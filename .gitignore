@@ -1,0 +1,18 @@
+# 各自の環境で自動生成されるフォルダを除外
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+*.sln
+
+# 作業用スクリプトのログ（自動生成・コミット不要）
+*.log
+
+# 作業用フォルダ（資料作成・使い捨てスクリプト。ゲーム本体ではないのでコミット不要）
+_pptbg/
+_pptwork/
+_audio/
+_editor/
+_torchcheck.*

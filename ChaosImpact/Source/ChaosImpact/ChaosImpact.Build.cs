@@ -18,10 +18,14 @@ public class ChaosImpact : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SlateCore"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
+
+		// Keep the supplied logo available through the platform file layer in packaged builds.
+		RuntimeDependencies.Add("$(ProjectDir)/Content/UI/TitleLogoTransparent.png", StagedFileType.UFS);
 
 		PublicIncludePaths.AddRange(new string[] {
 			"ChaosImpact",

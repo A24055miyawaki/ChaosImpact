@@ -4,8 +4,11 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBallSpawner.h"
+#include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactMenuWidget.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
+#include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerInput.h"
 #include "EnhancedInputSubsystems.h"
@@ -15,21 +18,31 @@
 #include "ChaosImpact.h"
 #include "Widgets/Input/SVirtualJoystick.h"
 #include "InputCoreTypes.h"
+#include "InputKeyEventArgs.h"
 
 void AChaosImpactPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 	bTrainingMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CITraining=1"));
-	BallFlightMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIBallArc=1"))
-		? EChaosImpactBallFlightMode::Arc : EChaosImpactBallFlightMode::Straight;
+	if (bTrainingMode)
+	{
+		RequestedLocalPlayerCount = FMath::Clamp(FCString::Atoi(
+			GetWorld()->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))), 1, 4);
+		bTrainingTargetsEnabled = !GetWorld()->URL.HasOption(TEXT("CITargets=0"));
+		bTrainingCPUEnabled = GetWorld()->URL.HasOption(TEXT("CICPU=1"));
+	}
+	BallFlightMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIBallStraight=1"))
+		? EChaosImpactBallFlightMode::Straight : EChaosImpactBallFlightMode::Arc;
+	CurrentScreen = bTrainingMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
+	const bool bPrimaryLocalPlayer = IsPrimaryLocalPlayerController();
 
-	bShowMouseCursor = true;
-	bEnableClickEvents = true;
-	bEnableMouseOverEvents = true;
+	bShowMouseCursor = bPrimaryLocalPlayer;
+	bEnableClickEvents = bPrimaryLocalPlayer;
+	bEnableMouseOverEvents = bPrimaryLocalPlayer;
 	DefaultMouseCursor = EMouseCursor::Crosshairs;
 
 	// only spawn touch controls on local player controllers
-	if (ShouldUseTouchControls() && IsLocalPlayerController())
+	if (ShouldUseTouchControls() && IsLocalPlayerController() && bPrimaryLocalPlayer)
 	{
 		// spawn the mobile controls widget
 		MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
@@ -47,19 +60,33 @@ void AChaosImpactPlayerController::BeginPlay()
 
 	}
 
-	if (IsLocalPlayerController())
+	if (IsLocalPlayerController() && bPrimaryLocalPlayer)
 	{
 		MenuWidget = CreateWidget<UChaosImpactMenuWidget>(this);
 		if (MenuWidget)
 		{
-			MenuWidget->AddToPlayerScreen(100);
-			CurrentScreen = bTrainingMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
+			// Menus use the complete game viewport. Gameplay HUDs still use
+			// AddToPlayerScreen, so only the pause layer spans split-screen views.
+			MenuWidget->AddToViewport(100);
 			MenuWidget->ShowScreen(CurrentScreen);
 			ApplyScreenInput();
 		}
 	}
 
 	EnsureTrainingBallSpawners();
+	EnsureTrainingTargets();
+}
+
+bool AChaosImpactPlayerController::IsPrimaryLocalPlayerController() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const ULocalPlayer* ThisLocalPlayer = GetLocalPlayer();
+	if (!ThisLocalPlayer)
+	{
+		return false;
+	}
+	return !GameInstance || GameInstance->GetLocalPlayers().IsEmpty()
+		|| GameInstance->GetLocalPlayers()[0] == ThisLocalPlayer;
 }
 
 void AChaosImpactPlayerController::SetupInputComponent()
@@ -69,10 +96,6 @@ void AChaosImpactPlayerController::SetupInputComponent()
 		&AChaosImpactPlayerController::TogglePauseMenu).bExecuteWhenPaused = true;
 	InputComponent->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this,
 		&AChaosImpactPlayerController::TogglePauseMenu).bExecuteWhenPaused = true;
-	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this,
-		&AChaosImpactPlayerController::HandleThrowPressed);
-	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this,
-		&AChaosImpactPlayerController::HandleThrowReleased);
 
 	// only add IMCs for local player controllers
 	if (IsLocalPlayerController())
@@ -108,6 +131,25 @@ void AChaosImpactPlayerController::SetupInputComponent()
 			}
 		}
 	}
+}
+
+bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	const bool bHandledByBase = Super::InputKey(Params);
+	if (Params.Key == EKeys::LeftMouseButton && IsGameplayActive())
+	{
+		if (Params.Event == IE_Pressed)
+		{
+			HandleThrowPressed();
+			return true;
+		}
+		if (Params.Event == IE_Released)
+		{
+			HandleThrowReleased();
+			return true;
+		}
+	}
+	return bHandledByBase;
 }
 
 void AChaosImpactPlayerController::HandleThrowPressed()
@@ -146,6 +188,7 @@ void AChaosImpactPlayerController::OnPossess(APawn* InPawn)
 		ApplyScreenInput();
 	}
 	EnsureTrainingBallSpawners();
+	EnsureTrainingTargets();
 }
 
 void AChaosImpactPlayerController::ApplyScreenInput()
@@ -163,7 +206,7 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 	{
 		PlayerInput->FlushPressedKeys();
 	}
-	bShowMouseCursor = true;
+	bShowMouseCursor = IsPrimaryLocalPlayerController();
 	DefaultMouseCursor = bPlaying ? EMouseCursor::Crosshairs : EMouseCursor::Default;
 	CurrentMouseCursor = DefaultMouseCursor;
 	SetPause(!bPlaying);
@@ -200,9 +243,15 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 		return;
 	}
 	// A pause screen is only reachable from an active play session.
-	if (NewScreen == EChaosImpactScreen::Pause && !IsGameplayActive())
+	if (NewScreen == EChaosImpactScreen::Pause && !IsGameplayActive()
+		&& CurrentScreen != EChaosImpactScreen::TrainingSettings)
 	{
 		return;
+	}
+	if (bTrainingMode && IsPrimaryLocalPlayerController()
+		&& (NewScreen == EChaosImpactScreen::ModeSelect || NewScreen == EChaosImpactScreen::Title))
+	{
+		RemoveSecondaryLocalPlayers();
 	}
 	CurrentScreen = NewScreen;
 	MenuWidget->ShowScreen(NewScreen);
@@ -211,6 +260,11 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 
 void AChaosImpactPlayerController::TogglePauseMenu()
 {
+	if (CurrentScreen == EChaosImpactScreen::TrainingSettings)
+	{
+		ShowMenuScreen(EChaosImpactScreen::Pause);
+		return;
+	}
 	if (CurrentScreen == EChaosImpactScreen::Pause)
 	{
 		ResumeGameplay();
@@ -234,10 +288,16 @@ void AChaosImpactPlayerController::ResumeGameplay()
 
 void AChaosImpactPlayerController::StartTraining()
 {
+	StartTrainingWithPlayers(1);
+}
+
+void AChaosImpactPlayerController::StartTrainingWithPlayers(const int32 LocalPlayerCount)
+{
 	if (bTravelPending || IsGameplayActive() || CurrentScreen == EChaosImpactScreen::Title)
 	{
 		return;
 	}
+	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, 4);
 	OpenTrainingLevel(false);
 }
 
@@ -248,6 +308,38 @@ void AChaosImpactPlayerController::RetryTraining()
 		return;
 	}
 	OpenTrainingLevel(true);
+}
+
+void AChaosImpactPlayerController::CycleTrainingPlayerCount()
+{
+	if (bTrainingMode)
+	{
+		RequestedLocalPlayerCount = RequestedLocalPlayerCount % 4 + 1;
+	}
+}
+
+void AChaosImpactPlayerController::ToggleTrainingTargets()
+{
+	if (bTrainingMode)
+	{
+		bTrainingTargetsEnabled = !bTrainingTargetsEnabled;
+	}
+}
+
+void AChaosImpactPlayerController::ToggleTrainingCPU()
+{
+	if (bTrainingMode)
+	{
+		bTrainingCPUEnabled = !bTrainingCPUEnabled;
+	}
+}
+
+void AChaosImpactPlayerController::ApplyTrainingSettings()
+{
+	if (bTrainingMode && !bTravelPending)
+	{
+		OpenTrainingLevel(true);
+	}
 }
 
 void AChaosImpactPlayerController::ToggleBallFlightMode()
@@ -266,16 +358,40 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode)
 	}
 	bTravelPending = true;
 	SetPause(false);
-	const bool bOpenWithArc = bKeepFlightMode && BallFlightMode == EChaosImpactBallFlightMode::Arc;
-	const FString Options = bOpenWithArc ? TEXT("CITraining=1?CIBallArc=1") : TEXT("CITraining=1");
+	const bool bOpenWithStraight = bKeepFlightMode
+		&& BallFlightMode == EChaosImpactBallFlightMode::Straight;
+	FString Options = FString::Printf(TEXT("CITraining=1?CILocalPlayers=%d"),
+		FMath::Clamp(RequestedLocalPlayerCount, 1, 4));
+	if (!bTrainingTargetsEnabled)
+	{
+		Options += TEXT("?CITargets=0");
+	}
+	if (bTrainingCPUEnabled)
+	{
+		Options += TEXT("?CICPU=1");
+	}
+	if (bOpenWithStraight)
+	{
+		Options += TEXT("?CIBallStraight=1");
+	}
 	// Reloading clears balls, actors, health, stamina and position.
 	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true, Options);
 }
 
 void AChaosImpactPlayerController::EnsureTrainingBallSpawners()
 {
-	if (!bTrainingMode || !HasAuthority() || !GetWorld() || !GetPawn()
+	if (!bTrainingMode || !IsPrimaryLocalPlayerController() || !HasAuthority() || !GetWorld() || !GetPawn()
 		|| !TrainingBallSpawners.IsEmpty())
+	{
+		return;
+	}
+	for (TActorIterator<AChaosImpactBallSpawner> It(GetWorld()); It; ++It)
+	{
+		TrainingBallSpawners.Add(*It);
+	}
+	// Level-authored spawn points always win. Add/move these actors in the editor
+	// to replace the fallback layout without changing code.
+	if (!TrainingBallSpawners.IsEmpty())
 	{
 		return;
 	}
@@ -305,4 +421,91 @@ void AChaosImpactPlayerController::EnsureTrainingBallSpawners()
 			TrainingBallSpawners.Add(Spawner);
 		}
 	}
+}
+
+void AChaosImpactPlayerController::EnsureTrainingTargets()
+{
+	if (!bTrainingMode || !IsPrimaryLocalPlayerController() || !HasAuthority() || !GetWorld() || !GetPawn())
+	{
+		return;
+	}
+	if (!bTrainingTargetsEnabled)
+	{
+		for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
+		{
+			It->Destroy();
+		}
+		TrainingTargets.Reset();
+		return;
+	}
+	if (!TrainingTargets.IsEmpty())
+	{
+		return;
+	}
+	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
+	{
+		TrainingTargets.Add(*It);
+	}
+	// If the designer placed any targets in the map, use that authored set as-is.
+	if (!TrainingTargets.IsEmpty())
+	{
+		return;
+	}
+
+	struct FTargetSetup
+	{
+		FVector Offset;
+		EChaosImpactTargetMotion Motion;
+		float Distance;
+		float Speed;
+		float Phase;
+	};
+
+	const FTargetSetup Setups[] =
+	{
+		{FVector(680.0f, 0.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
+		{FVector(420.0f, -620.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
+		{FVector(420.0f, 620.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 120.0f, 0.28f, 0.0f},
+		{FVector(-100.0f, -700.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 110.0f, 0.38f, 0.35f},
+		{FVector(-100.0f, 700.0f, 0.0f), EChaosImpactTargetMotion::ForwardBack, 120.0f, 0.34f, 0.65f}
+	};
+
+	const FVector Origin = GetPawn()->GetActorLocation();
+	for (const FTargetSetup& Setup : Setups)
+	{
+		FVector TargetLocation = Origin + Setup.Offset - FVector::UpVector * 90.0f;
+		FHitResult GroundHit;
+		const FVector TraceStart = Origin + Setup.Offset + FVector::UpVector * 700.0f;
+		const FVector TraceEnd = Origin + Setup.Offset - FVector::UpVector * 1800.0f;
+		if (GetWorld()->LineTraceSingleByChannel(
+			GroundHit, TraceStart, TraceEnd, ECC_Visibility))
+		{
+			TargetLocation = GroundHit.ImpactPoint + FVector::UpVector * 2.0f;
+		}
+
+		const FRotator FacingRotation = (Origin - TargetLocation).Rotation();
+		FActorSpawnParameters Parameters;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		if (AChaosImpactTrainingTarget* Target = GetWorld()->SpawnActor<AChaosImpactTrainingTarget>(
+			AChaosImpactTrainingTarget::StaticClass(), TargetLocation,
+			FRotator(0.0f, FacingRotation.Yaw, 0.0f), Parameters))
+		{
+			Target->ConfigureMotion(Setup.Motion, Setup.Distance, Setup.Speed, Setup.Phase);
+			TrainingTargets.Add(Target);
+		}
+	}
+}
+
+void AChaosImpactPlayerController::RemoveSecondaryLocalPlayers()
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	if (!GameInstance)
+	{
+		return;
+	}
+	while (GameInstance->GetLocalPlayers().Num() > 1)
+	{
+		GameInstance->RemoveLocalPlayer(GameInstance->GetLocalPlayers().Last());
+	}
+	RequestedLocalPlayerCount = 1;
 }

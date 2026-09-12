@@ -18,6 +18,13 @@ public:
 	
 	/** Constructor */
 	AChaosImpactGameMode();
+
+protected:
+	virtual void BeginPlay() override;
+
+private:
+	void SetupLocalTrainingPlayers();
+	void SpawnTrainingCPU(const FVector& Anchor, const FRotator& Facing);
 };
 
 

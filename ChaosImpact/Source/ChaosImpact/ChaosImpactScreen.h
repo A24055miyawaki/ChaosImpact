@@ -8,8 +8,10 @@ enum class EChaosImpactScreen : uint8
 {
 	Title,
 	ModeSelect,
+	TrainingSetup,
 	SoloReady,
 	MultiReady,
 	Playing,
-	Pause
+	Pause,
+	TrainingSettings
 };

@@ -10,7 +10,7 @@ class USceneComponent;
 class UStaticMeshComponent;
 
 /** Training pickup point that replaces its ball after a short delay. */
-UCLASS(Blueprintable)
+UCLASS(Blueprintable, meta=(DisplayName="Chaos Impact Ball Spawn Point"))
 class AChaosImpactBallSpawner : public AActor
 {
 	GENERATED_BODY()
@@ -46,4 +46,3 @@ protected:
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;
 };
-

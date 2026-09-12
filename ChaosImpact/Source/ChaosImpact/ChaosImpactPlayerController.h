@@ -12,6 +12,7 @@ class UInputMappingContext;
 class UUserWidget;
 class UChaosImpactMenuWidget;
 class AChaosImpactBallSpawner;
+class AChaosImpactTrainingTarget;
 
 /**
  *  Basic PlayerController class for a third person game
@@ -28,17 +29,32 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Menu")
 	void StartTraining();
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Menu")
+	void StartTrainingWithPlayers(int32 LocalPlayerCount);
+	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Menu")
 	void ResumeGameplay();
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
 	void RetryTraining();
+	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
+	void CycleTrainingPlayerCount();
+	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
+	void ToggleTrainingTargets();
+	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
+	void ToggleTrainingCPU();
+	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
+	void ApplyTrainingSettings();
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Ball")
 	void ToggleBallFlightMode();
 	void TogglePauseMenu();
 	bool IsGameplayActive() const { return CurrentScreen == EChaosImpactScreen::Playing && !bTravelPending; }
 	bool IsTrainingMode() const { return bTrainingMode; }
+	bool IsPrimaryLocalPlayerController() const;
+	int32 GetRequestedLocalPlayerCount() const { return RequestedLocalPlayerCount; }
+	bool AreTrainingTargetsEnabled() const { return bTrainingTargetsEnabled; }
+	bool IsTrainingCPUEnabled() const { return bTrainingCPUEnabled; }
 	EChaosImpactBallFlightMode GetBallFlightMode() const { return BallFlightMode; }
 	EChaosImpactScreen GetCurrentScreen() const { return CurrentScreen; }
 	UChaosImpactMenuWidget* GetMenuWidget() const { return MenuWidget; }
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 	
 protected:
 	UPROPERTY(Transient)
@@ -53,19 +69,27 @@ protected:
 
 	bool bTravelPending = false;
 	bool bTrainingMode = false;
+	int32 RequestedLocalPlayerCount = 1;
+	bool bTrainingTargetsEnabled = true;
+	bool bTrainingCPUEnabled = false;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
-	EChaosImpactBallFlightMode BallFlightMode = EChaosImpactBallFlightMode::Straight;
+	EChaosImpactBallFlightMode BallFlightMode = EChaosImpactBallFlightMode::Arc;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactBallSpawner>> TrainingBallSpawners;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AChaosImpactTrainingTarget>> TrainingTargets;
 
 	virtual void OnPossess(APawn* InPawn) override;
 	void ApplyScreenInput();
 	void HandleThrowPressed();
 	void HandleThrowReleased();
 	void EnsureTrainingBallSpawners();
+	void EnsureTrainingTargets();
 	void OpenTrainingLevel(bool bKeepFlightMode);
+	void RemoveSecondaryLocalPlayers();
 
 	/** Input Mapping Contexts */
 	UPROPERTY(EditAnywhere, Category ="Input|Input Mappings")

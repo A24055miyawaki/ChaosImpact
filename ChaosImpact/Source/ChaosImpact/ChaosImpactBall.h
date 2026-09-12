@@ -31,14 +31,18 @@ public:
 
 	/** Launches with either the original level flight or a gravity-driven arc. */
 	void Launch(const FVector& Direction, float Speed,
-		EChaosImpactBallFlightMode FlightMode = EChaosImpactBallFlightMode::Straight,
+		EChaosImpactBallFlightMode FlightMode = EChaosImpactBallFlightMode::Arc,
 		float ArcUpwardSpeed = 650.0f);
 
 	/** Turns this actor into a stationary ball that players can collect. */
 	void MakePickup();
+	void MakeRollingPickup(const FVector& ImpactVelocity);
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball")
 	bool IsPickup() const { return bIsPickup; }
+
+	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball")
+	bool IsPickupAvailable() const;
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball")
 	bool HasReflected() const { return bHasReflected; }
@@ -48,6 +52,7 @@ public:
 
 	bool WasThrownBy(const APawn* Pawn) const;
 	APawn* GetThrowingPawn() const { return ThrowingPawn.Get(); }
+	FVector GetBallVelocity() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -84,6 +89,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float Bounciness = 1.0f;
 
+	/** Prevents the pawn that was just hit from instantly collecting the ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.0"))
+	float HitPickupLockoutSeconds = 0.55f;
+
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	bool bHasReflected = false;
 
@@ -91,14 +100,18 @@ protected:
 	int32 ReflectionCount = 0;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
-	EChaosImpactBallFlightMode ActiveFlightMode = EChaosImpactBallFlightMode::Straight;
+	EChaosImpactBallFlightMode ActiveFlightMode = EChaosImpactBallFlightMode::Arc;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	bool bIsPickup = false;
 
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
+	bool bIsRolling = false;
+
 	FVector PickupBaseLocation = FVector::ZeroVector;
 	float PickupAnimationTime = 0.0f;
 	float FlightSeconds = 0.0f;
+	float PickupAvailableAtSeconds = 0.0f;
 	bool bPickupConsumed = false;
 	TWeakObjectPtr<APawn> ThrowingPawn;
 };

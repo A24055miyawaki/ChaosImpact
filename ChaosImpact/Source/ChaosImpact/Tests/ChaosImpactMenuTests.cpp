@@ -5,13 +5,19 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
+#include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpactCPUController.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Components/SphereComponent.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerInput.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "InputKeyEventArgs.h"
 #include "Misc/AutomationTest.h"
@@ -136,6 +142,15 @@ namespace
 					FPointerEvent(0, Position, Position, Pressed, EKeys::LeftMouseButton, 0, FModifierKeysState()));
 				FSlateApplication::Get().ProcessMouseButtonUpEvent(
 					FPointerEvent(0, Position, Position, Released, EKeys::LeftMouseButton, 0, FModifierKeysState()));
+				if (!Check(EChaosImpactScreen::TrainingSetup, TEXT("Training opens local player setup")))
+				{
+					return true;
+				}
+				MenuKey(EKeys::Gamepad_DPad_Right);
+				Test->TestEqual(TEXT("D-pad selects two-player training"), Menu->GetSelectedIndex(), 1);
+				MenuKey(EKeys::Gamepad_DPad_Left);
+				Test->TestEqual(TEXT("D-pad returns to one-player training"), Menu->GetSelectedIndex(), 0);
+				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
 			}
@@ -144,7 +159,18 @@ namespace
 				if (!Check(EChaosImpactScreen::Playing, TEXT("Mouse click loads training, bypassing title"))) { return true; }
 				Test->TestFalse(TEXT("Training is unpaused"), PC->IsPaused());
 				Test->TestTrue(TEXT("Training has a playable character"), IsValid(Cast<AChaosImpactCharacter>(PC->GetPawn())));
+				if (AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(PC->GetPawn()))
+				{
+					Test->TestEqual(TEXT("Training movement speed uses the slower tuning"),
+						Character->GetCharacterMovement()->MaxWalkSpeed, 560.0f);
+					Test->TestEqual(TEXT("Short dash uses the reduced range"),
+						Character->GetDashDistance(), 220.0f);
+				}
 				Test->TestTrue(TEXT("Training URL is recognized"), PC->IsTrainingMode());
+				Test->TestTrue(TEXT("Arc trajectory is the training default"),
+					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
+				Test->TestEqual(TEXT("One-player selection is preserved"),
+					PC->GetRequestedLocalPlayerCount(), 1);
 				{
 					int32 SpawnerCount = 0;
 					TArray<AChaosImpactBall*> PickupBalls;
@@ -157,6 +183,24 @@ namespace
 						}
 					}
 					Test->TestEqual(TEXT("Training creates three ball spawners"), SpawnerCount, 3);
+					int32 TargetCount = 0;
+					int32 StationaryTargets = 0;
+					int32 SideTargets = 0;
+					int32 ForwardTargets = 0;
+					for (TActorIterator<AChaosImpactTrainingTarget> It(PC->GetWorld()); It; ++It)
+					{
+						++TargetCount;
+						switch (It->GetMotionMode())
+						{
+						case EChaosImpactTargetMotion::Stationary: ++StationaryTargets; break;
+						case EChaosImpactTargetMotion::SideToSide: ++SideTargets; break;
+						case EChaosImpactTargetMotion::ForwardBack: ++ForwardTargets; break;
+						}
+					}
+					Test->TestEqual(TEXT("Training creates five sandbag targets"), TargetCount, 5);
+					Test->TestEqual(TEXT("Training has two stationary targets"), StationaryTargets, 2);
+					Test->TestEqual(TEXT("Training has two side-moving targets"), SideTargets, 2);
+					Test->TestEqual(TEXT("Training has one depth-moving target"), ForwardTargets, 1);
 					if (AChaosImpactCharacter* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn());
 						Pawn && PickupBalls.Num() >= 3)
 					{
@@ -191,13 +235,13 @@ namespace
 								Pawn->GetHealth(), HealthBeforeSelfHit);
 						}
 						FlightTestBall->Launch(FVector::ForwardVector, 1200.0f,
-							EChaosImpactBallFlightMode::Arc, 600.0f);
+							EChaosImpactBallFlightMode::Arc, 0.0f);
 						if (UProjectileMovementComponent* Movement =
 							FlightTestBall->FindComponentByClass<UProjectileMovementComponent>())
 						{
 							Test->TestEqual(TEXT("Arc throw enables gravity"), Movement->ProjectileGravityScale, 1.0f);
 							Test->TestFalse(TEXT("Arc throw is not plane constrained"), Movement->bConstrainToPlane);
-							Test->TestTrue(TEXT("Arc throw has upward velocity"), Movement->Velocity.Z > 0.0f);
+							Test->TestEqual(TEXT("Arc throw leaves the hand level"), Movement->Velocity.Z, 0.0);
 							Test->TestTrue(TEXT("Arc throw travels forward"), Movement->Velocity.X > 0.0f);
 							Test->TestEqual(TEXT("Arc throw has no sideways drift"), Movement->Velocity.Y, 0.0);
 							FlightTestBall->Launch(FVector::ForwardVector, 1200.0f,
@@ -208,11 +252,46 @@ namespace
 								Movement->bConstrainToPlane);
 							Test->TestEqual(TEXT("Straight throw keeps level height"), Movement->Velocity.Z, 0.0);
 						}
+						FlightTestBall->MakeRollingPickup(FVector(700.0f, 0.0f, 0.0f));
+						Test->TestTrue(TEXT("Landed ball becomes collectible"), FlightTestBall->IsPickup());
+						Test->TestFalse(TEXT("A ball cannot be caught immediately after impact"),
+							FlightTestBall->IsPickupAvailable());
+						Test->TestFalse(TEXT("A hit ball cannot be caught again immediately"),
+							FlightTestBall->IsPickupAvailable());
+						if (USphereComponent* Sphere = FlightTestBall->FindComponentByClass<USphereComponent>())
+						{
+							Test->TestTrue(TEXT("Landed pickup keeps rolling physics"), Sphere->IsSimulatingPhysics());
+							Test->TestTrue(TEXT("Landed pickup retains forward momentum"),
+								Sphere->GetPhysicsLinearVelocity().X > 0.0f);
+						}
 						FlightTestBall->Destroy();
+					}
+
+					FActorSpawnParameters TargetTestParameters;
+					TargetTestParameters.SpawnCollisionHandlingOverride =
+						ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+					if (AChaosImpactTrainingTarget* TargetTest =
+						PC->GetWorld()->SpawnActor<AChaosImpactTrainingTarget>(
+							AChaosImpactTrainingTarget::StaticClass(),
+							PC->GetPawn()->GetActorLocation() + FVector::UpVector * 1200.0f,
+							FRotator::ZeroRotator, TargetTestParameters))
+					{
+						FDamageEvent TargetHitEvent;
+						Test->TestEqual(TEXT("Training target accepts a ball-sized hit"),
+							TargetTest->TakeDamage(1.0f, TargetHitEvent, PC, PC->GetPawn()), 1.0f);
+						Test->TestTrue(TEXT("Training target enters defeated state"), TargetTest->IsDefeated());
+						Test->TestEqual(TEXT("Defeated target cannot score twice"),
+							TargetTest->TakeDamage(1.0f, TargetHitEvent, PC, PC->GetPawn()), 0.0f);
+						TargetTest->Destroy();
 					}
 				}
 				Capture(TEXT("05-Training.png"));
 				PC->InputKey(FInputKeyEventArgs(nullptr, INPUTDEVICEID_NONE, EKeys::LeftMouseButton, IE_Pressed, FPlatformTime::Cycles64()));
+				if (auto* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
+				{
+					Test->TestTrue(TEXT("Mouse press immediately starts charge"),
+						Pawn->GetThrowChargeAlpha() >= 0.0f && Pawn->GetCarriedBallCount() == 2);
+				}
 				break;
 			case 10:
 				if (auto* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
@@ -258,8 +337,35 @@ namespace
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::Pause, TEXT("Trajectory toggle keeps pause open"))) { return true; }
-				Test->TestTrue(TEXT("Pause menu switches to gravity arc"),
-					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
+				Test->TestTrue(TEXT("Pause menu switches from default arc to straight"),
+					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Straight);
+				MenuKey(EKeys::Down);
+				MenuKey(EKeys::Enter);
+				if (!Check(EChaosImpactScreen::TrainingSettings,
+					TEXT("Pause opens training settings"))) { return true; }
+				MenuKey(EKeys::Enter);
+				Test->TestEqual(TEXT("Training player count cycles"),
+					PC->GetRequestedLocalPlayerCount(), 2);
+				MenuKey(EKeys::Enter);
+				MenuKey(EKeys::Enter);
+				MenuKey(EKeys::Enter);
+				Test->TestEqual(TEXT("Training player count wraps to one"),
+					PC->GetRequestedLocalPlayerCount(), 1);
+				MenuKey(EKeys::Down);
+				MenuKey(EKeys::Enter);
+				Test->TestFalse(TEXT("Training targets can be disabled"), PC->AreTrainingTargetsEnabled());
+				MenuKey(EKeys::Enter);
+				Test->TestTrue(TEXT("Training targets can be restored"), PC->AreTrainingTargetsEnabled());
+				MenuKey(EKeys::Down);
+				MenuKey(EKeys::Enter);
+				Test->TestTrue(TEXT("Training CPU can be enabled"), PC->IsTrainingCPUEnabled());
+				MenuKey(EKeys::Enter);
+				Test->TestFalse(TEXT("Training CPU can be disabled"), PC->IsTrainingCPUEnabled());
+				MenuKey(EKeys::P);
+				if (!Check(EChaosImpactScreen::Pause,
+					TEXT("Training settings return to pause"))) { return true; }
+				MenuKey(EKeys::Down);
+				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
@@ -267,8 +373,8 @@ namespace
 			case 17:
 				if (!PC->IsGameplayActive() && Now - TravelStartedAt < 45) { return false; }
 				if (!Check(EChaosImpactScreen::Playing, TEXT("Training retry reloads the stage"))) { return true; }
-				Test->TestTrue(TEXT("Retry preserves selected arc trajectory"),
-					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
+				Test->TestTrue(TEXT("Retry preserves selected straight trajectory"),
+					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Straight);
 				if (auto* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
 				{
 					Test->TestEqual(TEXT("Retry clears carried balls"), Pawn->GetCarriedBallCount(), 0);
@@ -281,12 +387,16 @@ namespace
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
+				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::ModeSelect, TEXT("Pause modes button returns to selection"))) { return true; }
 				Test->TestTrue(TEXT("Gameplay stays frozen in mode selection"), PC->IsPaused());
 				MenuKey(EKeys::Right);
 				MenuKey(EKeys::Down);
 				Test->TestEqual(TEXT("Spatial arrows reach lower-right Training"), Menu->GetSelectedIndex(), 2);
+				MenuKey(EKeys::Enter);
+				if (!Check(EChaosImpactScreen::TrainingSetup,
+					TEXT("Training selection reopens player setup"))) { return true; }
 				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
@@ -300,6 +410,7 @@ namespace
 				PauseKey(PC);
 				break;
 			case 20:
+				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
@@ -332,6 +443,135 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactMenuFlowTest, "ChaosImpact.UI.MenuF
 bool FChaosImpactMenuFlowTest::RunTest(const FString& Parameters)
 {
 	ADD_LATENT_AUTOMATION_COMMAND(FMenuFlowCommand(this));
+	return true;
+}
+
+namespace
+{
+	class FLocalMultiplayerCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FLocalMultiplayerCommand(FAutomationTestBase* InTest) : Test(InTest) {}
+
+		virtual bool Update() override
+		{
+			AChaosImpactPlayerController* Primary = FindGameController();
+			if (!Primary || !Primary->GetWorld())
+			{
+				return FPlatformTime::Seconds() - StartedAt > 30.0;
+			}
+			if (!Primary->GetWorld()->URL.HasOption(TEXT("CITraining=1")))
+			{
+				Test->AddInfo(TEXT("Local multiplayer test requires a CITraining map URL."));
+				return true;
+			}
+			if (Stage == 1)
+			{
+				if (FPlatformTime::Seconds() < NextAt)
+				{
+					return false;
+				}
+				Test->TestTrue(TEXT("Primary pause freezes the complete split-screen game"),
+					Primary->GetCurrentScreen() == EChaosImpactScreen::Pause && Primary->IsPaused());
+				if (UChaosImpactMenuWidget* Menu = Primary->GetMenuWidget();
+					Menu && GEngine && GEngine->GameViewport && GEngine->GameViewport->Viewport)
+				{
+					const FVector2D MenuSize = Menu->GetCachedGeometry().GetLocalSize();
+					const FIntPoint ViewportSize = GEngine->GameViewport->Viewport->GetSizeXY();
+					Test->TestTrue(TEXT("Pause menu covers the entire split-screen viewport"),
+						MenuSize.X >= ViewportSize.X * 0.95f && MenuSize.Y >= ViewportSize.Y * 0.95f);
+				}
+				Capture(TEXT("09-Training-Split-Pause.png"));
+				return true;
+			}
+
+			UGameInstance* GameInstance = Primary->GetGameInstance();
+			const int32 ExpectedPlayers = Primary->GetRequestedLocalPlayerCount();
+			if (!GameInstance || GameInstance->GetNumLocalPlayers() < ExpectedPlayers)
+			{
+				if (FPlatformTime::Seconds() - StartedAt < 30.0) { return false; }
+				Test->AddError(TEXT("Timed out while creating local players."));
+				return true;
+			}
+
+			Test->TestEqual(TEXT("Requested local player count is created"),
+				GameInstance->GetNumLocalPlayers(), ExpectedPlayers);
+			for (int32 PlayerIndex = 0; PlayerIndex < ExpectedPlayers; ++PlayerIndex)
+			{
+				ULocalPlayer* LocalPlayer = GameInstance->GetLocalPlayers()[PlayerIndex];
+				AChaosImpactPlayerController* Controller = LocalPlayer
+					? Cast<AChaosImpactPlayerController>(LocalPlayer->GetPlayerController(Primary->GetWorld()))
+					: nullptr;
+				Test->TestNotNull(*FString::Printf(TEXT("Player %d controller exists"), PlayerIndex + 1), Controller);
+				Test->TestNotNull(*FString::Printf(TEXT("Player %d uses the Chaos Impact character"), PlayerIndex + 1),
+					Controller ? Cast<AChaosImpactCharacter>(Controller->GetPawn()) : nullptr);
+				if (Controller)
+				{
+					Test->TestTrue(*FString::Printf(TEXT("Player %d is in gameplay"), PlayerIndex + 1),
+						Controller->IsGameplayActive());
+				}
+			}
+
+			const bool bExpectTargets = !Primary->GetWorld()->URL.HasOption(TEXT("CITargets=0"));
+			int32 TargetCount = 0;
+			for (TActorIterator<AChaosImpactTrainingTarget> It(Primary->GetWorld()); It; ++It)
+			{
+				++TargetCount;
+			}
+			Test->TestTrue(TEXT("Training target setting is applied"),
+				bExpectTargets ? TargetCount > 0 : TargetCount == 0);
+
+			const bool bExpectCPU = Primary->GetWorld()->URL.HasOption(TEXT("CICPU=1"));
+			int32 CPUCount = 0;
+			for (TActorIterator<AChaosImpactCPUController> It(Primary->GetWorld()); It; ++It)
+			{
+				++CPUCount;
+				Test->TestNotNull(TEXT("CPU possesses the same playable character base"),
+					Cast<AChaosImpactCharacter>(It->GetPawn()));
+				Test->TestEqual(TEXT("CPU uses the player's current flight mode"),
+					It->UsesArcFlightMode(),
+					Primary->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
+			}
+			Test->TestEqual(TEXT("Training CPU setting is applied"), CPUCount, bExpectCPU ? 1 : 0);
+
+			if (GEngine && GEngine->GameViewport)
+			{
+				if (ExpectedPlayers == 2)
+				{
+					Test->TestEqual(TEXT("Two-player training uses a vertical divider"),
+						GEngine->GameViewport->GetCurrentSplitscreenConfiguration(),
+						ESplitScreenType::TwoPlayer_Vertical);
+				}
+				else if (ExpectedPlayers == 4)
+				{
+					Test->TestEqual(TEXT("Four-player training uses a grid"),
+						GEngine->GameViewport->GetCurrentSplitscreenConfiguration(),
+						ESplitScreenType::FourPlayer_Grid);
+				}
+			}
+			Capture(ExpectedPlayers == 2 ? TEXT("07-Training-2P.png")
+				: ExpectedPlayers == 4 ? TEXT("08-Training-4P.png") : TEXT("07-Training-Local.png"));
+			Primary->TogglePauseMenu();
+			Stage = 1;
+			NextAt = FPlatformTime::Seconds() + 0.6;
+			return false;
+		}
+
+	private:
+		FAutomationTestBase* Test;
+		double StartedAt = FPlatformTime::Seconds();
+		double NextAt = 0.0;
+		int32 Stage = 0;
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactLocalMultiplayerTest,
+	"ChaosImpact.Training.LocalMultiplayer",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactLocalMultiplayerTest::RunTest(const FString& Parameters)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FLocalMultiplayerCommand(this));
 	return true;
 }
 

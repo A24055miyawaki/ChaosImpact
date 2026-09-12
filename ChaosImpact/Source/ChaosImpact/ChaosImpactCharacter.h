@@ -10,6 +10,7 @@
 class USpringArmComponent;
 class UCameraComponent;
 class UStaticMeshComponent;
+class UPointLightComponent;
 class UInputAction;
 class UChaosImpactChargeWidget;
 class AChaosImpactBall;
@@ -62,6 +63,11 @@ public:
 	void EndThrowInput();
 	void RecoverStaminaFromBallHit();
 	bool TryPickupBall(AChaosImpactBall* Ball);
+	void SetTrainingStartTransform(const FVector& Location, const FRotator& Rotation);
+	void SetAIAimDirection(const FVector& Direction);
+	void RequestAIDash(const FVector& Direction);
+	bool IsChargingThrow() const { return bIsChargingThrow; }
+	bool IsEliminated() const { return bEliminated; }
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball Inventory")
 	int32 GetCarriedBallCount() const { return CarriedBallCount; }
@@ -87,6 +93,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Dash")
 	bool IsDashing() const { return bIsDashing; }
+
+	UFUNCTION(BlueprintPure, Category="Chaos Impact|Dash")
+	float GetDashDistance() const { return DashDistance; }
 
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
 		AController* EventInstigator, AActor* DamageCauser) override;
@@ -121,6 +130,9 @@ protected:
 	void UpdateDash(float DeltaSeconds);
 	void FinishDash();
 	void ResetAfterElimination();
+	void StartEliminationEffect();
+	void UpdateEliminationEffect(float DeltaSeconds);
+	void StopEliminationEffect();
 
 	/** Blueprint hooks for presentation/UI work without changing the C++ rules. */
 	UFUNCTION(BlueprintImplementableEvent, Category="Chaos Impact|Throw")
@@ -143,20 +155,16 @@ protected:
 	float MaxChargeSeconds = 1.5f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw", meta=(ClampMin="1.0"))
-	float MinimumThrowSpeed = 1200.0f;
+	float MinimumThrowSpeed = 1450.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw", meta=(ClampMin="1.0"))
-	float MaximumThrowSpeed = 2800.0f;
+	float MaximumThrowSpeed = 3400.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw")
 	FVector ThrowSocketOffset = FVector(90.0f, 0.0f, 55.0f);
 
-	/** Fixed elevation keeps the arc aimed straight ahead; charge raises total speed and range. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw", meta=(ClampMin="1.0", ClampMax="45.0"))
-	float ArcLaunchAngleDegrees = 20.0f;
-
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw", meta=(ClampMin="0.1", ClampMax="1.0"))
-	float ArcThrowSpeedScale = 0.8f;
+	float ArcThrowSpeedScale = 0.92f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory", meta=(ClampMin="1", ClampMax="2"))
 	int32 MaximumCarriedBalls = 2;
@@ -168,11 +176,21 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
 	TObjectPtr<UStaticMeshComponent> HeldBallMesh;
 
+	/** Second carried ball, shown in the left hand only while inventory is full. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
+	TObjectPtr<UStaticMeshComponent> LeftHeldBallMesh;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
 	FVector HeldBallRelativeLocation = FVector(0.0f, 0.0f, 2.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
 	FRotator HeldBallRelativeRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
+	FVector LeftHeldBallRelativeLocation = FVector(0.0f, 0.0f, 2.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
+	FRotator LeftHeldBallRelativeRotation = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0", ClampMax="30.0"))
 	float StickAimDeadZone = 0.2f;
@@ -203,7 +221,7 @@ protected:
 	float DashCost = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Dash", meta=(ClampMin="1.0"))
-	float DashDistance = 300.0f;
+	float DashDistance = 220.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Dash", meta=(ClampMin="0.01"))
 	float DashDuration = 0.14f;
@@ -221,6 +239,19 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactChargeWidget> ChargeWidget;
 
+	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Damage")
+	TArray<TObjectPtr<UStaticMeshComponent>> EliminationPieces;
+
+	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Damage")
+	TObjectPtr<UPointLightComponent> EliminationFlash;
+
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Damage", meta=(ClampMin="0.1"))
+	float EliminationEffectDuration = 0.85f;
+
+	TArray<FVector> EliminationPieceDirections;
+	float EliminationEffectTime = 0.0f;
+	bool bEliminationEffectActive = false;
+
 	FVector2D StickAimInput = FVector2D::ZeroVector;
 	FVector LastMoveDirection = FVector::ForwardVector;
 	FVector DashDirection = FVector::ForwardVector;
@@ -235,6 +266,7 @@ protected:
 	bool bWasFallingBeforeDash = false;
 	bool bEliminated = false;
 	bool bMouseChargeActive = false;
+	bool bWasMouseDownLastTick = false;
 
 public:
 

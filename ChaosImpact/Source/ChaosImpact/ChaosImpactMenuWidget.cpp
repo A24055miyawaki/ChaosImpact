@@ -123,6 +123,13 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(1000, 682, 1440, 772), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
 		Entries.Add({FSlateRect(160, 707, 490, 772), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
 		break;
+	case EChaosImpactScreen::TrainingSetup:
+		Entries.Add({FSlateRect(110, 285, 410, 585), TEXT("1人プレイ"), TEXT(""), TEXT("1P"), Ice});
+		Entries.Add({FSlateRect(470, 285, 770, 585), TEXT("2人プレイ"), TEXT(""), TEXT("2P"), Fire});
+		Entries.Add({FSlateRect(830, 285, 1130, 585), TEXT("3人プレイ"), TEXT(""), TEXT("3P"), Gold});
+		Entries.Add({FSlateRect(1190, 285, 1490, 585), TEXT("4人プレイ"), TEXT(""), TEXT("4P"), Ice});
+		Entries.Add({FSlateRect(160, 707, 490, 772), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+		break;
 	case EChaosImpactScreen::SoloReady:
 	case EChaosImpactScreen::MultiReady:
 		Entries.Add({FSlateRect(160, 700, 570, 780), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
@@ -134,15 +141,33 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bArc = Controller
 			&& Controller->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
-		Entries.Add({FSlateRect(490, 255, 1110, 327), TEXT("ゲームに戻る"), TEXT(""), TEXT(""), Ice});
-		Entries.Add({FSlateRect(490, 355, 1110, 427),
+		Entries.Add({FSlateRect(490, 245, 1110, 307), TEXT("ゲームに戻る"), TEXT(""), TEXT(""), Ice});
+		Entries.Add({FSlateRect(490, 325, 1110, 387),
 			bArc ? TEXT("投球軌道：放物線") : TEXT("投球軌道：直線"), TEXT(""), TEXT(""), bArc ? Fire : Ice});
 		if (Controller && Controller->IsTrainingMode())
 		{
-			Entries.Add({FSlateRect(490, 455, 1110, 527), TEXT("トレーニングをリトライ"), TEXT(""), TEXT(""), Gold});
+			Entries.Add({FSlateRect(490, 405, 1110, 467), TEXT("トレーニング設定"), TEXT(""), TEXT(""), Ice});
+			Entries.Add({FSlateRect(490, 485, 1110, 547), TEXT("トレーニングをリトライ"), TEXT(""), TEXT(""), Gold});
 		}
-		Entries.Add({FSlateRect(490, 555, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire});
-		Entries.Add({FSlateRect(490, 655, 1110, 727), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire});
+		Entries.Add({FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted});
+		break;
+	}
+	case EChaosImpactScreen::TrainingSettings:
+	{
+		const AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const int32 Players = Controller ? Controller->GetRequestedLocalPlayerCount() : 1;
+		const bool bTargets = !Controller || Controller->AreTrainingTargetsEnabled();
+		const bool bCPU = Controller && Controller->IsTrainingCPUEnabled();
+		Entries.Add({FSlateRect(450, 245, 1150, 307),
+			FString::Printf(TEXT("プレイヤー人数：%d人"), Players), TEXT(""), TEXT(""), Ice});
+		Entries.Add({FSlateRect(450, 335, 1150, 397),
+			bTargets ? TEXT("マト：あり") : TEXT("マト：なし"), TEXT(""), TEXT(""), bTargets ? Gold : Muted});
+		Entries.Add({FSlateRect(450, 425, 1150, 487),
+			bCPU ? TEXT("CPUプレイヤー：あり") : TEXT("CPUプレイヤー：なし"), TEXT(""), TEXT(""), bCPU ? Fire : Muted});
+		Entries.Add({FSlateRect(450, 565, 1150, 637), TEXT("設定を適用"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(450, 665, 1150, 737), TEXT("ポーズ画面へ戻る"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
 	default:
@@ -227,6 +252,13 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		P.Line(FVector2D(640, 184), FVector2D(800, 184), Ice, 5);
 		P.Line(FVector2D(800, 184), FVector2D(960, 184), Fire, 5);
 	}
+	else if (Screen == EChaosImpactScreen::TrainingSetup)
+	{
+		P.Text(TEXT("LOCAL TRAINING"), 800, 82, 58, Paper, true, true);
+		P.Text(TEXT("プレイヤー人数"), 800, 158, 30, Paper, true, true);
+		P.Line(FVector2D(620, 218), FVector2D(800, 218), Ice, 5);
+		P.Line(FVector2D(800, 218), FVector2D(980, 218), Fire, 5);
+	}
 	else if (Screen == EChaosImpactScreen::SoloReady || Screen == EChaosImpactScreen::MultiReady)
 	{
 		const bool bSolo = Screen == EChaosImpactScreen::SoloReady;
@@ -238,9 +270,38 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	}
 	else if (Screen == EChaosImpactScreen::Pause)
 	{
-		P.Text(TEXT("PAUSE"), 800, 94, 78, Paper, true, true);
+		const float Glitch = FMath::Clamp(1.0f - AnimationSeconds / 0.55f, 0.0f, 1.0f);
+		const float JitterX = FMath::Sin(AnimationSeconds * 93.0f) * Glitch * 13.0f;
+		if (Glitch > 0.0f)
+		{
+			for (int32 Scanline = 0; Scanline < 12; ++Scanline)
+			{
+				const float Y = FMath::Fmod(Scanline * 79.0f + AnimationSeconds * 920.0f, 900.0f);
+				P.Box(0.0f, Y, 1600.0f, Scanline % 3 == 0 ? 3.0f : 1.0f,
+					FLinearColor(0.72f, 0.88f, 1.0f, 0.11f * Glitch));
+			}
+			for (int32 Fragment = 0; Fragment < 7; ++Fragment)
+			{
+				const float X = FMath::Fmod(Fragment * 277.0f + AnimationSeconds * 1400.0f, 1500.0f);
+				const float Y = 55.0f + FMath::Fmod(Fragment * 113.0f, 690.0f);
+				const FLinearColor NoiseColor = Fragment % 2 == 0
+					? FLinearColor(0.0f, 0.75f, 1.0f, 0.16f * Glitch)
+					: FLinearColor(1.0f, 0.03f, 0.16f, 0.14f * Glitch);
+				P.Box(X, Y, 55.0f + Fragment * 19.0f, 4.0f + (Fragment % 3) * 3.0f, NoiseColor);
+			}
+			P.Text(TEXT("PAUSE"), 794.0f + JitterX, 94, 78, Ice, true, true);
+			P.Text(TEXT("PAUSE"), 806.0f - JitterX, 94, 78, Fire, true, true);
+		}
+		P.Text(TEXT("PAUSE"), 800.0f + JitterX * 0.18f, 94, 78, Paper, true, true);
 		P.Line(FVector2D(650, 211), FVector2D(800, 211), Ice, 5);
 		P.Line(FVector2D(800, 211), FVector2D(950, 211), Fire, 5);
+	}
+	else if (Screen == EChaosImpactScreen::TrainingSettings)
+	{
+		P.Text(TEXT("TRAINING SETTINGS"), 800, 92, 62, Paper, true, true);
+		P.Text(TEXT("項目を決めて設定を適用"), 800, 168, 27, Paper, true, true);
+		P.Line(FVector2D(610, 216), FVector2D(800, 216), Ice, 5);
+		P.Line(FVector2D(800, 216), FVector2D(990, 216), Fire, 5);
 	}
 
 	P.Layer = BaseLayer + 4;
@@ -319,13 +380,23 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 		break;
 	case EChaosImpactScreen::ModeSelect:
-		if (SelectedIndex == 2) { Controller->StartTraining(); }
+		if (SelectedIndex == 2) { Controller->ShowMenuScreen(EChaosImpactScreen::TrainingSetup); }
 		else { Controller->ShowMenuScreen(SelectedIndex == 0 ? EChaosImpactScreen::SoloReady
 			: SelectedIndex == 1 ? EChaosImpactScreen::MultiReady : EChaosImpactScreen::Title); }
 		break;
+	case EChaosImpactScreen::TrainingSetup:
+		if (SelectedIndex >= 0 && SelectedIndex < 4)
+		{
+			Controller->StartTrainingWithPlayers(SelectedIndex + 1);
+		}
+		else
+		{
+			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+		}
+		break;
 	case EChaosImpactScreen::SoloReady:
 	case EChaosImpactScreen::MultiReady:
-		if (SelectedIndex == 1) { Controller->StartTraining(); }
+		if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::TrainingSetup); }
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect); }
 		break;
 	case EChaosImpactScreen::Pause:
@@ -340,9 +411,14 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else
 		{
-			const int32 RetryIndex = Controller->IsTrainingMode() ? 2 : INDEX_NONE;
-			const int32 ModeIndex = Controller->IsTrainingMode() ? 3 : 2;
-			if (SelectedIndex == RetryIndex)
+			const int32 SettingsIndex = Controller->IsTrainingMode() ? 2 : INDEX_NONE;
+			const int32 RetryIndex = Controller->IsTrainingMode() ? 3 : INDEX_NONE;
+			const int32 ModeIndex = Controller->IsTrainingMode() ? 4 : 2;
+			if (SelectedIndex == SettingsIndex)
+			{
+				Controller->ShowMenuScreen(EChaosImpactScreen::TrainingSettings);
+			}
+			else if (SelectedIndex == RetryIndex)
 			{
 				Controller->RetryTraining();
 			}
@@ -351,6 +427,31 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 				Controller->ShowMenuScreen(SelectedIndex == ModeIndex
 					? EChaosImpactScreen::ModeSelect : EChaosImpactScreen::Title);
 			}
+		}
+		break;
+	case EChaosImpactScreen::TrainingSettings:
+		if (SelectedIndex == 0)
+		{
+			Controller->CycleTrainingPlayerCount();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 1)
+		{
+			Controller->ToggleTrainingTargets();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 2)
+		{
+			Controller->ToggleTrainingCPU();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 3)
+		{
+			Controller->ApplyTrainingSettings();
+		}
+		else
+		{
+			Controller->ShowMenuScreen(EChaosImpactScreen::Pause);
 		}
 		break;
 	default:
@@ -367,11 +468,15 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::Pause:
 			Controller->ResumeGameplay();
 			break;
+		case EChaosImpactScreen::TrainingSettings:
+			Controller->ShowMenuScreen(EChaosImpactScreen::Pause);
+			break;
 		case EChaosImpactScreen::ModeSelect:
 			Controller->ShowMenuScreen(EChaosImpactScreen::Title);
 			break;
 		case EChaosImpactScreen::SoloReady:
 		case EChaosImpactScreen::MultiReady:
+		case EChaosImpactScreen::TrainingSetup:
 			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 			break;
 		default:
@@ -396,7 +501,8 @@ FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
 			ConfirmSelection();
 		}
 		else if (Key == EKeys::BackSpace || Key == EKeys::Escape || Key == EKeys::Gamepad_FaceButton_Right
-			|| ((Key == EKeys::P || Key == EKeys::Gamepad_Special_Right) && Screen == EChaosImpactScreen::Pause))
+			|| ((Key == EKeys::P || Key == EKeys::Gamepad_Special_Right)
+				&& (Screen == EChaosImpactScreen::Pause || Screen == EChaosImpactScreen::TrainingSettings)))
 		{
 			GoBack();
 		}

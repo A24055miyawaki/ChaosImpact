@@ -3,12 +3,15 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactCPUController.h"
 #include "ChaosImpactPlayerController.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/Controller.h"
@@ -23,6 +26,10 @@
 #include "TimerManager.h"
 #include "DrawDebugHelpers.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 #include "ChaosImpact.h"
 
 AChaosImpactCharacter::AChaosImpactCharacter()
@@ -45,7 +52,7 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 	// instead of recompiling to adjust them
 	GetCharacterMovement()->JumpZVelocity = 500.f;
 	GetCharacterMovement()->AirControl = 0.35f;
-	GetCharacterMovement()->MaxWalkSpeed = 700.f;
+	GetCharacterMovement()->MaxWalkSpeed = 560.f;
 	GetCharacterMovement()->MinAnalogWalkSpeed = 20.f;
 	GetCharacterMovement()->MaxAcceleration = 100000.0f;
 	GetCharacterMovement()->BrakingDecelerationWalking = 100000.0f;
@@ -84,6 +91,46 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 		HeldBallMesh->SetStaticMesh(HeldSphereMesh.Object);
 	}
 
+	LeftHeldBallMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LeftHeldBallMesh"));
+	LeftHeldBallMesh->SetupAttachment(GetMesh(), TEXT("hand_l"));
+	LeftHeldBallMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LeftHeldBallMesh->SetGenerateOverlapEvents(false);
+	LeftHeldBallMesh->SetRelativeScale3D(FVector(0.34f));
+	if (HeldSphereMesh.Succeeded())
+	{
+		LeftHeldBallMesh->SetStaticMesh(HeldSphereMesh.Object);
+	}
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> EliminationCubeMesh(
+		TEXT("/Engine/BasicShapes/Cube.Cube"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> EliminationMaterial(
+		TEXT("/Game/LevelPrototyping/Materials/M_FlatCol.M_FlatCol"));
+	for (int32 PieceIndex = 0; PieceIndex < 30; ++PieceIndex)
+	{
+		UStaticMeshComponent* Piece = CreateDefaultSubobject<UStaticMeshComponent>(
+			*FString::Printf(TEXT("PlayerEliminationPiece_%02d"), PieceIndex));
+		Piece->SetupAttachment(GetCapsuleComponent());
+		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Piece->SetHiddenInGame(true);
+		if (EliminationCubeMesh.Succeeded())
+		{
+			Piece->SetStaticMesh(EliminationCubeMesh.Object);
+		}
+		if (EliminationMaterial.Succeeded())
+		{
+			Piece->SetMaterial(0, EliminationMaterial.Object);
+		}
+		EliminationPieces.Add(Piece);
+	}
+
+	EliminationFlash = CreateDefaultSubobject<UPointLightComponent>(TEXT("PlayerEliminationFlash"));
+	EliminationFlash->SetupAttachment(GetCapsuleComponent());
+	EliminationFlash->SetRelativeLocation(FVector(0.0f, 0.0f, 70.0f));
+	EliminationFlash->SetLightColor(FLinearColor(0.0f, 0.65f, 1.0f));
+	EliminationFlash->SetAttenuationRadius(620.0f);
+	EliminationFlash->SetCastShadows(false);
+	EliminationFlash->SetIntensity(0.0f);
+
 	BallClass = AChaosImpactBall::StaticClass();
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
@@ -101,6 +148,24 @@ void AChaosImpactCharacter::BeginPlay()
 	InitialSpawnLocation = GetActorLocation();
 	InitialSpawnRotation = GetActorRotation();
 	AimDirection = GetActorForwardVector().GetSafeNormal2D();
+	for (int32 PieceIndex = 0; PieceIndex < EliminationPieces.Num(); ++PieceIndex)
+	{
+		const float GoldenAngle = PieceIndex * 2.39996323f;
+		const float Height = FMath::Lerp(-0.35f, 0.95f,
+			static_cast<float>(PieceIndex % 11) / 10.0f);
+		const float Radius = FMath::Sqrt(FMath::Max(0.0f, 1.0f - Height * Height));
+		EliminationPieceDirections.Add(FVector(FMath::Cos(GoldenAngle) * Radius,
+			FMath::Sin(GoldenAngle) * Radius, Height));
+		if (UMaterialInstanceDynamic* Material = EliminationPieces[PieceIndex]
+			->CreateDynamicMaterialInstance(0))
+		{
+			const FLinearColor Color = PieceIndex % 2 == 0
+				? FLinearColor(0.0f, 0.72f, 1.0f) : FLinearColor(1.0f, 0.035f, 0.13f);
+			Material->SetVectorParameterValue(TEXT("Base Color"), Color);
+			Material->SetVectorParameterValue(TEXT("BaseColor"), Color);
+			Material->SetVectorParameterValue(TEXT("Color"), Color);
+		}
+	}
 	UpdateBallPresentation();
 
 	TryCreateChargeWidget();
@@ -109,6 +174,10 @@ void AChaosImpactCharacter::BeginPlay()
 void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bEliminationEffectActive)
+	{
+		UpdateEliminationEffect(DeltaSeconds);
+	}
 	TryCreateChargeWidget();
 	if (const APlayerController* PlayerController = Cast<APlayerController>(GetController());
 		PlayerController && PlayerController->IsLocalController())
@@ -118,8 +187,12 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 				&& FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton));
 		const AChaosImpactPlayerController* MenuController =
 			Cast<AChaosImpactPlayerController>(PlayerController);
-		const bool bCanReadThrow = !MenuController || MenuController->IsGameplayActive();
-		if (bCanReadThrow && bMouseDown)
+		const bool bCanUseMouse = !MenuController || MenuController->IsPrimaryLocalPlayerController();
+		const bool bCanReadThrow = bCanUseMouse
+			&& (!MenuController || MenuController->IsGameplayActive());
+		const bool bMousePressedThisTick = bMouseDown && !bWasMouseDownLastTick;
+		const bool bMouseReleasedThisTick = !bMouseDown && bWasMouseDownLastTick;
+		if (bCanReadThrow && bMousePressedThisTick)
 		{
 			if (!bIsChargingThrow)
 			{
@@ -127,7 +200,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 			}
 			bMouseChargeActive = bIsChargingThrow;
 		}
-		else if ((!bMouseDown || !bCanReadThrow) && bMouseChargeActive)
+		else if ((bMouseReleasedThisTick || !bCanReadThrow) && bMouseChargeActive)
 		{
 			if (bIsChargingThrow)
 			{
@@ -135,6 +208,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 			}
 			bMouseChargeActive = false;
 		}
+		bWasMouseDownLastTick = bMouseDown;
 	}
 
 	if (!bEliminated)
@@ -182,7 +256,11 @@ void AChaosImpactCharacter::TryCreateChargeWidget()
 	}
 
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	if (!PlayerController || !PlayerController->IsLocalController())
+	// CreatePlayer can possess the pawn one tick before its ULocalPlayer is
+	// attached. Wait for that attachment so CreateWidget always has a valid
+	// per-player viewport owner in split-screen play.
+	if (!PlayerController || !PlayerController->IsLocalController()
+		|| !PlayerController->GetLocalPlayer())
 	{
 		return;
 	}
@@ -523,6 +601,12 @@ bool AChaosImpactCharacter::FindMouseAimPoint(FVector& OutAimPoint) const
 	{
 		return false;
 	}
+	if (const AChaosImpactPlayerController* MenuController =
+		Cast<AChaosImpactPlayerController>(PlayerController);
+		MenuController && !MenuController->IsPrimaryLocalPlayerController())
+	{
+		return false;
+	}
 
 	FHitResult CursorHit;
 	if (PlayerController->GetHitResultUnderCursor(ECC_Visibility, false, CursorHit))
@@ -576,16 +660,19 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		const float ThrowSpeed = FMath::Lerp(MinimumThrowSpeed, MaximumThrowSpeed, ChargeAlpha);
 		const AChaosImpactPlayerController* PlayerController =
 			Cast<AChaosImpactPlayerController>(GetController());
+		const AChaosImpactCPUController* CPUController =
+			Cast<AChaosImpactCPUController>(GetController());
 		const EChaosImpactBallFlightMode FlightMode = PlayerController
-			? PlayerController->GetBallFlightMode() : EChaosImpactBallFlightMode::Straight;
+			? PlayerController->GetBallFlightMode()
+			: CPUController && !CPUController->UsesArcFlightMode()
+				? EChaosImpactBallFlightMode::Straight : EChaosImpactBallFlightMode::Arc;
 		float HorizontalThrowSpeed = ThrowSpeed;
 		float ArcUpwardSpeed = 0.0f;
 		if (FlightMode == EChaosImpactBallFlightMode::Arc)
 		{
-			const float ArcSpeed = ThrowSpeed * ArcThrowSpeedScale;
-			const float LaunchAngleRadians = FMath::DegreesToRadians(ArcLaunchAngleDegrees);
-			HorizontalThrowSpeed = ArcSpeed * FMath::Cos(LaunchAngleRadians);
-			ArcUpwardSpeed = ArcSpeed * FMath::Sin(LaunchAngleRadians);
+			// Top-down throw: leave the hand level and let gravity create only the downward arc.
+			HorizontalThrowSpeed = ThrowSpeed * ArcThrowSpeedScale;
+			ArcUpwardSpeed = 0.0f;
 		}
 		Ball->Launch(AimDirection.GetSafeNormal2D(), HorizontalThrowSpeed,
 			FlightMode, ArcUpwardSpeed);
@@ -633,6 +720,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		}
 		GetCharacterMovement()->DisableMovement();
 		SetActorEnableCollision(false);
+		StartEliminationEffect();
 		OnPlayerEliminated();
 
 		FTimerHandle ResetTimer;
@@ -645,6 +733,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 
 void AChaosImpactCharacter::ResetAfterElimination()
 {
+	StopEliminationEffect();
 	SetActorLocationAndRotation(InitialSpawnLocation, InitialSpawnRotation, false, nullptr,
 		ETeleportType::TeleportPhysics);
 	Health = MaxHealth;
@@ -658,6 +747,76 @@ void AChaosImpactCharacter::ResetAfterElimination()
 	SetActorEnableCollision(true);
 	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	UpdateBallPresentation();
+}
+
+void AChaosImpactCharacter::StartEliminationEffect()
+{
+	bEliminationEffectActive = true;
+	EliminationEffectTime = 0.0f;
+	GetMesh()->SetVisibility(false, true);
+	HeldBallMesh->SetVisibility(false, true);
+	LeftHeldBallMesh->SetVisibility(false, true);
+	for (UStaticMeshComponent* Piece : EliminationPieces)
+	{
+		Piece->SetHiddenInGame(false);
+	}
+	if (EliminationFlash)
+	{
+		EliminationFlash->SetIntensity(26000.0f);
+	}
+	if (UNiagaraSystem* Burst = LoadObject<UNiagaraSystem>(
+		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst,
+			GetActorLocation() + FVector::UpVector * 70.0f, GetActorRotation(), FVector(2.7f));
+	}
+}
+
+void AChaosImpactCharacter::UpdateEliminationEffect(const float DeltaSeconds)
+{
+	EliminationEffectTime += DeltaSeconds;
+	const float Alpha = FMath::Clamp(EliminationEffectTime /
+		FMath::Max(EliminationEffectDuration, UE_SMALL_NUMBER), 0.0f, 1.0f);
+	for (int32 PieceIndex = 0; PieceIndex < EliminationPieces.Num(); ++PieceIndex)
+	{
+		UStaticMeshComponent* Piece = EliminationPieces[PieceIndex];
+		const FVector Direction = EliminationPieceDirections.IsValidIndex(PieceIndex)
+			? EliminationPieceDirections[PieceIndex] : FVector::UpVector;
+		const float Distance = 230.0f + (PieceIndex % 7) * 34.0f;
+		FVector Position = FVector(0.0f, 0.0f, 70.0f) + Direction * Distance * Alpha;
+		Position.Z -= 180.0f * Alpha * Alpha;
+		Piece->SetRelativeLocation(Position);
+		Piece->SetRelativeRotation(Direction.Rotation()
+			+ FRotator(Alpha * 780.0f, Alpha * 620.0f, Alpha * 410.0f));
+		const float Size = (0.035f + 0.009f * (PieceIndex % 4))
+			* FMath::Square(1.0f - Alpha);
+		Piece->SetRelativeScale3D(FVector(Size));
+		Piece->SetHiddenInGame(Alpha >= 0.98f);
+	}
+	if (EliminationFlash)
+	{
+		EliminationFlash->SetIntensity(FMath::Lerp(26000.0f, 0.0f,
+			FMath::Clamp(Alpha * 2.8f, 0.0f, 1.0f)));
+	}
+	if (Alpha >= 1.0f)
+	{
+		bEliminationEffectActive = false;
+	}
+}
+
+void AChaosImpactCharacter::StopEliminationEffect()
+{
+	bEliminationEffectActive = false;
+	EliminationEffectTime = 0.0f;
+	for (UStaticMeshComponent* Piece : EliminationPieces)
+	{
+		Piece->SetHiddenInGame(true);
+	}
+	if (EliminationFlash)
+	{
+		EliminationFlash->SetIntensity(0.0f);
+	}
+	GetMesh()->SetVisibility(true, true);
 }
 
 void AChaosImpactCharacter::SetGameplayUIVisible(const bool bVisible)
@@ -706,9 +865,37 @@ void AChaosImpactCharacter::RecoverStaminaFromBallHit()
 	}
 }
 
+void AChaosImpactCharacter::SetTrainingStartTransform(
+	const FVector& Location, const FRotator& Rotation)
+{
+	SetActorLocationAndRotation(Location, Rotation, false, nullptr,
+		ETeleportType::TeleportPhysics);
+	InitialSpawnLocation = Location;
+	InitialSpawnRotation = Rotation;
+}
+
+void AChaosImpactCharacter::SetAIAimDirection(const FVector& Direction)
+{
+	const FVector HorizontalDirection = Direction.GetSafeNormal2D();
+	if (!HorizontalDirection.IsNearlyZero())
+	{
+		AimDirection = HorizontalDirection;
+	}
+}
+
+void AChaosImpactCharacter::RequestAIDash(const FVector& Direction)
+{
+	const FVector HorizontalDirection = Direction.GetSafeNormal2D();
+	if (!HorizontalDirection.IsNearlyZero())
+	{
+		LastMoveDirection = HorizontalDirection;
+	}
+	StartDash();
+}
+
 bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 {
-	if (!IsValid(Ball) || !Ball->IsPickup() || bEliminated
+	if (!IsValid(Ball) || !Ball->IsPickupAvailable() || bEliminated
 		|| CarriedBallCount >= MaximumCarriedBalls)
 	{
 		return false;
@@ -726,6 +913,12 @@ void AChaosImpactCharacter::UpdateBallPresentation()
 		HeldBallMesh->SetRelativeLocation(HeldBallRelativeLocation);
 		HeldBallMesh->SetRelativeRotation(HeldBallRelativeRotation);
 		HeldBallMesh->SetVisibility(CarriedBallCount > 0, true);
+	}
+	if (LeftHeldBallMesh)
+	{
+		LeftHeldBallMesh->SetRelativeLocation(LeftHeldBallRelativeLocation);
+		LeftHeldBallMesh->SetRelativeRotation(LeftHeldBallRelativeRotation);
+		LeftHeldBallMesh->SetVisibility(CarriedBallCount > 1, true);
 	}
 	if (ChargeWidget)
 	{

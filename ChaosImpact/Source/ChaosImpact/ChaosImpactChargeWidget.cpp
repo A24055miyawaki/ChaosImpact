@@ -15,6 +15,9 @@
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 
 void UChaosImpactChargeWidget::NativeOnInitialized()
 {
@@ -27,6 +30,41 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 
 	UCanvasPanel* RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("ChargeRoot"));
 	WidgetTree->RootWidget = RootCanvas;
+
+	// A strong dark seam keeps adjacent cameras readable, while the narrow blue
+	// highlight gives the divider a deliberate in-game finish.
+	auto AddDivider = [this, RootCanvas](const FName Name, const bool bVertical,
+		const float Thickness, const FLinearColor& Color) -> UBorder*
+	{
+		UBorder* Divider = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), Name);
+		Divider->SetBrushColor(Color);
+		Divider->SetVisibility(ESlateVisibility::Collapsed);
+		UCanvasPanelSlot* DividerSlot = RootCanvas->AddChildToCanvas(Divider);
+		DividerSlot->SetZOrder(1000);
+		if (bVertical)
+		{
+			DividerSlot->SetAnchors(FAnchors(1.0f, 0.0f, 1.0f, 1.0f));
+			DividerSlot->SetAlignment(FVector2D(1.0f, 0.0f));
+			DividerSlot->SetPosition(FVector2D::ZeroVector);
+			DividerSlot->SetSize(FVector2D(Thickness, 0.0f));
+		}
+		else
+		{
+			DividerSlot->SetAnchors(FAnchors(0.0f, 1.0f, 1.0f, 1.0f));
+			DividerSlot->SetAlignment(FVector2D(0.0f, 1.0f));
+			DividerSlot->SetPosition(FVector2D::ZeroVector);
+			DividerSlot->SetSize(FVector2D(0.0f, Thickness));
+		}
+		return Divider;
+	};
+	VerticalDivider = AddDivider(TEXT("VerticalSplitDivider"), true, 10.0f,
+		FLinearColor(0.003f, 0.006f, 0.012f, 0.98f));
+	VerticalDividerAccent = AddDivider(TEXT("VerticalSplitAccent"), true, 2.0f,
+		FLinearColor(0.0f, 0.64f, 1.0f, 0.9f));
+	HorizontalDivider = AddDivider(TEXT("HorizontalSplitDivider"), false, 10.0f,
+		FLinearColor(0.003f, 0.006f, 0.012f, 0.98f));
+	HorizontalDividerAccent = AddDivider(TEXT("HorizontalSplitAccent"), false, 2.0f,
+		FLinearColor(0.0f, 0.64f, 1.0f, 0.9f));
 
 	ChargeFrame = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("GaugeFrame"));
 	ChargeFrame->SetBrushColor(FLinearColor(0.01f, 0.012f, 0.02f, 0.86f));
@@ -97,73 +135,167 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 		}
 	}
 
-	UBorder* InventoryFrame = WidgetTree->ConstructWidget<UBorder>(
-		UBorder::StaticClass(), TEXT("BallInventoryFrame"));
-	InventoryFrame->SetBrushColor(FLinearColor(0.01f, 0.015f, 0.028f, 0.92f));
-	InventoryFrame->SetPadding(FMargin(10.0f, 7.0f));
-	UCanvasPanelSlot* InventoryFrameSlot = RootCanvas->AddChildToCanvas(InventoryFrame);
-	InventoryFrameSlot->SetAnchors(FAnchors(1.0f, 1.0f));
-	InventoryFrameSlot->SetAlignment(FVector2D(1.0f, 1.0f));
-	InventoryFrameSlot->SetPosition(FVector2D(-40.0f, -40.0f));
-	InventoryFrameSlot->SetSize(FVector2D(206.0f, 112.0f));
+	UCanvasPanel* InventoryCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(
+		UCanvasPanel::StaticClass(), TEXT("BallInventoryCanvas"));
+	UCanvasPanelSlot* InventorySlot = RootCanvas->AddChildToCanvas(InventoryCanvas);
+	InventorySlot->SetAnchors(FAnchors(1.0f, 1.0f));
+	InventorySlot->SetAlignment(FVector2D(1.0f, 1.0f));
+	InventorySlot->SetPosition(FVector2D(-24.0f, -22.0f));
+	InventorySlot->SetSize(FVector2D(240.0f, 128.0f));
 
-	UVerticalBox* InventoryColumn = WidgetTree->ConstructWidget<UVerticalBox>(
-		UVerticalBox::StaticClass(), TEXT("BallInventoryColumn"));
-	InventoryFrame->SetContent(InventoryColumn);
-
-	UTextBlock* InventoryLabel = WidgetTree->ConstructWidget<UTextBlock>(
-		UTextBlock::StaticClass(), TEXT("BallInventoryLabel"));
-	InventoryLabel->SetText(FText::FromString(TEXT("BALL")));
-	InventoryLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.84f, 0.94f, 1.0f)));
-	FSlateFontInfo LabelFont = InventoryLabel->GetFont();
-	LabelFont.Size = 15;
-	InventoryLabel->SetFont(LabelFont);
-	if (UVerticalBoxSlot* LabelSlot = InventoryColumn->AddChildToVerticalBox(InventoryLabel))
+	// Two sharp strokes establish direction without putting the HUD in another box.
+	for (int32 StrokeIndex = 0; StrokeIndex < 2; ++StrokeIndex)
 	{
-		LabelSlot->SetPadding(FMargin(5.0f, 0.0f, 0.0f, 3.0f));
-	}
-
-	UHorizontalBox* BallRow = WidgetTree->ConstructWidget<UHorizontalBox>(
-		UHorizontalBox::StaticClass(), TEXT("BallSlots"));
-	if (UVerticalBoxSlot* RowSlot = InventoryColumn->AddChildToVerticalBox(BallRow))
-	{
-		RowSlot->SetHorizontalAlignment(HAlign_Fill);
-		RowSlot->SetVerticalAlignment(VAlign_Fill);
+		UBorder* Stroke = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+		Stroke->SetBrushColor(StrokeIndex == 0
+			? FLinearColor(0.0f, 0.72f, 1.0f, 0.78f)
+			: FLinearColor(0.92f, 0.02f, 0.22f, 0.72f));
+		Stroke->SetRenderTransformAngle(-13.0f);
+		UCanvasPanelSlot* StrokeSlot = InventoryCanvas->AddChildToCanvas(Stroke);
+		StrokeSlot->SetPosition(StrokeIndex == 0 ? FVector2D(18.0f, 88.0f) : FVector2D(62.0f, 101.0f));
+		StrokeSlot->SetSize(StrokeIndex == 0 ? FVector2D(176.0f, 7.0f) : FVector2D(130.0f, 3.0f));
 	}
 
 	BallSlots.Reserve(2);
+	BallSlotAccents.Reserve(2);
 	BallIcons.Reserve(2);
 	for (int32 SlotIndex = 0; SlotIndex < 2; ++SlotIndex)
 	{
 		USizeBox* SlotSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-		SlotSize->SetWidthOverride(78.0f);
-		SlotSize->SetHeightOverride(64.0f);
+		SlotSize->SetWidthOverride(86.0f);
+		SlotSize->SetHeightOverride(86.0f);
+		UCanvasPanelSlot* BallCanvasSlot = InventoryCanvas->AddChildToCanvas(SlotSize);
+		BallCanvasSlot->SetPosition(SlotIndex == 0 ? FVector2D(17.0f, 30.0f) : FVector2D(94.0f, 7.0f));
+		BallCanvasSlot->SetSize(FVector2D(86.0f));
+
+		UOverlay* SlotOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
+		SlotSize->SetContent(SlotOverlay);
 
 		UBorder* BallSlot = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-		BallSlot->SetBrushColor(FLinearColor(0.055f, 0.065f, 0.09f, 1.0f));
-		BallSlot->SetPadding(FMargin(2.0f));
-		SlotSize->SetContent(BallSlot);
+		BallSlot->SetPadding(FMargin(0.0f));
+		if (UOverlaySlot* RingSlot = SlotOverlay->AddChildToOverlay(BallSlot))
+		{
+			RingSlot->SetHorizontalAlignment(HAlign_Fill);
+			RingSlot->SetVerticalAlignment(VAlign_Fill);
+		}
 		BallSlots.Add(BallSlot);
 
 		UTextBlock* BallIcon = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-		BallIcon->SetText(FText::FromString(TEXT("○")));
+		BallIcon->SetText(FText::FromString(TEXT("●")));
 		BallIcon->SetJustification(ETextJustify::Center);
-		BallIcon->SetColorAndOpacity(FSlateColor(FLinearColor(0.28f, 0.32f, 0.4f, 1.0f)));
+		BallIcon->SetShadowOffset(FVector2D(4.0f, 5.0f));
+		BallIcon->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.88f));
 		FSlateFontInfo IconFont = BallIcon->GetFont();
-		IconFont.Size = 42;
+		IconFont.Size = 58;
+		IconFont.OutlineSettings.OutlineSize = 2;
+		IconFont.OutlineSettings.OutlineColor = FLinearColor(0.0f, 0.03f, 0.08f, 1.0f);
 		BallIcon->SetFont(IconFont);
-		BallSlot->SetContent(BallIcon);
+		if (UOverlaySlot* IconSlot = SlotOverlay->AddChildToOverlay(BallIcon))
+		{
+			IconSlot->SetHorizontalAlignment(HAlign_Fill);
+			IconSlot->SetVerticalAlignment(VAlign_Center);
+		}
 		BallIcons.Add(BallIcon);
 
-		if (UHorizontalBoxSlot* BallSlotLayout = BallRow->AddChildToHorizontalBox(SlotSize))
+		UTextBlock* Seam = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+		Seam->SetText(FText::FromString(TEXT("╱")));
+		Seam->SetJustification(ETextJustify::Center);
+		Seam->SetColorAndOpacity(FSlateColor(FLinearColor(0.0f, 0.12f, 0.24f, 0.9f)));
+		FSlateFontInfo SeamFont = Seam->GetFont();
+		SeamFont.Size = 35;
+		Seam->SetFont(SeamFont);
+		if (UOverlaySlot* SeamSlot = SlotOverlay->AddChildToOverlay(Seam))
 		{
-			BallSlotLayout->SetPadding(FMargin(5.0f, 0.0f));
-			BallSlotLayout->SetHorizontalAlignment(HAlign_Fill);
-			BallSlotLayout->SetVerticalAlignment(VAlign_Fill);
+			SeamSlot->SetHorizontalAlignment(HAlign_Fill);
+			SeamSlot->SetVerticalAlignment(VAlign_Center);
 		}
+
+		UBorder* AccentDot = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+		USizeBox* AccentSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+		AccentSize->SetWidthOverride(14.0f);
+		AccentSize->SetHeightOverride(14.0f);
+		AccentSize->SetContent(AccentDot);
+		if (UOverlaySlot* AccentSlot = SlotOverlay->AddChildToOverlay(AccentSize))
+		{
+			AccentSlot->SetHorizontalAlignment(HAlign_Right);
+			AccentSlot->SetVerticalAlignment(VAlign_Top);
+			AccentSlot->SetPadding(FMargin(0.0f, 4.0f, 4.0f, 0.0f));
+		}
+		BallSlotAccents.Add(AccentDot);
 	}
 
+	InventoryCountLabel = WidgetTree->ConstructWidget<UTextBlock>(
+		UTextBlock::StaticClass(), TEXT("BallInventoryCount"));
+	InventoryCountLabel->SetText(FText::FromString(TEXT("× 0")));
+	InventoryCountLabel->SetJustification(ETextJustify::Center);
+	InventoryCountLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.56f, 0.68f, 1.0f)));
+	InventoryCountLabel->SetShadowOffset(FVector2D(3.0f, 3.0f));
+	InventoryCountLabel->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f));
+	FSlateFontInfo CountFont = InventoryCountLabel->GetFont();
+	CountFont.Size = 27;
+	CountFont.OutlineSettings.OutlineSize = 2;
+	CountFont.OutlineSettings.OutlineColor = FLinearColor(0.0f, 0.03f, 0.08f, 1.0f);
+	InventoryCountLabel->SetFont(CountFont);
+	UCanvasPanelSlot* CountSlot = InventoryCanvas->AddChildToCanvas(InventoryCountLabel);
+	CountSlot->SetPosition(FVector2D(176.0f, 46.0f));
+	CountSlot->SetSize(FVector2D(62.0f, 42.0f));
+
 	SetVisibility(ESlateVisibility::HitTestInvisible);
+	RefreshSplitScreenDividers();
+}
+
+void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+	RefreshSplitScreenDividers();
+}
+
+void UChaosImpactChargeWidget::RefreshSplitScreenDividers()
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const ULocalPlayer* OwningLocalPlayer = GetOwningLocalPlayer();
+	const int32 PlayerCount = GameInstance ? GameInstance->GetLocalPlayers().Num() : 1;
+	const int32 PlayerIndex = GameInstance && OwningLocalPlayer
+		? GameInstance->GetLocalPlayers().IndexOfByKey(OwningLocalPlayer) : INDEX_NONE;
+
+	bool bShowVertical = false;
+	bool bShowHorizontal = false;
+	if (PlayerCount == 2)
+	{
+		bShowVertical = PlayerIndex == 0;
+	}
+	else if (PlayerCount == 3)
+	{
+		// FavorTop: player 1 spans the top; players 2 and 3 share the bottom.
+		bShowHorizontal = PlayerIndex == 0;
+		bShowVertical = PlayerIndex == 1;
+	}
+	else if (PlayerCount >= 4)
+	{
+		bShowVertical = PlayerIndex == 0 || PlayerIndex == 2;
+		bShowHorizontal = PlayerIndex == 0 || PlayerIndex == 1;
+	}
+
+	const ESlateVisibility VerticalVisibility = bShowVertical
+		? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
+	const ESlateVisibility HorizontalVisibility = bShowHorizontal
+		? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
+	if (VerticalDivider)
+	{
+		VerticalDivider->SetVisibility(VerticalVisibility);
+	}
+	if (VerticalDividerAccent)
+	{
+		VerticalDividerAccent->SetVisibility(VerticalVisibility);
+	}
+	if (HorizontalDivider)
+	{
+		HorizontalDivider->SetVisibility(HorizontalVisibility);
+	}
+	if (HorizontalDividerAccent)
+	{
+		HorizontalDividerAccent->SetVisibility(HorizontalVisibility);
+	}
 }
 
 void UChaosImpactChargeWidget::SetChargeAlpha(const float ChargeAlpha)
@@ -222,23 +354,44 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 {
 	const int32 ClampedMaximum = FMath::Clamp(MaximumBalls, 0, BallIcons.Num());
 	const int32 ClampedCurrent = FMath::Clamp(CurrentBalls, 0, ClampedMaximum);
+	if (InventoryCountLabel)
+	{
+		InventoryCountLabel->SetText(FText::FromString(FString::Printf(TEXT("× %d"), ClampedCurrent)));
+		InventoryCountLabel->SetColorAndOpacity(FSlateColor(ClampedCurrent > 0
+			? FLinearColor(0.0f, 0.82f, 1.0f, 1.0f)
+			: FLinearColor(0.44f, 0.5f, 0.62f, 1.0f)));
+	}
 	for (int32 SlotIndex = 0; SlotIndex < BallIcons.Num(); ++SlotIndex)
 	{
 		const bool bEnabledSlot = SlotIndex < ClampedMaximum;
 		const bool bFilled = SlotIndex < ClampedCurrent;
 		if (UTextBlock* Icon = BallIcons[SlotIndex])
 		{
-			Icon->SetText(FText::FromString(bFilled ? TEXT("●") : TEXT("○")));
+			Icon->SetText(FText::FromString(TEXT("●")));
 			Icon->SetColorAndOpacity(FSlateColor(bFilled
-				? FLinearColor(0.86f, 0.95f, 1.0f, 1.0f)
-				: FLinearColor(0.28f, 0.32f, 0.4f, 1.0f)));
+				? FLinearColor(0.78f, 0.96f, 1.0f, 1.0f)
+				: FLinearColor(0.11f, 0.14f, 0.21f, 1.0f)));
 		}
 		if (UBorder* InventorySlot = BallSlots.IsValidIndex(SlotIndex) ? BallSlots[SlotIndex] : nullptr)
 		{
-			InventorySlot->SetBrushColor(bFilled
-				? FLinearColor(0.0f, 0.34f, 0.62f, 1.0f)
-				: bEnabledSlot ? FLinearColor(0.055f, 0.065f, 0.09f, 1.0f)
-				: FLinearColor(0.02f, 0.02f, 0.025f, 0.7f));
+			const FLinearColor FillColor = bFilled
+				? FLinearColor(0.0f, 0.1f, 0.22f, 0.96f)
+				: bEnabledSlot ? FLinearColor(0.015f, 0.022f, 0.045f, 0.82f)
+				: FLinearColor(0.01f, 0.01f, 0.015f, 0.6f);
+			const FLinearColor RingColor = bFilled
+				? FLinearColor(0.0f, 0.82f, 1.0f, 1.0f)
+				: FLinearColor(0.15f, 0.19f, 0.28f, 0.82f);
+			InventorySlot->SetBrush(FSlateRoundedBoxBrush(
+				FillColor, RingColor, bFilled ? 4.0f : 2.0f));
+			InventorySlot->SetRenderScale(bFilled ? FVector2D(1.0f) : FVector2D(0.92f));
+		}
+		if (UBorder* Accent = BallSlotAccents.IsValidIndex(SlotIndex)
+			? BallSlotAccents[SlotIndex] : nullptr)
+		{
+			Accent->SetBrush(FSlateRoundedBoxBrush(
+				bFilled ? FLinearColor(1.0f, 0.18f, 0.055f, 1.0f)
+					: FLinearColor(0.08f, 0.1f, 0.16f, 1.0f),
+				bFilled ? FLinearColor::White : FLinearColor(0.18f, 0.22f, 0.3f, 1.0f), 1.0f));
 		}
 	}
 }

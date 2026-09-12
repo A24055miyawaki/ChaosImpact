@@ -40,6 +40,12 @@ AChaosImpactBallSpawner::AChaosImpactBallSpawner()
 void AChaosImpactBallSpawner::BeginPlay()
 {
 	Super::BeginPlay();
+	if (!GetWorld() || !GetWorld()->URL.HasOption(TEXT("CITraining=1")))
+	{
+		SetActorHiddenInGame(true);
+		SetActorEnableCollision(false);
+		return;
+	}
 	GetWorldTimerManager().SetTimer(SpawnTimer, this,
 		&AChaosImpactBallSpawner::TrySpawnBall, RespawnInterval, true, 0.2f);
 }
@@ -61,4 +67,3 @@ void AChaosImpactBallSpawner::TrySpawnBall()
 		ActiveBall = Ball;
 	}
 }
-

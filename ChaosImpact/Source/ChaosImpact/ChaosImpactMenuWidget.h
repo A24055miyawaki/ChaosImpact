@@ -18,6 +18,7 @@ public:
 	void Navigate(FKey Key);
 	void ConfirmSelection();
 	void GoBack();
+	void RefreshEntries();
 	int32 GetSelectedIndex() const { return SelectedIndex; }
 	bool HasLogo() const { return LogoTexture != nullptr; }
 	EChaosImpactScreen GetScreen() const { return Screen; }
@@ -30,6 +31,8 @@ protected:
 		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual FReply NativeOnAnalogValueChanged(const FGeometry& InGeometry,
+		const FAnalogInputEvent& InAnalogEvent) override;
 	virtual FReply NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual FReply NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
@@ -43,14 +46,21 @@ private:
 		FString Detail;
 		FString Number;
 		FLinearColor Accent;
+		bool bDisabled = false;
 	};
 
 	TArray<FMenuEntry> Entries;
+	/** 0..1 eased selection state per entry, advanced in NativeTick. */
+	TArray<float> SelectBlend;
+	/** Per-slot join tracking so a newly connected device plays its entry animation once. */
+	bool bSlotJoined[4] = {};
+	double SlotJoinedAt[4] = {};
 	EChaosImpactScreen Screen = EChaosImpactScreen::Title;
 	int32 SelectedIndex = 0;
 	int32 PressedIndex = INDEX_NONE;
 	double ScreenStartedAt = 0.0;
 	float AnimationSeconds = 0.0f;
+	double LastAnalogNavigationAt = 0.0;
 	void BuildEntries();
 	int32 HitTestEntry(const FGeometry& Geometry, const FVector2D& ScreenPosition) const;
 

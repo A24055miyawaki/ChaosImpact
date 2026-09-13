@@ -9,6 +9,7 @@
 class UProjectileMovementComponent;
 class USphereComponent;
 class UStaticMeshComponent;
+class USceneComponent;
 class AChaosImpactCharacter;
 class APawn;
 
@@ -33,6 +34,10 @@ public:
 	void Launch(const FVector& Direction, float Speed,
 		EChaosImpactBallFlightMode FlightMode = EChaosImpactBallFlightMode::Arc,
 		float ArcUpwardSpeed = 650.0f);
+
+	/** Holds the real projectile on a hand socket until the animation release cue. */
+	void PrepareForAnimatedThrow(USceneComponent* HandParent, FName HandSocket,
+		const FVector& RelativeLocation, const FRotator& RelativeRotation);
 
 	/** Turns this actor into a stationary ball that players can collect. */
 	void MakePickup();
@@ -81,6 +86,10 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.0"))
 	float Damage = 1.0f;
+
+	/** Scale of the short contact burst. This plays on every damaging hit, not only a KO. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball|Effects", meta=(ClampMin="0.1"))
+	float ContactEffectScale = 0.85f;
 
 	/** Flight timeout. The ball becomes a pickup instead of being destroyed. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.1"))

@@ -9,9 +9,12 @@ enum class EChaosImpactScreen : uint8
 	Title,
 	ModeSelect,
 	TrainingSetup,
+	ControllerAssignment,
 	SoloReady,
 	MultiReady,
 	Playing,
 	Pause,
-	TrainingSettings
+	TrainingSettings,
+	/** Live training overlay: the world keeps ticking while characters are frozen. */
+	TrainingOverlay
 };

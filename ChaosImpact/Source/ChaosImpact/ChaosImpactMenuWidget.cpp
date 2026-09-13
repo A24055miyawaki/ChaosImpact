@@ -20,6 +20,32 @@ namespace
 	const FLinearColor Gold(1.0f, 0.68f, 0.06f, 1.0f);
 	const FLinearColor Paper(0.96f, 0.975f, 1.0f, 1.0f);
 	const FLinearColor Muted(0.48f, 0.54f, 0.64f, 1.0f);
+	const FLinearColor Violet(0.55f, 0.28f, 1.0f, 1.0f);
+	const FLinearColor PlayerAccents[] = {Ice, Fire, Gold, Violet};
+
+	bool IsMenuKeyAllowed(const UChaosImpactMenuWidget* Widget, const FKey Key)
+	{
+		const AChaosImpactPlayerController* Controller = Widget
+			? Cast<AChaosImpactPlayerController>(Widget->GetOwningPlayer()) : nullptr;
+		const bool bUsePendingGamepadMode = Widget
+			&& Widget->GetScreen() == EChaosImpactScreen::ControllerAssignment;
+		return !Controller || !Controller->IsTrainingMode()
+			|| Key.IsGamepadKey() == (bUsePendingGamepadMode
+				? Controller->WillPrimaryUseGamepad()
+				: Controller->IsPrimaryUsingGamepad());
+	}
+
+	bool IsMenuMouseAllowed(const UChaosImpactMenuWidget* Widget)
+	{
+		const AChaosImpactPlayerController* Controller = Widget
+			? Cast<AChaosImpactPlayerController>(Widget->GetOwningPlayer()) : nullptr;
+		const bool bUsePendingGamepadMode = Widget
+			&& Widget->GetScreen() == EChaosImpactScreen::ControllerAssignment;
+		return !Controller || !Controller->IsTrainingMode()
+			|| !(bUsePendingGamepadMode
+				? Controller->WillPrimaryUseGamepad()
+				: Controller->IsPrimaryUsingGamepad());
+	}
 
 	// Drawing and pointer hit testing both use this 1600 x 900 design space.
 	float DesignScale(const FGeometry& Geometry)
@@ -28,24 +54,64 @@ namespace
 			Geometry.GetLocalSize().Y / 900.0f));
 	}
 
+	FLinearColor WithAlpha(FLinearColor Color, const float Alpha)
+	{
+		Color.A *= FMath::Clamp(Alpha, 0.0f, 1.0f);
+		return Color;
+	}
+
+	float EaseOut(const float T)
+	{
+		return 1.0f - FMath::Pow(1.0f - FMath::Clamp(T, 0.0f, 1.0f), 3.0f);
+	}
+
+	/** A child space that leans forward ("/") and optionally scales about its center. */
+	FGeometry MakeSkewed(const FGeometry& Parent, const float X, const float Y, const float W,
+		const float H, const float Shear, const float Scale = 1.0f)
+	{
+		const FSlateRenderTransform Render(TMatrix2x2<float>(Scale, 0.0f, Scale * Shear, Scale));
+		return Parent.MakeChild(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y)),
+			Render, FVector2f(0.5f, 0.5f));
+	}
+
+	enum class ETextAlign : uint8 { Left, Center, Right };
+
 	struct FMenuPainter
 	{
 		const FGeometry& Geometry;
 		FSlateWindowElementList& Elements;
 		int32 Layer;
+		float Alpha = 1.0f;
 
 		void Box(float X, float Y, float W, float H, FLinearColor Color) const
 		{
+			if (W <= 0.0f || H <= 0.0f)
+			{
+				return;
+			}
 			FSlateDrawElement::MakeBox(Elements, Layer,
 				Geometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
-				FCoreStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, Color);
+				FCoreStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, WithAlpha(Color, Alpha));
 		}
 
 		void Line(FVector2D From, FVector2D To, FLinearColor Color, float Width = 1.0f) const
 		{
 			const TArray<FVector2D> Points{From, To};
 			FSlateDrawElement::MakeLines(Elements, Layer, Geometry.ToPaintGeometry(),
-				Points, ESlateDrawEffect::None, Color, true, Width);
+				Points, ESlateDrawEffect::None, WithAlpha(Color, Alpha), true, Width);
+		}
+
+		void Ring(FVector2D Center, float Radius, FLinearColor Color, float Width, int32 Segments = 56) const
+		{
+			TArray<FVector2D> Points;
+			Points.Reserve(Segments + 1);
+			for (int32 Segment = 0; Segment <= Segments; ++Segment)
+			{
+				const float Angle = UE_TWO_PI * Segment / Segments;
+				Points.Add(Center + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+			}
+			FSlateDrawElement::MakeLines(Elements, Layer, Geometry.ToPaintGeometry(),
+				Points, ESlateDrawEffect::None, WithAlpha(Color, Alpha), true, Width);
 		}
 
 		void Outline(float X, float Y, float W, float H, FLinearColor Color, float Width) const
@@ -56,25 +122,321 @@ namespace
 			Box(X + W - Width, Y, Width, H, Color);
 		}
 
-		void Text(const FString& Value, float X, float Y, int32 Size, FLinearColor Color,
-			bool bCentered = false, bool bBold = false) const
+		void Text(const FString& Value, float X, float Y, float Size, FLinearColor Color,
+			ETextAlign Align = ETextAlign::Left, FName Face = TEXT("Black"),
+			float OutlineSize = 0.0f, FLinearColor OutlineColor = Ink) const
 		{
-			const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle(bBold ? "Bold" : "Regular", Size);
-			if (bCentered)
+			if (Value.IsEmpty() || Alpha * Color.A <= 0.001f)
 			{
-				X -= FSlateApplication::Get().GetRenderer()->GetFontMeasureService()->Measure(Value, Font).X * 0.5f;
+				return;
 			}
-			const FLinearColor ShadowColor(0.0f, 0.0f, 0.0f, 1.0f);
+			const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle(Face, Size,
+				FFontOutlineSettings(FMath::RoundToInt(OutlineSize), WithAlpha(OutlineColor, Alpha * Color.A)));
+			if (Align != ETextAlign::Left)
+			{
+				const float Width = FSlateApplication::Get().GetRenderer()->GetFontMeasureService()
+					->Measure(Value, Font).X;
+				X -= Align == ETextAlign::Center ? Width * 0.5f : Width;
+			}
+			const FVector2f Area(2400.0f, Size * 2.4f);
 			FSlateDrawElement::MakeText(Elements, Layer,
-				Geometry.ToPaintGeometry(FVector2f(1600.0f, 120.0f),
-					FSlateLayoutTransform(FVector2f(X + 3.0f, Y + 3.0f))),
-				Value, Font, ESlateDrawEffect::None, ShadowColor);
-			Color.A = 1.0f;
+				Geometry.ToPaintGeometry(Area, FSlateLayoutTransform(FVector2f(X + 4.0f, Y + 5.0f))),
+				Value, FCoreStyle::GetDefaultFontStyle(Face, Size), ESlateDrawEffect::None,
+				FLinearColor(0.0f, 0.0f, 0.0f, 0.6f * Alpha * Color.A));
 			FSlateDrawElement::MakeText(Elements, Layer,
-				Geometry.ToPaintGeometry(FVector2f(1600.0f, 120.0f), FSlateLayoutTransform(FVector2f(X, Y))),
-				Value, Font, ESlateDrawEffect::None, Color);
+				Geometry.ToPaintGeometry(Area, FSlateLayoutTransform(FVector2f(X, Y))),
+				Value, Font, ESlateDrawEffect::None, WithAlpha(Color, Alpha));
 		}
 	};
+
+	/** Deep navy field split by a blue slab on the left and a red slab on the right. */
+	void PaintBackdrop(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const float Time)
+	{
+		const FMenuPainter Flat{Design, Elements, Layer};
+		for (int32 Band = 0; Band < 18; ++Band)
+		{
+			const float T = Band / 17.0f;
+			Flat.Box(-400.0f, Band * 50.0f, 2400.0f, 51.0f, FMath::Lerp(
+				FLinearColor(0.022f, 0.03f, 0.06f, 1.0f), FLinearColor(0.003f, 0.004f, 0.01f, 1.0f), T));
+		}
+
+		const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.36f);
+		const FMenuPainter S{Slant, Elements, Layer};
+		S.Box(-620.0f, -40.0f, 900.0f, 980.0f, FLinearColor(0.0f, 0.10f, 0.40f, 0.62f));
+		S.Box(280.0f, -40.0f, 11.0f, 980.0f, WithAlpha(Ice, 0.9f));
+		S.Box(305.0f, -40.0f, 3.0f, 980.0f, WithAlpha(Ice, 0.35f));
+		S.Box(1340.0f, -40.0f, 900.0f, 980.0f, FLinearColor(0.40f, 0.0f, 0.03f, 0.62f));
+		S.Box(1329.0f, -40.0f, 11.0f, 980.0f, WithAlpha(Fire, 0.9f));
+		S.Box(1312.0f, -40.0f, 3.0f, 980.0f, WithAlpha(Fire, 0.35f));
+		for (int32 Stripe = 0; Stripe < 14; ++Stripe)
+		{
+			const float X = FMath::Fmod(Stripe * 173.0f + Time * (70.0f + Stripe * 11.0f), 2100.0f) - 250.0f;
+			S.Box(X, -40.0f, 1.5f + Stripe % 3, 980.0f,
+				FLinearColor(1.0f, 1.0f, 1.0f, 0.016f + (Stripe % 4) * 0.007f));
+		}
+		Flat.Box(-400.0f, 0.0f, 2400.0f, 54.0f, WithAlpha(Ink, 0.55f));
+		Flat.Box(-400.0f, 846.0f, 2400.0f, 54.0f, WithAlpha(Ink, 0.65f));
+	}
+
+	/** Red/blue bars that cross the screen once when a menu page opens. */
+	void PaintEnterWipe(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const float Time)
+	{
+		if (Time >= 0.5f)
+		{
+			return;
+		}
+		const float E = EaseOut(Time / 0.45f);
+		const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.36f);
+		const FMenuPainter S{Slant, Elements, Layer, 1.0f - E};
+		S.Box(FMath::Lerp(1750.0f, -900.0f, E), -40.0f, 300.0f, 980.0f, Fire);
+		S.Box(FMath::Lerp(2120.0f, -560.0f, E), -40.0f, 90.0f, 980.0f, Ice);
+	}
+
+	void PaintHeader(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FString& Label, const float Time)
+	{
+		const float E = EaseOut((Time - 0.06f) / 0.4f);
+		const FGeometry Header = MakeSkewed(Design, 110.0f - (1.0f - E) * 90.0f, 66.0f, 900.0f, 120.0f, -0.2f);
+		const FMenuPainter P{Header, Elements, Layer, E};
+		P.Text(Label, 0.0f, 0.0f, 60.0f, Paper, ETextAlign::Left, TEXT("Black"));
+		// The short blue tick sits before the red bar so it never crosses the backdrop's blue edge.
+		P.Box(4.0f, 100.0f, 44.0f * E, 10.0f, Ice);
+		P.Box(60.0f, 100.0f, 230.0f * E, 10.0f, Fire);
+	}
+
+	void PaintBar(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const FString& Label, const FLinearColor& Accent, const float Blend,
+		const bool bPressed, const bool bDisabled, const float Alpha, const float Time)
+	{
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const FGeometry Bar = MakeSkewed(Design, Rect.Left + 14.0f * Blend, Rect.Top, W, H, -0.3f,
+			bPressed ? 0.96f : 1.0f);
+		const FMenuPainter P{Bar, Elements, Layer, Alpha};
+		const bool bNeutral = Accent.Equals(Muted);
+		const FLinearColor Fill = bNeutral ? Paper : Accent;
+		const bool bInkText = bNeutral || Accent.Equals(Gold);
+		const float Fold = bDisabled ? 0.0f : EaseOut(Blend);
+
+		P.Box(8.0f, 9.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		P.Box(0.0f, 0.0f, W, H, bDisabled
+			? FLinearColor(0.02f, 0.024f, 0.034f, 0.9f) : FLinearColor(0.018f, 0.024f, 0.04f, 0.97f));
+		P.Box(0.0f, 0.0f, W * Fold, H, Fill);
+		P.Box(0.0f, 0.0f, 9.0f, H, bDisabled ? WithAlpha(Muted, 0.35f) : Accent);
+
+		const FLinearColor Resting = bDisabled ? WithAlpha(Muted, 0.55f) : Paper;
+		const FLinearColor TextColor = FMath::Lerp(Resting, bInkText ? Ink : Paper, Fold);
+		const float Size = H >= 80.0f ? 32.0f : 27.0f;
+		P.Text(Label, 38.0f, H * 0.5f - Size * 0.8f, Size, TextColor);
+		if (Fold > 0.05f)
+		{
+			const float CX = W - 40.0f;
+			P.Line(FVector2D(CX - 12.0f, H * 0.5f - 12.0f), FVector2D(CX, H * 0.5f), WithAlpha(TextColor, Fold), 4.0f);
+			P.Line(FVector2D(CX, H * 0.5f), FVector2D(CX - 12.0f, H * 0.5f + 12.0f), WithAlpha(TextColor, Fold), 4.0f);
+			P.Outline(-6.0f, -6.0f, W + 12.0f, H + 12.0f,
+				WithAlpha(Paper, Fold * (0.3f + 0.3f * FMath::Sin(Time * 6.0f))), 2.0f);
+		}
+	}
+
+	void PaintCard(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const FString& Big, const FString& Sub, const FLinearColor& Accent,
+		const float Blend, const bool bPressed, const float Alpha, const float Time, const float BigSize,
+		const int32 Pips)
+	{
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const float B = EaseOut(Blend);
+		const FGeometry Card = MakeSkewed(Design, Rect.Left, Rect.Top - 12.0f * B, W, H, -0.14f,
+			(1.0f + 0.025f * B) * (bPressed ? 0.97f : 1.0f));
+		const FMenuPainter P{Card, Elements, Layer, Alpha};
+		FLinearColor Deep = Accent * 0.4f;
+		Deep.A = 1.0f;
+
+		P.Box(14.0f, 16.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
+		P.Box(0.0f, 0.0f, W, H, FLinearColor(0.02f, 0.027f, 0.047f, 0.97f));
+		P.Box(0.0f, 0.0f, W, H, WithAlpha(Deep, 0.25f + 0.75f * B));
+		// Vertical bands lean with the card and read as speed streaks once it is selected.
+		for (int32 Band = 0; Band < 3; ++Band)
+		{
+			P.Box(W * 0.52f + Band * 64.0f, 0.0f, 26.0f - Band * 7.0f, H, WithAlpha(Accent, 0.08f + 0.16f * B));
+		}
+		P.Box(0.0f, 0.0f, W, 6.0f, WithAlpha(Accent, 0.45f + 0.55f * B));
+		P.Box(0.0f, H - 14.0f, W, 14.0f, Accent);
+
+		P.Text(Big, 40.0f, H - BigSize * 1.3f - 110.0f, BigSize, WithAlpha(Paper, 0.7f + 0.3f * B),
+			ETextAlign::Left, TEXT("Black"), 3.0f * B, Ink);
+		P.Text(Sub, 46.0f, H - 84.0f, 30.0f, WithAlpha(Paper, 0.55f + 0.45f * B));
+		for (int32 Pip = 0; Pip < Pips; ++Pip)
+		{
+			P.Box(W - 34.0f - (Pips - Pip) * 26.0f, 30.0f, 16.0f, 34.0f, WithAlpha(Paper, 0.5f + 0.5f * B));
+		}
+		if (B > 0.01f)
+		{
+			P.Outline(-7.0f, -7.0f, W + 14.0f, H + 14.0f,
+				WithAlpha(Paper, B * (0.7f + 0.3f * FMath::Sin(Time * 5.0f))), 4.0f);
+		}
+	}
+
+	void PaintPadGlyph(const FMenuPainter& P, const float CX, const float CY, const float S,
+		const FLinearColor& Accent)
+	{
+		const auto Part = [&](float X, float Y, float W, float H, const FLinearColor& Color)
+		{
+			P.Box(CX + X * S, CY + Y * S, W * S, H * S, Color);
+		};
+		Part(-78.0f, -30.0f, 156.0f, 56.0f, Paper);
+		Part(-94.0f, -12.0f, 50.0f, 70.0f, Paper);
+		Part(44.0f, -12.0f, 50.0f, 70.0f, Paper);
+		Part(-64.0f, -18.0f, 10.0f, 30.0f, Ink);
+		Part(-74.0f, -8.0f, 30.0f, 10.0f, Ink);
+		Part(46.0f, -22.0f, 12.0f, 12.0f, Accent);
+		Part(60.0f, -9.0f, 12.0f, 12.0f, Accent);
+		Part(32.0f, -9.0f, 12.0f, 12.0f, Accent);
+		Part(46.0f, 4.0f, 12.0f, 12.0f, Accent);
+		Part(-28.0f, 6.0f, 18.0f, 18.0f, Ink);
+		Part(10.0f, 6.0f, 18.0f, 18.0f, Ink);
+	}
+
+	void PaintKeyboardGlyph(const FMenuPainter& P, const float CX, const float CY, const float S,
+		const FLinearColor& Accent)
+	{
+		P.Outline(CX - 96.0f * S, CY - 42.0f * S, 192.0f * S, 84.0f * S, Paper, 6.0f * S);
+		for (int32 Row = 0; Row < 2; ++Row)
+		{
+			for (int32 Key = 0; Key < 7; ++Key)
+			{
+				P.Box(CX + (-76.0f + Key * 22.0f) * S, CY + (-26.0f + Row * 20.0f) * S,
+					16.0f * S, 14.0f * S, Row == 0 && Key == 1 ? Accent : Paper);
+			}
+		}
+		P.Box(CX - 46.0f * S, CY + 16.0f * S, 92.0f * S, 12.0f * S, Paper);
+	}
+
+	void PaintJoinSlot(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const int32 PlayerIndex, const bool bRequired, const bool bNext,
+		const bool bJoined, const bool bKeyboard, const float JoinAge, const float Time, const float Alpha)
+	{
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const FLinearColor Accent = PlayerAccents[PlayerIndex];
+		const FString Label = FString::Printf(TEXT("P%d"), PlayerIndex + 1);
+		// Damped spring: the card lands small, overshoots, then settles like a console join.
+		const float Pop = bJoined
+			? 1.0f - 0.2f * FMath::Exp(-7.5f * JoinAge) * FMath::Cos(19.0f * JoinAge) : 1.0f;
+		const FGeometry Card = MakeSkewed(Design, Rect.Left, Rect.Top, W, H, -0.1f, Pop);
+		const FMenuPainter P{Card, Elements, Layer, Alpha};
+		const FVector2D Center(W * 0.5f, H * 0.53f);
+
+		P.Box(12.0f, 14.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		if (!bRequired)
+		{
+			P.Box(0.0f, 0.0f, W, H, FLinearColor(0.012f, 0.016f, 0.026f, 0.72f));
+			P.Outline(0.0f, 0.0f, W, H, FLinearColor(0.11f, 0.13f, 0.17f, 0.8f), 2.0f);
+			P.Text(Label, W * 0.5f, H * 0.5f - 62.0f, 88.0f, FLinearColor(0.13f, 0.15f, 0.2f, 1.0f),
+				ETextAlign::Center);
+			return;
+		}
+
+		P.Box(0.0f, 0.0f, W, H, FLinearColor(0.02f, 0.026f, 0.045f, 0.98f));
+		if (bJoined)
+		{
+			FLinearColor Deep = Accent * 0.5f;
+			Deep.A = 1.0f;
+			const float Flood = EaseOut(JoinAge / 0.3f);
+			P.Box(0.0f, H * (1.0f - Flood), W, H * Flood, Deep);
+			for (int32 Band = 0; Band < 3; ++Band)
+			{
+				P.Box(W * 0.18f + Band * 74.0f, H * (1.0f - Flood), 24.0f - Band * 6.0f, H * Flood,
+					WithAlpha(Accent, 0.25f));
+			}
+			P.Box(0.0f, 0.0f, W, 10.0f, Accent);
+			P.Box(0.0f, H - 10.0f, W, 10.0f, Accent);
+			P.Outline(0.0f, 0.0f, W, H, Accent, 3.0f);
+
+			const float Drop = -110.0f * FMath::Exp(-9.0f * JoinAge) * FMath::Cos(15.0f * JoinAge);
+			P.Text(Label, W * 0.5f, 30.0f + Drop, 100.0f, Paper, ETextAlign::Center, TEXT("Black"), 4.0f, Ink);
+
+			const float GlyphAge = FMath::Max(0.0f, JoinAge - 0.06f);
+			const float GlyphScale = 1.0f + 0.9f * FMath::Exp(-13.0f * GlyphAge);
+			FMenuPainter Glyph = P;
+			Glyph.Alpha = Alpha * FMath::Clamp(GlyphAge / 0.08f, 0.0f, 1.0f);
+			if (bKeyboard)
+			{
+				PaintKeyboardGlyph(Glyph, Center.X, Center.Y, GlyphScale, Accent);
+			}
+			else
+			{
+				PaintPadGlyph(Glyph, Center.X, Center.Y, GlyphScale, Accent);
+			}
+
+			const float TagIn = EaseOut((JoinAge - 0.22f) / 0.25f);
+			FMenuPainter Tag = P;
+			Tag.Alpha = Alpha * TagIn;
+			Tag.Text(bKeyboard ? TEXT("キーボード") : TEXT("コントローラー"),
+				W * 0.5f, H - 136.0f, 26.0f, Paper, ETextAlign::Center);
+			Tag.Box(W * 0.5f - 94.0f + (1.0f - TagIn) * 70.0f, H - 84.0f, 188.0f, 48.0f, Paper);
+			Tag.Text(TEXT("READY"), W * 0.5f + (1.0f - TagIn) * 70.0f, H - 82.0f, 32.0f, Ink,
+				ETextAlign::Center, TEXT("BlackItalic"));
+
+			const float Flash = FMath::Max(0.0f, 1.0f - JoinAge / 0.2f);
+			P.Box(-6.0f, -6.0f, W + 12.0f, H + 12.0f, WithAlpha(Paper, 0.9f * Flash));
+		}
+		else
+		{
+			const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 5.0f);
+			const FLinearColor Idle(0.2f, 0.24f, 0.32f, 1.0f);
+			P.Outline(0.0f, 0.0f, W, H, bNext ? WithAlpha(Accent, 0.45f + 0.55f * Pulse) : Idle,
+				bNext ? 5.0f : 2.0f);
+			P.Text(Label, W * 0.5f, 30.0f, 100.0f, bNext ? WithAlpha(Accent, 0.9f) : Idle, ETextAlign::Center);
+			if (bNext)
+			{
+				P.Box(8.0f, FMath::Fmod(Time * 240.0f, H - 40.0f) + 20.0f, W - 16.0f, 3.0f, WithAlpha(Accent, 0.35f));
+				P.Ring(Center, 48.0f + 7.0f * Pulse, WithAlpha(Accent, 0.85f), 4.0f);
+				P.Box(Center.X - 21.0f, Center.Y - 3.0f, 42.0f, 6.0f, Paper);
+				P.Box(Center.X - 3.0f, Center.Y - 21.0f, 6.0f, 42.0f, Paper);
+				P.Text(TEXT("PRESS ANY BUTTON"), W * 0.5f, H - 96.0f, 22.0f,
+					WithAlpha(Paper, 0.5f + 0.5f * Pulse), ETextAlign::Center, TEXT("BoldCondensed"));
+			}
+			else
+			{
+				P.Ring(Center, 48.0f, Idle, 3.0f);
+			}
+		}
+	}
+
+	/** Shockwave and sparks drawn unskewed over the slot while a join lands. */
+	void PaintJoinBurst(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const int32 PlayerIndex, const float JoinAge)
+	{
+		if (JoinAge < 0.0f || JoinAge >= 0.7f)
+		{
+			return;
+		}
+		const float E = EaseOut(JoinAge / 0.7f);
+		const FMenuPainter P{Design, Elements, Layer, 1.0f - JoinAge / 0.7f};
+		const FLinearColor Accent = PlayerAccents[PlayerIndex];
+		const FVector2D Center((Rect.Left + Rect.Right) * 0.5f, (Rect.Top + Rect.Bottom) * 0.5f);
+		P.Ring(Center, 90.0f + 360.0f * E, Accent, 2.0f + 10.0f * (1.0f - E), 72);
+		P.Ring(Center, 40.0f + 250.0f * E, Paper, 4.0f, 72);
+		for (int32 Spark = 0; Spark < 12; ++Spark)
+		{
+			const float Angle = FMath::DegreesToRadians(Spark * 30.0f + PlayerIndex * 11.0f);
+			const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+			const float Inner = 130.0f + 300.0f * E;
+			P.Line(Center + Direction * Inner, Center + Direction * (Inner + 20.0f + 70.0f * (1.0f - E)),
+				Spark % 2 == 0 ? Accent : Paper, 5.0f);
+		}
+	}
+
+	FSlateRect JoinSlotRect(const int32 PlayerIndex)
+	{
+		const float Width = 300.0f;
+		const float Gap = 36.0f;
+		const float X = (1600.0f - (Width * 4.0f + Gap * 3.0f)) * 0.5f + PlayerIndex * (Width + Gap);
+		return FSlateRect(X, 212.0f, X + Width, 642.0f);
+	}
 }
 
 void UChaosImpactMenuWidget::NativeOnInitialized()
@@ -105,8 +467,28 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	ScreenStartedAt = FPlatformTime::Seconds();
 	AnimationSeconds = 0.0f;
 	BuildEntries();
+	SelectBlend.Init(0.0f, Entries.Num());
+
+	// Slots that are already filled when the page opens (the reserved keyboard, or a
+	// return visit) still play their join animation, staggered after the page wipe.
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	for (int32 PlayerIndex = 0; PlayerIndex < 4; ++PlayerIndex)
+	{
+		bSlotJoined[PlayerIndex] = Controller && Screen == EChaosImpactScreen::ControllerAssignment
+			&& Controller->IsInputAssignedToPlayer(PlayerIndex);
+		SlotJoinedAt[PlayerIndex] = bSlotJoined[PlayerIndex]
+			? ScreenStartedAt + 0.32 + 0.12 * PlayerIndex : -1000.0;
+	}
+
 	SetVisibility(Screen == EChaosImpactScreen::Playing
 		? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+}
+
+void UChaosImpactMenuWidget::RefreshEntries()
+{
+	BuildEntries();
+	SelectBlend.SetNumZeroed(Entries.Num());
+	InvalidateLayoutAndVolatility();
 }
 
 void UChaosImpactMenuWidget::BuildEntries()
@@ -115,25 +497,45 @@ void UChaosImpactMenuWidget::BuildEntries()
 	switch (Screen)
 	{
 	case EChaosImpactScreen::Title:
-		Entries.Add({FSlateRect(570, 710, 1030, 790), TEXT("PRESS START"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(520, 700, 1080, 800), TEXT("PRESS START"), TEXT(""), TEXT(""), Gold});
 		break;
 	case EChaosImpactScreen::ModeSelect:
-		Entries.Add({FSlateRect(160, 275, 775, 590), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
-		Entries.Add({FSlateRect(825, 275, 1440, 590), TEXT("マルチモード"), TEXT(""), TEXT("MULTI"), Fire});
-		Entries.Add({FSlateRect(1000, 682, 1440, 772), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(160, 707, 490, 772), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
+		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("マルチモード"), TEXT(""), TEXT("MULTI"), Fire});
+		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
 		break;
 	case EChaosImpactScreen::TrainingSetup:
-		Entries.Add({FSlateRect(110, 285, 410, 585), TEXT("1人プレイ"), TEXT(""), TEXT("1P"), Ice});
-		Entries.Add({FSlateRect(470, 285, 770, 585), TEXT("2人プレイ"), TEXT(""), TEXT("2P"), Fire});
-		Entries.Add({FSlateRect(830, 285, 1130, 585), TEXT("3人プレイ"), TEXT(""), TEXT("3P"), Gold});
-		Entries.Add({FSlateRect(1190, 285, 1490, 585), TEXT("4人プレイ"), TEXT(""), TEXT("4P"), Ice});
-		Entries.Add({FSlateRect(160, 707, 490, 772), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+	{
+		const AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const bool bGamepad = Controller && Controller->WillPrimaryUseGamepad();
+		for (int32 Players = 1; Players <= 4; ++Players)
+		{
+			const float X = 150.0f + (Players - 1) * 331.0f;
+			Entries.Add({FSlateRect(X, 236, X + 305, 626), Players == 1 ? TEXT("PLAYER") : TEXT("PLAYERS"),
+				TEXT(""), FString::FromInt(Players), PlayerAccents[Players - 1]});
+		}
+		Entries.Add({FSlateRect(930, 708, 1450, 788),
+			bGamepad ? TEXT("1P  コントローラー") : TEXT("1P  キーボード＋マウス"),
+			TEXT(""), TEXT(""), bGamepad ? Fire : Ice});
+		Entries.Add({FSlateRect(150, 716, 470, 780), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
 		break;
+	}
+	case EChaosImpactScreen::ControllerAssignment:
+	{
+		const AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		FMenuEntry Start{FSlateRect(1030, 712, 1454, 800), TEXT("ゲーム開始"), TEXT(""), TEXT(""), Gold};
+		Start.bDisabled = !(Controller && Controller->AreControllerAssignmentsComplete());
+		Entries.Add(Start);
+		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		break;
+	}
 	case EChaosImpactScreen::SoloReady:
 	case EChaosImpactScreen::MultiReady:
-		Entries.Add({FSlateRect(160, 700, 570, 780), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
-		Entries.Add({FSlateRect(990, 700, 1440, 780), TEXT("トレーニングへ"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("トレーニングへ"), TEXT(""), TEXT(""), Gold});
 		break;
 	case EChaosImpactScreen::Pause:
 	{
@@ -159,15 +561,42 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const int32 Players = Controller ? Controller->GetRequestedLocalPlayerCount() : 1;
 		const bool bTargets = !Controller || Controller->AreTrainingTargetsEnabled();
-		const bool bCPU = Controller && Controller->IsTrainingCPUEnabled();
-		Entries.Add({FSlateRect(450, 245, 1150, 307),
+		const int32 CPUCount = Controller ? Controller->GetTrainingCPUCount() : 0;
+		const bool bGamepad = Controller && Controller->WillPrimaryUseGamepad();
+		Entries.Add({FSlateRect(450, 220, 1150, 282),
 			FString::Printf(TEXT("プレイヤー人数：%d人"), Players), TEXT(""), TEXT(""), Ice});
-		Entries.Add({FSlateRect(450, 335, 1150, 397),
+		Entries.Add({FSlateRect(450, 300, 1150, 362),
+			bGamepad ? TEXT("1P  コントローラー") : TEXT("1P  キーボード＋マウス"),
+			TEXT(""), TEXT(""), bGamepad ? Fire : Ice});
+		Entries.Add({FSlateRect(450, 380, 1150, 442),
 			bTargets ? TEXT("マト：あり") : TEXT("マト：なし"), TEXT(""), TEXT(""), bTargets ? Gold : Muted});
-		Entries.Add({FSlateRect(450, 425, 1150, 487),
-			bCPU ? TEXT("CPUプレイヤー：あり") : TEXT("CPUプレイヤー：なし"), TEXT(""), TEXT(""), bCPU ? Fire : Muted});
-		Entries.Add({FSlateRect(450, 565, 1150, 637), TEXT("設定を適用"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(450, 665, 1150, 737), TEXT("ポーズ画面へ戻る"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(450, 460, 1150, 522),
+			FString::Printf(TEXT("CPUプレイヤー：%d体"), CPUCount), TEXT(""), TEXT(""),
+			CPUCount > 0 ? Fire : Muted});
+		Entries.Add({FSlateRect(450, 575, 1150, 647), TEXT("設定を適用"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(450, 675, 1150, 747), TEXT("ポーズ画面へ戻る"), TEXT(""), TEXT(""), Muted});
+		break;
+	}
+	case EChaosImpactScreen::TrainingOverlay:
+	{
+		const AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const int32 Players = Controller ? Controller->GetRequestedLocalPlayerCount() : 1;
+		const bool bTargets = !Controller || Controller->AreTrainingTargetsEnabled();
+		const int32 CPUCount = Controller ? Controller->GetTrainingCPUCount() : 0;
+		const bool bArc = Controller
+			&& Controller->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
+		Entries.Add({FSlateRect(78, 174, 624, 232),
+			bArc ? TEXT("投球軌道：放物線") : TEXT("投球軌道：直線"), TEXT(""), TEXT(""), bArc ? Fire : Ice});
+		Entries.Add({FSlateRect(78, 244, 624, 302),
+			FString::Printf(TEXT("プレイヤー人数：%d人"), Players), TEXT(""), TEXT(""), Ice});
+		Entries.Add({FSlateRect(78, 314, 624, 372),
+			bTargets ? TEXT("マト：あり") : TEXT("マト：なし"), TEXT(""), TEXT(""), bTargets ? Gold : Muted});
+		Entries.Add({FSlateRect(78, 384, 624, 442),
+			FString::Printf(TEXT("CPUプレイヤー：%d体"), CPUCount), TEXT(""), TEXT(""),
+			CPUCount > 0 ? Fire : Muted});
+		Entries.Add({FSlateRect(78, 490, 624, 558), TEXT("トレーニングをリセット"), TEXT(""), TEXT(""), Fire});
+		Entries.Add({FSlateRect(78, 582, 624, 650), TEXT("閉じる"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
 	default:
@@ -179,7 +608,32 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	// Slate continues to animate while the gameplay world is paused.
-	AnimationSeconds = static_cast<float>(FPlatformTime::Seconds() - ScreenStartedAt);
+	const double Now = FPlatformTime::Seconds();
+	AnimationSeconds = static_cast<float>(Now - ScreenStartedAt);
+
+	SelectBlend.SetNumZeroed(Entries.Num());
+	for (int32 Index = 0; Index < SelectBlend.Num(); ++Index)
+	{
+		SelectBlend[Index] = FMath::FInterpTo(SelectBlend[Index],
+			Index == SelectedIndex ? 1.0f : 0.0f, InDeltaTime, 16.0f);
+	}
+
+	if (Screen == EChaosImpactScreen::ControllerAssignment)
+	{
+		if (const AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			for (int32 PlayerIndex = 0; PlayerIndex < 4; ++PlayerIndex)
+			{
+				const bool bJoined = Controller->IsInputAssignedToPlayer(PlayerIndex);
+				if (bJoined && !bSlotJoined[PlayerIndex])
+				{
+					SlotJoinedAt[PlayerIndex] = Now;
+				}
+				bSlotJoined[PlayerIndex] = bJoined;
+			}
+		}
+	}
 }
 
 int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -192,155 +646,202 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	{
 		return BaseLayer;
 	}
-
 	const float Scale = DesignScale(AllottedGeometry);
 	const FVector2D Offset = (AllottedGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
 	const FGeometry DesignGeometry = AllottedGeometry.MakeChild(
 		FVector2f(1600, 900), FSlateLayoutTransform(Scale, FVector2f(Offset)));
-	FMenuPainter Full{AllottedGeometry, OutDrawElements, BaseLayer + 1};
-	Full.Box(0, 0, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, Ink);
+	const float T = AnimationSeconds;
+	const double Now = FPlatformTime::Seconds();
+	const bool bFrontEnd = Screen != EChaosImpactScreen::TrainingOverlay
+		&& Screen != EChaosImpactScreen::Pause && Screen != EChaosImpactScreen::TrainingSettings;
+
+	const FMenuPainter Full{AllottedGeometry, OutDrawElements, BaseLayer + 1};
 	FMenuPainter P{DesignGeometry, OutDrawElements, BaseLayer + 2};
 
-	// Quiet, high-contrast backdrop. Decoration stays at the edges so the UI never fights it.
-	for (int32 Band = 0; Band < 12; ++Band)
+	if (Screen == EChaosImpactScreen::TrainingOverlay)
 	{
-		const float T = static_cast<float>(Band) / 11.0f;
-		const FLinearColor Top(0.025f, 0.035f, 0.065f, 1.0f);
-		const FLinearColor Bottom(0.004f, 0.006f, 0.013f, 1.0f);
-		P.Box(0, Band * 75.0f, 1600, 76, FMath::Lerp(Top, Bottom, T));
+		// Keep the live arena readable and place the opaque UI to the side of P1.
+		Full.Box(0, 0, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y,
+			FLinearColor(0.0f, 0.0f, 0.0f, 0.14f));
+		const FGeometry Panel = MakeSkewed(DesignGeometry, 32, 30, 640, 760, -0.04f);
+		const FMenuPainter Side{Panel, OutDrawElements, BaseLayer + 2};
+		Side.Box(0, 0, 640, 760, FLinearColor(0.008f, 0.014f, 0.027f, 0.93f));
+		Side.Box(0, 0, 10, 760, Ice);
+		Side.Box(630, 0, 10, 760, Fire);
+		P.Text(TEXT("TRAINING"), 66, 60, 44, Paper);
+		P.Box(68, 122, 150, 8, Fire);
+		P.Box(226, 122, 48, 8, Ice);
 	}
-	P.Box(0, 0, 9, 900, Ice);
-	P.Box(1591, 0, 9, 900, Fire);
-	P.Line(FVector2D(-120, 900), FVector2D(330, 620), FLinearColor(0.0f, 0.28f, 0.65f, 0.42f), 90);
-	P.Line(FVector2D(1720, 0), FVector2D(1390, 240), FLinearColor(0.72f, 0.01f, 0.055f, 0.38f), 76);
-	P.Line(FVector2D(0, 842), FVector2D(410, 842), FLinearColor(0.0f, 0.45f, 1.0f, 0.55f), 3);
-	P.Line(FVector2D(1190, 58), FVector2D(1600, 58), FLinearColor(1.0f, 0.03f, 0.09f, 0.5f), 3);
+	else
+	{
+		Full.Box(0, 0, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, Ink);
+		PaintBackdrop(DesignGeometry, OutDrawElements, BaseLayer + 1, T);
+	}
 
 	if (Screen == EChaosImpactScreen::Title)
 	{
-		const float Arrival = FMath::Clamp((AnimationSeconds - 0.12f) / 0.72f, 0.0f, 1.0f);
-		const float Ease = 1.0f - FMath::Pow(1.0f - Arrival, 3.0f);
-		const float Zoom = FMath::Lerp(1.22f, 1.0f, Ease);
-		const float Shake = AnimationSeconds > 0.75f && AnimationSeconds < 1.1f
-			? FMath::Sin(AnimationSeconds * 70.0f) * (1.1f - AnimationSeconds) * 8.0f : 0.0f;
+		const float ImpactAt = 0.84f;
+		const float Arrival = FMath::Clamp((T - 0.12f) / 0.72f, 0.0f, 1.0f);
+		const float Ease = Arrival * Arrival * Arrival;
+		const float Zoom = FMath::Lerp(1.9f, 1.0f, Ease) + 0.008f * FMath::Sin(T * 2.2f);
+		const float Shake = T > ImpactAt && T < 1.2f
+			? FMath::Sin(T * 80.0f) * (1.2f - T) * 26.0f : 0.0f;
 		const float Width = 1080.0f * Zoom;
 		const float Height = Width * LogoBrush.ImageSize.Y / FMath::Max(LogoBrush.ImageSize.X, 1.0f);
-		const float X = 800.0f - Width * 0.5f + Shake;
-		const float Y = 412.0f - Height * 0.5f;
+
+		// Incoming slashes converge on the logo right before it lands.
+		if (T < ImpactAt + 0.1f)
+		{
+			const float Slash = EaseOut(T / ImpactAt);
+			const FGeometry Slant = MakeSkewed(DesignGeometry, 0, 0, 1600, 900, -0.36f);
+			const FMenuPainter S{Slant, OutDrawElements, BaseLayer + 2, 1.0f - FMath::Max(0.0f, T - ImpactAt) * 10.0f};
+			S.Box(FMath::Lerp(-700.0f, 560.0f, Slash), 380, 520, 14, Ice);
+			S.Box(FMath::Lerp(1780.0f, 520.0f, Slash), 432, 520, 14, Fire);
+		}
+		if (T > ImpactAt && T < ImpactAt + 0.8f)
+		{
+			const float Wave = (T - ImpactAt) / 0.8f;
+			const FMenuPainter Rings{DesignGeometry, OutDrawElements, BaseLayer + 2, 1.0f - Wave};
+			Rings.Ring(FVector2D(800, 412), 120.0f + 820.0f * EaseOut(Wave), Paper, 3.0f + 12.0f * (1.0f - Wave), 96);
+			Rings.Ring(FVector2D(800, 412), 60.0f + 560.0f * EaseOut(Wave), Fire, 6.0f, 96);
+			Rings.Ring(FVector2D(800, 412), 30.0f + 380.0f * EaseOut(Wave), Ice, 6.0f, 96);
+		}
 
 		if (LogoTexture)
 		{
 			FSlateDrawElement::MakeBox(OutDrawElements, BaseLayer + 3,
-				DesignGeometry.ToPaintGeometry(FVector2f(Width, Height), FSlateLayoutTransform(FVector2f(X, Y))),
-				&LogoBrush, ESlateDrawEffect::None, FLinearColor(1, 1, 1, Arrival));
+				DesignGeometry.ToPaintGeometry(FVector2f(Width, Height),
+					FSlateLayoutTransform(FVector2f(800.0f - Width * 0.5f + Shake, 408.0f - Height * 0.5f))),
+				&LogoBrush, ESlateDrawEffect::None, FLinearColor(1, 1, 1, FMath::Clamp(Arrival * 1.6f, 0.0f, 1.0f)));
 		}
 		else
 		{
-			P.Text(TEXT("カオスインパクト"), 800, 350, 80, Paper, true, true);
+			P.Text(TEXT("カオスインパクト"), 800 + Shake, 330, 96, Paper, ETextAlign::Center);
 		}
-		// Two quick edge sweeps sell the opening impact without placing anything behind the logo.
-		const float Sweep = FMath::Clamp(AnimationSeconds / 0.75f, 0.0f, 1.0f);
-		if (Sweep < 1.0f)
+
+		if (T > ImpactAt && T < ImpactAt + 0.3f)
 		{
-			P.Line(FVector2D(-50, 210), FVector2D(360 * Sweep, 270), Ice, 10);
-			P.Line(FVector2D(1650, 620), FVector2D(1650 - 360 * Sweep, 560), Fire, 10);
+			const FMenuPainter Flash{AllottedGeometry, OutDrawElements, BaseLayer + 4};
+			Flash.Box(0, 0, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y,
+				WithAlpha(Paper, 0.8f * (1.0f - (T - ImpactAt) / 0.3f)));
+		}
+
+		const float PromptIn = EaseOut((T - 1.25f) / 0.35f);
+		if (PromptIn > 0.0f)
+		{
+			const float Blink = 0.4f + 0.6f * (0.5f + 0.5f * FMath::Cos((T - 1.25f) * 4.2f));
+			const FGeometry Prompt = MakeSkewed(DesignGeometry, 520, 716, 560, 70, -0.25f);
+			const FMenuPainter Row{Prompt, OutDrawElements, BaseLayer + 3, PromptIn};
+			Row.Box(280.0f - 260.0f * PromptIn, 28, 80, 12, Ice);
+			Row.Box(200.0f + 260.0f * PromptIn, 28, 80, 12, Fire);
+			Row.Text(TEXT("PRESS START"), 280, 4, 44, WithAlpha(Paper, Blink), ETextAlign::Center);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::ModeSelect)
 	{
-		P.Text(TEXT("モード選択"), 800, 92, 62, Paper, true, true);
-		P.Line(FVector2D(640, 184), FVector2D(800, 184), Ice, 5);
-		P.Line(FVector2D(800, 184), FVector2D(960, 184), Fire, 5);
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("MODE SELECT"), T);
 	}
 	else if (Screen == EChaosImpactScreen::TrainingSetup)
 	{
-		P.Text(TEXT("LOCAL TRAINING"), 800, 82, 58, Paper, true, true);
-		P.Text(TEXT("プレイヤー人数"), 800, 158, 30, Paper, true, true);
-		P.Line(FVector2D(620, 218), FVector2D(800, 218), Ice, 5);
-		P.Line(FVector2D(800, 218), FVector2D(980, 218), Fire, 5);
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("TRAINING"), T);
+	}
+	else if (Screen == EChaosImpactScreen::ControllerAssignment)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("PLAYER ENTRY"), T);
+		if (const AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			const int32 Players = Controller->GetRequestedLocalPlayerCount();
+			const int32 ReadyPlayers = Controller->GetAssignedPlayerCount();
+			for (int32 PlayerIndex = 0; PlayerIndex < 4; ++PlayerIndex)
+			{
+				const float SlotIn = EaseOut((T - 0.1f - 0.06f * PlayerIndex) / 0.35f);
+				FSlateRect Rect = JoinSlotRect(PlayerIndex);
+				Rect = Rect.OffsetBy(FVector2D((1.0f - SlotIn) * 140.0f, 0.0f));
+				const bool bRequired = PlayerIndex < Players;
+				const float JoinAge = static_cast<float>(Now - SlotJoinedAt[PlayerIndex]);
+				const bool bJoined = bRequired && Controller->IsInputAssignedToPlayer(PlayerIndex) && JoinAge >= 0.0f;
+				const bool bNext = bRequired && !Controller->IsInputAssignedToPlayer(PlayerIndex)
+					&& PlayerIndex == ReadyPlayers;
+				PaintJoinSlot(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, PlayerIndex, bRequired,
+					bNext, bJoined, Controller->IsKeyboardMouseAssignedToPlayer(PlayerIndex), JoinAge, T, SlotIn);
+				if (bJoined)
+				{
+					PaintJoinBurst(DesignGeometry, OutDrawElements, BaseLayer + 5, Rect, PlayerIndex, JoinAge);
+				}
+			}
+		}
 	}
 	else if (Screen == EChaosImpactScreen::SoloReady || Screen == EChaosImpactScreen::MultiReady)
 	{
 		const bool bSolo = Screen == EChaosImpactScreen::SoloReady;
-		const FLinearColor Accent = bSolo ? Ice : Fire;
-		P.Text(bSolo ? TEXT("SOLO") : TEXT("MULTI"), 800, 102, 82, Paper, true, true);
-		P.Line(FVector2D(660, 215), FVector2D(940, 215), Accent, 6);
-		P.Text(bSolo ? TEXT("ソロモード") : TEXT("マルチモード"), 800, 255, 44, Paper, true, true);
-		P.Text(TEXT("準備中"), 800, 390, 66, Paper, true, true);
+		const float E = EaseOut(T / 0.45f);
+		const FGeometry Title = MakeSkewed(DesignGeometry, 0, 240, 1600, 320, -0.2f, FMath::Lerp(1.25f, 1.0f, E));
+		const FMenuPainter Big{Title, OutDrawElements, BaseLayer + 3, E};
+		Big.Text(bSolo ? TEXT("SOLO") : TEXT("MULTI"), 800, 0, 150, Paper, ETextAlign::Center,
+			TEXT("Black"), 5.0f, bSolo ? Ice : Fire);
+		Big.Text(TEXT("COMING SOON"), 800, 226, 38, bSolo ? Ice : Fire, ETextAlign::Center, TEXT("BlackItalic"));
 	}
 	else if (Screen == EChaosImpactScreen::Pause)
 	{
-		const float Glitch = FMath::Clamp(1.0f - AnimationSeconds / 0.55f, 0.0f, 1.0f);
-		const float JitterX = FMath::Sin(AnimationSeconds * 93.0f) * Glitch * 13.0f;
+		const float Glitch = FMath::Clamp(1.0f - T / 0.55f, 0.0f, 1.0f);
+		const float JitterX = FMath::Sin(T * 93.0f) * Glitch * 13.0f;
 		if (Glitch > 0.0f)
 		{
 			for (int32 Scanline = 0; Scanline < 12; ++Scanline)
 			{
-				const float Y = FMath::Fmod(Scanline * 79.0f + AnimationSeconds * 920.0f, 900.0f);
+				const float Y = FMath::Fmod(Scanline * 79.0f + T * 920.0f, 900.0f);
 				P.Box(0.0f, Y, 1600.0f, Scanline % 3 == 0 ? 3.0f : 1.0f,
 					FLinearColor(0.72f, 0.88f, 1.0f, 0.11f * Glitch));
 			}
-			for (int32 Fragment = 0; Fragment < 7; ++Fragment)
-			{
-				const float X = FMath::Fmod(Fragment * 277.0f + AnimationSeconds * 1400.0f, 1500.0f);
-				const float Y = 55.0f + FMath::Fmod(Fragment * 113.0f, 690.0f);
-				const FLinearColor NoiseColor = Fragment % 2 == 0
-					? FLinearColor(0.0f, 0.75f, 1.0f, 0.16f * Glitch)
-					: FLinearColor(1.0f, 0.03f, 0.16f, 0.14f * Glitch);
-				P.Box(X, Y, 55.0f + Fragment * 19.0f, 4.0f + (Fragment % 3) * 3.0f, NoiseColor);
-			}
-			P.Text(TEXT("PAUSE"), 794.0f + JitterX, 94, 78, Ice, true, true);
-			P.Text(TEXT("PAUSE"), 806.0f - JitterX, 94, 78, Fire, true, true);
+			P.Text(TEXT("PAUSE"), 794.0f + JitterX, 94, 78, Ice, ETextAlign::Center);
+			P.Text(TEXT("PAUSE"), 806.0f - JitterX, 94, 78, Fire, ETextAlign::Center);
 		}
-		P.Text(TEXT("PAUSE"), 800.0f + JitterX * 0.18f, 94, 78, Paper, true, true);
-		P.Line(FVector2D(650, 211), FVector2D(800, 211), Ice, 5);
-		P.Line(FVector2D(800, 211), FVector2D(950, 211), Fire, 5);
+		P.Text(TEXT("PAUSE"), 800.0f + JitterX * 0.18f, 94, 78, Paper, ETextAlign::Center);
+		P.Box(650, 206, 150, 8, Ice);
+		P.Box(800, 206, 150, 8, Fire);
 	}
 	else if (Screen == EChaosImpactScreen::TrainingSettings)
 	{
-		P.Text(TEXT("TRAINING SETTINGS"), 800, 92, 62, Paper, true, true);
-		P.Text(TEXT("項目を決めて設定を適用"), 800, 168, 27, Paper, true, true);
-		P.Line(FVector2D(610, 216), FVector2D(800, 216), Ice, 5);
-		P.Line(FVector2D(800, 216), FVector2D(990, 216), Fire, 5);
+		P.Text(TEXT("TRAINING SETTINGS"), 800, 92, 62, Paper, ETextAlign::Center);
+		P.Box(610, 186, 190, 8, Ice);
+		P.Box(800, 186, 190, 8, Fire);
 	}
 
-	P.Layer = BaseLayer + 4;
 	for (int32 Index = 0; Index < Entries.Num(); ++Index)
 	{
-		const FMenuEntry& Entry = Entries[Index];
-		const bool bSelected = SelectedIndex == Index;
-		const float X = Entry.Rect.Left;
-		const float Y = Entry.Rect.Top;
-		const float W = Entry.Rect.Right - X;
-		const float H = Entry.Rect.Bottom - Y;
-		// The colored state never covers the label: black panel, white type, colored edge only.
-		P.Box(X + 8, Y + 9, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.56f));
-		P.Box(X, Y, W, H, PressedIndex == Index
-			? FLinearColor(0.065f, 0.075f, 0.105f, 1.0f)
-			: FLinearColor(0.018f, 0.024f, 0.040f, 1.0f));
-		P.Outline(X, Y, W, H, bSelected ? Entry.Accent : FLinearColor(0.23f, 0.27f, 0.34f, 1.0f),
-			bSelected ? 6.0f : 2.0f);
-		P.Box(X, Y, bSelected ? 14.0f : 6.0f, H, Entry.Accent);
-		if (!Entry.Number.IsEmpty())
+		if (Screen == EChaosImpactScreen::Title)
 		{
-			P.Text(Entry.Number, X + 52, Y + 48, 68, Paper, false, true);
-			P.Line(FVector2D(X + 52, Y + 142), FVector2D(X + 210, Y + 142), Entry.Accent, 5);
-			P.Text(Entry.Title, X + 52, Y + 182, 38, Paper, false, true);
-			if (bSelected)
-			{
-				P.Text(TEXT("▶"), X + W - 82, Y + H - 76, 28, Paper);
-			}
+			break;
+		}
+		const FMenuEntry& Entry = Entries[Index];
+		const float Blend = SelectBlend.IsValidIndex(Index)
+			? SelectBlend[Index] : (Index == SelectedIndex ? 1.0f : 0.0f);
+		const float EntryIn = bFrontEnd ? EaseOut((T - 0.12f - 0.05f * Index) / 0.35f) : 1.0f;
+		const FSlateRect Rect = Entry.Rect.OffsetBy(FVector2D((1.0f - EntryIn) * 120.0f, 0.0f));
+		const bool bPressed = PressedIndex == Index;
+		if (Screen == EChaosImpactScreen::ModeSelect && Index < 2)
+		{
+			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
+				Entry.Accent, Blend, bPressed, EntryIn, T, 118.0f, 0);
+		}
+		else if (Screen == EChaosImpactScreen::TrainingSetup && Index < 4)
+		{
+			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
+				Entry.Accent, Blend, bPressed, EntryIn, T, 170.0f, Index + 1);
 		}
 		else
 		{
-			P.Text(Entry.Title, X + 42, Y + H * 0.5f - 22, H > 95 ? 30 : 25, Paper, false, true);
-			if (bSelected)
-			{
-				P.Text(TEXT("▶"), X + W - 57, Y + H * 0.5f - 17, 23, Paper);
-			}
+			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Entry.Title, Entry.Accent,
+				Blend, bPressed, Entry.bDisabled, EntryIn, T);
 		}
 	}
-	return BaseLayer + 5;
+
+	if (bFrontEnd && Screen != EChaosImpactScreen::Title)
+	{
+		PaintEnterWipe(DesignGeometry, OutDrawElements, BaseLayer + 6, T);
+	}
+	return BaseLayer + 7;
 }
 
 void UChaosImpactMenuWidget::Navigate(const FKey Key)
@@ -387,11 +888,26 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 	case EChaosImpactScreen::TrainingSetup:
 		if (SelectedIndex >= 0 && SelectedIndex < 4)
 		{
-			Controller->StartTrainingWithPlayers(SelectedIndex + 1);
+			Controller->PrepareTrainingControllerAssignment(SelectedIndex + 1);
+		}
+		else if (SelectedIndex == 4)
+		{
+			Controller->TogglePrimaryInputMode();
+			BuildEntries();
 		}
 		else
 		{
 			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+		}
+		break;
+	case EChaosImpactScreen::ControllerAssignment:
+		if (SelectedIndex == 0)
+		{
+			Controller->ConfirmControllerAssignments();
+		}
+		else
+		{
+			GoBack();
 		}
 		break;
 	case EChaosImpactScreen::SoloReady:
@@ -416,7 +932,8 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			const int32 ModeIndex = Controller->IsTrainingMode() ? 4 : 2;
 			if (SelectedIndex == SettingsIndex)
 			{
-				Controller->ShowMenuScreen(EChaosImpactScreen::TrainingSettings);
+				Controller->ResumeGameplay();
+				Controller->ToggleTrainingOverlay();
 			}
 			else if (SelectedIndex == RetryIndex)
 			{
@@ -437,21 +954,56 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else if (SelectedIndex == 1)
 		{
-			Controller->ToggleTrainingTargets();
+			Controller->TogglePrimaryInputMode();
 			BuildEntries();
 		}
 		else if (SelectedIndex == 2)
 		{
-			Controller->ToggleTrainingCPU();
+			Controller->ToggleTrainingTargets();
 			BuildEntries();
 		}
 		else if (SelectedIndex == 3)
+		{
+			Controller->ToggleTrainingCPU();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 4)
 		{
 			Controller->ApplyTrainingSettings();
 		}
 		else
 		{
 			Controller->ShowMenuScreen(EChaosImpactScreen::Pause);
+		}
+		break;
+	case EChaosImpactScreen::TrainingOverlay:
+		if (SelectedIndex == 0)
+		{
+			Controller->ToggleBallFlightMode();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 1)
+		{
+			Controller->CycleTrainingPlayerCount();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 2)
+		{
+			Controller->ToggleTrainingTargets();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 3)
+		{
+			Controller->ToggleTrainingCPU();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 4)
+		{
+			Controller->RetryTraining();
+		}
+		else
+		{
+			Controller->CloseTrainingOverlay();
 		}
 		break;
 	default:
@@ -471,6 +1023,9 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::TrainingSettings:
 			Controller->ShowMenuScreen(EChaosImpactScreen::Pause);
 			break;
+		case EChaosImpactScreen::TrainingOverlay:
+			Controller->CloseTrainingOverlay();
+			break;
 		case EChaosImpactScreen::ModeSelect:
 			Controller->ShowMenuScreen(EChaosImpactScreen::Title);
 			break;
@@ -478,6 +1033,9 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::MultiReady:
 		case EChaosImpactScreen::TrainingSetup:
 			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+			break;
+		case EChaosImpactScreen::ControllerAssignment:
+			Controller->ShowMenuScreen(Controller->GetControllerAssignmentReturnScreen());
 			break;
 		default:
 			break;
@@ -488,6 +1046,43 @@ void UChaosImpactMenuWidget::GoBack()
 FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
 	const FKey Key = InKeyEvent.GetKey();
+	if (Screen == EChaosImpactScreen::ControllerAssignment && !Key.IsGamepadKey()
+		&& !InKeyEvent.IsRepeat())
+	{
+		if (AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			const bool bWasJoined = Controller->IsKeyboardMouseJoined();
+			if (Controller->RegisterKeyboardMouseJoin() && !bWasJoined)
+			{
+				// The first keyboard press only claims the next open player slot.
+				return FReply::Handled();
+			}
+		}
+	}
+	if (Screen == EChaosImpactScreen::ControllerAssignment && Key.IsGamepadKey()
+		&& !InKeyEvent.IsRepeat())
+	{
+		if (AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			const int32 InputDeviceId = InKeyEvent.GetInputDeviceId().GetId();
+			const bool bWasJoined = Controller->IsControllerJoined(InputDeviceId);
+			if (Controller->RegisterControllerJoin(
+				InputDeviceId, static_cast<int32>(InKeyEvent.GetUserIndex()))
+				&& !bWasJoined)
+			{
+				// The press that joins a controller must not also activate the
+				// currently selected Start/Back entry. Once everyone is READY,
+				// subsequent presses from P1's assigned pad control the menu normally.
+				return FReply::Handled();
+			}
+		}
+	}
+	if (!IsMenuKeyAllowed(this, Key))
+	{
+		return FReply::Handled();
+	}
 	if (Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Left || Key == EKeys::Right
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Down
 		|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right || Key == EKeys::Tab)
@@ -501,6 +1096,8 @@ FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
 			ConfirmSelection();
 		}
 		else if (Key == EKeys::BackSpace || Key == EKeys::Escape || Key == EKeys::Gamepad_FaceButton_Right
+			|| ((Key == EKeys::T || Key == EKeys::Hyphen || Key == EKeys::Gamepad_Special_Left)
+				&& Screen == EChaosImpactScreen::TrainingOverlay)
 			|| ((Key == EKeys::P || Key == EKeys::Gamepad_Special_Right)
 				&& (Screen == EChaosImpactScreen::Pause || Screen == EChaosImpactScreen::TrainingSettings)))
 		{
@@ -524,6 +1121,36 @@ FReply UChaosImpactMenuWidget::NativeOnPreviewKeyDown(
 	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
 }
 
+FReply UChaosImpactMenuWidget::NativeOnAnalogValueChanged(
+	const FGeometry& InGeometry, const FAnalogInputEvent& InAnalogEvent)
+{
+	const FKey Key = InAnalogEvent.GetKey();
+	if (!IsMenuKeyAllowed(this, Key))
+	{
+		return FReply::Handled();
+	}
+	if (Key != EKeys::Gamepad_LeftX && Key != EKeys::Gamepad_LeftY)
+	{
+		return Super::NativeOnAnalogValueChanged(InGeometry, InAnalogEvent);
+	}
+
+	const float Value = InAnalogEvent.GetAnalogValue();
+	const double Now = FPlatformTime::Seconds();
+	if (FMath::Abs(Value) >= 0.62f && Now - LastAnalogNavigationAt >= 0.20)
+	{
+		if (Key == EKeys::Gamepad_LeftX)
+		{
+			Navigate(Value > 0.0f ? EKeys::Gamepad_DPad_Right : EKeys::Gamepad_DPad_Left);
+		}
+		else
+		{
+			Navigate(Value > 0.0f ? EKeys::Gamepad_DPad_Up : EKeys::Gamepad_DPad_Down);
+		}
+		LastAnalogNavigationAt = Now;
+	}
+	return FReply::Handled();
+}
+
 int32 UChaosImpactMenuWidget::HitTestEntry(const FGeometry& Geometry, const FVector2D& ScreenPosition) const
 {
 	const float Scale = DesignScale(Geometry);
@@ -541,6 +1168,10 @@ int32 UChaosImpactMenuWidget::HitTestEntry(const FGeometry& Geometry, const FVec
 
 FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (!IsMenuMouseAllowed(this))
+	{
+		return FReply::Handled();
+	}
 	if (!InMouseEvent.GetCursorDelta().IsNearlyZero())
 	{
 		const int32 Hovered = HitTestEntry(InGeometry, InMouseEvent.GetScreenSpacePosition());
@@ -554,6 +1185,24 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (Screen == EChaosImpactScreen::ControllerAssignment)
+	{
+		if (AChaosImpactPlayerController* Controller =
+			Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			const bool bWasJoined = Controller->IsKeyboardMouseJoined();
+			if (Controller->RegisterKeyboardMouseJoin() && !bWasJoined)
+			{
+				// Mouse and keyboard are one shared device; the first click claims it.
+				PressedIndex = INDEX_NONE;
+				return FReply::Handled();
+			}
+		}
+	}
+	if (!IsMenuMouseAllowed(this))
+	{
+		return FReply::Handled();
+	}
 	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
 		PressedIndex = HitTestEntry(InGeometry, InMouseEvent.GetScreenSpacePosition());
@@ -568,6 +1217,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (!IsMenuMouseAllowed(this))
+	{
+		PressedIndex = INDEX_NONE;
+		return FReply::Handled().ReleaseMouseCapture();
+	}
 	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
 		const int32 Released = HitTestEntry(InGeometry, InMouseEvent.GetScreenSpacePosition());

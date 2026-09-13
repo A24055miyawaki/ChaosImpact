@@ -26,12 +26,15 @@ class AChaosImpactTrainingTarget : public AActor
 
 public:
 	AChaosImpactTrainingTarget();
+	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
 		AController* EventInstigator, AActor* DamageCauser) override;
 
 	void ConfigureMotion(EChaosImpactTargetMotion NewMotion, float NewTravelDistance = 260.0f,
 		float NewCyclesPerSecond = 0.32f, float StartPhase = 0.0f);
+	/** Shows/hides this authored target immediately without destroying its editor placement. */
+	void SetTrainingEnabled(bool bEnabled);
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Training Target")
 	bool IsDefeated() const { return bDefeated; }
@@ -103,5 +106,6 @@ private:
 	FVector ImpactLocalLocation = FVector(0.0f, 0.0f, 132.0f);
 	bool bDefeated = false;
 	bool bRespawning = false;
+	bool bTrainingEnabled = true;
 	FTimerHandle RespawnTimer;
 };

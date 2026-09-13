@@ -5,7 +5,9 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
+#include "ChaosImpactTrainingArena.h"
 #include "ChaosImpactTrainingTarget.h"
+#include "JoyShockBlueprintLibrary.h"
 #include "ChaosImpactCPUController.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -55,10 +57,20 @@ namespace
 		FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(Key, FModifierKeysState(), 0, false, 0, 0));
 	}
 
+	void MenuDeviceKey(FKey Key, const int32 InputDeviceId)
+	{
+		const FInputDeviceId DeviceId = FInputDeviceId::CreateFromInternalId(InputDeviceId);
+		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(
+			Key, FModifierKeysState(), DeviceId, false, 0, 0, TOptional<int32>(0)));
+		FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(
+			Key, FModifierKeysState(), DeviceId, false, 0, 0, TOptional<int32>(0)));
+	}
+
 	void PauseKey(AChaosImpactPlayerController* PC)
 	{
-		PC->InputKey(FInputKeyEventArgs(nullptr, INPUTDEVICEID_NONE, EKeys::P, IE_Pressed, FPlatformTime::Cycles64()));
-		PC->InputKey(FInputKeyEventArgs(nullptr, INPUTDEVICEID_NONE, EKeys::P, IE_Released, FPlatformTime::Cycles64()));
+		// Invoke the same bound action directly; synthetic INPUTDEVICEID_NONE events
+		// are intentionally rejected when physical-user filtering is enabled.
+		PC->TogglePauseMenu();
 	}
 
 	void Capture(const TCHAR* Name)
@@ -105,18 +117,19 @@ namespace
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::ModeSelect, TEXT("Enter opens modes"))) { return true; }
 				break;
-			case 3:
-				Capture(TEXT("02-Modes-TrainingClick.png"));
-				MenuKey(EKeys::Gamepad_DPad_Right);
-				Test->TestEqual(TEXT("D-pad selects Multi"), Menu->GetSelectedIndex(), 1);
-				MenuKey(EKeys::Gamepad_FaceButton_Bottom);
+				case 3:
+					Capture(TEXT("02-Modes-TrainingClick.png"));
+					PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+					Menu->Navigate(EKeys::Gamepad_DPad_Right);
+					Test->TestEqual(TEXT("D-pad selects Multi"), Menu->GetSelectedIndex(), 1);
+					Menu->ConfirmSelection();
 				if (!Check(EChaosImpactScreen::MultiReady, TEXT("Gamepad A opens Multi"))) { return true; }
 				break;
 			case 4:
 				Capture(TEXT("03-Multi.png"));
 				break;
 			case 5:
-				MenuKey(EKeys::Gamepad_FaceButton_Right);
+					Menu->GoBack();
 				if (!Check(EChaosImpactScreen::ModeSelect, TEXT("Gamepad B returns to modes"))) { return true; }
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::SoloReady, TEXT("Solo has its own ready screen"))) { return true; }
@@ -146,17 +159,44 @@ namespace
 				{
 					return true;
 				}
-				MenuKey(EKeys::Gamepad_DPad_Right);
-				Test->TestEqual(TEXT("D-pad selects two-player training"), Menu->GetSelectedIndex(), 1);
-				MenuKey(EKeys::Gamepad_DPad_Left);
+					Menu->Navigate(EKeys::Gamepad_DPad_Right);
+					Test->TestEqual(TEXT("D-pad selects two-player training"), Menu->GetSelectedIndex(), 1);
+					Menu->Navigate(EKeys::Gamepad_DPad_Left);
 				Test->TestEqual(TEXT("D-pad returns to one-player training"), Menu->GetSelectedIndex(), 0);
 				MenuKey(EKeys::Enter);
+				if (!Check(EChaosImpactScreen::ControllerAssignment,
+					TEXT("Player count opens controller assignment"))) { return true; }
+					Test->TestTrue(TEXT("Assignment screen names the first player's device"),
+						!PC->GetLocalInputAssignmentForPlayer(0).IsEmpty());
+					PC->TogglePrimaryInputMode();
+					Test->TestFalse(TEXT("A controller player waits for a join press"),
+						PC->AreControllerAssignmentsComplete());
+					MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 77);
+					Test->TestTrue(TEXT("The assignment UI accepts a physical controller button"),
+						PC->IsControllerJoined(77));
+					Test->TestTrue(TEXT("The join press completes the requested controller roster"),
+						PC->AreControllerAssignmentsComplete());
+					PC->TogglePrimaryInputMode();
+					Test->TestTrue(TEXT("Keyboard P1 is ready without a controller"),
+						PC->AreControllerAssignmentsComplete());
+					MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
 			}
 			case 9:
 				if (!PC->IsGameplayActive() && Now - TravelStartedAt < 45) { return false; }
 				if (!Check(EChaosImpactScreen::Playing, TEXT("Mouse click loads training, bypassing title"))) { return true; }
+				{
+					int32 ReadyPickupBallCount = 0;
+					for (TActorIterator<AChaosImpactBallSpawner> It(PC->GetWorld()); It; ++It)
+					{
+						ReadyPickupBallCount += IsValid(It->GetActiveBall()) ? 1 : 0;
+					}
+					if (ReadyPickupBallCount < 3 && Now - TravelStartedAt < 45)
+					{
+						return false;
+					}
+				}
 				Test->TestFalse(TEXT("Training is unpaused"), PC->IsPaused());
 				Test->TestTrue(TEXT("Training has a playable character"), IsValid(Cast<AChaosImpactCharacter>(PC->GetPawn())));
 				if (AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(PC->GetPawn()))
@@ -165,12 +205,24 @@ namespace
 						Character->GetCharacterMovement()->MaxWalkSpeed, 560.0f);
 					Test->TestEqual(TEXT("Short dash uses the reduced range"),
 						Character->GetDashDistance(), 220.0f);
+					Test->TestEqual(TEXT("Player respawn waits three seconds"),
+						Character->GetEliminationResetDelay(), 3.0f);
 				}
 				Test->TestTrue(TEXT("Training URL is recognized"), PC->IsTrainingMode());
 				Test->TestTrue(TEXT("Arc trajectory is the training default"),
 					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
 				Test->TestEqual(TEXT("One-player selection is preserved"),
 					PC->GetRequestedLocalPlayerCount(), 1);
+				{
+					int32 ArenaCount = 0;
+					for (TActorIterator<AChaosImpactTrainingArena> It(PC->GetWorld()); It; ++It)
+					{
+						++ArenaCount;
+						Test->TestTrue(TEXT("Training arena has rebound walls"), It->GetWallCount() >= 7);
+						Test->TestTrue(TEXT("Training arena has climbable steps"), It->GetStepCount() >= 3);
+					}
+					Test->TestEqual(TEXT("Training creates one dedicated arena"), ArenaCount, 1);
+				}
 				{
 					int32 SpawnerCount = 0;
 					TArray<AChaosImpactBall*> PickupBalls;
@@ -182,7 +234,7 @@ namespace
 							PickupBalls.Add(PickupBall);
 						}
 					}
-					Test->TestEqual(TEXT("Training creates three ball spawners"), SpawnerCount, 3);
+					Test->TestEqual(TEXT("Large training arena creates seven ball spawners"), SpawnerCount, 7);
 					int32 TargetCount = 0;
 					int32 StationaryTargets = 0;
 					int32 SideTargets = 0;
@@ -197,10 +249,10 @@ namespace
 						case EChaosImpactTargetMotion::ForwardBack: ++ForwardTargets; break;
 						}
 					}
-					Test->TestEqual(TEXT("Training creates five sandbag targets"), TargetCount, 5);
-					Test->TestEqual(TEXT("Training has two stationary targets"), StationaryTargets, 2);
-					Test->TestEqual(TEXT("Training has two side-moving targets"), SideTargets, 2);
-					Test->TestEqual(TEXT("Training has one depth-moving target"), ForwardTargets, 1);
+					Test->TestEqual(TEXT("Large training arena creates eight sandbag targets"), TargetCount, 8);
+					Test->TestEqual(TEXT("Training has three stationary targets"), StationaryTargets, 3);
+					Test->TestEqual(TEXT("Training has three side-moving targets"), SideTargets, 3);
+					Test->TestEqual(TEXT("Training has two depth-moving targets"), ForwardTargets, 2);
 					if (AChaosImpactCharacter* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn());
 						Pawn && PickupBalls.Num() >= 3)
 					{
@@ -301,6 +353,21 @@ namespace
 					PC->InputKey(FInputKeyEventArgs(nullptr, INPUTDEVICEID_NONE,
 						EKeys::LeftMouseButton, IE_Released, FPlatformTime::Cycles64()));
 					Test->TestEqual(TEXT("A picked-up ball can be thrown"), Pawn->GetCarriedBallCount(), 1);
+					Test->TestTrue(TEXT("Throw release waits for the animation hand cue"),
+						Pawn->IsThrowReleasePending());
+					Test->TestTrue(TEXT("Throw release starts the character motion"),
+						Pawn->IsThrowAnimationPlaying());
+					bool bProjectileFollowsHand = false;
+					for (TActorIterator<AChaosImpactBall> It(PC->GetWorld()); It; ++It)
+					{
+						if (It->WasThrownBy(Pawn) && It->GetAttachParentActor() == Pawn)
+						{
+							bProjectileFollowsHand = true;
+							break;
+						}
+					}
+					Test->TestTrue(TEXT("The real projectile follows the throwing hand before launch"),
+						bProjectileFollowsHand);
 					PC->InputKey(FInputKeyEventArgs(nullptr, INPUTDEVICEID_NONE,
 						EKeys::LeftMouseButton, IE_Pressed, FPlatformTime::Cycles64()));
 				}
@@ -334,6 +401,7 @@ namespace
 				PauseKey(PC);
 				break;
 			case 16:
+			{
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::Pause, TEXT("Trajectory toggle keeps pause open"))) { return true; }
@@ -341,36 +409,106 @@ namespace
 					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Straight);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
-				if (!Check(EChaosImpactScreen::TrainingSettings,
-					TEXT("Pause opens training settings"))) { return true; }
-				MenuKey(EKeys::Enter);
-				Test->TestEqual(TEXT("Training player count cycles"),
-					PC->GetRequestedLocalPlayerCount(), 2);
-				MenuKey(EKeys::Enter);
-				MenuKey(EKeys::Enter);
-				MenuKey(EKeys::Enter);
-				Test->TestEqual(TEXT("Training player count wraps to one"),
-					PC->GetRequestedLocalPlayerCount(), 1);
+				if (!Check(EChaosImpactScreen::TrainingOverlay,
+					TEXT("Pause opens the live training overlay"))) { return true; }
+				Test->TestFalse(TEXT("Live training overlay does not pause world time"), PC->IsPaused());
+				if (AChaosImpactCharacter* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
+				{
+					Test->TestTrue(TEXT("P1 movement is frozen while live settings are open"),
+						Pawn->IsTrainingMenuFrozen());
+					Test->TestFalse(TEXT("Character animation playback remains active"),
+						Pawn->GetMesh()->bPauseAnims);
+				}
+				Test->TestTrue(TEXT("Live settings temporarily use only P1's full viewport"),
+					GEngine && GEngine->GameViewport
+					&& GEngine->GameViewport->IsSplitscreenForceDisabled());
+
+				PC->CycleTrainingPlayerCount();
+				Test->TestEqual(TEXT("Player count changes immediately without travel"),
+					PC->GetGameInstance()->GetLocalPlayers().Num(), 2);
+				PC->CycleTrainingPlayerCount();
+				if (UJoyShockLibrary::JSL4UGetAllConnectedControllers().Num() >= 2)
+				{
+					const TArray<ULocalPlayer*>& LocalPlayers =
+						PC->GetGameInstance()->GetLocalPlayers();
+					APlayerController* PlayerTwo = LocalPlayers.IsValidIndex(1)
+						? LocalPlayers[1]->GetPlayerController(PC->GetWorld()) : nullptr;
+					APlayerController* PlayerThree = LocalPlayers.IsValidIndex(2)
+						? LocalPlayers[2]->GetPlayerController(PC->GetWorld()) : nullptr;
+					const TArray<FJSL4UControllerInfo> PlayerTwoPads =
+						UJoyShockLibrary::JSL4UGetControllersAssignedToPlayer(PlayerTwo);
+					const TArray<FJSL4UControllerInfo> PlayerThreePads =
+						UJoyShockLibrary::JSL4UGetControllersAssignedToPlayer(PlayerThree);
+					Test->TestTrue(TEXT("Live 3P gives P2 a physical controller"),
+						!PlayerTwoPads.IsEmpty());
+					Test->TestTrue(TEXT("Live 3P gives P3 the second physical controller"),
+						!PlayerThreePads.IsEmpty());
+					if (!PlayerTwoPads.IsEmpty() && !PlayerThreePads.IsEmpty())
+					{
+						Test->TestNotEqual(TEXT("P2 and P3 own different input devices"),
+							PlayerTwoPads[0].InputDeviceId, PlayerThreePads[0].InputDeviceId);
+					}
+				}
+				PC->CycleTrainingPlayerCount();
+				PC->CycleTrainingPlayerCount();
+				Test->TestEqual(TEXT("Live player count wraps back to one"),
+					PC->GetGameInstance()->GetLocalPlayers().Num(), 1);
+
+				PC->ToggleTrainingTargets();
+				Test->TestFalse(TEXT("Training targets toggle off immediately"),
+					PC->AreTrainingTargetsEnabled());
+				for (TActorIterator<AChaosImpactTrainingTarget> It(PC->GetWorld()); It; ++It)
+				{
+					Test->TestTrue(TEXT("Disabled training target is hidden in the live world"), It->IsHidden());
+				}
+				PC->ToggleTrainingTargets();
+				Test->TestTrue(TEXT("Training targets restore immediately"),
+					PC->AreTrainingTargetsEnabled());
+
+				PC->ToggleTrainingCPU();
+				int32 LiveCPUCount = 0;
+				for (TActorIterator<AChaosImpactCPUController> It(PC->GetWorld()); It; ++It)
+				{
+					++LiveCPUCount;
+					if (AChaosImpactCharacter* CPU = Cast<AChaosImpactCharacter>(It->GetPawn()))
+					{
+						Test->TestTrue(TEXT("New live CPU remains frozen until settings close"),
+							CPU->IsTrainingMenuFrozen());
+					}
+				}
+				Test->TestEqual(TEXT("CPU is spawned immediately"), LiveCPUCount, 1);
+				PC->ToggleTrainingCPU();
+				PC->ToggleTrainingCPU();
+				PC->ToggleTrainingCPU();
+				PC->ToggleTrainingCPU();
+				Test->TestFalse(TEXT("CPU cycle removes every CPU immediately"), PC->IsTrainingCPUEnabled());
+
+				MenuKey(EKeys::T);
+				if (!Check(EChaosImpactScreen::Playing,
+					TEXT("Keyboard T closes live settings"))) { return true; }
+				Test->TestFalse(TEXT("Closing live settings restores split-screen policy"),
+					GEngine && GEngine->GameViewport
+					&& GEngine->GameViewport->IsSplitscreenForceDisabled());
+				PC->ToggleTrainingOverlay();
+				if (!Check(EChaosImpactScreen::TrainingOverlay,
+					TEXT("Keyboard T opens live settings directly"))) { return true; }
+				PausedWorldTime = PC->GetWorld()->GetTimeSeconds();
+				break;
+			}
+			case 17:
+				Test->TestTrue(TEXT("World time advances while live training settings are open"),
+					PC->GetWorld()->GetTimeSeconds() > PausedWorldTime + 0.25f);
+				Capture(TEXT("06-Live-Training-Overlay.png"));
+				break;
+			case 18:
 				MenuKey(EKeys::Down);
-				MenuKey(EKeys::Enter);
-				Test->TestFalse(TEXT("Training targets can be disabled"), PC->AreTrainingTargetsEnabled());
-				MenuKey(EKeys::Enter);
-				Test->TestTrue(TEXT("Training targets can be restored"), PC->AreTrainingTargetsEnabled());
-				MenuKey(EKeys::Down);
-				MenuKey(EKeys::Enter);
-				Test->TestTrue(TEXT("Training CPU can be enabled"), PC->IsTrainingCPUEnabled());
-				MenuKey(EKeys::Enter);
-				Test->TestFalse(TEXT("Training CPU can be disabled"), PC->IsTrainingCPUEnabled());
-				MenuKey(EKeys::P);
-				if (!Check(EChaosImpactScreen::Pause,
-					TEXT("Training settings return to pause"))) { return true; }
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
-			case 17:
+			case 19:
 				if (!PC->IsGameplayActive() && Now - TravelStartedAt < 45) { return false; }
 				if (!Check(EChaosImpactScreen::Playing, TEXT("Training retry reloads the stage"))) { return true; }
 				Test->TestTrue(TEXT("Retry preserves selected straight trajectory"),
@@ -382,7 +520,7 @@ namespace
 				}
 				PauseKey(PC);
 				break;
-			case 18:
+			case 20:
 				if (!Check(EChaosImpactScreen::Pause, TEXT("Pause opens after retry"))) { return true; }
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
@@ -398,9 +536,12 @@ namespace
 				if (!Check(EChaosImpactScreen::TrainingSetup,
 					TEXT("Training selection reopens player setup"))) { return true; }
 				MenuKey(EKeys::Enter);
+				if (!Check(EChaosImpactScreen::ControllerAssignment,
+					TEXT("Restart also shows controller assignment"))) { return true; }
+				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
-			case 19:
+			case 21:
 				if (!PC->IsGameplayActive() && Now - TravelStartedAt < 45) { return false; }
 				if (!Check(EChaosImpactScreen::Playing, TEXT("Training can restart from menu"))) { return true; }
 				if (auto* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
@@ -409,7 +550,7 @@ namespace
 				}
 				PauseKey(PC);
 				break;
-			case 20:
+			case 22:
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
@@ -418,7 +559,7 @@ namespace
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::Title, TEXT("Pause title button returns to title"))) { return true; }
 				break;
-			case 21:
+			case 23:
 				Test->AddInfo(TEXT("Menu and ball flow complete: inventory, both trajectories, retry, spawners and navigation."));
 				return true;
 			}
@@ -437,12 +578,108 @@ namespace
 	};
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactControllerAimAxesTest,
+	"ChaosImpact.Input.ControllerAimAxes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+	| EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactControllerAimAxesTest::RunTest(const FString& Parameters)
+{
+	const FVector2D PhysicalRight =
+		AChaosImpactCharacter::ConvertRawControllerAimAxes(FVector2D(1.0f, 0.0f));
+	const FVector2D PhysicalUp =
+		AChaosImpactCharacter::ConvertRawControllerAimAxes(FVector2D(0.0f, -1.0f));
+	TestTrue(TEXT("Physical stick right becomes screen right"), PhysicalRight.X > 0.99f);
+	TestTrue(TEXT("Physical stick up becomes screen up"), PhysicalUp.Y > 0.99f);
+	TestTrue(TEXT("Up-to-right stick motion remains clockwise after conversion"),
+		PhysicalUp.X * PhysicalRight.Y - PhysicalUp.Y * PhysicalRight.X < -0.99f);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactMenuFlowTest, "ChaosImpact.UI.MenuFlow",
-	EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+	| EAutomationTestFlags::EngineFilter)
 
 bool FChaosImpactMenuFlowTest::RunTest(const FString& Parameters)
 {
 	ADD_LATENT_AUTOMATION_COMMAND(FMenuFlowCommand(this));
+	return true;
+}
+
+namespace
+{
+	class FControllerJoinUICommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FControllerJoinUICommand(FAutomationTestBase* InTest) : Test(InTest) {}
+
+		virtual bool Update() override
+		{
+			AChaosImpactPlayerController* PC = FindGameController();
+			if (!PC || !PC->GetMenuWidget())
+			{
+				if (FPlatformTime::Seconds() - StartedAt < 30.0)
+				{
+					return false;
+				}
+				Test->AddError(TEXT("No menu/controller was created for controller join UI test."));
+				return true;
+			}
+
+			PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+			PC->ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
+			PC->PrepareTrainingControllerAssignment(2);
+			Test->TestEqual(TEXT("Two-player setup opens the join screen"),
+				PC->GetCurrentScreen(), EChaosImpactScreen::ControllerAssignment);
+			Test->TestFalse(TEXT("Two-player keyboard setup initially waits for P2"),
+				PC->AreControllerAssignmentsComplete());
+
+			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 77);
+			Test->TestTrue(TEXT("A Slate UI-only gamepad event registers its physical device"),
+				PC->IsControllerJoined(77));
+			Test->TestTrue(TEXT("The UI-only join event completes the two-player roster"),
+				PC->AreControllerAssignmentsComplete());
+			Test->TestEqual(TEXT("The join press does not accidentally activate a menu entry"),
+				PC->GetCurrentScreen(), EChaosImpactScreen::ControllerAssignment);
+
+			PC->ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
+			PC->TogglePrimaryInputMode();
+			PC->PrepareTrainingControllerAssignment(3);
+			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 88);
+			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 99);
+			MenuKey(EKeys::SpaceBar);
+			Test->TestTrue(TEXT("Keyboard and mouse can join after two controllers"),
+				PC->IsKeyboardMouseAssignedToPlayer(2));
+			Test->TestTrue(TEXT("Controller, controller, keyboard fills a three-player roster"),
+				PC->AreControllerAssignmentsComplete());
+			Test->TestTrue(TEXT("P1 remains controller-only when keyboard joins as P3"),
+				PC->WillPrimaryUseGamepad());
+
+			PC->ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
+			PC->PrepareTrainingControllerAssignment(1);
+			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 111);
+			Test->TestTrue(TEXT("Controller-only P1 joins from the first button press"),
+				PC->IsControllerJoined(111) && PC->AreControllerAssignmentsComplete());
+			MenuDeviceKey(EKeys::Gamepad_DPad_Right, 111);
+			Test->TestEqual(TEXT("After READY, P1 controller can navigate the join menu"),
+				PC->GetMenuWidget()->GetSelectedIndex(), 1);
+			return true;
+		}
+
+	private:
+		FAutomationTestBase* Test;
+		double StartedAt = FPlatformTime::Seconds();
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactControllerJoinUITest,
+	"ChaosImpact.UI.ControllerJoin",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+	| EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactControllerJoinUITest::RunTest(const FString& Parameters)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FControllerJoinUICommand(this));
 	return true;
 }
 
@@ -465,7 +702,78 @@ namespace
 				Test->AddInfo(TEXT("Local multiplayer test requires a CITraining map URL."));
 				return true;
 			}
+			if (Stage == 10)
+			{
+				if (FPlatformTime::Seconds() < NextAt)
+				{
+					return false;
+				}
+				AChaosImpactCharacter* Victim = RespawningVictim.Get();
+				AChaosImpactCharacter* Killer = SpectatedKiller.Get();
+				Test->TestTrue(TEXT("Secondary player's private aim guide is visible before a hit"),
+					Killer && Killer->IsPersonalAimGuideVisible());
+				Test->TestTrue(TEXT("Right-stick right produces a rightward world aim"),
+					Killer && Killer->GetAimDirection().Y > 0.8f);
+				Capture(TEXT("07-Training-2P-Private-Aim.png"));
+				FDamageEvent EliminationEvent;
+				AController* KillerController = Killer ? Killer->GetController() : nullptr;
+				Test->TestTrue(TEXT("Opponent damage eliminates the primary player"),
+					Victim && KillerController
+					&& Victim->TakeDamage(999.0f, EliminationEvent, KillerController, Killer) > 0.0f
+					&& Victim->IsEliminated());
+				Test->TestEqual(TEXT("Elimination briefly keeps the victim's own camera"),
+					Primary->GetViewTarget(), static_cast<AActor*>(Victim));
+				Stage = 1;
+				NextAt = FPlatformTime::Seconds() + 1.0;
+				return false;
+			}
 			if (Stage == 1)
+			{
+				if (FPlatformTime::Seconds() < NextAt)
+				{
+					return false;
+				}
+				AChaosImpactCharacter* Victim = RespawningVictim.Get();
+				AChaosImpactCharacter* Killer = SpectatedKiller.Get();
+				Test->TestTrue(TEXT("Eliminated player remains out during the countdown"),
+					Victim && Victim->IsEliminated());
+				Test->TestEqual(TEXT("Victim camera follows the eliminating player"),
+					Primary->GetViewTarget(), static_cast<AActor*>(Killer));
+				Test->TestTrue(TEXT("Secondary player has a private aim guide in their HUD"),
+					Killer && Killer->IsPersonalAimGuideVisible());
+				Test->TestFalse(TEXT("Eliminated player's HUD never exposes an opponent guide"),
+					Victim && Victim->IsPersonalAimGuideVisible());
+				Capture(TEXT("08-Training-Respawn-Countdown.png"));
+				Stage = 2;
+				NextAt = FPlatformTime::Seconds() + 3.1;
+				return false;
+			}
+			if (Stage == 2)
+			{
+				if (FPlatformTime::Seconds() < NextAt)
+				{
+					return false;
+				}
+				AChaosImpactCharacter* Victim = RespawningVictim.Get();
+				Test->TestTrue(TEXT("Player automatically respawns after about three seconds"),
+					Victim && !Victim->IsEliminated());
+				Test->TestEqual(TEXT("Respawn restores the player's own camera"),
+					Primary->GetViewTarget(), static_cast<AActor*>(Victim));
+				Test->TestEqual(TEXT("Respawn clears carried-ball inventory"),
+					Victim ? Victim->GetCarriedBallCount() : -1, 0);
+				Test->TestFalse(TEXT("Respawn does not reveal phantom hand balls"),
+					Victim && Victim->HasVisibleHeldBall());
+				if (AChaosImpactCharacter* Killer = SpectatedKiller.Get())
+				{
+					Killer->CancelChargingThrow();
+				}
+				Capture(TEXT("08-Training-Respawned.png"));
+				Primary->TogglePauseMenu();
+				Stage = 3;
+				NextAt = FPlatformTime::Seconds() + 0.6;
+				return false;
+			}
+			if (Stage == 3)
 			{
 				if (FPlatformTime::Seconds() < NextAt)
 				{
@@ -484,6 +792,31 @@ namespace
 				Capture(TEXT("09-Training-Split-Pause.png"));
 				return true;
 			}
+			if (Stage == 20)
+			{
+				if (FPlatformTime::Seconds() < NextAt)
+				{
+					return false;
+				}
+				int32 ResponsiveCPUs = 0;
+				for (int32 Index = 0; Index < ObservedCPUs.Num(); ++Index)
+				{
+					if (const AChaosImpactCharacter* CPUCharacter = ObservedCPUs[Index].Get();
+						CPUCharacter && CPUStartLocations.IsValidIndex(Index)
+						&& FVector::Dist2D(CPUCharacter->GetActorLocation(),
+							CPUStartLocations[Index]) > 90.0f)
+					{
+						++ResponsiveCPUs;
+					}
+				}
+				Test->TestTrue(TEXT("CPUs actively navigate the expanded terrain"),
+					ResponsiveCPUs >= FMath::Max(1, ObservedCPUs.Num() - 1));
+				Capture(TEXT("10-Training-CPU-Navigation.png"));
+				Primary->TogglePauseMenu();
+				Stage = 3;
+				NextAt = FPlatformTime::Seconds() + 0.6;
+				return false;
+			}
 
 			UGameInstance* GameInstance = Primary->GetGameInstance();
 			const int32 ExpectedPlayers = Primary->GetRequestedLocalPlayerCount();
@@ -496,7 +829,15 @@ namespace
 
 			Test->TestEqual(TEXT("Requested local player count is created"),
 				GameInstance->GetNumLocalPlayers(), ExpectedPlayers);
-			for (int32 PlayerIndex = 0; PlayerIndex < ExpectedPlayers; ++PlayerIndex)
+			const TCHAR* KeyboardOption =
+				Primary->GetWorld()->URL.GetOption(TEXT("CIKeyboardPlayer="), nullptr);
+			const int32 KeyboardPlayerIndex = KeyboardOption
+				? FCString::Atoi(KeyboardOption)
+				: (Primary->GetWorld()->URL.HasOption(TEXT("CIP1Gamepad=1")) ? INDEX_NONE : 0);
+			const bool bExpectedPrimaryGamepad = KeyboardPlayerIndex != 0;
+			Test->TestEqual(TEXT("P1 exclusive input mode is restored from travel options"),
+				Primary->IsPrimaryUsingGamepad(), bExpectedPrimaryGamepad);
+				for (int32 PlayerIndex = 0; PlayerIndex < ExpectedPlayers; ++PlayerIndex)
 			{
 				ULocalPlayer* LocalPlayer = GameInstance->GetLocalPlayers()[PlayerIndex];
 				AChaosImpactPlayerController* Controller = LocalPlayer
@@ -505,14 +846,33 @@ namespace
 				Test->TestNotNull(*FString::Printf(TEXT("Player %d controller exists"), PlayerIndex + 1), Controller);
 				Test->TestNotNull(*FString::Printf(TEXT("Player %d uses the Chaos Impact character"), PlayerIndex + 1),
 					Controller ? Cast<AChaosImpactCharacter>(Controller->GetPawn()) : nullptr);
+					Test->TestTrue(*FString::Printf(TEXT("Player %d has a valid input slot"), PlayerIndex + 1),
+						LocalPlayer && LocalPlayer->GetControllerId() >= 0);
 				if (Controller)
 				{
 					Test->TestTrue(*FString::Printf(TEXT("Player %d is in gameplay"), PlayerIndex + 1),
 						Controller->IsGameplayActive());
+					const AChaosImpactCharacter* Character =
+						Cast<AChaosImpactCharacter>(Controller->GetPawn());
+					Test->AddInfo(FString::Printf(
+						TEXT("Player %d idle input: left=(%.3f, %.3f), velocity=%.3f"),
+						PlayerIndex + 1,
+						Controller->GetInputAnalogKeyState(EKeys::Gamepad_LeftX),
+						Controller->GetInputAnalogKeyState(EKeys::Gamepad_LeftY),
+						Character ? Character->GetVelocity().Size2D() : -1.0f));
+					Test->TestTrue(*FString::Printf(
+						TEXT("Player %d has no uncommanded horizontal movement"), PlayerIndex + 1),
+						Character && Character->GetVelocity().Size2D() < 8.0f);
+					const bool bShouldOwnController = PlayerIndex != KeyboardPlayerIndex;
+					const int32 AssignedControllerCount =
+						UJoyShockLibrary::JSL4UGetControllersAssignedToPlayer(Controller).Num();
+					Test->TestEqual(*FString::Printf(
+						TEXT("Player %d controller ownership matches its selected input mode"), PlayerIndex + 1),
+						AssignedControllerCount > 0, bShouldOwnController);
+					}
 				}
-			}
 
-			const bool bExpectTargets = !Primary->GetWorld()->URL.HasOption(TEXT("CITargets=0"));
+				const bool bExpectTargets = !Primary->GetWorld()->URL.HasOption(TEXT("CITargets=0"));
 			int32 TargetCount = 0;
 			for (TActorIterator<AChaosImpactTrainingTarget> It(Primary->GetWorld()); It; ++It)
 			{
@@ -521,18 +881,32 @@ namespace
 			Test->TestTrue(TEXT("Training target setting is applied"),
 				bExpectTargets ? TargetCount > 0 : TargetCount == 0);
 
-			const bool bExpectCPU = Primary->GetWorld()->URL.HasOption(TEXT("CICPU=1"));
+				const int32 ExpectedCPUCount = FMath::Clamp(FCString::Atoi(
+					Primary->GetWorld()->URL.GetOption(TEXT("CICPUCount="),
+						Primary->GetWorld()->URL.HasOption(TEXT("CICPU=1")) ? TEXT("1") : TEXT("0"))), 0, 4);
 			int32 CPUCount = 0;
 			for (TActorIterator<AChaosImpactCPUController> It(Primary->GetWorld()); It; ++It)
 			{
 				++CPUCount;
+				AChaosImpactCharacter* CPUCharacter = Cast<AChaosImpactCharacter>(It->GetPawn());
 				Test->TestNotNull(TEXT("CPU possesses the same playable character base"),
-					Cast<AChaosImpactCharacter>(It->GetPawn()));
+					CPUCharacter);
+				if (CPUCharacter)
+				{
+					ObservedCPUs.Add(CPUCharacter);
+					CPUStartLocations.Add(CPUCharacter->GetActorLocation());
+				}
 				Test->TestEqual(TEXT("CPU uses the player's current flight mode"),
 					It->UsesArcFlightMode(),
 					Primary->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
 			}
-			Test->TestEqual(TEXT("Training CPU setting is applied"), CPUCount, bExpectCPU ? 1 : 0);
+				Test->TestEqual(TEXT("Training CPU count is applied"), CPUCount, ExpectedCPUCount);
+			if (ExpectedPlayers == 1 && ExpectedCPUCount > 0)
+			{
+				Stage = 20;
+				NextAt = FPlatformTime::Seconds() + 3.5;
+				return false;
+			}
 
 			if (GEngine && GEngine->GameViewport)
 			{
@@ -551,8 +925,47 @@ namespace
 			}
 			Capture(ExpectedPlayers == 2 ? TEXT("07-Training-2P.png")
 				: ExpectedPlayers == 4 ? TEXT("08-Training-4P.png") : TEXT("07-Training-Local.png"));
+			if (ExpectedPlayers >= 2)
+			{
+				ULocalPlayer* KillerLocalPlayer = GameInstance->GetLocalPlayers()[1];
+				AChaosImpactPlayerController* KillerController = KillerLocalPlayer
+					? Cast<AChaosImpactPlayerController>(
+						KillerLocalPlayer->GetPlayerController(Primary->GetWorld())) : nullptr;
+				AChaosImpactCharacter* Victim = Cast<AChaosImpactCharacter>(Primary->GetPawn());
+				AChaosImpactCharacter* Killer = KillerController
+					? Cast<AChaosImpactCharacter>(KillerController->GetPawn()) : nullptr;
+				if (Victim && KillerController && Killer)
+				{
+					for (TActorIterator<AChaosImpactBallSpawner> It(Primary->GetWorld()); It; ++It)
+					{
+						AChaosImpactBall* Ball = It->GetActiveBall();
+						if (Victim->GetCarriedBallCount() < Victim->GetMaximumCarriedBalls()
+							&& Victim->TryPickupBall(Ball))
+						{
+							Ball->Destroy();
+						}
+						else if (Killer->GetCarriedBallCount() == 0 && Killer->TryPickupBall(Ball))
+						{
+							Ball->Destroy();
+							Killer->BeginThrowInput();
+						}
+					}
+					Test->TestEqual(TEXT("Victim carries two balls before elimination"),
+						Victim->GetCarriedBallCount(), 2);
+					Test->TestEqual(TEXT("Secondary player can carry a ball for aim-guide testing"),
+						Killer->GetCarriedBallCount(), 1);
+					Killer->DoLook(1.0f, 0.0f);
+					RespawningVictim = Victim;
+					SpectatedKiller = Killer;
+					Stage = 10;
+					NextAt = FPlatformTime::Seconds() + 0.45;
+					return false;
+				}
+				Test->AddError(TEXT("Could not create the two-player elimination test state."));
+				return true;
+			}
 			Primary->TogglePauseMenu();
-			Stage = 1;
+			Stage = 3;
 			NextAt = FPlatformTime::Seconds() + 0.6;
 			return false;
 		}
@@ -562,12 +975,17 @@ namespace
 		double StartedAt = FPlatformTime::Seconds();
 		double NextAt = 0.0;
 		int32 Stage = 0;
+		TWeakObjectPtr<AChaosImpactCharacter> RespawningVictim;
+		TWeakObjectPtr<AChaosImpactCharacter> SpectatedKiller;
+		TArray<TWeakObjectPtr<AChaosImpactCharacter>> ObservedCPUs;
+		TArray<FVector> CPUStartLocations;
 	};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactLocalMultiplayerTest,
 	"ChaosImpact.Training.LocalMultiplayer",
-	EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+	| EAutomationTestFlags::EngineFilter)
 
 bool FChaosImpactLocalMultiplayerTest::RunTest(const FString& Parameters)
 {

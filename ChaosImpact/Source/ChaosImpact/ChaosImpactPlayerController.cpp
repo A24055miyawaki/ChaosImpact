@@ -3,14 +3,18 @@
 
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactGameMode.h"
 #include "ChaosImpactBallSpawner.h"
+#include "ChaosImpactTrainingArena.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactMenuWidget.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerInput.h"
+#include "GameFramework/InputSettings.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
@@ -19,26 +23,57 @@
 #include "Widgets/Input/SVirtualJoystick.h"
 #include "InputCoreTypes.h"
 #include "InputKeyEventArgs.h"
+#include "GameMapsSettings.h"
+#include "Components/CapsuleComponent.h"
+#include "Framework/Application/SlateApplication.h"
 
 void AChaosImpactPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 	bTrainingMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CITraining=1"));
+	ActiveKeyboardPlayerIndex = 0;
+	if (GetWorld())
+	{
+		const TCHAR* KeyboardValue = GetWorld()->URL.GetOption(TEXT("CIKeyboardPlayer="), nullptr);
+		ActiveKeyboardPlayerIndex = KeyboardValue
+			? FCString::Atoi(KeyboardValue)
+			: (GetWorld()->URL.HasOption(TEXT("CIP1Gamepad=1")) ? INDEX_NONE : 0);
+	}
+	bPrimaryUsesGamepad = ActiveKeyboardPlayerIndex != 0;
+	bRequestedPrimaryUsesGamepad = bPrimaryUsesGamepad;
+	RequestedKeyboardPlayerIndex = ActiveKeyboardPlayerIndex;
+	ApplyLocalInputRouting();
 	if (bTrainingMode)
 	{
 		RequestedLocalPlayerCount = FMath::Clamp(FCString::Atoi(
 			GetWorld()->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))), 1, 4);
 		bTrainingTargetsEnabled = !GetWorld()->URL.HasOption(TEXT("CITargets=0"));
-		bTrainingCPUEnabled = GetWorld()->URL.HasOption(TEXT("CICPU=1"));
+		TrainingCPUCount = FMath::Clamp(FCString::Atoi(
+			GetWorld()->URL.GetOption(TEXT("CICPUCount="),
+				GetWorld()->URL.HasOption(TEXT("CICPU=1")) ? TEXT("1") : TEXT("0"))), 0, 4);
+		const int32 ExpectedPads = RequestedLocalPlayerCount
+			- (ActiveKeyboardPlayerIndex != INDEX_NONE ? 1 : 0);
+		for (int32 PadIndex = 0; PadIndex < ExpectedPads; ++PadIndex)
+		{
+			const FString DeviceOption = FString::Printf(TEXT("CIPadDevice%d="), PadIndex);
+			const FString ControllerOption = FString::Printf(TEXT("CIPadController%d="), PadIndex);
+			const TCHAR* DeviceValue = GetWorld()->URL.GetOption(*DeviceOption, nullptr);
+			if (DeviceValue)
+			{
+				JoinedInputDeviceIds.Add(FCString::Atoi(DeviceValue));
+				JoinedLegacyControllerIds.Add(FCString::Atoi(
+					GetWorld()->URL.GetOption(*ControllerOption, *FString::FromInt(PadIndex))));
+			}
+		}
 	}
 	BallFlightMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIBallStraight=1"))
 		? EChaosImpactBallFlightMode::Straight : EChaosImpactBallFlightMode::Arc;
 	CurrentScreen = bTrainingMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
 	const bool bPrimaryLocalPlayer = IsPrimaryLocalPlayerController();
 
-	bShowMouseCursor = bPrimaryLocalPlayer;
-	bEnableClickEvents = bPrimaryLocalPlayer;
-	bEnableMouseOverEvents = bPrimaryLocalPlayer;
+	bShowMouseCursor = !IsUsingGamepad();
+	bEnableClickEvents = bShowMouseCursor;
+	bEnableMouseOverEvents = bShowMouseCursor;
 	DefaultMouseCursor = EMouseCursor::Crosshairs;
 
 	// only spawn touch controls on local player controllers
@@ -73,6 +108,7 @@ void AChaosImpactPlayerController::BeginPlay()
 		}
 	}
 
+	EnsureTrainingArena();
 	EnsureTrainingBallSpawners();
 	EnsureTrainingTargets();
 }
@@ -89,6 +125,18 @@ bool AChaosImpactPlayerController::IsPrimaryLocalPlayerController() const
 		|| GameInstance->GetLocalPlayers()[0] == ThisLocalPlayer;
 }
 
+int32 AChaosImpactPlayerController::GetThisLocalPlayerIndex() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance && GetLocalPlayer()
+		? GameInstance->GetLocalPlayers().IndexOfByKey(GetLocalPlayer()) : 0;
+}
+
+bool AChaosImpactPlayerController::IsUsingGamepad() const
+{
+	return GetThisLocalPlayerIndex() != ActiveKeyboardPlayerIndex;
+}
+
 void AChaosImpactPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
@@ -96,6 +144,13 @@ void AChaosImpactPlayerController::SetupInputComponent()
 		&AChaosImpactPlayerController::TogglePauseMenu).bExecuteWhenPaused = true;
 	InputComponent->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this,
 		&AChaosImpactPlayerController::TogglePauseMenu).bExecuteWhenPaused = true;
+	InputComponent->BindKey(EKeys::T, IE_Pressed, this,
+		&AChaosImpactPlayerController::ToggleTrainingOverlay);
+	InputComponent->BindKey(EKeys::Hyphen, IE_Pressed, this,
+		&AChaosImpactPlayerController::ToggleTrainingOverlay);
+	// Special_Left maps to Minus on Switch, Create on DualSense and View on Xbox pads.
+	InputComponent->BindKey(EKeys::Gamepad_Special_Left, IE_Pressed, this,
+		&AChaosImpactPlayerController::ToggleTrainingOverlay);
 
 	// only add IMCs for local player controllers
 	if (IsLocalPlayerController())
@@ -135,6 +190,14 @@ void AChaosImpactPlayerController::SetupInputComponent()
 
 bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+	// Input mode is deliberately exclusive. In one-player keyboard mode the first
+	// connected pad must not also move P1; in pad mode stray keyboard/mouse input
+	// must not affect the match. The keyboard/mouse pair may belong to any one
+	// local player, based on the order devices joined on the assignment screen.
+	if (!IsKeyAllowedForThisPlayer(Params.Key))
+	{
+		return true;
+	}
 	const bool bHandledByBase = Super::InputKey(Params);
 	if (Params.Key == EKeys::LeftMouseButton && IsGameplayActive())
 	{
@@ -150,6 +213,162 @@ bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 		}
 	}
 	return bHandledByBase;
+}
+
+bool AChaosImpactPlayerController::IsKeyAllowedForThisPlayer(const FKey Key) const
+{
+	if (!IsLocalPlayerController())
+	{
+		return true;
+	}
+	return Key.IsGamepadKey() == IsUsingGamepad();
+}
+
+void AChaosImpactPlayerController::ApplyLocalInputRouting()
+{
+	// Devices are paired explicitly from the join screen. The legacy automatic
+	// offset would move them again and is therefore always disabled.
+	if (UGameMapsSettings* MapsSettings = GetMutableDefault<UGameMapsSettings>())
+	{
+		MapsSettings->bOffsetPlayerGamepadIds = false;
+	}
+	// PIE keeps the editor process alive between runs, so also update the live CDO.
+	// Without platform-user filtering, every Enhanced Input local-player subsystem
+	// receives every pad and P2 can inherit P1's held/stale analog state.
+	if (UInputSettings* InputSettings = GetMutableDefault<UInputSettings>())
+	{
+		InputSettings->bFilterInputByPlatformUser = true;
+	}
+}
+
+FString AChaosImpactPlayerController::GetLocalInputAssignmentText(const int32 PlayerCount) const
+{
+	const int32 Players = FMath::Clamp(
+		PlayerCount == INDEX_NONE ? RequestedLocalPlayerCount : PlayerCount, 1, 4);
+	TArray<FString> Assignments;
+	Assignments.Reserve(Players);
+	for (int32 PlayerIndex = 0; PlayerIndex < Players; ++PlayerIndex)
+	{
+		if (PlayerIndex == RequestedKeyboardPlayerIndex)
+		{
+			Assignments.Add(TEXT("1P  キーボード＋マウス"));
+		}
+		else
+		{
+			const int32 PadIndex = GetPadIndexForPlayer(PlayerIndex);
+			Assignments.Add(FString::Printf(TEXT("%dP  %s"), PlayerIndex + 1,
+				JoinedInputDeviceIds.IsValidIndex(PadIndex)
+					? TEXT("コントローラー READY") : TEXT("ボタンを押して参加")));
+		}
+	}
+	return FString::Join(Assignments, TEXT("   /   "));
+}
+
+FString AChaosImpactPlayerController::GetLocalInputAssignmentForPlayer(const int32 PlayerIndex) const
+{
+	if (PlayerIndex < 0 || PlayerIndex >= RequestedLocalPlayerCount)
+	{
+		return FString();
+	}
+	if (PlayerIndex == RequestedKeyboardPlayerIndex)
+	{
+		return TEXT("キーボード ＋ マウス");
+	}
+	const int32 PadIndex = GetPadIndexForPlayer(PlayerIndex);
+	return JoinedInputDeviceIds.IsValidIndex(PadIndex)
+		? TEXT("コントローラー  READY") : TEXT("何かボタンを押してください");
+}
+
+bool AChaosImpactPlayerController::AreControllerAssignmentsComplete() const
+{
+	return GetAssignedPlayerCount() >= RequestedLocalPlayerCount;
+}
+
+bool AChaosImpactPlayerController::IsInputAssignedToPlayer(const int32 PlayerIndex) const
+{
+	if (PlayerIndex < 0 || PlayerIndex >= RequestedLocalPlayerCount)
+	{
+		return false;
+	}
+	if (PlayerIndex == RequestedKeyboardPlayerIndex)
+	{
+		return true;
+	}
+	const int32 PadIndex = GetPadIndexForPlayer(PlayerIndex);
+	return PadIndex >= 0 && JoinedInputDeviceIds.IsValidIndex(PadIndex);
+}
+
+int32 AChaosImpactPlayerController::GetPadIndexForPlayer(const int32 PlayerIndex) const
+{
+	return PlayerIndex - (RequestedKeyboardPlayerIndex != INDEX_NONE
+		&& RequestedKeyboardPlayerIndex < PlayerIndex ? 1 : 0);
+}
+
+void AChaosImpactPlayerController::ResetControllerJoinSequence()
+{
+	JoinedInputDeviceIds.Reset();
+	JoinedLegacyControllerIds.Reset();
+	RequestedKeyboardPlayerIndex = bRequestedPrimaryUsesGamepad ? INDEX_NONE : 0;
+}
+
+bool AChaosImpactPlayerController::RegisterControllerJoin(
+	const int32 InputDeviceId, const int32 LegacyControllerId)
+{
+	if (CurrentScreen != EChaosImpactScreen::ControllerAssignment || InputDeviceId < 0)
+	{
+		return false;
+	}
+	if (JoinedInputDeviceIds.Contains(InputDeviceId))
+	{
+		return true;
+	}
+	if (GetAssignedPlayerCount() >= RequestedLocalPlayerCount)
+	{
+		return true;
+	}
+
+	JoinedInputDeviceIds.Add(InputDeviceId);
+	JoinedLegacyControllerIds.Add(LegacyControllerId);
+	if (MenuWidget)
+	{
+		MenuWidget->RefreshEntries();
+	}
+	return true;
+}
+
+bool AChaosImpactPlayerController::RegisterKeyboardMouseJoin()
+{
+	if (CurrentScreen != EChaosImpactScreen::ControllerAssignment)
+	{
+		return false;
+	}
+	if (RequestedKeyboardPlayerIndex != INDEX_NONE)
+	{
+		return true;
+	}
+	if (GetAssignedPlayerCount() >= RequestedLocalPlayerCount)
+	{
+		return true;
+	}
+
+	RequestedKeyboardPlayerIndex = GetAssignedPlayerCount();
+	bRequestedPrimaryUsesGamepad = RequestedKeyboardPlayerIndex != 0;
+	if (MenuWidget)
+	{
+		MenuWidget->RefreshEntries();
+	}
+	return true;
+}
+
+void AChaosImpactPlayerController::BuildFallbackControllerAssignments()
+{
+	const int32 RequiredPads = RequestedLocalPlayerCount
+		- (RequestedKeyboardPlayerIndex != INDEX_NONE ? 1 : 0);
+	for (int32 PadIndex = JoinedInputDeviceIds.Num(); PadIndex < RequiredPads; ++PadIndex)
+	{
+		JoinedInputDeviceIds.Add(PadIndex);
+		JoinedLegacyControllerIds.Add(PadIndex);
+	}
 }
 
 void AChaosImpactPlayerController::HandleThrowPressed()
@@ -187,6 +406,7 @@ void AChaosImpactPlayerController::OnPossess(APawn* InPawn)
 	{
 		ApplyScreenInput();
 	}
+	EnsureTrainingArena();
 	EnsureTrainingBallSpawners();
 	EnsureTrainingTargets();
 }
@@ -194,6 +414,7 @@ void AChaosImpactPlayerController::OnPossess(APawn* InPawn)
 void AChaosImpactPlayerController::ApplyScreenInput()
 {
 	const bool bPlaying = IsGameplayActive();
+	const bool bLiveTrainingOverlay = CurrentScreen == EChaosImpactScreen::TrainingOverlay;
 	if (AChaosImpactCharacter* PlayerCharacter = Cast<AChaosImpactCharacter>(GetPawn()))
 	{
 		PlayerCharacter->SetGameplayUIVisible(bPlaying);
@@ -206,10 +427,13 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 	{
 		PlayerInput->FlushPressedKeys();
 	}
-	bShowMouseCursor = IsPrimaryLocalPlayerController();
+	bShowMouseCursor = !IsUsingGamepad();
+	bEnableClickEvents = bShowMouseCursor;
+	bEnableMouseOverEvents = bShowMouseCursor;
 	DefaultMouseCursor = bPlaying ? EMouseCursor::Crosshairs : EMouseCursor::Default;
 	CurrentMouseCursor = DefaultMouseCursor;
-	SetPause(!bPlaying);
+	// The training panel deliberately leaves world time and ball physics alive.
+	SetPause(!bPlaying && !bLiveTrainingOverlay);
 	if (MobileControlsWidget)
 	{
 		MobileControlsWidget->SetVisibility(bPlaying ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
@@ -220,6 +444,14 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 		// Do not sacrifice the first throw click when the viewport captures the mouse again.
 		GameInputMode.SetConsumeCaptureMouseDown(false);
 		SetInputMode(GameInputMode);
+		// SetInputMode only focuses the viewport for P1's Slate user. Pads owned by
+		// P2-P4 are routed through their own Slate users, and a user without viewport
+		// focus drops every button/stick event before UGameViewportClient::InputKey.
+		// Focusing all users also becomes the default for users created later.
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().SetAllUserFocusToGameViewport();
+		}
 	}
 	else if (MenuWidget)
 	{
@@ -242,6 +474,15 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 		ResumeGameplay();
 		return;
 	}
+	if (NewScreen == EChaosImpactScreen::TrainingOverlay)
+	{
+		OpenTrainingOverlay();
+		return;
+	}
+	if (bTrainingOverlayPresentationActive)
+	{
+		ExitTrainingOverlayPresentation();
+	}
 	// A pause screen is only reachable from an active play session.
 	if (NewScreen == EChaosImpactScreen::Pause && !IsGameplayActive()
 		&& CurrentScreen != EChaosImpactScreen::TrainingSettings)
@@ -260,8 +501,32 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 
 void AChaosImpactPlayerController::TogglePauseMenu()
 {
+	// Any active local controller may request pause, but the primary controller
+	// owns the single full-viewport pause widget and applies the world pause.
+	if (!IsPrimaryLocalPlayerController())
+	{
+		if (UGameInstance* GameInstance = GetGameInstance();
+			GameInstance && !GameInstance->GetLocalPlayers().IsEmpty())
+		{
+			if (ULocalPlayer* PrimaryPlayer = GameInstance->GetLocalPlayers()[0])
+			{
+				if (AChaosImpactPlayerController* PrimaryController =
+					Cast<AChaosImpactPlayerController>(PrimaryPlayer->GetPlayerController(GetWorld())))
+				{
+					PrimaryController->TogglePauseMenu();
+				}
+			}
+		}
+		return;
+	}
 	if (CurrentScreen == EChaosImpactScreen::TrainingSettings)
 	{
+		ShowMenuScreen(EChaosImpactScreen::Pause);
+		return;
+	}
+	if (CurrentScreen == EChaosImpactScreen::TrainingOverlay)
+	{
+		CloseTrainingOverlay();
 		ShowMenuScreen(EChaosImpactScreen::Pause);
 		return;
 	}
@@ -286,6 +551,94 @@ void AChaosImpactPlayerController::ResumeGameplay()
 	ApplyScreenInput();
 }
 
+void AChaosImpactPlayerController::ToggleTrainingOverlay()
+{
+	// Unlike pause, this menu belongs only to P1. Its widget also spans the complete
+	// viewport, so it remains a single global prompt/menu during local multiplayer.
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending)
+	{
+		return;
+	}
+	if (CurrentScreen == EChaosImpactScreen::TrainingOverlay)
+	{
+		CloseTrainingOverlay();
+	}
+	else if (IsGameplayActive())
+	{
+		OpenTrainingOverlay();
+	}
+}
+
+void AChaosImpactPlayerController::OpenTrainingOverlay()
+{
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget
+		|| (CurrentScreen != EChaosImpactScreen::Playing
+			&& CurrentScreen != EChaosImpactScreen::ControllerAssignment))
+	{
+		return;
+	}
+
+	CurrentScreen = EChaosImpactScreen::TrainingOverlay;
+	bTrainingOverlayPresentationActive = true;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(true);
+	}
+	SetTrainingCharactersFrozen(true);
+	if (AChaosImpactCharacter* PrimaryCharacter = Cast<AChaosImpactCharacter>(GetPawn()))
+	{
+		PrimaryCharacter->SetTrainingMenuCameraActive(true);
+	}
+	MenuWidget->ShowScreen(CurrentScreen);
+	ApplyScreenInput();
+}
+
+void AChaosImpactPlayerController::CloseTrainingOverlay()
+{
+	if (CurrentScreen != EChaosImpactScreen::TrainingOverlay || bTravelPending)
+	{
+		return;
+	}
+	ExitTrainingOverlayPresentation();
+	CurrentScreen = EChaosImpactScreen::Playing;
+	if (MenuWidget)
+	{
+		MenuWidget->ShowScreen(CurrentScreen);
+	}
+	ApplyScreenInput();
+}
+
+void AChaosImpactPlayerController::ExitTrainingOverlayPresentation()
+{
+	if (!bTrainingOverlayPresentationActive)
+	{
+		return;
+	}
+	bTrainingOverlayPresentationActive = false;
+	SetTrainingCharactersFrozen(false);
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		It->SetTrainingMenuCameraActive(false);
+	}
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+}
+
+void AChaosImpactPlayerController::SetTrainingCharactersFrozen(const bool bFrozen)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		It->SetTrainingMenuFrozen(bFrozen);
+		It->SetGameplayUIVisible(!bFrozen);
+	}
+}
+
 void AChaosImpactPlayerController::StartTraining()
 {
 	StartTrainingWithPlayers(1);
@@ -298,7 +651,30 @@ void AChaosImpactPlayerController::StartTrainingWithPlayers(const int32 LocalPla
 		return;
 	}
 	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, 4);
+	BuildFallbackControllerAssignments();
 	OpenTrainingLevel(false);
+}
+
+void AChaosImpactPlayerController::PrepareTrainingControllerAssignment(const int32 LocalPlayerCount)
+{
+	if (bTravelPending || IsGameplayActive() || CurrentScreen == EChaosImpactScreen::Title)
+	{
+		return;
+	}
+	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, 4);
+	ResetControllerJoinSequence();
+	bControllerAssignmentKeepsFlightMode = false;
+	ControllerAssignmentReturnScreen = EChaosImpactScreen::TrainingSetup;
+	ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
+}
+
+void AChaosImpactPlayerController::ConfirmControllerAssignments()
+{
+	if (CurrentScreen == EChaosImpactScreen::ControllerAssignment && !bTravelPending
+		&& AreControllerAssignmentsComplete())
+	{
+		OpenTrainingLevel(bControllerAssignmentKeepsFlightMode);
+	}
 }
 
 void AChaosImpactPlayerController::RetryTraining()
@@ -315,6 +691,15 @@ void AChaosImpactPlayerController::CycleTrainingPlayerCount()
 	if (bTrainingMode)
 	{
 		RequestedLocalPlayerCount = RequestedLocalPlayerCount % 4 + 1;
+		if (CurrentScreen == EChaosImpactScreen::TrainingOverlay)
+		{
+			if (AChaosImpactGameMode* GameMode = GetWorld()
+				? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+			{
+				GameMode->SetTrainingLocalPlayerCountLive(RequestedLocalPlayerCount);
+				SetTrainingCharactersFrozen(true);
+			}
+		}
 	}
 }
 
@@ -323,6 +708,10 @@ void AChaosImpactPlayerController::ToggleTrainingTargets()
 	if (bTrainingMode)
 	{
 		bTrainingTargetsEnabled = !bTrainingTargetsEnabled;
+		if (CurrentScreen == EChaosImpactScreen::TrainingOverlay)
+		{
+			EnsureTrainingTargets();
+		}
 	}
 }
 
@@ -330,15 +719,33 @@ void AChaosImpactPlayerController::ToggleTrainingCPU()
 {
 	if (bTrainingMode)
 	{
-		bTrainingCPUEnabled = !bTrainingCPUEnabled;
+		TrainingCPUCount = (TrainingCPUCount + 1) % 5;
+		if (CurrentScreen == EChaosImpactScreen::TrainingOverlay)
+		{
+			if (AChaosImpactGameMode* GameMode = GetWorld()
+				? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+			{
+				GameMode->SetTrainingCPUCountLive(TrainingCPUCount);
+				SetTrainingCharactersFrozen(true);
+			}
+		}
 	}
+}
+
+void AChaosImpactPlayerController::TogglePrimaryInputMode()
+{
+	bRequestedPrimaryUsesGamepad = !bRequestedPrimaryUsesGamepad;
+	ResetControllerJoinSequence();
 }
 
 void AChaosImpactPlayerController::ApplyTrainingSettings()
 {
 	if (bTrainingMode && !bTravelPending)
 	{
-		OpenTrainingLevel(true);
+		bControllerAssignmentKeepsFlightMode = true;
+		ControllerAssignmentReturnScreen = CurrentScreen == EChaosImpactScreen::TrainingOverlay
+			? EChaosImpactScreen::TrainingOverlay : EChaosImpactScreen::TrainingSettings;
+		ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
 	}
 }
 
@@ -357,6 +764,7 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode)
 		return;
 	}
 	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
 	SetPause(false);
 	const bool bOpenWithStraight = bKeepFlightMode
 		&& BallFlightMode == EChaosImpactBallFlightMode::Straight;
@@ -366,9 +774,21 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode)
 	{
 		Options += TEXT("?CITargets=0");
 	}
-	if (bTrainingCPUEnabled)
+	if (TrainingCPUCount > 0)
 	{
-		Options += TEXT("?CICPU=1");
+		Options += FString::Printf(TEXT("?CICPUCount=%d"), FMath::Clamp(TrainingCPUCount, 0, 4));
+	}
+	Options += FString::Printf(TEXT("?CIKeyboardPlayer=%d"), RequestedKeyboardPlayerIndex);
+	BuildFallbackControllerAssignments();
+	for (int32 PadIndex = 0; PadIndex < JoinedInputDeviceIds.Num(); ++PadIndex)
+	{
+		Options += FString::Printf(TEXT("?CIPadDevice%d=%d"),
+			PadIndex, JoinedInputDeviceIds[PadIndex]);
+		if (JoinedLegacyControllerIds.IsValidIndex(PadIndex))
+		{
+			Options += FString::Printf(TEXT("?CIPadController%d=%d"),
+				PadIndex, JoinedLegacyControllerIds[PadIndex]);
+		}
 	}
 	if (bOpenWithStraight)
 	{
@@ -376,6 +796,40 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode)
 	}
 	// Reloading clears balls, actors, health, stamina and position.
 	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true, Options);
+}
+
+void AChaosImpactPlayerController::EnsureTrainingArena()
+{
+	if (!bTrainingMode || !IsPrimaryLocalPlayerController() || !HasAuthority()
+		|| !GetWorld() || !GetPawn() || IsValid(TrainingArena))
+	{
+		return;
+	}
+	for (TActorIterator<AChaosImpactTrainingArena> It(GetWorld()); It; ++It)
+	{
+		TrainingArena = *It;
+		return;
+	}
+
+	FVector ArenaOrigin = GetPawn()->GetActorLocation();
+	FHitResult GroundHit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ChaosImpactTrainingArenaGround), false,
+		GetPawn());
+	if (GetWorld()->LineTraceSingleByChannel(GroundHit,
+		ArenaOrigin + FVector::UpVector * 150.0f,
+		ArenaOrigin - FVector::UpVector * 800.0f, ECC_Visibility, QueryParams))
+	{
+		ArenaOrigin.Z = GroundHit.ImpactPoint.Z + 2.0f;
+	}
+	else if (const ACharacter* CharacterPawn = Cast<ACharacter>(GetPawn()))
+	{
+		ArenaOrigin.Z -= CharacterPawn->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	}
+
+	FActorSpawnParameters Parameters;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	TrainingArena = GetWorld()->SpawnActor<AChaosImpactTrainingArena>(
+		AChaosImpactTrainingArena::StaticClass(), ArenaOrigin, FRotator::ZeroRotator, Parameters);
 }
 
 void AChaosImpactPlayerController::EnsureTrainingBallSpawners()
@@ -399,9 +853,13 @@ void AChaosImpactPlayerController::EnsureTrainingBallSpawners()
 	const FVector Origin = GetPawn()->GetActorLocation();
 	const FVector Offsets[] =
 	{
-		FVector(430.0f, 0.0f, 0.0f),
-		FVector(-330.0f, 370.0f, 0.0f),
-		FVector(-330.0f, -370.0f, 0.0f)
+		FVector(420.0f, 0.0f, 0.0f),
+		FVector(-620.0f, 680.0f, 0.0f),
+		FVector(-620.0f, -680.0f, 0.0f),
+		FVector(1450.0f, 1300.0f, 0.0f),
+		FVector(1900.0f, -1550.0f, 0.0f),
+		FVector(-1900.0f, 1500.0f, 0.0f),
+		FVector(-2750.0f, -1100.0f, 0.0f)
 	};
 	for (const FVector& Offset : Offsets)
 	{
@@ -433,17 +891,29 @@ void AChaosImpactPlayerController::EnsureTrainingTargets()
 	{
 		for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
 		{
-			It->Destroy();
+			It->SetTrainingEnabled(false);
+			TrainingTargets.AddUnique(*It);
 		}
-		TrainingTargets.Reset();
 		return;
 	}
+	TrainingTargets.RemoveAll([](const TObjectPtr<AChaosImpactTrainingTarget>& Target)
+	{
+		return !IsValid(Target);
+	});
 	if (!TrainingTargets.IsEmpty())
 	{
+		for (AChaosImpactTrainingTarget* Target : TrainingTargets)
+		{
+			if (IsValid(Target))
+			{
+				Target->SetTrainingEnabled(true);
+			}
+		}
 		return;
 	}
 	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
 	{
+		It->SetTrainingEnabled(true);
 		TrainingTargets.Add(*It);
 	}
 	// If the designer placed any targets in the map, use that authored set as-is.
@@ -463,11 +933,14 @@ void AChaosImpactPlayerController::EnsureTrainingTargets()
 
 	const FTargetSetup Setups[] =
 	{
-		{FVector(680.0f, 0.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
-		{FVector(420.0f, -620.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
-		{FVector(420.0f, 620.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 120.0f, 0.28f, 0.0f},
-		{FVector(-100.0f, -700.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 110.0f, 0.38f, 0.35f},
-		{FVector(-100.0f, 700.0f, 0.0f), EChaosImpactTargetMotion::ForwardBack, 120.0f, 0.34f, 0.65f}
+		{FVector(3000.0f, 0.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
+		{FVector(2250.0f, 1660.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
+		{FVector(-2450.0f, -1660.0f, 0.0f), EChaosImpactTargetMotion::Stationary, 0.0f, 0.3f, 0.0f},
+		{FVector(2200.0f, -1900.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 250.0f, 0.26f, 0.0f},
+		{FVector(650.0f, 2050.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 260.0f, 0.31f, 0.3f},
+		{FVector(-1250.0f, 1800.0f, 0.0f), EChaosImpactTargetMotion::SideToSide, 220.0f, 0.36f, 0.58f},
+		{FVector(-2250.0f, 1050.0f, 0.0f), EChaosImpactTargetMotion::ForwardBack, 240.0f, 0.3f, 0.15f},
+		{FVector(1500.0f, 800.0f, 0.0f), EChaosImpactTargetMotion::ForwardBack, 190.0f, 0.4f, 0.72f}
 	};
 
 	const FVector Origin = GetPawn()->GetActorLocation();
@@ -505,7 +978,16 @@ void AChaosImpactPlayerController::RemoveSecondaryLocalPlayers()
 	}
 	while (GameInstance->GetLocalPlayers().Num() > 1)
 	{
-		GameInstance->RemoveLocalPlayer(GameInstance->GetLocalPlayers().Last());
+		ULocalPlayer* RemovedPlayer = GameInstance->GetLocalPlayers().Last();
+		if (APlayerController* RemovedController = RemovedPlayer
+			? RemovedPlayer->GetPlayerController(GetWorld()) : nullptr)
+		{
+			UGameplayStatics::RemovePlayer(RemovedController, true);
+		}
+		else
+		{
+			GameInstance->RemoveLocalPlayer(RemovedPlayer);
+		}
 	}
 	RequestedLocalPlayerCount = 1;
 }

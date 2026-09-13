@@ -30,6 +30,27 @@
 		{
 			"Name": "GameplayStateTree",
 			"Enabled": true
+		},
+		{
+			"Name": "GameInputWindows",
+			"Enabled": false,
+			"PlatformAllowList": [
+				"Win64"
+			]
+		},
+		{
+			"Name": "XInputDevice",
+			"Enabled": true,
+			"PlatformAllowList": [
+				"Win64"
+			]
+		},
+		{
+			"Name": "JoyShockLibrary4Unreal",
+			"Enabled": true,
+			"PlatformAllowList": [
+				"Win64"
+			]
 		}
 	]
 }

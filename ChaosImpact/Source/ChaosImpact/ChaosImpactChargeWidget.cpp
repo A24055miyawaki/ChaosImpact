@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactCharacter.h"
+#include "ChaosImpactPaint.h"
 
 #include "Blueprint/WidgetTree.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/Border.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -13,27 +16,53 @@
 #include "Components/ProgressBar.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
+
+namespace
+{
+	// Bottom-right ball inventory canvas, in widget units. Shared by the UMG layout and
+	// the painted pickup ripple so both stay aligned.
+	const FVector2D InventoryOffset(-24.0f, -22.0f);
+	const FVector2D InventorySize(240.0f, 128.0f);
+	const FVector2D BallSlotPositions[] = {FVector2D(17.0f, 30.0f), FVector2D(94.0f, 7.0f)};
+	const float BallSlotSize = 86.0f;
+	const float BallPickupSeconds = 0.32f;
+}
 
 void UChaosImpactChargeWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
+	ForceVolatile(true);
 
 	if (!WidgetTree || WidgetTree->RootWidget)
 	{
 		return;
 	}
 
-	UCanvasPanel* RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("ChargeRoot"));
+	RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("ChargeRoot"));
 	WidgetTree->RootWidget = RootCanvas;
+
+	PersonalAimGuideBars.Reserve(3);
+	for (int32 BarIndex = 0; BarIndex < 3; ++BarIndex)
+	{
+		UBorder* Bar = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(),
+			*FString::Printf(TEXT("PersonalAimGuide_%d"), BarIndex));
+		Bar->SetBrushColor(FLinearColor(0.12f, 0.93f, 1.0f, 0.94f));
+		Bar->SetRenderTransformPivot(FVector2D(0.0f, 0.5f));
+		Bar->SetVisibility(ESlateVisibility::Collapsed);
+		UCanvasPanelSlot* BarSlot = RootCanvas->AddChildToCanvas(Bar);
+		BarSlot->SetPosition(FVector2D::ZeroVector);
+		BarSlot->SetSize(FVector2D(1.0f, BarIndex == 0 ? 6.0f : 7.0f));
+		BarSlot->SetZOrder(40);
+		PersonalAimGuideBars.Add(Bar);
+	}
 
 	// A strong dark seam keeps adjacent cameras readable, while the narrow blue
 	// highlight gives the divider a deliberate in-game finish.
-	auto AddDivider = [this, RootCanvas](const FName Name, const bool bVertical,
+	auto AddDivider = [this](const FName Name, const bool bVertical,
 		const float Thickness, const FLinearColor& Color) -> UBorder*
 	{
 		UBorder* Divider = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), Name);
@@ -140,8 +169,8 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 	UCanvasPanelSlot* InventorySlot = RootCanvas->AddChildToCanvas(InventoryCanvas);
 	InventorySlot->SetAnchors(FAnchors(1.0f, 1.0f));
 	InventorySlot->SetAlignment(FVector2D(1.0f, 1.0f));
-	InventorySlot->SetPosition(FVector2D(-24.0f, -22.0f));
-	InventorySlot->SetSize(FVector2D(240.0f, 128.0f));
+	InventorySlot->SetPosition(InventoryOffset);
+	InventorySlot->SetSize(InventorySize);
 
 	// Two sharp strokes establish direction without putting the HUD in another box.
 	for (int32 StrokeIndex = 0; StrokeIndex < 2; ++StrokeIndex)
@@ -162,17 +191,18 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 	for (int32 SlotIndex = 0; SlotIndex < 2; ++SlotIndex)
 	{
 		USizeBox* SlotSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-		SlotSize->SetWidthOverride(86.0f);
-		SlotSize->SetHeightOverride(86.0f);
+		SlotSize->SetWidthOverride(BallSlotSize);
+		SlotSize->SetHeightOverride(BallSlotSize);
 		UCanvasPanelSlot* BallCanvasSlot = InventoryCanvas->AddChildToCanvas(SlotSize);
-		BallCanvasSlot->SetPosition(SlotIndex == 0 ? FVector2D(17.0f, 30.0f) : FVector2D(94.0f, 7.0f));
-		BallCanvasSlot->SetSize(FVector2D(86.0f));
+		BallCanvasSlot->SetPosition(BallSlotPositions[SlotIndex]);
+		BallCanvasSlot->SetSize(FVector2D(BallSlotSize));
 
 		UOverlay* SlotOverlay = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 		SlotSize->SetContent(SlotOverlay);
 
 		UBorder* BallSlot = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
 		BallSlot->SetPadding(FMargin(0.0f));
+		BallSlot->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 		if (UOverlaySlot* RingSlot = SlotOverlay->AddChildToOverlay(BallSlot))
 		{
 			RingSlot->SetHorizontalAlignment(HAlign_Fill);
@@ -185,6 +215,7 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 		BallIcon->SetJustification(ETextJustify::Center);
 		BallIcon->SetShadowOffset(FVector2D(4.0f, 5.0f));
 		BallIcon->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.88f));
+		BallIcon->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 		FSlateFontInfo IconFont = BallIcon->GetFont();
 		IconFont.Size = 58;
 		IconFont.OutlineSettings.OutlineSize = 2;
@@ -231,6 +262,7 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 	InventoryCountLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.56f, 0.68f, 1.0f)));
 	InventoryCountLabel->SetShadowOffset(FVector2D(3.0f, 3.0f));
 	InventoryCountLabel->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f));
+	InventoryCountLabel->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 	FSlateFontInfo CountFont = InventoryCountLabel->GetFont();
 	CountFont.Size = 27;
 	CountFont.OutlineSettings.OutlineSize = 2;
@@ -247,7 +279,109 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	RefreshPersonalAimGuide();
 	RefreshSplitScreenDividers();
+	RefreshBallPickupAnimation();
+}
+
+void UChaosImpactChargeWidget::RefreshBallPickupAnimation()
+{
+	const float Age = static_cast<float>(FPlatformTime::Seconds() - BallGainedAt);
+	const float Kick = Age < BallPickupSeconds
+		? 1.0f - ChaosImpactPaint::EaseOut(Age / BallPickupSeconds) : 0.0f;
+	for (int32 SlotIndex = 0; SlotIndex < BallSlots.Num(); ++SlotIndex)
+	{
+		const bool bFilled = SlotIndex < CarriedBalls;
+		const float Pop = SlotIndex == BallGainedSlot ? 0.22f * Kick : 0.0f;
+		if (UBorder* InventorySlot = BallSlots[SlotIndex])
+		{
+			InventorySlot->SetRenderScale(FVector2D((bFilled ? 1.0f : 0.92f) + Pop));
+		}
+		if (UTextBlock* Icon = BallIcons.IsValidIndex(SlotIndex) ? BallIcons[SlotIndex] : nullptr)
+		{
+			Icon->SetRenderScale(FVector2D(1.0f + Pop * 1.4f));
+		}
+	}
+	if (InventoryCountLabel)
+	{
+		InventoryCountLabel->SetRenderScale(FVector2D(1.0f + 0.3f * Kick));
+	}
+}
+
+void UChaosImpactChargeWidget::RefreshPersonalAimGuide()
+{
+	APlayerController* PlayerController = GetOwningPlayer();
+	AChaosImpactCharacter* Character = PlayerController
+		? Cast<AChaosImpactCharacter>(PlayerController->GetPawn()) : nullptr;
+	const bool bShouldShow = Character && Character->IsChargingThrow()
+		&& !Character->IsEliminated() && PersonalAimGuideBars.Num() >= 3;
+	for (UBorder* Bar : PersonalAimGuideBars)
+	{
+		if (Bar)
+		{
+			Bar->SetVisibility(bShouldShow
+				? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		}
+	}
+	if (!bShouldShow)
+	{
+		return;
+	}
+
+	const FVector Direction = Character->GetAimDirection().GetSafeNormal2D();
+	const FVector StartWorld = Character->GetAimGuideStartWorldLocation();
+	const FVector EndWorld = StartWorld + Direction * Character->GetAimGuideLength();
+	FVector2D StartScreen;
+	FVector2D EndScreen;
+	// This projection removes DPI and quality scaling and returns coordinates
+	// relative to this player's sub-viewport. It remains aligned after resizing
+	// and for every split-screen layout.
+	if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(
+		PlayerController, StartWorld, StartScreen, true)
+		|| !UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(
+			PlayerController, EndWorld, EndScreen, true))
+	{
+		for (UBorder* Bar : PersonalAimGuideBars)
+		{
+			Bar->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		return;
+	}
+
+	auto PlaceBar = [](UBorder* Bar, const FVector2D& Start, const FVector2D& End,
+		const float Thickness)
+	{
+		if (!Bar)
+		{
+			return;
+		}
+		const FVector2D Delta = End - Start;
+		if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(Bar->Slot))
+		{
+			Slot->SetPosition(Start);
+			Slot->SetSize(FVector2D(FMath::Max(Delta.Length(), 1.0f), Thickness));
+		}
+		Bar->SetRenderTransformAngle(FMath::RadiansToDegrees(FMath::Atan2(Delta.Y, Delta.X)));
+	};
+
+	PlaceBar(PersonalAimGuideBars[0], StartScreen, EndScreen, 6.0f);
+	const FVector2D ScreenDirection = (EndScreen - StartScreen).GetSafeNormal();
+	const float HeadLength = 42.0f;
+	for (int32 WingIndex = 0; WingIndex < 2; ++WingIndex)
+	{
+		const float WingRadians = FMath::DegreesToRadians(WingIndex == 0 ? 145.0f : -145.0f);
+		const FVector2D WingDirection(
+			ScreenDirection.X * FMath::Cos(WingRadians) - ScreenDirection.Y * FMath::Sin(WingRadians),
+			ScreenDirection.X * FMath::Sin(WingRadians) + ScreenDirection.Y * FMath::Cos(WingRadians));
+		PlaceBar(PersonalAimGuideBars[WingIndex + 1], EndScreen,
+			EndScreen + WingDirection * HeadLength, 7.0f);
+	}
+}
+
+bool UChaosImpactChargeWidget::IsAimGuideVisible() const
+{
+	return PersonalAimGuideBars.Num() > 0 && PersonalAimGuideBars[0]
+		&& PersonalAimGuideBars[0]->GetVisibility() != ESlateVisibility::Collapsed;
 }
 
 void UChaosImpactChargeWidget::RefreshSplitScreenDividers()
@@ -330,6 +464,17 @@ void UChaosImpactChargeWidget::SetCharging(const bool bCharging)
 	}
 }
 
+void UChaosImpactChargeWidget::SetHealth(const float CurrentHealth, const float MaxHealth)
+{
+	const float Clamped = FMath::Clamp(CurrentHealth, 0.0f, FMath::Max(MaxHealth, 1.0f));
+	if (bHealthKnown && Clamped < Health - KINDA_SMALL_NUMBER)
+	{
+		HitAt = FPlatformTime::Seconds();
+	}
+	Health = Clamped;
+	bHealthKnown = true;
+}
+
 void UChaosImpactChargeWidget::SetStamina(const float CurrentStamina, const float MaxStamina)
 {
 	const float SafeMaximum = FMath::Max(MaxStamina, 1.0f);
@@ -354,6 +499,12 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 {
 	const int32 ClampedMaximum = FMath::Clamp(MaximumBalls, 0, BallIcons.Num());
 	const int32 ClampedCurrent = FMath::Clamp(CurrentBalls, 0, ClampedMaximum);
+	if (ClampedCurrent > CarriedBalls)
+	{
+		BallGainedAt = FPlatformTime::Seconds();
+		BallGainedSlot = ClampedCurrent - 1;
+	}
+	CarriedBalls = ClampedCurrent;
 	if (InventoryCountLabel)
 	{
 		InventoryCountLabel->SetText(FText::FromString(FString::Printf(TEXT("× %d"), ClampedCurrent)));
@@ -383,7 +534,6 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 				: FLinearColor(0.15f, 0.19f, 0.28f, 0.82f);
 			InventorySlot->SetBrush(FSlateRoundedBoxBrush(
 				FillColor, RingColor, bFilled ? 4.0f : 2.0f));
-			InventorySlot->SetRenderScale(bFilled ? FVector2D(1.0f) : FVector2D(0.92f));
 		}
 		if (UBorder* Accent = BallSlotAccents.IsValidIndex(SlotIndex)
 			? BallSlotAccents[SlotIndex] : nullptr)
@@ -394,4 +544,176 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 				bFilled ? FLinearColor::White : FLinearColor(0.18f, 0.22f, 0.3f, 1.0f), 1.0f));
 		}
 	}
+	RefreshBallPickupAnimation();
+}
+
+void UChaosImpactChargeWidget::ShowRespawn(const FString& DefeatedBy, const float TotalSeconds)
+{
+	DefeatedByName = DefeatedBy;
+	bRespawnVisible = true;
+	RespawnShownAt = FPlatformTime::Seconds();
+	CountdownNumber = INDEX_NONE;
+	UpdateRespawn(TotalSeconds, TotalSeconds);
+}
+
+void UChaosImpactChargeWidget::UpdateRespawn(const float RemainingSeconds, const float TotalSeconds)
+{
+	RespawnTotal = FMath::Max(TotalSeconds, UE_SMALL_NUMBER);
+	RespawnRemaining = FMath::Clamp(RemainingSeconds, 0.0f, RespawnTotal);
+	const int32 Number = FMath::Max(1, FMath::CeilToInt(RespawnRemaining));
+	if (Number != CountdownNumber)
+	{
+		CountdownNumber = Number;
+		CountdownChangedAt = FPlatformTime::Seconds();
+	}
+}
+
+void UChaosImpactChargeWidget::HideRespawn()
+{
+	bRespawnVisible = false;
+}
+
+void UChaosImpactChargeWidget::ShowKnockout(const FString& VictimName)
+{
+	const double Now = FPlatformTime::Seconds();
+	KnockoutStreak = Now - KnockoutAt < 4.0 ? KnockoutStreak + 1 : 1;
+	KnockoutAt = Now;
+	KnockoutVictim = VictimName;
+}
+
+int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
+	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
+	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
+{
+	using namespace ChaosImpactPaint;
+
+	const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
+		OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	if (Size.X < 1.0f || Size.Y < 1.0f)
+	{
+		return BaseLayer;
+	}
+	const double Clock = FPlatformTime::Seconds();
+	const UGameInstance* GameInstance = GetGameInstance();
+	const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
+	const int32 PlayerIndex = GameInstance && LocalPlayer
+		? FMath::Max(0, GameInstance->GetLocalPlayers().IndexOfByKey(LocalPlayer)) : 0;
+	const FLinearColor Accent = PlayerAccents[PlayerIndex % 4];
+
+	// Hit flash: red screen edges that fade quickly.
+	const float HitAge = static_cast<float>(Clock - HitAt);
+	if (HitAge < 0.45f)
+	{
+		const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f);
+		const FPainter Edge{AllottedGeometry, OutDrawElements, BaseLayer + 1, 1.0f - HitAge / 0.45f};
+		const FLinearColor Red(1.0f, 0.02f, 0.1f, 0.5f);
+		const float Band = 70.0f * S;
+		Edge.Box(0.0f, 0.0f, Band, Size.Y, Red);
+		Edge.Box(Size.X - Band, 0.0f, Band, Size.Y, Red);
+		Edge.Box(0.0f, 0.0f, Size.X, Band * 0.6f, Red);
+		Edge.Box(0.0f, Size.Y - Band * 0.6f, Size.X, Band * 0.6f, Red);
+	}
+
+	// Ball pickup ripple around the slot that just filled.
+	const float PickupAge = static_cast<float>(Clock - BallGainedAt);
+	if (PickupAge < BallPickupSeconds && BallGainedSlot >= 0 && BallGainedSlot < 2)
+	{
+		const float T = PickupAge / BallPickupSeconds;
+		const FVector2D SlotCenter = FVector2D(Size) + InventoryOffset - InventorySize
+			+ BallSlotPositions[BallGainedSlot] + FVector2D(BallSlotSize * 0.5f);
+		const FPainter Ripple{AllottedGeometry, OutDrawElements, BaseLayer + 1, 1.0f - T};
+		Ripple.Ring(SlotCenter, 44.0f + 30.0f * EaseOut(T), FLinearColor(0.6f, 0.93f, 1.0f, 1.0f),
+			2.0f + 4.0f * (1.0f - T));
+	}
+
+	// Respawn notice in the bottom-right corner, above the ball stock.
+	if (bRespawnVisible)
+	{
+		const float In = EaseOut(static_cast<float>(Clock - RespawnShownAt) / 0.3f);
+		const float Left = Size.X - 488.0f + (1.0f - In) * 140.0f;
+		const float Top = Size.Y - 298.0f;
+		const FGeometry Corner = MakeAnchor(AllottedGeometry, Left, Top, 1.0f);
+
+		const FGeometry Band = MakeSkewed(Corner, 0.0f, 18.0f, 470.0f, 104.0f, -0.3f);
+		const FPainter BandPainter{Band, OutDrawElements, BaseLayer + 2, In};
+		BandPainter.Box(8.0f, 9.0f, 470.0f, 104.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		BandPainter.Box(0.0f, 0.0f, 470.0f, 104.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
+		BandPainter.Box(0.0f, 0.0f, 470.0f, 5.0f, Fire);
+		BandPainter.Box(0.0f, 101.0f, 470.0f, 3.0f, Ice);
+		BandPainter.Box(0.0f, 0.0f, 118.0f, 104.0f, Fire);
+
+		const float NumberAge = static_cast<float>(Clock - CountdownChangedAt);
+		const FGeometry NumberSpace = MakeSkewed(Corner, 0.0f, 10.0f, 118.0f, 120.0f, -0.2f,
+			1.0f + 0.6f * FMath::Exp(-12.0f * NumberAge));
+		const FPainter NumberPainter{NumberSpace, OutDrawElements, BaseLayer + 3, In};
+		NumberPainter.Text(FString::FromInt(FMath::Max(1, CountdownNumber)), 59.0f, 4.0f, 76.0f, Paper,
+			ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+
+		const FGeometry Labels = MakeSkewed(Corner, 140.0f, 26.0f, 320.0f, 90.0f, -0.25f);
+		const FPainter LabelPainter{Labels, OutDrawElements, BaseLayer + 3, In};
+		LabelPainter.Text(TEXT("復活まで"), 0.0f, -2.0f, 30.0f, Paper);
+		LabelPainter.Text(FString::Printf(TEXT("%s にやられた！"), *DefeatedByName), 2.0f, 46.0f, 21.0f, Fire,
+			ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
+
+		const float Remaining = FMath::Clamp(RespawnRemaining / RespawnTotal, 0.0f, 1.0f);
+		const FGeometry Progress = MakeSkewed(Corner, 44.0f, 134.0f, 416.0f, 9.0f, -0.6f);
+		const FPainter ProgressPainter{Progress, OutDrawElements, BaseLayer + 3, In};
+		ProgressPainter.Box(0.0f, 0.0f, 416.0f, 9.0f, FLinearColor(0.05f, 0.06f, 0.1f, 0.9f));
+		ProgressPainter.Box(0.0f, 0.0f, 416.0f * Remaining, 9.0f, FMath::Lerp(Ice, Fire, Remaining));
+	}
+
+	// KO banner: two slashes cut across the top-right corner, then the KO stamp lands on them.
+	const float KnockoutAge = static_cast<float>(Clock - KnockoutAt);
+	if (KnockoutAge < 2.2f)
+	{
+		const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f);
+		const float Leave = FMath::Clamp((KnockoutAge - 1.8f) / 0.4f, 0.0f, 1.0f);
+		const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, -Leave * 60.0f * S, S);
+		const float Cut = EaseOut(KnockoutAge / 0.14f);
+
+		const FGeometry Slashes = MakeSkewed(TopRight, -720.0f, 96.0f, 720.0f, 110.0f, -0.55f);
+		const FPainter SlashPainter{Slashes, OutDrawElements, BaseLayer + 4, 1.0f - Leave};
+		SlashPainter.Box(720.0f * (1.0f - Cut), 22.0f, 720.0f * Cut, 58.0f, WithAlpha(Fire, 0.92f));
+		SlashPainter.Box(720.0f * (1.0f - Cut) + 90.0f, 86.0f, 630.0f * Cut, 10.0f, Ice);
+
+		const float StampAge = FMath::Max(0.0f, KnockoutAge - 0.08f);
+		const float Stamp = 1.0f + 1.3f * FMath::Exp(-16.0f * StampAge);
+		const float Shake = StampAge > 0.05f && StampAge < 0.3f
+			? FMath::Sin(StampAge * 95.0f) * (0.3f - StampAge) * 36.0f : 0.0f;
+		const FGeometry StampSpace = MakeSkewed(TopRight, -520.0f + Shake, 40.0f, 330.0f, 170.0f, -0.22f, Stamp);
+		const FPainter StampPainter{StampSpace, OutDrawElements, BaseLayer + 5,
+			(1.0f - Leave) * FMath::Clamp(StampAge / 0.06f, 0.0f, 1.0f)};
+		StampPainter.Text(TEXT("KO!"), 165.0f, 0.0f, 128.0f, Gold, ETextAlign::Center, TEXT("Black"), 7.0f, Ink);
+
+		// Speed lines radiating from the stamp for the first moments.
+		if (StampAge < 0.35f)
+		{
+			const float T = StampAge / 0.35f;
+			const FPainter Lines{TopRight, OutDrawElements, BaseLayer + 4, (1.0f - T) * (1.0f - Leave)};
+			const FVector2D Center(-355.0f, 125.0f);
+			for (int32 LineIndex = 0; LineIndex < 10; ++LineIndex)
+			{
+				const float Angle = FMath::DegreesToRadians(LineIndex * 36.0f + 12.0f);
+				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+				const float Inner = 150.0f + 160.0f * EaseOut(T);
+				Lines.Line(Center + Direction * Inner, Center + Direction * (Inner + 70.0f),
+					LineIndex % 2 == 0 ? Paper : Gold, 5.0f);
+			}
+		}
+
+		const float ChipIn = EaseOut((KnockoutAge - 0.18f) / 0.2f);
+		const FGeometry Chip = MakeSkewed(TopRight, -470.0f + (1.0f - ChipIn) * 80.0f, 214.0f, 300.0f, 44.0f, -0.3f);
+		const FPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 5, ChipIn * (1.0f - Leave)};
+		ChipPainter.Box(0.0f, 0.0f, 300.0f, 44.0f, WithAlpha(Ink, 0.9f));
+		ChipPainter.Box(0.0f, 0.0f, 10.0f, 44.0f, Accent);
+		ChipPainter.Text(KnockoutVictim, 26.0f, 5.0f, 24.0f, Paper);
+		if (KnockoutStreak >= 2)
+		{
+			ChipPainter.Text(KnockoutStreak == 2 ? FString(TEXT("DOUBLE")) : KnockoutStreak == 3
+				? FString(TEXT("TRIPLE")) : FString::Printf(TEXT("×%d"), KnockoutStreak),
+				290.0f, 5.0f, 24.0f, Gold, ETextAlign::Right, TEXT("BlackItalic"));
+		}
+	}
+	return BaseLayer + 6;
 }

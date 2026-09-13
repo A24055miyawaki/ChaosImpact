@@ -5,10 +5,13 @@
 #include "ChaosImpactTrainingTarget.h"
 
 #include "Components/SphereComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 #include "UObject/ConstructorHelpers.h"
 
 AChaosImpactBall::AChaosImpactBall()
@@ -96,6 +99,7 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	const EChaosImpactBallFlightMode FlightMode, const float ArcUpwardSpeed)
 {
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 	const FVector HorizontalDirection(Direction.X, Direction.Y, 0.0f);
 	const bool bArc = FlightMode == EChaosImpactBallFlightMode::Arc;
 	ActiveFlightMode = FlightMode;
@@ -122,6 +126,24 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	ProjectileMovement->Friction = bArc ? 0.12f : 0.0f;
 	ProjectileMovement->Velocity = HorizontalDirection.GetSafeNormal() * Speed
 		+ (bArc ? FVector::UpVector * ArcUpwardSpeed : FVector::ZeroVector);
+}
+
+void AChaosImpactBall::PrepareForAnimatedThrow(USceneComponent* HandParent,
+	const FName HandSocket, const FVector& RelativeLocation, const FRotator& RelativeRotation)
+{
+	if (!HandParent)
+	{
+		return;
+	}
+	ProjectileMovement->StopMovementImmediately();
+	ProjectileMovement->Deactivate();
+	CollisionSphere->SetSimulatePhysics(false);
+	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SetActorTickEnabled(false);
+	AttachToComponent(HandParent, FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+		HandSocket);
+	SetActorRelativeLocation(RelativeLocation);
+	SetActorRelativeRotation(RelativeRotation);
 }
 
 void AChaosImpactBall::MakePickup()
@@ -231,6 +253,14 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 	const bool bHitTrainingTarget = OtherActor->IsA<AChaosImpactTrainingTarget>();
 	if ((bHitPawn || bHitTrainingTarget) && OtherActor->CanBeDamaged())
 	{
+		// A compact contact flash is independent of the target/player elimination burst,
+		// so even non-lethal hits have immediate visual feedback.
+		if (UNiagaraSystem* ContactBurst = LoadObject<UNiagaraSystem>(
+			nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+		{
+			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, ContactBurst,
+				Hit.ImpactPoint, Hit.ImpactNormal.Rotation(), FVector(ContactEffectScale));
+		}
 		const float AppliedDamage = UGameplayStatics::ApplyDamage(
 			OtherActor, Damage, GetInstigatorController(), this, nullptr);
 		if (AppliedDamage > 0.0f)

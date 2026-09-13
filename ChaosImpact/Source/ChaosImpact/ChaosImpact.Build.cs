@@ -12,6 +12,8 @@ public class ChaosImpact : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
+			"ApplicationCore",
+			"EngineSettings",
 			"InputCore",
 			"EnhancedInput",
 			"AIModule",
@@ -23,7 +25,9 @@ public class ChaosImpact : ModuleRules
 			"Niagara"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"JoyShockLibrary4Unreal"
+		});
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.
 		RuntimeDependencies.Add("$(ProjectDir)/Content/UI/TitleLogoTransparent.png", StagedFileType.UFS);

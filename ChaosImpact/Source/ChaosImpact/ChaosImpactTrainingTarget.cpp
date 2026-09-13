@@ -9,8 +9,6 @@
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
-#include "NiagaraFunctionLibrary.h"
-#include "NiagaraSystem.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -84,6 +82,8 @@ AChaosImpactTrainingTarget::AChaosImpactTrainingTarget()
 	{
 		FacePlateMesh->SetStaticMesh(CylinderAsset.Object);
 	}
+	FacePlateMesh->SetVisibility(false, true);
+	FacePlateMesh->SetHiddenInGame(true);
 
 	ShockCore = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ImpactShockCore"));
 	ShockCore->SetupAttachment(SceneRoot);
@@ -131,6 +131,18 @@ AChaosImpactTrainingTarget::AChaosImpactTrainingTarget()
 	HitLight->SetIntensity(0.0f);
 }
 
+void AChaosImpactTrainingTarget::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+	// The cyan circular face plate read as an unrelated marker rather than part
+	// of the sandbag, so keep it removed in both the editor and the running game.
+	if (FacePlateMesh)
+	{
+		FacePlateMesh->SetVisibility(false, true);
+		FacePlateMesh->SetHiddenInGame(true);
+	}
+}
+
 void AChaosImpactTrainingTarget::BeginPlay()
 {
 	Super::BeginPlay();
@@ -172,6 +184,22 @@ void AChaosImpactTrainingTarget::ConfigureMotion(const EChaosImpactTargetMotion 
 	CyclesPerSecond = FMath::Max(0.05f, NewCyclesPerSecond);
 	MotionPhase = StartPhase;
 	HomeLocation = GetActorLocation();
+}
+
+void AChaosImpactTrainingTarget::SetTrainingEnabled(const bool bEnabled)
+{
+	bTrainingEnabled = bEnabled;
+	SetActorHiddenInGame(!bEnabled);
+	SetActorTickEnabled(bEnabled);
+	if (!bEnabled)
+	{
+		BagMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		return;
+	}
+
+	SetTargetVisible(!bDefeated || bRespawning);
+	BagMesh->SetCollisionEnabled(!bDefeated && !bRespawning
+		? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
 }
 
 void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
@@ -260,7 +288,7 @@ void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
 float AChaosImpactTrainingTarget::TakeDamage(const float DamageAmount,
 	const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
-	if (bDefeated || bRespawning || DamageAmount <= 0.0f)
+	if (!bTrainingEnabled || bDefeated || bRespawning || DamageAmount <= 0.0f)
 	{
 		return 0.0f;
 	}
@@ -289,13 +317,6 @@ void AChaosImpactTrainingTarget::Defeat(const FVector& ImpactPoint)
 		Piece->SetHiddenInGame(false);
 	}
 
-	if (UNiagaraSystem* DamageBurst = LoadObject<UNiagaraSystem>(
-		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
-	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-			this, DamageBurst, BagMesh->Bounds.Origin, GetActorRotation(), FVector(2.4f));
-	}
-
 	GetWorldTimerManager().SetTimer(
 		RespawnTimer, this, &AChaosImpactTrainingTarget::RespawnTarget, RespawnDelay, false);
 }
@@ -313,7 +334,7 @@ void AChaosImpactTrainingTarget::RespawnTarget()
 	PoleMesh->SetRelativeScale3D(TargetPoleScale * FVector(0.18f, 0.18f, 0.04f));
 	BagMesh->SetRelativeScale3D(TargetBagScale * FVector(0.18f, 0.18f, 0.04f));
 	FacePlateMesh->SetRelativeScale3D(TargetPlateScale * FVector(0.18f, 0.18f, 0.04f));
-	SetTargetVisible(true);
+	SetTargetVisible(bTrainingEnabled);
 	SetCanBeDamaged(false);
 	BagMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	ShockCore->SetHiddenInGame(false);
@@ -331,5 +352,5 @@ void AChaosImpactTrainingTarget::SetTargetVisible(const bool bVisible)
 	BaseMesh->SetHiddenInGame(!bVisible);
 	PoleMesh->SetHiddenInGame(!bVisible);
 	BagMesh->SetHiddenInGame(!bVisible);
-	FacePlateMesh->SetHiddenInGame(!bVisible);
+	FacePlateMesh->SetHiddenInGame(true);
 }

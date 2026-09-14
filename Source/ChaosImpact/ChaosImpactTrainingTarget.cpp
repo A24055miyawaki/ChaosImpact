@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpact.h"
+#include "Net/UnrealNetwork.h"
 
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
@@ -23,6 +25,8 @@ AChaosImpactTrainingTarget::AChaosImpactTrainingTarget()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	SetCanBeDamaged(true);
+	bReplicates = true;
+	SetReplicateMovement(true);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -147,7 +151,7 @@ void AChaosImpactTrainingTarget::BeginPlay()
 {
 	Super::BeginPlay();
 	HomeLocation = GetActorLocation();
-	if (!GetWorld() || !GetWorld()->URL.HasOption(TEXT("CITraining=1")))
+	if (!ChaosImpact::IsTrainingWorld(GetWorld()))
 	{
 		SetTargetVisible(false);
 		BagMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -186,9 +190,26 @@ void AChaosImpactTrainingTarget::ConfigureMotion(const EChaosImpactTargetMotion 
 	HomeLocation = GetActorLocation();
 }
 
+void AChaosImpactTrainingTarget::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AChaosImpactTrainingTarget, bTrainingEnabled);
+}
+
 void AChaosImpactTrainingTarget::SetTrainingEnabled(const bool bEnabled)
 {
 	bTrainingEnabled = bEnabled;
+	ApplyTrainingEnabled();
+}
+
+void AChaosImpactTrainingTarget::OnRep_TrainingEnabled()
+{
+	ApplyTrainingEnabled();
+}
+
+void AChaosImpactTrainingTarget::ApplyTrainingEnabled()
+{
+	const bool bEnabled = bTrainingEnabled;
 	SetActorHiddenInGame(!bEnabled);
 	SetActorTickEnabled(bEnabled);
 	if (!bEnabled)
@@ -276,7 +297,8 @@ void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
 	}
 
 	MotionTime += DeltaSeconds;
-	if (MotionMode != EChaosImpactTargetMotion::Stationary)
+	// Clients follow the server's replicated position instead of running their own motion.
+	if (HasAuthority() && MotionMode != EChaosImpactTargetMotion::Stationary)
 	{
 		const float Wave = FMath::Sin((MotionTime * CyclesPerSecond + MotionPhase) * 2.0f * PI);
 		const FVector Axis = MotionMode == EChaosImpactTargetMotion::SideToSide
@@ -288,14 +310,19 @@ void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
 float AChaosImpactTrainingTarget::TakeDamage(const float DamageAmount,
 	const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
-	if (!bTrainingEnabled || bDefeated || bRespawning || DamageAmount <= 0.0f)
+	if (!HasAuthority() || !bTrainingEnabled || bDefeated || bRespawning || DamageAmount <= 0.0f)
 	{
 		return 0.0f;
 	}
 
 	Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	Defeat(DamageCauser ? DamageCauser->GetActorLocation() : BagMesh->Bounds.Origin);
+	MulticastDefeat(DamageCauser ? DamageCauser->GetActorLocation() : BagMesh->Bounds.Origin);
 	return DamageAmount;
+}
+
+void AChaosImpactTrainingTarget::MulticastDefeat_Implementation(FVector_NetQuantize ImpactPoint)
+{
+	Defeat(ImpactPoint);
 }
 
 void AChaosImpactTrainingTarget::Defeat(const FVector& ImpactPoint)

@@ -6,6 +6,7 @@
 #include "Blueprint/UserWidget.h"
 #include "ChaosImpactChargeWidget.generated.h"
 
+class APlayerState;
 class UProgressBar;
 class UTextBlock;
 class UBorder;
@@ -108,4 +109,10 @@ private:
 	double KnockoutAt = -100.0;
 	int32 KnockoutStreak = 0;
 	FString KnockoutVictim;
+
+	/** When each online room member first appeared, for the member list slide-in. */
+	TMap<TWeakObjectPtr<APlayerState>, double> MemberSeenAt;
+
+	void PaintOnlineOverlay(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+		int32 BaseLayer) const;
 };

@@ -8,6 +8,9 @@
 #include "ChaosImpactTrainingArena.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactMenuWidget.h"
+#include "ChaosImpactGameState.h"
+#include "ChaosImpactSessionSubsystem.h"
+#include "GameFramework/PlayerState.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
@@ -30,7 +33,8 @@
 void AChaosImpactPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-	bTrainingMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CITraining=1"));
+	bTrainingMode = ChaosImpact::IsTrainingWorld(GetWorld());
+	bOnlineAnyInput = IsOnlineRoom() || (GetWorld() && GetWorld()->URL.HasOption(TEXT("CIOnlineSearch=1")));
 	ActiveKeyboardPlayerIndex = 0;
 	if (GetWorld())
 	{
@@ -108,6 +112,67 @@ void AChaosImpactPlayerController::BeginPlay()
 		}
 	}
 
+	if (IsLocalController() && IsOnlineRoom())
+	{
+		if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+		{
+			ServerSetPlayerName(Sessions->GetPlayerName());
+		}
+	}
+	// After being disconnected from a room the engine lands on the title map;
+	// continue straight into this player's own training arena instead.
+	if (!bTrainingMode && IsLocalController() && bPrimaryLocalPlayer)
+	{
+		// Development hook for multi-instance testing without driving the menus:
+		// -CIAutoRoom=create:1234 or -CIAutoRoom=search:1234, optionally -CIAutoName=Name.
+		// -CIShowScreen=MultiReady|OnlineName|OnlinePassword opens a menu page directly for screenshots.
+		static bool bShowScreenConsumed = false;
+		FString ScreenName;
+		if (!bShowScreenConsumed && FParse::Value(FCommandLine::Get(), TEXT("CIShowScreen="), ScreenName))
+		{
+			bShowScreenConsumed = true;
+			const UEnum* ScreenEnum = StaticEnum<EChaosImpactScreen>();
+			const int64 Value = ScreenEnum ? ScreenEnum->GetValueByNameString(ScreenName) : INDEX_NONE;
+			if (Value != INDEX_NONE)
+			{
+				ShowMenuScreen(static_cast<EChaosImpactScreen>(Value));
+			}
+		}
+		static bool bAutoRoomConsumed = false;
+		FString AutoRoom;
+		if (!bAutoRoomConsumed && FParse::Value(FCommandLine::Get(), TEXT("CIAutoRoom="), AutoRoom))
+		{
+			bAutoRoomConsumed = true;
+			FString AutoName;
+			if (FParse::Value(FCommandLine::Get(), TEXT("CIAutoName="), AutoName))
+			{
+				if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+				{
+					Sessions->SetPlayerName(AutoName);
+				}
+			}
+			FString Mode;
+			FString Password;
+			if (AutoRoom.Split(TEXT(":"), &Mode, &Password))
+			{
+				bPendingCreateRoom = Mode == TEXT("create");
+				SubmitRoomPassword(Password);
+				return;
+			}
+		}
+		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+			Sessions && Sessions->ConsumeReturnToTraining())
+		{
+			RequestedLocalPlayerCount = 1;
+			RequestedKeyboardPlayerIndex = 0;
+			bRequestedPrimaryUsesGamepad = false;
+			JoinedInputDeviceIds.Reset();
+			JoinedLegacyControllerIds.Reset();
+			OpenTrainingLevel(false);
+			return;
+		}
+	}
+
 	EnsureTrainingArena();
 	EnsureTrainingBallSpawners();
 	EnsureTrainingTargets();
@@ -134,6 +199,10 @@ int32 AChaosImpactPlayerController::GetThisLocalPlayerIndex() const
 
 bool AChaosImpactPlayerController::IsUsingGamepad() const
 {
+	if (bOnlineAnyInput)
+	{
+		return bLastInputGamepad;
+	}
 	return GetThisLocalPlayerIndex() != ActiveKeyboardPlayerIndex;
 }
 
@@ -190,6 +259,21 @@ void AChaosImpactPlayerController::SetupInputComponent()
 
 bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+	if (bOnlineAnyInput && IsLocalController())
+	{
+		const bool bMouseAxis = Params.Key == EKeys::MouseX || Params.Key == EKeys::MouseY;
+		const bool bAnalog = Params.Key.IsAnalog();
+		const bool bMeaningful = bMouseAxis ? FMath::Abs(Params.AmountDepressed) > 2.0f
+			: bAnalog ? FMath::Abs(Params.AmountDepressed) > 0.35f
+			: Params.Event == IE_Pressed;
+		if (bMeaningful && Params.Key.IsGamepadKey() != bLastInputGamepad)
+		{
+			bLastInputGamepad = Params.Key.IsGamepadKey();
+			bShowMouseCursor = !bLastInputGamepad;
+			bEnableClickEvents = bShowMouseCursor;
+			bEnableMouseOverEvents = bShowMouseCursor;
+		}
+	}
 	// Input mode is deliberately exclusive. In one-player keyboard mode the first
 	// connected pad must not also move P1; in pad mode stray keyboard/mouse input
 	// must not affect the match. The keyboard/mouse pair may belong to any one
@@ -217,7 +301,7 @@ bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 
 bool AChaosImpactPlayerController::IsKeyAllowedForThisPlayer(const FKey Key) const
 {
-	if (!IsLocalPlayerController())
+	if (!IsLocalPlayerController() || bOnlineAnyInput)
 	{
 		return true;
 	}
@@ -433,7 +517,8 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 	DefaultMouseCursor = bPlaying ? EMouseCursor::Crosshairs : EMouseCursor::Default;
 	CurrentMouseCursor = DefaultMouseCursor;
 	// The training panel deliberately leaves world time and ball physics alive.
-	SetPause(!bPlaying && !bLiveTrainingOverlay);
+	// Pausing an online room would freeze every member, so menus there never pause the world.
+	SetPause(!bPlaying && !bLiveTrainingOverlay && !IsOnlineRoom());
 	if (MobileControlsWidget)
 	{
 		MobileControlsWidget->SetVisibility(bPlaying ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
@@ -493,6 +578,7 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 		&& (NewScreen == EChaosImpactScreen::ModeSelect || NewScreen == EChaosImpactScreen::Title))
 	{
 		RemoveSecondaryLocalPlayers();
+		StopRoomSearch();
 	}
 	CurrentScreen = NewScreen;
 	MenuWidget->ShowScreen(NewScreen);
@@ -555,7 +641,7 @@ void AChaosImpactPlayerController::ToggleTrainingOverlay()
 {
 	// Unlike pause, this menu belongs only to P1. Its widget also spans the complete
 	// viewport, so it remains a single global prompt/menu during local multiplayer.
-	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending)
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || IsOnlineRoom())
 	{
 		return;
 	}
@@ -571,7 +657,7 @@ void AChaosImpactPlayerController::ToggleTrainingOverlay()
 
 void AChaosImpactPlayerController::OpenTrainingOverlay()
 {
-	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget || IsOnlineRoom()
 		|| (CurrentScreen != EChaosImpactScreen::Playing
 			&& CurrentScreen != EChaosImpactScreen::ControllerAssignment))
 	{
@@ -755,7 +841,123 @@ void AChaosImpactPlayerController::ToggleBallFlightMode()
 		? EChaosImpactBallFlightMode::Arc : EChaosImpactBallFlightMode::Straight;
 }
 
-void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode)
+void AChaosImpactPlayerController::BeginOnlineFlow(const bool bCreateRoom)
+{
+	bPendingCreateRoom = bCreateRoom;
+	bOnlineNameOnly = false;
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	ShowMenuScreen(Sessions && Sessions->HasSavedPlayerName()
+		? EChaosImpactScreen::OnlinePassword : EChaosImpactScreen::OnlineName);
+}
+
+void AChaosImpactPlayerController::BeginOnlineRename()
+{
+	bOnlineNameOnly = true;
+	ShowMenuScreen(EChaosImpactScreen::OnlineName);
+}
+
+void AChaosImpactPlayerController::SubmitOnlineName(const FString& Name)
+{
+	if (Name.TrimStartAndEnd().IsEmpty())
+	{
+		return;
+	}
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->SetPlayerName(Name);
+	}
+	ShowMenuScreen(bOnlineNameOnly ? EChaosImpactScreen::MultiReady : EChaosImpactScreen::OnlinePassword);
+}
+
+void AChaosImpactPlayerController::SubmitRoomPassword(const FString& Password)
+{
+	UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Sessions || bTravelPending)
+	{
+		return;
+	}
+	if (bPendingCreateRoom)
+	{
+		Sessions->CreateRoom(Password);
+		ShowMenuScreen(EChaosImpactScreen::OnlineStatus);
+		return;
+	}
+	// Search in the background while this player waits in their own training arena.
+	Sessions->StartSearch(Password);
+	RemoveSecondaryLocalPlayers();
+	RequestedLocalPlayerCount = 1;
+	RequestedKeyboardPlayerIndex = 0;
+	bRequestedPrimaryUsesGamepad = false;
+	JoinedInputDeviceIds.Reset();
+	JoinedLegacyControllerIds.Reset();
+	OpenTrainingLevel(false, true);
+}
+
+void AChaosImpactPlayerController::CancelOnlineStatus()
+{
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->CancelCreate();
+	}
+	ShowMenuScreen(EChaosImpactScreen::OnlinePassword);
+}
+
+void AChaosImpactPlayerController::CloseRecruitment()
+{
+	if (!CanCloseRecruitment())
+	{
+		return;
+	}
+	ResumeGameplay();
+	if (AChaosImpactGameMode* GameMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
+	{
+		GameMode->CloseRecruitment();
+	}
+}
+
+void AChaosImpactPlayerController::LeaveOnlineRoom()
+{
+	UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Sessions || bTravelPending)
+	{
+		return;
+	}
+	bTravelPending = true;
+	Sessions->LeaveRoom();
+}
+
+void AChaosImpactPlayerController::StopRoomSearch()
+{
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->StopSearch();
+	}
+}
+
+bool AChaosImpactPlayerController::IsSearchingForRoom() const
+{
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	return Sessions && (Sessions->GetState() == EChaosImpactRoomState::Searching
+		|| Sessions->GetState() == EChaosImpactRoomState::Joining);
+}
+
+bool AChaosImpactPlayerController::CanCloseRecruitment() const
+{
+	const AChaosImpactGameState* RoomState = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	return IsOnlineRoomHost() && RoomState && !RoomState->bRecruitmentClosed
+		&& RoomState->Phase == EChaosImpactOnlinePhase::Lobby;
+}
+
+void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FString& Name)
+{
+	const FString Trimmed = Name.TrimStartAndEnd().Left(UChaosImpactSessionSubsystem::MaxNameLength);
+	if (PlayerState && !Trimmed.IsEmpty())
+	{
+		PlayerState->SetPlayerName(Trimmed);
+	}
+}
+
+void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode, const bool bOnlineSearch)
 {
 	const FString MapPackage = TrainingLevel.GetLongPackageName();
 	if (MapPackage.IsEmpty())
@@ -793,6 +995,11 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode)
 	if (bOpenWithStraight)
 	{
 		Options += TEXT("?CIBallStraight=1");
+	}
+	// Retry / settings reloads while a search is running must stay in the search lobby.
+	if (bOnlineSearch || IsSearchingForRoom())
+	{
+		Options += TEXT("?CIOnlineSearch=1");
 	}
 	// Reloading clears balls, actors, health, stamina and position.
 	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true, Options);

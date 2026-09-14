@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "Engine/NetSerialization.h"
 #include "Logging/LogMacros.h"
 #include "ChaosImpactCharacter.generated.h"
 
@@ -141,8 +142,38 @@ public:
 
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
 		AController* EventInstigator, AActor* DamageCauser) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	/** Server: puts this character at a match start point with full health and no balls. */
+	void ResetForOnlineMatch(const FVector& Location, const FRotator& Rotation);
 
 protected:
+	// Online play: inputs are predicted locally and resolved by the server.
+	UFUNCTION(Server, Reliable)
+	void ServerStartCharge();
+	UFUNCTION(Server, Reliable)
+	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim);
+	UFUNCTION(Server, Reliable)
+	void ServerStartDash(FVector_NetQuantizeNormal Direction);
+	UFUNCTION(Server, Unreliable)
+	void ServerUpdateAim(FVector_NetQuantizeNormal Direction);
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayThrowAnimation();
+	UFUNCTION(Client, Reliable)
+	void ClientShowRespawn(const FString& DefeatedBy, float Seconds, APawn* KillerPawn);
+	UFUNCTION(Client, Reliable)
+	void ClientRespawned();
+	UFUNCTION(Client, Reliable)
+	void ClientShowKnockout(const FString& VictimName);
+	UFUNCTION()
+	void OnRep_CarriedBallCount();
+	UFUNCTION()
+	void OnRep_Eliminated();
+	UFUNCTION()
+	void OnRep_ReplicatedDashing();
+	void PerformDash(const FVector& Direction);
+	void ShowRespawnLocally(const FString& DefeatedBy, float Seconds, APawn* KillerPawn);
+	void ApplyEliminatedPresentation(bool bNowEliminated);
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -184,7 +215,7 @@ protected:
 	void UpdateRespawnEffect(float DeltaSeconds);
 	void UpdateAimGuidePresentation(bool bVisible);
 	void UpdateDashTrailPresentation(bool bVisible);
-	void BeginEliminationSpectate(AController* EventInstigator);
+	void BeginEliminationSpectate(APawn* KillerPawn);
 	void EndEliminationSpectate();
 	FString GetEliminatorDisplayName(AController* EventInstigator) const;
 
@@ -234,7 +265,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory", meta=(ClampMin="1", ClampMax="2"))
 	int32 MaximumCarriedBalls = 2;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
+	UPROPERTY(VisibleInstanceOnly, ReplicatedUsing=OnRep_CarriedBallCount, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
 	int32 CarriedBallCount = 0;
 
 	/** Ball shown on the right hand while at least one ball is carried. */
@@ -288,7 +319,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Damage", meta=(ClampMin="0.0", ClampMax="2.0"))
 	float EliminationCameraHoldSeconds = 0.45f;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Damage")
+	UPROPERTY(VisibleInstanceOnly, Replicated, BlueprintReadOnly, Category="Chaos Impact|Damage")
 	float Health = 3.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Dash", meta=(ClampMin="1.0"))
@@ -313,8 +344,21 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Dash", meta=(ClampMin="0.0"))
 	float DashCooldownSeconds = 0.8f;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Dash")
+	UPROPERTY(VisibleInstanceOnly, Replicated, BlueprintReadOnly, Category="Chaos Impact|Dash")
 	float Stamina = 5.0f;
+
+	/** Other machines only draw the dash trail; the dash itself runs on the owner and server. */
+	UPROPERTY(ReplicatedUsing=OnRep_ReplicatedDashing)
+	bool bReplicatedDashing = false;
+
+	UPROPERTY(Replicated)
+	FVector_NetQuantizeNormal ReplicatedDashDirection = FVector::ForwardVector;
+
+	UPROPERTY(ReplicatedUsing=OnRep_Eliminated)
+	bool bEliminated = false;
+
+	double NextAimSendAt = 0.0;
+	FVector LastSentAim = FVector::ZeroVector;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Aim")
 	FVector AimDirection = FVector::ForwardVector;
@@ -376,7 +420,6 @@ protected:
 	bool bThrowAnimationActive = false;
 	bool bIsDashing = false;
 	bool bWasFallingBeforeDash = false;
-	bool bEliminated = false;
 	bool bMouseChargeActive = false;
 	bool bWasMouseDownLastTick = false;
 	bool bTrainingMenuFrozen = false;

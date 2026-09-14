@@ -4,7 +4,10 @@
 #include "ChaosImpactBall.h"
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactCPUController.h"
+#include "ChaosImpactGameMode.h"
 #include "ChaosImpactPlayerController.h"
+#include "GameFramework/PlayerState.h"
+#include "Net/UnrealNetwork.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
@@ -333,6 +336,11 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		{
 			Stamina = FMath::Min(MaxStamina, Stamina + StaminaRegenPerSecond * DeltaSeconds);
 		}
+		if (GetLocalRole() == ROLE_SimulatedProxy)
+		{
+			DashDirection = ReplicatedDashDirection;
+			UpdateDashTrailPresentation(bReplicatedDashing);
+		}
 	}
 
 	if (ChargeWidget)
@@ -599,6 +607,10 @@ void AChaosImpactCharacter::StartChargingThrow()
 
 	bIsChargingThrow = true;
 	ThrowChargeStartedAt = GetWorld()->GetTimeSeconds();
+	if (!HasAuthority())
+	{
+		ServerStartCharge();
+	}
 	OnThrowChargeChanged(0.0f);
 	if (ChargeWidget)
 	{
@@ -661,6 +673,30 @@ void AChaosImpactCharacter::StartDash()
 	{
 		DashDirection = GetActorForwardVector().GetSafeNormal2D();
 	}
+	if (!HasAuthority())
+	{
+		ServerStartDash(DashDirection);
+	}
+	PerformDash(DashDirection);
+}
+
+void AChaosImpactCharacter::PerformDash(const FVector& Direction)
+{
+	if (!GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing
+		|| Stamina + UE_SMALL_NUMBER < DashCost || GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds)
+	{
+		return;
+	}
+	DashDirection = Direction.GetSafeNormal2D();
+	if (DashDirection.IsNearlyZero())
+	{
+		DashDirection = GetActorForwardVector().GetSafeNormal2D();
+	}
+	if (HasAuthority())
+	{
+		bReplicatedDashing = true;
+		ReplicatedDashDirection = DashDirection;
+	}
 
 	Stamina = FMath::Clamp(Stamina - DashCost, 0.0f, MaxStamina);
 	bIsDashing = true;
@@ -713,6 +749,10 @@ void AChaosImpactCharacter::FinishDash()
 	}
 
 	bIsDashing = false;
+	if (HasAuthority())
+	{
+		bReplicatedDashing = false;
+	}
 	UpdateDashTrailPresentation(false);
 	DashElapsedSeconds = 0.0f;
 	DashDistanceApplied = 0.0f;
@@ -781,13 +821,29 @@ void AChaosImpactCharacter::ReleaseChargedThrow()
 		ChargeWidget->SetCharging(false);
 		ChargeWidget->SetChargeAlpha(0.0f);
 	}
-	SpawnBall(ChargeAlpha);
+	if (HasAuthority())
+	{
+		SpawnBall(ChargeAlpha);
+	}
+	else
+	{
+		ServerReleaseThrow(ChargeAlpha, AimDirection);
+	}
 }
 
 void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 {
+	// Other players' characters take their rotation from replicated movement.
+	if (GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		return;
+	}
 	FVector DesiredDirection = AimDirection;
-	if (StickAimInput.Size() >= StickAimDeadZone)
+	if (!IsLocallyControlled())
+	{
+		// Server copy of a remote player: aim arrives through ServerUpdateAim.
+	}
+	else if (StickAimInput.Size() >= StickAimDeadZone)
 	{
 		const FRotator CameraYaw(0.0f, CameraBoom->GetComponentRotation().Yaw, 0.0f);
 		const FVector CameraForward = FRotationMatrix(CameraYaw).GetUnitAxis(EAxis::X);
@@ -812,6 +868,17 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		const FRotator SmoothRotation = FMath::RInterpConstantTo(
 			GetActorRotation(), TargetRotation, DeltaSeconds, 720.0f);
 		SetActorRotation(FRotator(0.0f, SmoothRotation.Yaw, 0.0f));
+	}
+
+	if (!HasAuthority() && IsLocallyControlled() && GetWorld())
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (Now >= NextAimSendAt && FVector::DotProduct(LastSentAim, AimDirection) < 0.9995f)
+		{
+			ServerUpdateAim(AimDirection);
+			LastSentAim = AimDirection;
+			NextAimSendAt = Now + 0.05;
+		}
 	}
 }
 
@@ -961,7 +1028,14 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		// The spawned projectile itself replaces the cosmetic hand ball until the cue.
 		HeldBallMesh->SetVisibility(false, true);
 		LeftHeldBallMesh->SetVisibility(false, true);
-		PlayThrowAnimation();
+		if (GetNetMode() == NM_Standalone)
+		{
+			PlayThrowAnimation();
+		}
+		else
+		{
+			MulticastPlayThrowAnimation();
+		}
 		if (ThrowReleaseDelaySeconds <= UE_SMALL_NUMBER)
 		{
 			CompleteAnimatedThrow();
@@ -1029,7 +1103,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	{
 		return 0.0f;
 	}
-	if (bEliminated || DamageAmount <= 0.0f)
+	if (!HasAuthority() || bEliminated || DamageAmount <= 0.0f)
 	{
 		return 0.0f;
 	}
@@ -1086,6 +1160,10 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		if (Eliminator && Eliminator != this)
 		{
 			Eliminator->NotifyOpponentEliminated(Eliminator->GetEliminatorDisplayName(GetController()));
+			if (AChaosImpactGameMode* GameMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
+			{
+				GameMode->RegisterKnockout(Eliminator->GetController());
+			}
 		}
 
 		GetWorldTimerManager().ClearTimer(EliminationCameraHoldTimer);
@@ -1111,12 +1189,16 @@ void AChaosImpactCharacter::BeginRespawnCountdown()
 	{
 		return;
 	}
-	BeginEliminationSpectate(EliminationInstigator.Get());
 	RespawnAtWorldSeconds = GetWorld()->GetTimeSeconds() + EliminationResetDelay;
-	if (ChargeWidget)
+	const FString DefeatedBy = GetEliminatorDisplayName(EliminationInstigator.Get());
+	APawn* KillerPawn = EliminationInstigator.IsValid() ? EliminationInstigator->GetPawn() : nullptr;
+	if (IsLocallyControlled())
 	{
-		ChargeWidget->ShowRespawn(GetEliminatorDisplayName(EliminationInstigator.Get()),
-			EliminationResetDelay);
+		ShowRespawnLocally(DefeatedBy, EliminationResetDelay, KillerPawn);
+	}
+	else if (IsPlayerControlled())
+	{
+		ClientShowRespawn(DefeatedBy, EliminationResetDelay, KillerPawn);
 	}
 	GetWorldTimerManager().SetTimer(RespawnTimer, this,
 		&AChaosImpactCharacter::ResetAfterElimination, EliminationResetDelay, false);
@@ -1128,7 +1210,14 @@ void AChaosImpactCharacter::ResetAfterElimination()
 	GetWorldTimerManager().ClearTimer(RespawnTimer);
 	RespawnAtWorldSeconds = 0.0f;
 	StopEliminationEffect();
-	EndEliminationSpectate();
+	if (IsLocallyControlled())
+	{
+		EndEliminationSpectate();
+	}
+	else if (IsPlayerControlled())
+	{
+		ClientRespawned();
+	}
 	SetActorLocationAndRotation(InitialSpawnLocation, InitialSpawnRotation, false, nullptr,
 		ETeleportType::TeleportPhysics);
 	Health = MaxHealth;
@@ -1274,6 +1363,11 @@ FString AChaosImpactCharacter::GetEliminatorDisplayName(AController* EventInstig
 	{
 		return TEXT("相手");
 	}
+	if (GetNetMode() != NM_Standalone && EventInstigator->GetPlayerState<APlayerState>()
+		&& Cast<APlayerController>(EventInstigator))
+	{
+		return EventInstigator->GetPlayerState<APlayerState>()->GetPlayerName();
+	}
 	if (const UGameInstance* GameInstance = GetGameInstance())
 	{
 		const TArray<ULocalPlayer*>& LocalPlayers = GameInstance->GetLocalPlayers();
@@ -1293,10 +1387,9 @@ FString AChaosImpactCharacter::GetEliminatorDisplayName(AController* EventInstig
 	return TEXT("相手プレイヤー");
 }
 
-void AChaosImpactCharacter::BeginEliminationSpectate(AController* EventInstigator)
+void AChaosImpactCharacter::BeginEliminationSpectate(APawn* KillerPawn)
 {
 	APlayerController* VictimController = Cast<APlayerController>(GetController());
-	APawn* KillerPawn = EventInstigator ? EventInstigator->GetPawn() : nullptr;
 	if (!VictimController || !VictimController->IsLocalController()
 		|| !KillerPawn || KillerPawn == this)
 	{
@@ -1336,11 +1429,182 @@ FVector AChaosImpactCharacter::GetAimGuideStartWorldLocation() const
 
 void AChaosImpactCharacter::NotifyOpponentEliminated(const FString& VictimName)
 {
+	if (!IsLocallyControlled())
+	{
+		if (IsPlayerControlled())
+		{
+			ClientShowKnockout(VictimName);
+		}
+		return;
+	}
 	TryCreateChargeWidget();
 	if (ChargeWidget)
 	{
 		ChargeWidget->ShowKnockout(VictimName);
 	}
+}
+
+void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AChaosImpactCharacter, CarriedBallCount);
+	DOREPLIFETIME(AChaosImpactCharacter, Health);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, Stamina, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, bReplicatedDashing, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, ReplicatedDashDirection, COND_SkipOwner);
+	DOREPLIFETIME(AChaosImpactCharacter, bEliminated);
+}
+
+void AChaosImpactCharacter::ServerStartCharge_Implementation()
+{
+	if (!bEliminated && !bIsDashing && CarriedBallCount > 0 && GetWorld())
+	{
+		bIsChargingThrow = true;
+		ThrowChargeStartedAt = GetWorld()->GetTimeSeconds();
+	}
+}
+
+void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float ChargeAlpha,
+	FVector_NetQuantizeNormal Aim)
+{
+	bIsChargingThrow = false;
+	if (bEliminated || bIsDashing || bTrainingMenuFrozen)
+	{
+		return;
+	}
+	const FVector Direction = FVector(Aim).GetSafeNormal2D();
+	if (!Direction.IsNearlyZero())
+	{
+		AimDirection = Direction;
+	}
+	SpawnBall(FMath::Clamp(ChargeAlpha, 0.0f, 1.0f));
+}
+
+void AChaosImpactCharacter::ServerStartDash_Implementation(FVector_NetQuantizeNormal Direction)
+{
+	bIsChargingThrow = false;
+	PerformDash(Direction);
+}
+
+void AChaosImpactCharacter::ServerUpdateAim_Implementation(FVector_NetQuantizeNormal Direction)
+{
+	const FVector Horizontal = FVector(Direction).GetSafeNormal2D();
+	if (!Horizontal.IsNearlyZero())
+	{
+		AimDirection = Horizontal;
+	}
+}
+
+void AChaosImpactCharacter::MulticastPlayThrowAnimation_Implementation()
+{
+	PlayThrowAnimation();
+}
+
+void AChaosImpactCharacter::ClientShowRespawn_Implementation(const FString& DefeatedBy, const float Seconds,
+	APawn* KillerPawn)
+{
+	ShowRespawnLocally(DefeatedBy, Seconds, KillerPawn);
+}
+
+void AChaosImpactCharacter::ShowRespawnLocally(const FString& DefeatedBy, const float Seconds, APawn* KillerPawn)
+{
+	if (GetWorld())
+	{
+		RespawnAtWorldSeconds = GetWorld()->GetTimeSeconds() + Seconds;
+	}
+	BeginEliminationSpectate(KillerPawn);
+	TryCreateChargeWidget();
+	if (ChargeWidget)
+	{
+		ChargeWidget->ShowRespawn(DefeatedBy, Seconds);
+	}
+}
+
+void AChaosImpactCharacter::ClientRespawned_Implementation()
+{
+	RespawnAtWorldSeconds = 0.0f;
+	EndEliminationSpectate();
+	if (ChargeWidget)
+	{
+		ChargeWidget->HideRespawn();
+	}
+}
+
+void AChaosImpactCharacter::ClientShowKnockout_Implementation(const FString& VictimName)
+{
+	TryCreateChargeWidget();
+	if (ChargeWidget)
+	{
+		ChargeWidget->ShowKnockout(VictimName);
+	}
+}
+
+void AChaosImpactCharacter::OnRep_CarriedBallCount()
+{
+	UpdateBallPresentation();
+}
+
+void AChaosImpactCharacter::OnRep_ReplicatedDashing()
+{
+	DashDirection = ReplicatedDashDirection;
+	UpdateDashTrailPresentation(bReplicatedDashing);
+}
+
+void AChaosImpactCharacter::OnRep_Eliminated()
+{
+	ApplyEliminatedPresentation(bEliminated);
+}
+
+void AChaosImpactCharacter::ApplyEliminatedPresentation(const bool bNowEliminated)
+{
+	if (bNowEliminated)
+	{
+		bIsChargingThrow = false;
+		bIsDashing = false;
+		UpdateDashTrailPresentation(false);
+		if (ChargeWidget)
+		{
+			ChargeWidget->SetCharging(false);
+		}
+		SetActorEnableCollision(false);
+		StartEliminationEffect();
+		return;
+	}
+	StopEliminationEffect();
+	SetActorEnableCollision(true);
+	StartRespawnEffect();
+}
+
+void AChaosImpactCharacter::ResetForOnlineMatch(const FVector& Location, const FRotator& Rotation)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (bEliminated)
+	{
+		ResetAfterElimination();
+	}
+	if (bIsDashing)
+	{
+		FinishDash();
+	}
+	CancelChargingThrow();
+	GetWorldTimerManager().ClearTimer(ThrowReleaseTimer);
+	if (AChaosImpactBall* PendingBall = PendingThrowBall.Get())
+	{
+		PendingBall->Destroy();
+	}
+	PendingThrowBall.Reset();
+	bThrowReleasePending = false;
+	TeleportTo(Location, Rotation);
+	InitialSpawnLocation = GetActorLocation();
+	InitialSpawnRotation = Rotation;
+	Health = MaxHealth;
+	Stamina = MaxStamina;
+	CarriedBallCount = 0;
+	NextDashAvailableAtSeconds = 0.0f;
+	UpdateBallPresentation();
 }
 
 void AChaosImpactCharacter::SetGameplayUIVisible(const bool bVisible)
@@ -1478,7 +1742,7 @@ void AChaosImpactCharacter::RequestAIDash(const FVector& Direction)
 
 bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 {
-	if (!IsValid(Ball) || !Ball->IsPickupAvailable() || bEliminated
+	if (!HasAuthority() || !IsValid(Ball) || !Ball->IsPickupAvailable() || bEliminated
 		|| CarriedBallCount >= MaximumCarriedBalls)
 	{
 		return false;

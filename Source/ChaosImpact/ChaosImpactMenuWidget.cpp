@@ -1,8 +1,11 @@
 #include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSessionSubsystem.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/EditableText.h"
 #include "Engine/Texture2D.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
@@ -437,6 +440,19 @@ namespace
 		const float X = (1600.0f - (Width * 4.0f + Gap * 3.0f)) * 0.5f + PlayerIndex * (Width + Gap);
 		return FSlateRect(X, 212.0f, X + Width, 642.0f);
 	}
+
+	FSlateRect PasswordDigitRect(const int32 Index)
+	{
+		const float X = 455.0f + Index * 180.0f;
+		return FSlateRect(X, 300.0f, X + 150.0f, 510.0f);
+	}
+
+	FVector2D ToDesignPoint(const FGeometry& Geometry, const FVector2D& ScreenPosition)
+	{
+		const float Scale = DesignScale(Geometry);
+		const FVector2D Offset = (Geometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+		return (Geometry.AbsoluteToLocal(ScreenPosition) - Offset) / Scale;
+	}
 }
 
 void UChaosImpactMenuWidget::NativeOnInitialized()
@@ -447,6 +463,20 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 	if (WidgetTree && !WidgetTree->RootWidget)
 	{
 		WidgetTree->RootWidget = WidgetTree->ConstructWidget<UCanvasPanel>();
+	}
+	if (UCanvasPanel* Canvas = WidgetTree ? Cast<UCanvasPanel>(WidgetTree->RootWidget) : nullptr)
+	{
+		// A real text field so user names can be typed with IME (Japanese) input.
+		NameInput = WidgetTree->ConstructWidget<UEditableText>(UEditableText::StaticClass(), TEXT("OnlineNameInput"));
+		// UUserWidget paints its children before NativePaint, so the menu backdrop would cover this
+		// field. It stays invisible and only handles typing/IME; NativePaint draws the text on top.
+		NameInput->WidgetStyle.SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 1.0f, 1.0f, 0.0f)));
+		NameInput->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Black"), 44.0f));
+		NameInput->SetJustification(ETextJustify::Center);
+		NameInput->OnTextCommitted.AddDynamic(this, &UChaosImpactMenuWidget::HandleNameCommitted);
+		NameInput->OnTextChanged.AddDynamic(this, &UChaosImpactMenuWidget::HandleNameChanged);
+		NameInput->SetVisibility(ESlateVisibility::Collapsed);
+		Canvas->AddChildToCanvas(NameInput);
 	}
 
 	LogoTexture = FImageUtils::ImportFileAsTexture2D(
@@ -464,6 +494,7 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	Screen = NewScreen;
 	SelectedIndex = 0;
 	PressedIndex = INDEX_NONE;
+	ArmedIndex = INDEX_NONE;
 	ScreenStartedAt = FPlatformTime::Seconds();
 	AnimationSeconds = 0.0f;
 	BuildEntries();
@@ -480,8 +511,108 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 			? ScreenStartedAt + 0.32 + 0.12 * PlayerIndex : -1000.0;
 	}
 
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (NameInput)
+	{
+		const bool bNameScreen = Screen == EChaosImpactScreen::OnlineName;
+		NameInput->SetVisibility(bNameScreen ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		if (bNameScreen && Sessions)
+		{
+			NameInput->SetText(FText::FromString(Sessions->GetPlayerName()));
+		}
+		bNameFocusPending = bNameScreen;
+	}
+	if (Screen == EChaosImpactScreen::OnlinePassword)
+	{
+		PasswordCursor = 0;
+		const FString Previous = Sessions ? Sessions->GetPassword() : FString();
+		for (int32 Digit = 0; Digit < 4 && Previous.Len() == 4; ++Digit)
+		{
+			PasswordDigits[Digit] = FMath::Clamp(Previous[Digit] - TEXT('0'), 0, 9);
+		}
+	}
+	LastCreateError = Sessions ? Sessions->GetCreateError() : FString();
+
 	SetVisibility(Screen == EChaosImpactScreen::Playing
 		? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+}
+
+void UChaosImpactMenuWidget::HandleNameCommitted(const FText& Text, const ETextCommit::Type CommitMethod)
+{
+	if (CommitMethod == ETextCommit::OnEnter && Screen == EChaosImpactScreen::OnlineName)
+	{
+		SubmitName();
+	}
+}
+
+void UChaosImpactMenuWidget::HandleNameChanged(const FText& Text)
+{
+	const FString Value = Text.ToString();
+	if (NameInput && Value.Len() > UChaosImpactSessionSubsystem::MaxNameLength)
+	{
+		NameInput->SetText(FText::FromString(Value.Left(UChaosImpactSessionSubsystem::MaxNameLength)));
+	}
+}
+
+void UChaosImpactMenuWidget::SubmitName()
+{
+	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		Controller && NameInput)
+	{
+		Controller->SubmitOnlineName(NameInput->GetText().ToString());
+	}
+}
+
+FString UChaosImpactMenuWidget::GetPasswordString() const
+{
+	return FString::Printf(TEXT("%d%d%d%d"), PasswordDigits[0], PasswordDigits[1], PasswordDigits[2], PasswordDigits[3]);
+}
+
+void UChaosImpactMenuWidget::SubmitPassword()
+{
+	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+	{
+		Controller->SubmitRoomPassword(GetPasswordString());
+	}
+}
+
+bool UChaosImpactMenuWidget::HandlePasswordKey(const FKey& Key)
+{
+	if (Screen != EChaosImpactScreen::OnlinePassword)
+	{
+		return false;
+	}
+	if (Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Down)
+	{
+		const int32 Delta = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up ? 1 : -1;
+		PasswordDigits[PasswordCursor] = (PasswordDigits[PasswordCursor] + Delta + 10) % 10;
+		return true;
+	}
+	if (Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left || Key == EKeys::BackSpace)
+	{
+		PasswordCursor = FMath::Max(0, PasswordCursor - 1);
+		return true;
+	}
+	if (Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right)
+	{
+		PasswordCursor = FMath::Min(3, PasswordCursor + 1);
+		return true;
+	}
+	static const FKey DigitKeys[] = {EKeys::Zero, EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four,
+		EKeys::Five, EKeys::Six, EKeys::Seven, EKeys::Eight, EKeys::Nine};
+	static const FKey PadKeys[] = {EKeys::NumPadZero, EKeys::NumPadOne, EKeys::NumPadTwo, EKeys::NumPadThree,
+		EKeys::NumPadFour, EKeys::NumPadFive, EKeys::NumPadSix, EKeys::NumPadSeven, EKeys::NumPadEight,
+		EKeys::NumPadNine};
+	for (int32 Value = 0; Value < 10; ++Value)
+	{
+		if (Key == DigitKeys[Value] || Key == PadKeys[Value])
+		{
+			PasswordDigits[PasswordCursor] = Value;
+			PasswordCursor = FMath::Min(3, PasswordCursor + 1);
+			return true;
+		}
+	}
+	return false;
 }
 
 void UChaosImpactMenuWidget::RefreshEntries()
@@ -533,14 +664,55 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::SoloReady:
-	case EChaosImpactScreen::MultiReady:
 		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
 		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("トレーニングへ"), TEXT(""), TEXT(""), Gold});
 		break;
+	case EChaosImpactScreen::MultiReady:
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("へやをつくる"), TEXT(""), TEXT("CREATE"), Ice});
+		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("へやをさがす"), TEXT(""), TEXT("SEARCH"), Fire});
+		Entries.Add({FSlateRect(930, 714, 1450, 798),
+			FString::Printf(TEXT("なまえ  %s"), Sessions ? *Sessions->GetPlayerName() : TEXT("")),
+			TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+		break;
+	}
+	case EChaosImpactScreen::OnlineName:
+	case EChaosImpactScreen::OnlinePassword:
+		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("決定"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		break;
+	case EChaosImpactScreen::OnlineStatus:
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		const bool bFailed = Sessions && !Sessions->GetCreateError().IsEmpty();
+		Entries.Add({FSlateRect(560, 714, 1040, 798), bFailed ? TEXT("あいことばを変える") : TEXT("やめる"),
+			TEXT(""), TEXT(""), bFailed ? Gold : Muted});
+		break;
+	}
 	case EChaosImpactScreen::Pause:
 	{
 		const AChaosImpactPlayerController* Controller =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		if (Controller && Controller->IsOnlineRoom())
+		{
+			float Y = 285.0f;
+			Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("ゲームに戻る"), TEXT("resume"), TEXT(""), Ice});
+			if (Controller->CanCloseRecruitment())
+			{
+				Y += 80.0f;
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("メンバー募集終了"), TEXT("close_recruit"),
+					TEXT(""), Gold});
+			}
+			Y += 80.0f;
+			const bool bLeaveArmed = ArmedIndex == Entries.Num();
+			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
+				bLeaveArmed ? TEXT("もう一度おすと決定")
+					: Controller->IsOnlineRoomHost() ? TEXT("へやを解散する") : TEXT("へやをぬける"),
+				TEXT("leave"), TEXT(""), Fire});
+			break;
+		}
 		const bool bArc = Controller
 			&& Controller->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
 		Entries.Add({FSlateRect(490, 245, 1110, 307), TEXT("ゲームに戻る"), TEXT(""), TEXT(""), Ice});
@@ -553,6 +725,13 @@ void UChaosImpactMenuWidget::BuildEntries()
 		}
 		Entries.Add({FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire});
 		Entries.Add({FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted});
+		// Appended last so the existing pause entry indices stay unchanged.
+		if (Controller && Controller->IsSearchingForRoom())
+		{
+			Entries.Add({FSlateRect(490, 725, 1110, 787),
+				ArmedIndex == Entries.Num() ? TEXT("もう一度おすと決定") : TEXT("へやをさがすのをやめる"),
+				TEXT("stop_search"), TEXT(""), Fire});
+		}
 		break;
 	}
 	case EChaosImpactScreen::TrainingSettings:
@@ -616,6 +795,37 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	{
 		SelectBlend[Index] = FMath::FInterpTo(SelectBlend[Index],
 			Index == SelectedIndex ? 1.0f : 0.0f, InDeltaTime, 16.0f);
+	}
+
+	if (NameInput && Screen == EChaosImpactScreen::OnlineName)
+	{
+		const float Scale = DesignScale(MyGeometry);
+		const FVector2D Offset = (MyGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+		if (UCanvasPanelSlot* InputSlot = Cast<UCanvasPanelSlot>(NameInput->Slot))
+		{
+			InputSlot->SetPosition(Offset + FVector2D(440.0f, 372.0f) * Scale);
+			InputSlot->SetSize(FVector2D(720.0f, 96.0f) * Scale);
+		}
+		if (!FMath::IsNearlyEqual(NameInputFontScale, Scale, 0.01f))
+		{
+			NameInputFontScale = Scale;
+			NameInput->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Black"), FMath::Max(12.0f, 52.0f * Scale)));
+		}
+		if (bNameFocusPending)
+		{
+			bNameFocusPending = false;
+			NameInput->SetUserFocus(GetOwningPlayer());
+		}
+	}
+	if (Screen == EChaosImpactScreen::OnlineStatus)
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		const FString CreateError = Sessions ? Sessions->GetCreateError() : FString();
+		if (CreateError != LastCreateError)
+		{
+			LastCreateError = CreateError;
+			RefreshEntries();
+		}
 	}
 
 	if (Screen == EChaosImpactScreen::ControllerAssignment)
@@ -772,15 +982,107 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			}
 		}
 	}
-	else if (Screen == EChaosImpactScreen::SoloReady || Screen == EChaosImpactScreen::MultiReady)
+	else if (Screen == EChaosImpactScreen::SoloReady)
 	{
-		const bool bSolo = Screen == EChaosImpactScreen::SoloReady;
 		const float E = EaseOut(T / 0.45f);
 		const FGeometry Title = MakeSkewed(DesignGeometry, 0, 240, 1600, 320, -0.2f, FMath::Lerp(1.25f, 1.0f, E));
 		const FMenuPainter Big{Title, OutDrawElements, BaseLayer + 3, E};
-		Big.Text(bSolo ? TEXT("SOLO") : TEXT("MULTI"), 800, 0, 150, Paper, ETextAlign::Center,
-			TEXT("Black"), 5.0f, bSolo ? Ice : Fire);
-		Big.Text(TEXT("COMING SOON"), 800, 226, 38, bSolo ? Ice : Fire, ETextAlign::Center, TEXT("BlackItalic"));
+		Big.Text(TEXT("SOLO"), 800, 0, 150, Paper, ETextAlign::Center, TEXT("Black"), 5.0f, Ice);
+		Big.Text(TEXT("COMING SOON"), 800, 226, 38, Ice, ETextAlign::Center, TEXT("BlackItalic"));
+	}
+	else if (Screen == EChaosImpactScreen::MultiReady)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("MULTI"), T);
+	}
+	else if (Screen == EChaosImpactScreen::OnlineName)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("なまえ"), T);
+		const float E = EaseOut((T - 0.1f) / 0.35f);
+		const FGeometry Panel = MakeSkewed(DesignGeometry, 400.0f + (1.0f - E) * 120.0f, 340.0f, 800.0f, 160.0f, -0.18f);
+		const FMenuPainter Field{Panel, OutDrawElements, BaseLayer + 2, E};
+		Field.Box(12.0f, 14.0f, 800.0f, 160.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		Field.Box(0.0f, 0.0f, 800.0f, 160.0f, FLinearColor(0.02f, 0.027f, 0.047f, 0.97f));
+		Field.Box(0.0f, 0.0f, 12.0f, 160.0f, Ice);
+		Field.Box(40.0f, 136.0f, 720.0f, 6.0f, WithAlpha(Fire, 0.55f + 0.45f * FMath::Sin(T * 5.0f)));
+		const FString Typed = NameInput ? NameInput->GetText().ToString() : FString();
+		const FMenuPainter NameText{Panel, OutDrawElements, BaseLayer + 3, E};
+		NameText.Text(Typed, 400.0f, 34.0f, 58.0f, Paper, ETextAlign::Center);
+		if (NameInput && NameInput->HasKeyboardFocus() && FMath::Fmod(T, 1.0f) < 0.55f)
+		{
+			const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle(TEXT("Black"), 58.0f);
+			const float Width = FSlateApplication::Get().GetRenderer()->GetFontMeasureService()->Measure(Typed, Font).X;
+			NameText.Box(400.0f + Width * 0.5f + 8.0f, 40.0f, 5.0f, 80.0f, Ice);
+		}
+		P.Text(FString::Printf(TEXT("%d/%d"), Typed.Len(), UChaosImpactSessionSubsystem::MaxNameLength),
+			1180.0f, 520.0f, 26.0f, Muted, ETextAlign::Right);
+	}
+	else if (Screen == EChaosImpactScreen::OnlinePassword)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("あいことば"), T);
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const bool bCreate = !Controller || Controller->IsPendingCreateRoom();
+		const FLinearColor ModeColor = bCreate ? Ice : Fire;
+		const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
+		const FGeometry Chip = MakeSkewed(DesignGeometry, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f);
+		const FMenuPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 2, ChipIn};
+		ChipPainter.Box(0.0f, 0.0f, 360.0f, 70.0f, ModeColor);
+		ChipPainter.Text(bCreate ? TEXT("へやをつくる") : TEXT("へやをさがす"), 180.0f, 10.0f, 34.0f, Paper,
+			ETextAlign::Center);
+
+		for (int32 Digit = 0; Digit < 4; ++Digit)
+		{
+			const float CardIn = EaseOut((T - 0.12f - 0.05f * Digit) / 0.3f);
+			const FSlateRect Rect = PasswordDigitRect(Digit).OffsetBy(FVector2D((1.0f - CardIn) * 100.0f, 0.0f));
+			const float W = Rect.Right - Rect.Left;
+			const float H = Rect.Bottom - Rect.Top;
+			const bool bSelected = Digit == PasswordCursor;
+			const FGeometry Card = MakeSkewed(DesignGeometry, Rect.Left, Rect.Top, W, H, -0.12f, bSelected ? 1.06f : 1.0f);
+			const FMenuPainter C{Card, OutDrawElements, BaseLayer + 3, CardIn};
+			FLinearColor Deep = ModeColor * 0.45f;
+			Deep.A = 1.0f;
+			C.Box(10.0f, 12.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+			C.Box(0.0f, 0.0f, W, H, bSelected ? Deep : FLinearColor(0.02f, 0.027f, 0.047f, 0.97f));
+			C.Box(0.0f, H - 10.0f, W, 10.0f, bSelected ? ModeColor : FLinearColor(0.2f, 0.24f, 0.32f, 1.0f));
+			C.Text(FString::FromInt(PasswordDigits[Digit]), W * 0.5f, 20.0f, 120.0f, Paper, ETextAlign::Center,
+				TEXT("Black"), bSelected ? 4.0f : 0.0f, Ink);
+			if (bSelected)
+			{
+				const float Pulse = 0.6f + 0.4f * FMath::Sin(T * 6.0f);
+				C.Outline(-6.0f, -6.0f, W + 12.0f, H + 12.0f, WithAlpha(Paper, Pulse), 4.0f);
+				const FVector2D Top(W * 0.5f, -30.0f);
+				const FVector2D Bottom(W * 0.5f, H + 30.0f);
+				C.Line(Top + FVector2D(-18.0f, 10.0f), Top, Paper, 5.0f);
+				C.Line(Top, Top + FVector2D(18.0f, 10.0f), Paper, 5.0f);
+				C.Line(Bottom + FVector2D(-18.0f, -10.0f), Bottom, Paper, 5.0f);
+				C.Line(Bottom, Bottom + FVector2D(18.0f, -10.0f), Paper, 5.0f);
+			}
+		}
+	}
+	else if (Screen == EChaosImpactScreen::OnlineStatus)
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		const FString Error = Sessions ? Sessions->GetCreateError() : FString();
+		const float E = EaseOut(T / 0.35f);
+		const FGeometry Band = MakeSkewed(DesignGeometry, -200.0f - (1.0f - E) * 400.0f, 300.0f, 2000.0f, 240.0f, -0.3f);
+		const FMenuPainter BandPainter{Band, OutDrawElements, BaseLayer + 2, E};
+		BandPainter.Box(0.0f, 0.0f, 2000.0f, 240.0f, FLinearColor(0.015f, 0.018f, 0.035f, 0.92f));
+		BandPainter.Box(0.0f, 0.0f, 2000.0f, 8.0f, Error.IsEmpty() ? Ice : Fire);
+		BandPainter.Box(0.0f, 232.0f, 2000.0f, 8.0f, Error.IsEmpty() ? Fire : Fire);
+		const FMenuPainter Label{DesignGeometry, OutDrawElements, BaseLayer + 3, E};
+		Label.Text(Error.IsEmpty() ? FString(TEXT("へやをつくっています")) : Error, 800.0f, 350.0f, 54.0f,
+			Error.IsEmpty() ? Paper : Fire, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+		Label.Text(FString::Printf(TEXT("あいことば  %s"), Sessions ? *Sessions->GetPassword() : TEXT("")),
+			800.0f, 450.0f, 30.0f, Muted, ETextAlign::Center);
+		if (Error.IsEmpty())
+		{
+			for (int32 Dot = 0; Dot < 8; ++Dot)
+			{
+				const float Angle = T * 5.0f + Dot * UE_TWO_PI / 8.0f;
+				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+				Label.Line(FVector2D(800.0f, 610.0f) + Direction * 26.0f, FVector2D(800.0f, 610.0f) + Direction * 44.0f,
+					WithAlpha(Dot == 0 ? Fire : Paper, 0.25f + 0.75f * Dot / 7.0f), 6.0f);
+			}
+		}
 	}
 	else if (Screen == EChaosImpactScreen::Pause)
 	{
@@ -820,7 +1122,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const float EntryIn = bFrontEnd ? EaseOut((T - 0.12f - 0.05f * Index) / 0.35f) : 1.0f;
 		const FSlateRect Rect = Entry.Rect.OffsetBy(FVector2D((1.0f - EntryIn) * 120.0f, 0.0f));
 		const bool bPressed = PressedIndex == Index;
-		if (Screen == EChaosImpactScreen::ModeSelect && Index < 2)
+		if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::MultiReady) && Index < 2)
 		{
 			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
 				Entry.Accent, Blend, bPressed, EntryIn, T, 118.0f, 0);
@@ -850,9 +1152,14 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	{
 		return;
 	}
+	if (Key != EKeys::Tab && HandlePasswordKey(Key))
+	{
+		return;
+	}
 	const bool bBack = Key == EKeys::Up || Key == EKeys::Left
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Left;
-	if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab)
+	if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::MultiReady)
+		&& Key != EKeys::Tab)
 	{
 		// A spatial grid: Solo/Multi above Back/Training.
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
@@ -866,6 +1173,16 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		SelectedIndex = (SelectedIndex + Entries.Num() + (bBack ? -1 : 1)) % Entries.Num();
 	}
 	PressedIndex = INDEX_NONE;
+	DisarmSelection();
+}
+
+void UChaosImpactMenuWidget::DisarmSelection()
+{
+	if (ArmedIndex != INDEX_NONE && ArmedIndex != SelectedIndex)
+	{
+		ArmedIndex = INDEX_NONE;
+		BuildEntries();
+	}
 }
 
 void UChaosImpactMenuWidget::ConfirmSelection()
@@ -911,12 +1228,65 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		break;
 	case EChaosImpactScreen::SoloReady:
-	case EChaosImpactScreen::MultiReady:
 		if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::TrainingSetup); }
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect); }
 		break;
+	case EChaosImpactScreen::MultiReady:
+		if (SelectedIndex == 0 || SelectedIndex == 1)
+		{
+			Controller->BeginOnlineFlow(SelectedIndex == 0);
+		}
+		else if (SelectedIndex == 2)
+		{
+			Controller->BeginOnlineRename();
+		}
+		else
+		{
+			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+		}
+		break;
+	case EChaosImpactScreen::OnlineName:
+		if (SelectedIndex == 0) { SubmitName(); } else { GoBack(); }
+		break;
+	case EChaosImpactScreen::OnlinePassword:
+		if (SelectedIndex == 0) { SubmitPassword(); } else { GoBack(); }
+		break;
+	case EChaosImpactScreen::OnlineStatus:
+		Controller->CancelOnlineStatus();
+		break;
 	case EChaosImpactScreen::Pause:
-		if (SelectedIndex == 0)
+		// Gameplay keeps running behind the online pause menu, so a throw click or dash press
+		// right as it opens must not activate anything.
+		if ((Controller->IsOnlineRoom() || Controller->IsSearchingForRoom())
+			&& FPlatformTime::Seconds() - ScreenStartedAt < 0.25)
+		{
+			break;
+		}
+		if ((Entries[SelectedIndex].Detail == TEXT("leave") || Entries[SelectedIndex].Detail == TEXT("stop_search"))
+			&& ArmedIndex != SelectedIndex)
+		{
+			ArmedIndex = SelectedIndex;
+			BuildEntries();
+			break;
+		}
+		if (Entries[SelectedIndex].Detail == TEXT("resume"))
+		{
+			Controller->ResumeGameplay();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("close_recruit"))
+		{
+			Controller->CloseRecruitment();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("leave"))
+		{
+			Controller->LeaveOnlineRoom();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("stop_search"))
+		{
+			Controller->StopRoomSearch();
+			Controller->ResumeGameplay();
+		}
+		else if (SelectedIndex == 0)
 		{
 			Controller->ResumeGameplay();
 		}
@@ -1037,6 +1407,13 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::ControllerAssignment:
 			Controller->ShowMenuScreen(Controller->GetControllerAssignmentReturnScreen());
 			break;
+		case EChaosImpactScreen::OnlineName:
+		case EChaosImpactScreen::OnlinePassword:
+			Controller->ShowMenuScreen(EChaosImpactScreen::MultiReady);
+			break;
+		case EChaosImpactScreen::OnlineStatus:
+			Controller->CancelOnlineStatus();
+			break;
 		default:
 			break;
 		}
@@ -1083,6 +1460,10 @@ FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
 	{
 		return FReply::Handled();
 	}
+	if (HandlePasswordKey(Key))
+	{
+		return FReply::Handled();
+	}
 	if (Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Left || Key == EKeys::Right
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Down
 		|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right || Key == EKeys::Tab)
@@ -1117,6 +1498,13 @@ FReply UChaosImpactMenuWidget::NativeOnPreviewKeyDown(
 		|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right)
 	{
 		return NativeOnKeyDown(InGeometry, InKeyEvent);
+	}
+	// The name field would otherwise swallow Escape; B also leaves while it has focus.
+	if (Screen == EChaosImpactScreen::OnlineName && !InKeyEvent.IsRepeat()
+		&& (Key == EKeys::Escape || Key == EKeys::Gamepad_FaceButton_Right))
+	{
+		GoBack();
+		return FReply::Handled();
 	}
 	return Super::NativeOnPreviewKeyDown(InGeometry, InKeyEvent);
 }
@@ -1178,6 +1566,7 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 		if (Hovered != INDEX_NONE)
 		{
 			SelectedIndex = Hovered;
+			DisarmSelection();
 		}
 	}
 	return FReply::Handled();
@@ -1202,6 +1591,21 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	if (!IsMenuMouseAllowed(this))
 	{
 		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::OnlinePassword && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		const FVector2D Point = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+		for (int32 Digit = 0; Digit < 4; ++Digit)
+		{
+			const FSlateRect Rect = PasswordDigitRect(Digit);
+			if (Rect.ContainsPoint(Point))
+			{
+				PasswordCursor = Digit;
+				const bool bUpper = Point.Y < (Rect.Top + Rect.Bottom) * 0.5f;
+				PasswordDigits[Digit] = (PasswordDigits[Digit] + (bUpper ? 1 : 9)) % 10;
+				return FReply::Handled();
+			}
+		}
 	}
 	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{

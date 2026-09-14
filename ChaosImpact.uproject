@@ -46,6 +46,18 @@
 			]
 		},
 		{
+			"Name": "OnlineSubsystem",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystemNull",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystemUtils",
+			"Enabled": true
+		},
+		{
 			"Name": "JoyShockLibrary4Unreal",
 			"Enabled": true,
 			"PlatformAllowList": [

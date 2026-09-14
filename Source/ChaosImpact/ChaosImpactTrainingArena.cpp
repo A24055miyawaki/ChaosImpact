@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactTrainingArena.h"
+#include "ChaosImpact.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -147,7 +148,7 @@ UStaticMeshComponent* AChaosImpactTrainingArena::CreateBlock(const FName& Name,
 void AChaosImpactTrainingArena::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!GetWorld() || !GetWorld()->URL.HasOption(TEXT("CITraining=1")))
+	if (!ChaosImpact::IsTrainingWorld(GetWorld()))
 	{
 		SetActorHiddenInGame(true);
 		SetActorEnableCollision(false);

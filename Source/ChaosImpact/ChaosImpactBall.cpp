@@ -10,6 +10,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Net/UnrealNetwork.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "UObject/ConstructorHelpers.h"
@@ -18,6 +19,10 @@ AChaosImpactBall::AChaosImpactBall()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = false;
+	// Online rooms: the server simulates every ball and clients follow its movement.
+	bReplicates = true;
+	SetReplicateMovement(true);
+	SetNetUpdateFrequency(60.0f);
 
 	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
 	SetRootComponent(CollisionSphere);
@@ -71,11 +76,40 @@ void AChaosImpactBall::BeginPlay()
 	{
 		CollisionSphere->IgnoreActorWhenMoving(OwningActor, true);
 	}
+	if (!HasAuthority())
+	{
+		// A client copy is purely visual: no local physics, projectile motion or hits.
+		ProjectileMovement->Deactivate();
+		CollisionSphere->SetSimulatePhysics(false);
+		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		SetActorTickEnabled(false);
+	}
+}
+
+void AChaosImpactBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AChaosImpactBall, bIsPickup);
+	DOREPLIFETIME(AChaosImpactBall, bIsRolling);
+}
+
+void AChaosImpactBall::MulticastContactBurst_Implementation(FVector_NetQuantize Location, FRotator Rotation)
+{
+	if (UNiagaraSystem* ContactBurst = LoadObject<UNiagaraSystem>(
+		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, ContactBurst,
+			Location, Rotation, FVector(ContactEffectScale));
+	}
 }
 
 void AChaosImpactBall::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (!HasAuthority())
+	{
+		return;
+	}
 	if (!bIsPickup)
 	{
 		FlightSeconds += DeltaSeconds;
@@ -204,6 +238,10 @@ bool AChaosImpactBall::WasThrownBy(const APawn* Pawn) const
 
 FVector AChaosImpactBall::GetBallVelocity() const
 {
+	if (!HasAuthority())
+	{
+		return GetVelocity();
+	}
 	return bIsRolling && CollisionSphere
 		? CollisionSphere->GetPhysicsLinearVelocity()
 		: ProjectileMovement ? ProjectileMovement->Velocity : FVector::ZeroVector;
@@ -239,7 +277,7 @@ void AChaosImpactBall::DropToGroundAsPickup()
 void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* OtherActor,
 	UPrimitiveComponent* OtherComponent, FVector NormalImpulse, const FHitResult& Hit)
 {
-	if (bIsPickup)
+	if (bIsPickup || !HasAuthority())
 	{
 		return;
 	}
@@ -255,12 +293,7 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 	{
 		// A compact contact flash is independent of the target/player elimination burst,
 		// so even non-lethal hits have immediate visual feedback.
-		if (UNiagaraSystem* ContactBurst = LoadObject<UNiagaraSystem>(
-			nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
-		{
-			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, ContactBurst,
-				Hit.ImpactPoint, Hit.ImpactNormal.Rotation(), FVector(ContactEffectScale));
-		}
+		MulticastContactBurst(Hit.ImpactPoint, Hit.ImpactNormal.Rotation());
 		const float AppliedDamage = UGameplayStatics::ApplyDamage(
 			OtherActor, Damage, GetInstigatorController(), this, nullptr);
 		if (AppliedDamage > 0.0f)
@@ -279,7 +312,7 @@ void AChaosImpactBall::HandlePickupOverlap(UPrimitiveComponent* OverlappedCompon
 	AActor* OtherActor, UPrimitiveComponent* OtherComponent, int32 OtherBodyIndex,
 	bool bFromSweep, const FHitResult& SweepResult)
 {
-	if (!IsPickupAvailable() || bPickupConsumed)
+	if (!HasAuthority() || !IsPickupAvailable() || bPickupConsumed)
 	{
 		return;
 	}
@@ -294,6 +327,10 @@ void AChaosImpactBall::HandlePickupOverlap(UPrimitiveComponent* OverlappedCompon
 
 void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVector& ImpactVelocity)
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
 	if (ImpactResult.GetActor() && ImpactResult.GetActor()->IsA<APawn>())
 	{
 		return;

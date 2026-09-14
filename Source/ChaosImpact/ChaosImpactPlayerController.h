@@ -101,6 +101,26 @@ public:
 	EChaosImpactScreen GetCurrentScreen() const { return CurrentScreen; }
 	UChaosImpactMenuWidget* GetMenuWidget() const { return MenuWidget; }
 	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
+
+	// LAN multiplayer rooms
+	/** Starts へやをつくる / へやをさがす; asks for a user name first if none was saved. */
+	void BeginOnlineFlow(bool bCreateRoom);
+	void BeginOnlineRename();
+	void SubmitOnlineName(const FString& Name);
+	void SubmitRoomPassword(const FString& Password);
+	void CancelOnlineStatus();
+	/** Host only: メンバー募集終了. Closes the room and starts the match countdown. */
+	void CloseRecruitment();
+	void LeaveOnlineRoom();
+	void StopRoomSearch();
+	bool IsOnlineRoom() const { return GetNetMode() != NM_Standalone; }
+	bool IsOnlineRoomHost() const { return GetNetMode() == NM_ListenServer; }
+	bool IsPendingCreateRoom() const { return bPendingCreateRoom; }
+	bool IsSearchingForRoom() const;
+	bool CanCloseRecruitment() const;
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetPlayerName(const FString& Name);
 	
 protected:
 	UPROPERTY(Transient)
@@ -129,6 +149,11 @@ protected:
 	TArray<int32> JoinedInputDeviceIds;
 	TArray<int32> JoinedLegacyControllerIds;
 	bool bTrainingOverlayPresentationActive = false;
+	bool bPendingCreateRoom = true;
+	bool bOnlineNameOnly = false;
+	/** Online rooms and room search accept keyboard and pad alike, following the last one used. */
+	bool bOnlineAnyInput = false;
+	bool bLastInputGamepad = false;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	EChaosImpactBallFlightMode BallFlightMode = EChaosImpactBallFlightMode::Arc;
@@ -151,7 +176,7 @@ protected:
 	void EnsureTrainingArena();
 	void EnsureTrainingBallSpawners();
 	void EnsureTrainingTargets();
-	void OpenTrainingLevel(bool bKeepFlightMode);
+	void OpenTrainingLevel(bool bKeepFlightMode, bool bOnlineSearch = false);
 	void ResetControllerJoinSequence();
 	void BuildFallbackControllerAssignments();
 	int32 GetPadIndexForPlayer(int32 PlayerIndex) const;

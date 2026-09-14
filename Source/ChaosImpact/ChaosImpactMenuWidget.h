@@ -6,6 +6,7 @@
 #include "ChaosImpactMenuWidget.generated.h"
 
 class UTexture2D;
+class UEditableText;
 
 /** Native, resolution-independent front end. All hit regions and D-pad focus share one layout. */
 UCLASS()
@@ -58,11 +59,32 @@ private:
 	EChaosImpactScreen Screen = EChaosImpactScreen::Title;
 	int32 SelectedIndex = 0;
 	int32 PressedIndex = INDEX_NONE;
+	/** Pause entries that leave the room/search need a second confirm on the same entry. */
+	int32 ArmedIndex = INDEX_NONE;
+	void DisarmSelection();
 	double ScreenStartedAt = 0.0;
 	float AnimationSeconds = 0.0f;
 	double LastAnalogNavigationAt = 0.0;
 	void BuildEntries();
 	int32 HitTestEntry(const FGeometry& Geometry, const FVector2D& ScreenPosition) const;
+
+	UFUNCTION()
+	void HandleNameCommitted(const FText& Text, ETextCommit::Type CommitMethod);
+	UFUNCTION()
+	void HandleNameChanged(const FText& Text);
+	void SubmitName();
+	void SubmitPassword();
+	FString GetPasswordString() const;
+	/** Digit editing on the password screen. Returns true when the key was consumed. */
+	bool HandlePasswordKey(const FKey& Key);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UEditableText> NameInput;
+	int32 PasswordDigits[4] = {0, 0, 0, 0};
+	int32 PasswordCursor = 0;
+	bool bNameFocusPending = false;
+	float NameInputFontScale = 0.0f;
+	FString LastCreateError;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> LogoTexture;

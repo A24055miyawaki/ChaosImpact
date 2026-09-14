@@ -4,6 +4,9 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactCPUController.h"
+#include "ChaosImpactGameState.h"
+#include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactTrainingTarget.h"
 
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
@@ -20,12 +23,35 @@
 
 AChaosImpactGameMode::AChaosImpactGameMode()
 {
-	// stub
+	GameStateClass = AChaosImpactGameState::StaticClass();
+	PlayerStateClass = AChaosImpactPlayerState::StaticClass();
 }
 
 void AChaosImpactGameMode::BeginPlay()
 {
 	Super::BeginPlay();
+	if (AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>(); RoomState && IsOnlineRoom())
+	{
+		RoomState->bOnlineRoom = true;
+		RoomState->Phase = EChaosImpactOnlinePhase::Lobby;
+		if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+		{
+			RoomState->RoomPassword = Sessions->GetPassword();
+		}
+		UpdateRoomMemberCount();
+
+		float OverrideSeconds = 0.0f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("CIMatchSeconds="), OverrideSeconds) && OverrideSeconds > 1.0f)
+		{
+			MatchDuration = OverrideSeconds;
+		}
+		float AutoStartSeconds = 0.0f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("CIAutoStartMatch="), AutoStartSeconds) && AutoStartSeconds > 0.0f)
+		{
+			GetWorldTimerManager().SetTimer(AutoStartMatchTimer, this,
+				&AChaosImpactGameMode::CloseRecruitment, AutoStartSeconds, false);
+		}
+	}
 	if (GetWorld() && GetWorld()->URL.HasOption(TEXT("CITraining=1")))
 	{
 		GetWorldTimerManager().SetTimerForNextTick(
@@ -378,6 +404,210 @@ void AChaosImpactGameMode::LogTrainingControllerRouting() const
 			PlayerIndex + 1, LocalPlayer->GetPlatformUserId().GetInternalId(),
 			LocalPlayer->GetControllerId(), *FString::Join(DeviceIds, TEXT(", ")),
 			PlayerIndex == TrainingKeyboardPlayerIndex ? TEXT(" + keyboard/mouse") : TEXT(""));
+	}
+}
+
+void AChaosImpactGameMode::PreLogin(const FString& Options, const FString& Address,
+	const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
+{
+	Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
+	const AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!ErrorMessage.IsEmpty() || !IsOnlineRoom() || !RoomState)
+	{
+		return;
+	}
+	// The client's session subsystem turns these codes into a readable notice.
+	if (RoomState->PlayerArray.Num() >= AChaosImpactGameState::MaxMembers)
+	{
+		ErrorMessage = TEXT("CIFULL");
+	}
+	else if (RoomState->bRecruitmentClosed || RoomState->Phase != EChaosImpactOnlinePhase::Lobby)
+	{
+		ErrorMessage = TEXT("CICLOSED");
+	}
+}
+
+void AChaosImpactGameMode::PostLogin(APlayerController* NewPlayer)
+{
+	if (AChaosImpactPlayerState* Member = NewPlayer ? NewPlayer->GetPlayerState<AChaosImpactPlayerState>() : nullptr)
+	{
+		Member->bRoomHost = NewPlayer->IsLocalController();
+		Member->JoinOrder = Member->bRoomHost ? 0 : NextJoinOrder++;
+	}
+	Super::PostLogin(NewPlayer);
+	if (!IsOnlineRoom())
+	{
+		return;
+	}
+	if (AChaosImpactCharacter* Character = NewPlayer ? Cast<AChaosImpactCharacter>(NewPlayer->GetPawn()) : nullptr)
+	{
+		Character->SetTrainingStartTransform(Character->GetActorLocation(), Character->GetActorRotation());
+	}
+	UpdateRoomMemberCount();
+}
+
+void AChaosImpactGameMode::Logout(AController* Exiting)
+{
+	Super::Logout(Exiting);
+	if (IsOnlineRoom())
+	{
+		GetWorldTimerManager().SetTimerForNextTick(this, &AChaosImpactGameMode::UpdateRoomMemberCount);
+	}
+}
+
+APawn* AChaosImpactGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
+{
+	if (!IsOnlineRoom() || !StartSpot || !GetWorld())
+	{
+		return Super::SpawnDefaultPawnFor_Implementation(NewPlayer, StartSpot);
+	}
+	if (!bHasRoomAnchor)
+	{
+		RoomAnchor = StartSpot->GetActorLocation();
+		bHasRoomAnchor = true;
+	}
+	// Members appear in a ring around the start point instead of stacking on it.
+	const AChaosImpactPlayerState* Member = NewPlayer ? NewPlayer->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	const int32 Order = Member ? Member->JoinOrder : 0;
+	const FVector Offset = Order == 0 ? FVector::ZeroVector
+		: FVector(260.0f, 0.0f, 0.0f).RotateAngleAxis(Order * 51.0f, FVector::UpVector);
+	const FTransform SpawnTransform(FRotator(0.0f, StartSpot->GetActorRotation().Yaw, 0.0f), RoomAnchor + Offset);
+	FActorSpawnParameters Parameters;
+	Parameters.Instigator = GetInstigator();
+	Parameters.ObjectFlags |= RF_Transient;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	return GetWorld()->SpawnActor<APawn>(GetDefaultPawnClassForController(NewPlayer), SpawnTransform, Parameters);
+}
+
+FVector AChaosImpactGameMode::GetRoomAnchor() const
+{
+	if (bHasRoomAnchor)
+	{
+		return RoomAnchor;
+	}
+	const UGameInstance* GameInstance = GetGameInstance();
+	const APlayerController* Host = GameInstance ? GameInstance->GetFirstLocalPlayerController(GetWorld()) : nullptr;
+	return Host && Host->GetPawn() ? Host->GetPawn()->GetActorLocation() : FVector::ZeroVector;
+}
+
+void AChaosImpactGameMode::UpdateRoomMemberCount()
+{
+	const AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this); Sessions && RoomState)
+	{
+		Sessions->SetMemberCount(RoomState->PlayerArray.Num());
+	}
+}
+
+void AChaosImpactGameMode::CloseRecruitment()
+{
+	AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!IsOnlineRoom() || !RoomState || RoomState->bRecruitmentClosed)
+	{
+		return;
+	}
+	RoomState->bRecruitmentClosed = true;
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->SetRecruitmentOpen(false);
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Room recruitment closed with %d members"), RoomState->PlayerArray.Num());
+}
+
+void AChaosImpactGameMode::StartOnlineMatch()
+{
+	AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!IsOnlineRoom() || !RoomState || RoomState->Phase != EChaosImpactOnlinePhase::Lobby)
+	{
+		return;
+	}
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->SetRecruitmentOpen(false);
+	}
+	RoomState->Phase = EChaosImpactOnlinePhase::Countdown;
+	RoomState->PhaseEndsAt = RoomState->GetServerWorldTimeSeconds() + MatchCountdownSeconds;
+	GetWorldTimerManager().SetTimer(OnlinePhaseTimer, this,
+		&AChaosImpactGameMode::BeginOnlineMatch, MatchCountdownSeconds, false);
+}
+
+void AChaosImpactGameMode::BeginOnlineMatch()
+{
+	AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!RoomState)
+	{
+		return;
+	}
+	SyncTrainingCPUCount(0, FVector::ZeroVector, FRotator::ZeroRotator);
+	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
+	{
+		It->SetTrainingEnabled(false);
+	}
+
+	const FVector Anchor = GetRoomAnchor();
+	const TArray<AChaosImpactPlayerState*> Members = RoomState->GetMembersInJoinOrder();
+	for (int32 Index = 0; Index < Members.Num(); ++Index)
+	{
+		AChaosImpactPlayerState* Member = Members[Index];
+		Member->Knockouts = 0;
+		AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Member->GetPawn());
+		if (!Character)
+		{
+			continue;
+		}
+		const float Angle = 360.0f * Index / FMath::Max(Members.Num(), 2);
+		const FVector Location = Anchor + FVector(1100.0f, 0.0f, 0.0f).RotateAngleAxis(Angle, FVector::UpVector);
+		const FRotator Facing(0.0f, (Anchor - Location).Rotation().Yaw, 0.0f);
+		Character->ResetForOnlineMatch(Location, Facing);
+	}
+	RoomState->Phase = EChaosImpactOnlinePhase::Match;
+	RoomState->PhaseEndsAt = RoomState->GetServerWorldTimeSeconds() + MatchDuration;
+	GetWorldTimerManager().SetTimer(OnlinePhaseTimer, this,
+		&AChaosImpactGameMode::EndOnlineMatch, MatchDuration, false);
+}
+
+void AChaosImpactGameMode::EndOnlineMatch()
+{
+	AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!RoomState)
+	{
+		return;
+	}
+	RoomState->Phase = EChaosImpactOnlinePhase::Results;
+	RoomState->PhaseEndsAt = RoomState->GetServerWorldTimeSeconds() + ResultsSeconds;
+	GetWorldTimerManager().SetTimer(OnlinePhaseTimer, this,
+		&AChaosImpactGameMode::ReturnToOnlineLobby, ResultsSeconds, false);
+}
+
+void AChaosImpactGameMode::ReturnToOnlineLobby()
+{
+	AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!RoomState)
+	{
+		return;
+	}
+	RoomState->Phase = EChaosImpactOnlinePhase::Lobby;
+	RoomState->PhaseEndsAt = 0.0;
+	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
+	{
+		It->SetTrainingEnabled(true);
+	}
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->SetRecruitmentOpen(true);
+	}
+}
+
+void AChaosImpactGameMode::RegisterKnockout(AController* Killer)
+{
+	const AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!RoomState || RoomState->Phase != EChaosImpactOnlinePhase::Match || !Killer)
+	{
+		return;
+	}
+	if (AChaosImpactPlayerState* Member = Killer->GetPlayerState<AChaosImpactPlayerState>())
+	{
+		++Member->Knockouts;
 	}
 }
 

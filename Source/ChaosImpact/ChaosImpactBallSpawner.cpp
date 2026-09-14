@@ -1,6 +1,7 @@
 #include "ChaosImpactBallSpawner.h"
 
 #include "ChaosImpactBall.h"
+#include "ChaosImpact.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -40,19 +41,23 @@ AChaosImpactBallSpawner::AChaosImpactBallSpawner()
 void AChaosImpactBallSpawner::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!GetWorld() || !GetWorld()->URL.HasOption(TEXT("CITraining=1")))
+	if (!ChaosImpact::IsTrainingWorld(GetWorld()))
 	{
 		SetActorHiddenInGame(true);
 		SetActorEnableCollision(false);
 		return;
 	}
-	GetWorldTimerManager().SetTimer(SpawnTimer, this,
-		&AChaosImpactBallSpawner::TrySpawnBall, RespawnInterval, true, 0.2f);
+	// Balls are replicated actors, so only the server (or a standalone game) spawns them.
+	if (HasAuthority())
+	{
+		GetWorldTimerManager().SetTimer(SpawnTimer, this,
+			&AChaosImpactBallSpawner::TrySpawnBall, RespawnInterval, true, 0.2f);
+	}
 }
 
 void AChaosImpactBallSpawner::TrySpawnBall()
 {
-	if (!GetWorld() || !BallClass || ActiveBall.IsValid())
+	if (!GetWorld() || !HasAuthority() || !BallClass || ActiveBall.IsValid())
 	{
 		return;
 	}

@@ -29,6 +29,7 @@ class AChaosImpactBall : public AActor
 public:
 	AChaosImpactBall();
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Launches with either the original level flight or a gravity-driven arc. */
 	void Launch(const FVector& Direction, float Speed,
@@ -75,6 +76,10 @@ protected:
 		const FHitResult& SweepResult);
 	void DropToGroundAsPickup();
 
+	/** Contact flash on every machine; gameplay resolution itself stays on the server. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastContactBurst(FVector_NetQuantize Location, FRotator Rotation);
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
 	TObjectPtr<USphereComponent> CollisionSphere;
 
@@ -111,10 +116,10 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	EChaosImpactBallFlightMode ActiveFlightMode = EChaosImpactBallFlightMode::Arc;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
+	UPROPERTY(VisibleInstanceOnly, Replicated, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	bool bIsPickup = false;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
+	UPROPERTY(VisibleInstanceOnly, Replicated, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	bool bIsRolling = false;
 
 	FVector PickupBaseLocation = FVector::ZeroVector;

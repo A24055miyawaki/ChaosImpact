@@ -2,7 +2,11 @@
 
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactGameMode.h"
+#include "ChaosImpactGameState.h"
 #include "ChaosImpactPaint.h"
+#include "ChaosImpactSessionSubsystem.h"
+#include "GameFramework/PlayerState.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -282,6 +286,19 @@ void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const flo
 	RefreshPersonalAimGuide();
 	RefreshSplitScreenDividers();
 	RefreshBallPickupAnimation();
+
+	if (const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+		Room && Room->bOnlineRoom)
+	{
+		const double Now = FPlatformTime::Seconds();
+		for (APlayerState* Member : Room->PlayerArray)
+		{
+			if (Member && !MemberSeenAt.Contains(Member))
+			{
+				MemberSeenAt.Add(Member, Now);
+			}
+		}
+	}
 }
 
 void UChaosImpactChargeWidget::RefreshBallPickupAnimation()
@@ -715,5 +732,192 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 				290.0f, 5.0f, 24.0f, Gold, ETextAlign::Right, TEXT("BlackItalic"));
 		}
 	}
-	return BaseLayer + 6;
+	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
+	return BaseLayer + 10;
+}
+
+void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeometry,
+	FSlateWindowElementList& OutDrawElements, const int32 BaseLayer) const
+{
+	using namespace ChaosImpactPaint;
+
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const double Clock = FPlatformTime::Seconds();
+	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f);
+	const FGeometry TopLeft = MakeAnchor(AllottedGeometry, 0.0f, 0.0f, S);
+	const FGeometry Center = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.5f, S);
+	const FGeometry TopCenter = MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, S);
+	static const FLinearColor MemberColors[] = {Ice, Fire, Gold, Violet,
+		FLinearColor(0.1f, 0.85f, 0.35f), FLinearColor(1.0f, 0.45f, 0.05f),
+		FLinearColor(1.0f, 0.3f, 0.7f), FLinearColor(0.2f, 0.95f, 0.9f)};
+
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	float NoticeY = 40.0f;
+
+	// Searching for a room while waiting in local training.
+	if (Sessions && (!Room || !Room->bOnlineRoom)
+		&& (Sessions->GetState() == EChaosImpactRoomState::Searching || Sessions->GetState() == EChaosImpactRoomState::Joining))
+	{
+		const bool bJoining = Sessions->GetState() == EChaosImpactRoomState::Joining;
+		const FGeometry Chip = MakeSkewed(TopLeft, 40.0f, 40.0f, 560.0f, 84.0f, -0.25f);
+		const FPainter P{Chip, OutDrawElements, BaseLayer};
+		P.Box(8.0f, 9.0f, 560.0f, 84.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		P.Box(0.0f, 0.0f, 560.0f, 84.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
+		P.Box(0.0f, 0.0f, 12.0f, 84.0f, bJoining ? Gold : Fire);
+		P.Text(bJoining ? TEXT("へやに入ります") : TEXT("へやをさがしています"), 40.0f, 6.0f, 30.0f, Paper);
+		P.Text(FString::Printf(TEXT("あいことば  %s"), *Sessions->GetPassword()), 42.0f, 48.0f, 20.0f, Muted);
+		const FVector2D SpinCenter(510.0f, 42.0f);
+		for (int32 Dot = 0; Dot < 6; ++Dot)
+		{
+			const float Angle = static_cast<float>(Clock) * 6.0f + Dot * UE_TWO_PI / 6.0f;
+			const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+			P.Line(SpinCenter + Direction * 12.0f, SpinCenter + Direction * 22.0f,
+				WithAlpha(Paper, 0.2f + 0.8f * Dot / 5.0f), 5.0f);
+		}
+		NoticeY = 144.0f;
+	}
+
+	// Room notices such as "the room was dissolved".
+	if (Sessions && !Sessions->GetNotice().IsEmpty() && Clock - Sessions->GetNoticeTime() < 4.0)
+	{
+		const float Age = static_cast<float>(Clock - Sessions->GetNoticeTime());
+		const float Alpha = EaseOut(Age / 0.25f) * FMath::Clamp((4.0f - Age) / 0.4f, 0.0f, 1.0f);
+		const FGeometry Chip = MakeSkewed(TopLeft, 40.0f, NoticeY, 520.0f, 60.0f, -0.25f);
+		const FPainter P{Chip, OutDrawElements, BaseLayer, Alpha};
+		P.Box(0.0f, 0.0f, 520.0f, 60.0f, WithAlpha(Fire, 0.92f));
+		P.Text(Sessions->GetNotice(), 30.0f, 10.0f, 28.0f, Paper);
+	}
+
+	if (!Room || !Room->bOnlineRoom)
+	{
+		return;
+	}
+	const TArray<AChaosImpactPlayerState*> Members = Room->GetMembersInJoinOrder();
+	const APlayerState* Self = GetOwningPlayer() ? GetOwningPlayer()->GetPlayerState<APlayerState>() : nullptr;
+
+	// Member list: host at the top, then everyone in the order they came in.
+	if (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Countdown)
+	{
+		const FGeometry Header = MakeSkewed(TopLeft, 40.0f, 36.0f, 380.0f, 56.0f, -0.25f);
+		const FPainter H{Header, OutDrawElements, BaseLayer};
+		H.Box(0.0f, 0.0f, 380.0f, 56.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
+		H.Box(0.0f, 52.0f, 380.0f, 4.0f, Ice);
+		H.Text(FString::Printf(TEXT("へや  %s"), *Room->RoomPassword), 24.0f, 8.0f, 28.0f, Paper);
+		if (Room->bRecruitmentClosed)
+		{
+			// Sits just outside the header so it never covers the password or member count.
+			H.Box(396.0f, 8.0f, 112.0f, 40.0f, Fire);
+			H.Text(TEXT("募集終了"), 452.0f, 10.0f, 24.0f, Paper, ETextAlign::Center);
+		}
+		H.Text(FString::Printf(TEXT("%d/%d"), Members.Num(), AChaosImpactGameState::MaxMembers), 360.0f, 6.0f, 32.0f,
+			Members.Num() >= AChaosImpactGameState::MaxMembers ? Fire : Gold, ETextAlign::Right);
+
+		for (int32 Index = 0; Index < Members.Num(); ++Index)
+		{
+			const AChaosImpactPlayerState* Member = Members[Index];
+			const double* SeenAt = MemberSeenAt.Find(Member);
+			const float Age = SeenAt ? static_cast<float>(Clock - *SeenAt) : 1.0f;
+			const float In = EaseOut(Age / 0.3f);
+			const FLinearColor Color = MemberColors[FMath::Abs(Member->JoinOrder) % 8];
+			const FGeometry Row = MakeSkewed(TopLeft, 40.0f - (1.0f - In) * 420.0f, 104.0f + Index * 52.0f,
+				380.0f, 44.0f, -0.25f);
+			const FPainter R{Row, OutDrawElements, BaseLayer, In};
+			R.Box(6.0f, 6.0f, 380.0f, 44.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+			R.Box(0.0f, 0.0f, 380.0f, 44.0f, FLinearColor(0.02f, 0.026f, 0.045f, 0.9f));
+			R.Box(0.0f, 0.0f, 16.0f, 44.0f, Color);
+			R.Text(Member->GetPlayerName(), 34.0f, 5.0f, 26.0f, Paper);
+			if (Member->bRoomHost)
+			{
+				R.Box(296.0f, 9.0f, 70.0f, 26.0f, Gold);
+				R.Text(TEXT("HOST"), 331.0f, 8.0f, 18.0f, Ink, ETextAlign::Center);
+			}
+			if (Member == Self)
+			{
+				R.Outline(-3.0f, -3.0f, 386.0f, 50.0f, WithAlpha(Paper, 0.85f), 2.0f);
+			}
+			if (Age < 0.45f)
+			{
+				R.Box(0.0f, 0.0f, 380.0f, 44.0f, WithAlpha(Paper, 0.8f * (1.0f - Age / 0.45f)));
+			}
+		}
+	}
+
+	if (Room->Phase == EChaosImpactOnlinePhase::Countdown)
+	{
+		const float Remaining = Room->GetPhaseRemainingSeconds();
+		const int32 Number = FMath::Max(1, FMath::CeilToInt(Remaining));
+		const float Pop = 1.0f - (static_cast<float>(Number) - Remaining);
+		const FGeometry NumberSpace = MakeSkewed(Center, -200.0f, -160.0f, 400.0f, 300.0f, -0.2f,
+			1.0f + 0.8f * FMath::Clamp(Pop - 0.75f, 0.0f, 1.0f) * 4.0f);
+		const FPainter N{NumberSpace, OutDrawElements, BaseLayer + 2};
+		N.Text(FString::FromInt(Number), 200.0f, 0.0f, 220.0f, Paper, ETextAlign::Center, TEXT("Black"), 7.0f, Fire);
+		const FPainter Title{Center, OutDrawElements, BaseLayer + 2};
+		Title.Text(TEXT("メンバー募集終了"), 0.0f, 150.0f, 40.0f, Gold, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+	}
+
+	if (Room->Phase == EChaosImpactOnlinePhase::Match)
+	{
+		const float Remaining = Room->GetPhaseRemainingSeconds();
+		const int32 Seconds = FMath::CeilToInt(Remaining);
+		const bool bHurry = Remaining <= 10.0f;
+		const FGeometry Plate = MakeSkewed(TopCenter, -170.0f, 24.0f, 340.0f, 90.0f, -0.25f,
+			bHurry ? 1.0f + 0.05f * FMath::Sin(static_cast<float>(Clock) * 12.0f) : 1.0f);
+		const FPainter P{Plate, OutDrawElements, BaseLayer};
+		P.Box(8.0f, 9.0f, 340.0f, 90.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		P.Box(0.0f, 0.0f, 340.0f, 90.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
+		P.Box(0.0f, 84.0f, 340.0f, 6.0f, bHurry ? Fire : Ice);
+		P.Text(FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 170.0f, 4.0f, 60.0f,
+			bHurry ? Fire : Paper, ETextAlign::Center);
+		if (const AChaosImpactPlayerState* Own = Cast<AChaosImpactPlayerState>(Self))
+		{
+			const FGeometry KO = MakeSkewed(TopCenter, 190.0f, 34.0f, 170.0f, 64.0f, -0.25f);
+			const FPainter K{KO, OutDrawElements, BaseLayer};
+			K.Box(0.0f, 0.0f, 170.0f, 64.0f, Fire);
+			K.Text(FString::Printf(TEXT("KO %d"), Own->Knockouts), 85.0f, 6.0f, 40.0f, Paper, ETextAlign::Center);
+		}
+		const float Elapsed = AChaosImpactGameMode::MatchSeconds - Remaining;
+		if (Elapsed < 1.0f)
+		{
+			const FGeometry Start = MakeSkewed(Center, -500.0f, -110.0f, 1000.0f, 220.0f, -0.2f,
+				FMath::Lerp(1.6f, 1.0f, EaseOut(Elapsed / 0.2f)));
+			const FPainter St{Start, OutDrawElements, BaseLayer + 2, 1.0f - FMath::Clamp((Elapsed - 0.7f) / 0.3f, 0.0f, 1.0f)};
+			St.Text(TEXT("START!"), 500.0f, 10.0f, 170.0f, Gold, ETextAlign::Center, TEXT("Black"), 7.0f, Ink);
+		}
+	}
+
+	if (Room->Phase == EChaosImpactOnlinePhase::Results)
+	{
+		TArray<AChaosImpactPlayerState*> Ranking = Members;
+		Ranking.StableSort([](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B)
+		{
+			return A.Knockouts > B.Knockouts;
+		});
+		const FPainter Dim{AllottedGeometry, OutDrawElements, BaseLayer};
+		Dim.Box(0.0f, 0.0f, Size.X, Size.Y, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		const FPainter T{Center, OutDrawElements, BaseLayer + 1};
+		T.Text(TEXT("RESULT"), 0.0f, -380.0f, 90.0f, Paper, ETextAlign::Center, TEXT("Black"), 5.0f, Fire);
+		int32 Rank = 0;
+		for (int32 Index = 0; Index < Ranking.Num(); ++Index)
+		{
+			if (Index == 0 || Ranking[Index]->Knockouts != Ranking[Index - 1]->Knockouts)
+			{
+				Rank = Index + 1;
+			}
+			const FLinearColor Color = MemberColors[FMath::Abs(Ranking[Index]->JoinOrder) % 8];
+			const FGeometry Row = MakeSkewed(Center, -380.0f, -250.0f + Index * 66.0f, 760.0f, 56.0f, -0.25f);
+			const FPainter R{Row, OutDrawElements, BaseLayer + 1};
+			R.Box(0.0f, 0.0f, 760.0f, 56.0f, Rank == 1 ? WithAlpha(Gold, 0.95f) : FLinearColor(0.02f, 0.026f, 0.045f, 0.92f));
+			R.Box(0.0f, 0.0f, 16.0f, 56.0f, Color);
+			const FLinearColor TextColor = Rank == 1 ? Ink : Paper;
+			R.Text(FString::Printf(TEXT("%d位"), Rank), 40.0f, 8.0f, 32.0f, TextColor);
+			R.Text(Ranking[Index]->GetPlayerName(), 150.0f, 8.0f, 32.0f, TextColor);
+			R.Text(FString::Printf(TEXT("KO %d"), Ranking[Index]->Knockouts), 740.0f, 8.0f, 32.0f, TextColor,
+				ETextAlign::Right);
+			if (Ranking[Index] == Self)
+			{
+				R.Outline(-4.0f, -4.0f, 768.0f, 64.0f, Paper, 3.0f);
+			}
+		}
+	}
 }

@@ -26,7 +26,10 @@ public class ChaosImpact : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
-			"JoyShockLibrary4Unreal"
+			"JoyShockLibrary4Unreal",
+			"NetCore",
+			"OnlineSubsystem",
+			"OnlineSubsystemUtils"
 		});
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.

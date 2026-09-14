@@ -28,6 +28,7 @@ public:
 	AChaosImpactTrainingTarget();
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
 		AController* EventInstigator, AActor* DamageCauser) override;
 
@@ -52,6 +53,14 @@ private:
 	void Defeat(const FVector& ImpactPoint);
 	void RespawnTarget();
 	void SetTargetVisible(bool bVisible);
+	void ApplyTrainingEnabled();
+
+	/** Plays the fall/burst on the server and every client; each side then respawns locally. */
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastDefeat(FVector_NetQuantize ImpactPoint);
+
+	UFUNCTION()
+	void OnRep_TrainingEnabled();
 
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -106,6 +115,7 @@ private:
 	FVector ImpactLocalLocation = FVector(0.0f, 0.0f, 132.0f);
 	bool bDefeated = false;
 	bool bRespawning = false;
+	UPROPERTY(ReplicatedUsing=OnRep_TrainingEnabled)
 	bool bTrainingEnabled = true;
 	FTimerHandle RespawnTimer;
 };

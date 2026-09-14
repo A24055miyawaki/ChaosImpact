@@ -7,6 +7,7 @@
 #include "Components/SphereComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
@@ -19,10 +20,13 @@ AChaosImpactBall::AChaosImpactBall()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = false;
-	// Online rooms: the server simulates every ball and clients follow its movement.
+	// Online rooms: the server simulates every ball. Engine movement replication is not used:
+	// it snaps clients between updates and forces client physics on for rolling balls.
+	// NetState carries position + velocity instead, and clients predict and smooth locally.
 	bReplicates = true;
-	SetReplicateMovement(true);
+	SetReplicateMovement(false);
 	SetNetUpdateFrequency(60.0f);
+	SetMinNetUpdateFrequency(30.0f);
 
 	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
 	SetRootComponent(CollisionSphere);
@@ -79,10 +83,11 @@ void AChaosImpactBall::BeginPlay()
 	if (!HasAuthority())
 	{
 		// A client copy is purely visual: no local physics, projectile motion or hits.
+		// It still ticks to predict and smooth its displayed position.
 		ProjectileMovement->Deactivate();
 		CollisionSphere->SetSimulatePhysics(false);
 		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		SetActorTickEnabled(false);
+		SetActorTickEnabled(true);
 	}
 }
 
@@ -91,6 +96,168 @@ void AChaosImpactBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactBall, bIsPickup);
 	DOREPLIFETIME(AChaosImpactBall, bIsRolling);
+	DOREPLIFETIME(AChaosImpactBall, NetState);
+}
+
+namespace
+{
+	enum class EChaosImpactBallNetMode : uint8 { Held, Straight, Arc, Rolling, Hover };
+
+	constexpr float MaxFlightExtrapolationSeconds = 0.15f;
+	constexpr float MaxRollingExtrapolationSeconds = 0.1f;
+	constexpr float ClientErrorDecayRate = 14.0f;
+	constexpr float ClientSnapDistance = 400.0f;
+	constexpr float HoverFrequency = 2.2f;
+	constexpr float HoverHeight = 7.0f;
+	constexpr float HoverYawSpeed = 55.0f;
+}
+
+double AChaosImpactBall::GetServerNow() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	return GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+}
+
+void AChaosImpactBall::UpdateNetState()
+{
+	if (!HasAuthority() || GetNetMode() == NM_Standalone || !GetWorld())
+	{
+		return;
+	}
+	FChaosImpactBallNetState NewState;
+	NewState.ServerTime = GetServerNow();
+	NewState.Location = GetActorLocation();
+	if (GetAttachParentActor())
+	{
+		NewState.Mode = static_cast<uint8>(EChaosImpactBallNetMode::Held);
+	}
+	else if (bIsPickup && !bIsRolling)
+	{
+		NewState.Mode = static_cast<uint8>(EChaosImpactBallNetMode::Hover);
+		NewState.Location = PickupBaseLocation;
+		// A hovering ball does not move; resending it every tick would only waste bandwidth.
+		if (NetState.Mode == NewState.Mode && NetState.Location.Equals(NewState.Location, 1.0f))
+		{
+			return;
+		}
+	}
+	else if (bIsRolling)
+	{
+		NewState.Mode = static_cast<uint8>(EChaosImpactBallNetMode::Rolling);
+		NewState.Velocity = CollisionSphere->GetPhysicsLinearVelocity();
+	}
+	else
+	{
+		NewState.Mode = static_cast<uint8>(ActiveFlightMode == EChaosImpactBallFlightMode::Arc
+			? EChaosImpactBallNetMode::Arc : EChaosImpactBallNetMode::Straight);
+		NewState.Velocity = ProjectileMovement->Velocity;
+	}
+	NetState = NewState;
+}
+
+FVector AChaosImpactBall::PredictNetLocation(const double ServerNow) const
+{
+	const FVector Start = NetState.Location;
+	const FVector Velocity = NetState.Velocity;
+	const float Elapsed = static_cast<float>(ServerNow - NetState.ServerTime);
+	switch (static_cast<EChaosImpactBallNetMode>(NetState.Mode))
+	{
+	case EChaosImpactBallNetMode::Rolling:
+	{
+		const float Seconds = FMath::Clamp(Elapsed, 0.0f, MaxRollingExtrapolationSeconds);
+		return Start + FVector(Velocity.X, Velocity.Y, 0.0f) * Seconds;
+	}
+	case EChaosImpactBallNetMode::Straight:
+	case EChaosImpactBallNetMode::Arc:
+	{
+		const bool bArc = NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Arc);
+		const float Seconds = FMath::Clamp(Elapsed, 0.0f, MaxFlightExtrapolationSeconds);
+		FVector End = Start + Velocity * Seconds;
+		if (bArc && GetWorld())
+		{
+			End.Z += 0.5f * GetWorld()->GetGravityZ() * Seconds * Seconds;
+		}
+		// Do not extrapolate through walls: mirror off the first blocking surface like the server does.
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactBallPredict), false, this);
+		const float Radius = CollisionSphere->GetScaledSphereRadius();
+		if (GetWorld() && GetWorld()->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, ECC_WorldStatic,
+			FCollisionShape::MakeSphere(Radius), Params) && !Hit.bStartPenetrating)
+		{
+			if (bArc && Hit.ImpactNormal.Z > 0.65f)
+			{
+				return Hit.Location;
+			}
+			FVector Remaining = FMath::GetReflectionVector(End - Hit.Location, Hit.ImpactNormal);
+			if (!bArc)
+			{
+				Remaining.Z = 0.0f;
+			}
+			return Hit.Location + Remaining;
+		}
+		return End;
+	}
+	case EChaosImpactBallNetMode::Held:
+	case EChaosImpactBallNetMode::Hover:
+	default:
+		return Start;
+	}
+}
+
+void AChaosImpactBall::OnRep_NetState()
+{
+	if (NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Hover))
+	{
+		ClientHoverTime = 0.0f;
+	}
+	if (!bClientHasPresentation || GetAttachParentActor())
+	{
+		return;
+	}
+	// Keep the displayed ball where it is and blend the correction away over a few frames.
+	ClientErrorOffset = GetActorLocation() - PredictNetLocation(GetServerNow());
+	if (ClientErrorOffset.SizeSquared() > FMath::Square(ClientSnapDistance))
+	{
+		ClientErrorOffset = FVector::ZeroVector;
+	}
+}
+
+void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
+{
+	if (GetAttachParentActor())
+	{
+		// Held in a hand: attachment replication positions it. Blend out from the hand on release.
+		bClientHasPresentation = false;
+		return;
+	}
+	if (NetState.ServerTime <= 0.0)
+	{
+		return;
+	}
+	FVector Desired = PredictNetLocation(GetServerNow());
+	const bool bHover = NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Hover);
+	if (bHover)
+	{
+		ClientHoverTime += DeltaSeconds;
+		Desired.Z += FMath::Sin(ClientHoverTime * HoverFrequency) * HoverHeight;
+		AddActorLocalRotation(FRotator(0.0f, DeltaSeconds * HoverYawSpeed, 0.0f));
+	}
+	if (!bClientHasPresentation)
+	{
+		bClientHasPresentation = true;
+		ClientErrorOffset = GetActorLocation() - Desired;
+		if (ClientErrorOffset.SizeSquared() > FMath::Square(ClientSnapDistance))
+		{
+			ClientErrorOffset = FVector::ZeroVector;
+		}
+	}
+	ClientErrorOffset *= FMath::Exp(-ClientErrorDecayRate * DeltaSeconds);
+	SetActorLocation(Desired + ClientErrorOffset);
 }
 
 void AChaosImpactBall::MulticastContactBurst_Implementation(FVector_NetQuantize Location, FRotator Rotation)
@@ -108,6 +275,7 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	if (!HasAuthority())
 	{
+		TickClientPresentation(DeltaSeconds);
 		return;
 	}
 	if (!bIsPickup)
@@ -117,17 +285,15 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 		{
 			DropToGroundAsPickup();
 		}
-		return;
 	}
-	if (bIsRolling)
+	else if (!bIsRolling)
 	{
-		return;
+		PickupAnimationTime += DeltaSeconds;
+		const float Hover = FMath::Sin(PickupAnimationTime * HoverFrequency) * HoverHeight;
+		SetActorLocation(PickupBaseLocation + FVector::UpVector * Hover);
+		AddActorLocalRotation(FRotator(0.0f, DeltaSeconds * HoverYawSpeed, 0.0f));
 	}
-
-	PickupAnimationTime += DeltaSeconds;
-	const float Hover = FMath::Sin(PickupAnimationTime * 2.2f) * 7.0f;
-	SetActorLocation(PickupBaseLocation + FVector::UpVector * Hover);
-	AddActorLocalRotation(FRotator(0.0f, DeltaSeconds * 55.0f, 0.0f));
+	UpdateNetState();
 }
 
 void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
@@ -160,6 +326,7 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	ProjectileMovement->Friction = bArc ? 0.12f : 0.0f;
 	ProjectileMovement->Velocity = HorizontalDirection.GetSafeNormal() * Speed
 		+ (bArc ? FVector::UpVector * ArcUpwardSpeed : FVector::ZeroVector);
+	UpdateNetState();
 }
 
 void AChaosImpactBall::PrepareForAnimatedThrow(USceneComponent* HandParent,
@@ -178,6 +345,7 @@ void AChaosImpactBall::PrepareForAnimatedThrow(USceneComponent* HandParent,
 		HandSocket);
 	SetActorRelativeLocation(RelativeLocation);
 	SetActorRelativeRotation(RelativeRotation);
+	UpdateNetState();
 }
 
 void AChaosImpactBall::MakePickup()
@@ -198,6 +366,7 @@ void AChaosImpactBall::MakePickup()
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	CollisionSphere->SetGenerateOverlapEvents(true);
 	SetActorTickEnabled(true);
+	UpdateNetState();
 }
 
 void AChaosImpactBall::MakeRollingPickup(const FVector& ImpactVelocity)
@@ -229,6 +398,7 @@ void AChaosImpactBall::MakeRollingPickup(const FVector& ImpactVelocity)
 	const FVector AngularVelocity = FVector::CrossProduct(FVector::UpVector, RollingVelocity) / Radius;
 	CollisionSphere->SetPhysicsAngularVelocityInRadians((AngularVelocity));
 	SetActorTickEnabled(true);
+	UpdateNetState();
 }
 
 bool AChaosImpactBall::WasThrownBy(const APawn* Pawn) const
@@ -240,7 +410,7 @@ FVector AChaosImpactBall::GetBallVelocity() const
 {
 	if (!HasAuthority())
 	{
-		return GetVelocity();
+		return NetState.Velocity;
 	}
 	return bIsRolling && CollisionSphere
 		? CollisionSphere->GetPhysicsLinearVelocity()

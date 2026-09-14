@@ -20,6 +20,27 @@ enum class EChaosImpactBallFlightMode : uint8
 	Arc UMETA(DisplayName="Arc")
 };
 
+/** Compact ball motion sent to clients, which predict and smooth locally between updates. */
+USTRUCT()
+struct FChaosImpactBallNetState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FVector_NetQuantize10 Location;
+
+	UPROPERTY()
+	FVector_NetQuantize10 Velocity;
+
+	/** Server world time at which Location/Velocity were sampled. */
+	UPROPERTY()
+	double ServerTime = 0.0;
+
+	/** EChaosImpactBallNetMode. */
+	UPROPERTY()
+	uint8 Mode = 0;
+};
+
 /** A damage-dealing dodgeball that rebounds from blocking geometry. */
 UCLASS(Blueprintable)
 class AChaosImpactBall : public AActor
@@ -121,6 +142,23 @@ protected:
 
 	UPROPERTY(VisibleInstanceOnly, Replicated, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	bool bIsRolling = false;
+
+	UPROPERTY(ReplicatedUsing=OnRep_NetState)
+	FChaosImpactBallNetState NetState;
+
+	UFUNCTION()
+	void OnRep_NetState();
+	/** Server: publishes the current motion for clients (no-op offline). */
+	void UpdateNetState();
+	/** Client: where the ball should be now, extrapolated from the last server state. */
+	FVector PredictNetLocation(double ServerNow) const;
+	void TickClientPresentation(float DeltaSeconds);
+	double GetServerNow() const;
+
+	/** Client: display offset that decays to zero so corrections never snap. */
+	FVector ClientErrorOffset = FVector::ZeroVector;
+	bool bClientHasPresentation = false;
+	float ClientHoverTime = 0.0f;
 
 	FVector PickupBaseLocation = FVector::ZeroVector;
 	float PickupAnimationTime = 0.0f;

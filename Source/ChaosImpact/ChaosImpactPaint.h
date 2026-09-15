@@ -91,6 +91,25 @@ namespace ChaosImpactPaint
 				Points, ESlateDrawEffect::None, WithAlpha(Color, Alpha), true, Width);
 		}
 
+		/** An arc between two angles in degrees (0 = right, increasing clockwise on screen). */
+		void Arc(FVector2D Center, float Radius, float FromDegrees, float ToDegrees, FLinearColor Color, float Width) const
+		{
+			if (Radius <= 0.0f || ToDegrees <= FromDegrees || Alpha * Color.A <= 0.001f)
+			{
+				return;
+			}
+			const int32 Steps = FMath::Max(2, FMath::CeilToInt((ToDegrees - FromDegrees) / 5.0f));
+			TArray<FVector2D> Points;
+			Points.Reserve(Steps + 1);
+			for (int32 Step = 0; Step <= Steps; ++Step)
+			{
+				const float Angle = FMath::DegreesToRadians(FMath::Lerp(FromDegrees, ToDegrees, static_cast<float>(Step) / Steps));
+				Points.Add(Center + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+			}
+			FSlateDrawElement::MakeLines(Elements, Layer, Geometry.ToPaintGeometry(),
+				Points, ESlateDrawEffect::None, WithAlpha(Color, Alpha), true, Width);
+		}
+
 		/** A filled circle. A fully rounded box stays smooth where a thick line strip would spike. */
 		void Disc(FVector2D Center, float Radius, FLinearColor Color) const
 		{

@@ -2,6 +2,7 @@
 
 #include "ChaosImpactBall.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactGameState.h"
 #include "ChaosImpactPlayerController.h"
 #include "CollisionShape.h"
 #include "CollisionQueryParams.h"
@@ -28,6 +29,8 @@ AChaosImpactCPUController::AChaosImpactCPUController()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.TickInterval = 0.0f;
+	// VS matches rank CPUs and put them in teams like everyone else.
+	bWantsPlayerState = true;
 }
 
 void AChaosImpactCPUController::OnPossess(APawn* InPawn)
@@ -67,7 +70,7 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 		EvadeUntil = 0.0f;
 		return;
 	}
-	if (Self->IsTrainingMenuFrozen())
+	if (Self->IsTrainingMenuFrozen() || Self->IsMatchInputLocked())
 	{
 		// World time and physics keep running, but the CPU itself must stand still.
 		if (Self->IsChargingThrow())
@@ -491,7 +494,7 @@ AChaosImpactCharacter* AChaosImpactCPUController::SelectTarget(const AChaosImpac
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
 		AChaosImpactCharacter* Candidate = *It;
-		if (Candidate == Self || Candidate->IsEliminated())
+		if (Candidate == Self || Candidate->IsEliminated() || AChaosImpactGameState::AreTeammates(GetWorld(), Candidate, Self))
 		{
 			continue;
 		}

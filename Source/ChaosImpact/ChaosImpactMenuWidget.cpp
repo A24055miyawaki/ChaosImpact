@@ -1,13 +1,18 @@
 #include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactCharacter.h"
+#include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/EditableText.h"
 #include "Engine/Texture2D.h"
 #include "Fonts/FontMeasure.h"
+#include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ImageUtils.h"
 #include "InputCoreTypes.h"
@@ -30,13 +35,44 @@ namespace
 	{
 		const AChaosImpactPlayerController* Controller = Widget
 			? Cast<AChaosImpactPlayerController>(Widget->GetOwningPlayer()) : nullptr;
-		const bool bUsePendingGamepadMode = Widget
-			&& Widget->GetScreen() == EChaosImpactScreen::ControllerAssignment;
-		return !Controller || !Controller->IsTrainingMode()
-			|| Key.IsGamepadKey() == (bUsePendingGamepadMode
-				? Controller->WillPrimaryUseGamepad()
-				: Controller->IsPrimaryUsingGamepad());
+		if (!Controller || !Controller->IsTrainingMode())
+		{
+			return true;
+		}
+		// Player entry decides which device is P1's, so it follows the device being chosen there.
+		if (Widget->GetScreen() == EChaosImpactScreen::ControllerAssignment)
+		{
+			return Key.IsGamepadKey() == Controller->WillPrimaryUseGamepad();
+		}
+		// A lone player works the menus with either device (team select, pause, rules, results). With several
+		// local players each device belongs to its own player; online follows the room's any-device rule.
+		const UGameInstance* GameInstance = Widget->GetGameInstance();
+		if (GameInstance && GameInstance->GetLocalPlayers().Num() <= 1)
+		{
+			return true;
+		}
+		return Controller->AcceptsInputKey(Key);
 	}
+
+	/** Player entry sees every controller's buttons, whichever Slate user they belong to. */
+	class FControllerJoinProcessor : public IInputProcessor
+	{
+	public:
+		explicit FControllerJoinProcessor(UChaosImpactMenuWidget* InWidget) : Widget(InWidget) {}
+
+		virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override {}
+
+		virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+		{
+			UChaosImpactMenuWidget* Menu = Widget.Get();
+			return Menu && Menu->TryJoinControllerFromAnyUser(InKeyEvent);
+		}
+
+		virtual const TCHAR* GetDebugName() const override { return TEXT("ChaosImpactControllerJoin"); }
+
+	private:
+		TWeakObjectPtr<UChaosImpactMenuWidget> Widget;
+	};
 
 	bool IsMenuMouseAllowed(const UChaosImpactMenuWidget* Widget)
 	{
@@ -476,6 +512,12 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 		Canvas->AddChildToCanvas(NameInput);
 	}
 
+	if (FSlateApplication::IsInitialized() && !JoinInputProcessor.IsValid())
+	{
+		JoinInputProcessor = MakeShared<FControllerJoinProcessor>(this);
+		FSlateApplication::Get().RegisterInputPreProcessor(JoinInputProcessor);
+	}
+
 	LogoTexture = FImageUtils::ImportFileAsTexture2D(
 		FPaths::Combine(FPaths::ProjectContentDir(), TEXT("UI/TitleLogoTransparent.png")));
 	if (LogoTexture)
@@ -484,6 +526,33 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 		LogoBrush.ImageSize = FVector2D(LogoTexture->GetSizeX(), LogoTexture->GetSizeY());
 		LogoBrush.DrawAs = ESlateBrushDrawType::Image;
 	}
+}
+
+void UChaosImpactMenuWidget::NativeDestruct()
+{
+	if (JoinInputProcessor.IsValid() && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().UnregisterInputPreProcessor(JoinInputProcessor);
+	}
+	JoinInputProcessor.Reset();
+	Super::NativeDestruct();
+}
+
+bool UChaosImpactMenuWidget::TryJoinControllerFromAnyUser(const FKeyEvent& InKeyEvent)
+{
+	if (Screen != EChaosImpactScreen::ControllerAssignment || !InKeyEvent.GetKey().IsGamepadKey()
+		|| InKeyEvent.IsRepeat() || GetVisibility() == ESlateVisibility::Collapsed)
+	{
+		return false;
+	}
+	AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const int32 InputDeviceId = InKeyEvent.GetInputDeviceId().GetId();
+	if (!Controller || Controller->IsControllerJoined(InputDeviceId))
+	{
+		return false;
+	}
+	Controller->RegisterControllerJoin(InputDeviceId, static_cast<int32>(InKeyEvent.GetUserIndex()));
+	return Controller->IsControllerJoined(InputDeviceId);
 }
 
 void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
@@ -511,11 +580,19 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 	if (NameInput)
 	{
-		const bool bNameScreen = Screen == EChaosImpactScreen::OnlineName;
+		const bool bNameScreen = Screen == EChaosImpactScreen::OnlineName || Screen == EChaosImpactScreen::OnlineRoomName;
 		NameInput->SetVisibility(bNameScreen ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
-		if (bNameScreen && Sessions)
+		if (Screen == EChaosImpactScreen::OnlineName && Sessions)
 		{
 			NameInput->SetText(FText::FromString(Sessions->GetPlayerName()));
+		}
+		else if (Screen == EChaosImpactScreen::OnlineRoomName)
+		{
+			// Renaming starts from the current name; a new room from "<player>のへや".
+			const AChaosImpactPlayerController* RoomController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+			NameInput->SetText(FText::FromString(RoomController && RoomController->IsRenamingRoom() && Room
+				? Room->RoomName : Sessions ? Sessions->GetDefaultRoomName() : FString()));
 		}
 		bNameFocusPending = bNameScreen;
 	}
@@ -540,14 +617,29 @@ void UChaosImpactMenuWidget::HandleNameCommitted(const FText& Text, const ETextC
 	{
 		SubmitName();
 	}
+	else if (CommitMethod == ETextCommit::OnEnter && Screen == EChaosImpactScreen::OnlineRoomName)
+	{
+		SubmitRoomNameEntry();
+	}
+}
+
+void UChaosImpactMenuWidget::SubmitRoomNameEntry()
+{
+	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		Controller && NameInput)
+	{
+		Controller->SubmitRoomName(NameInput->GetText().ToString());
+	}
 }
 
 void UChaosImpactMenuWidget::HandleNameChanged(const FText& Text)
 {
 	const FString Value = Text.ToString();
-	if (NameInput && Value.Len() > UChaosImpactSessionSubsystem::MaxNameLength)
+	const int32 MaxLength = Screen == EChaosImpactScreen::OnlineRoomName
+		? UChaosImpactSessionSubsystem::MaxRoomNameLength : UChaosImpactSessionSubsystem::MaxNameLength;
+	if (NameInput && Value.Len() > MaxLength)
 	{
-		NameInput->SetText(FText::FromString(Value.Left(UChaosImpactSessionSubsystem::MaxNameLength)));
+		NameInput->SetText(FText::FromString(Value.Left(MaxLength)));
 	}
 }
 
@@ -708,9 +800,29 @@ void UChaosImpactMenuWidget::BuildEntries()
 	}
 	case EChaosImpactScreen::OnlineName:
 	case EChaosImpactScreen::OnlinePassword:
+	case EChaosImpactScreen::OnlineRoomName:
 		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("決定"), TEXT(""), TEXT(""), Gold});
 		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		break;
+	case EChaosImpactScreen::RoomList:
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		static const TArray<FChaosImpactRoomListing> NoListings;
+		const TArray<FChaosImpactRoomListing>& Listings = Sessions ? Sessions->GetRoomListings() : NoListings;
+		const int32 LocalPlayers = Sessions ? Sessions->GetLocalPlayerCount() : 1;
+		// Each room is a row: its name (Title), host (Detail) and members (Number).
+		for (int32 Index = 0; Index < FMath::Min(Listings.Num(), 5); ++Index)
+		{
+			const FChaosImpactRoomListing& Listing = Listings[Index];
+			FMenuEntry Row{FSlateRect(250, 232 + Index * 92, 1350, 312 + Index * 92), Listing.RoomName, Listing.HostName,
+				FString::Printf(TEXT("%d/%d"), Listing.Members, AChaosImpactGameState::MaxMembers), Ice};
+			Row.bDisabled = !Listing.bOpen || Listing.Members + LocalPlayers > AChaosImpactGameState::MaxMembers;
+			Entries.Add(Row);
+		}
+		Entries.Add({FSlateRect(1010, 724, 1450, 800), TEXT("さがしなおす"), TEXT("refresh"), TEXT(""), Gold});
+		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("戻る"), TEXT("back"), TEXT(""), Muted});
+		break;
+	}
 	case EChaosImpactScreen::OnlineStatus:
 	{
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
@@ -727,12 +839,36 @@ void UChaosImpactMenuWidget::BuildEntries()
 		{
 			float Y = 285.0f;
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("ゲームに戻る"), TEXT("resume"), TEXT(""), Ice});
+			const AChaosImpactGameState* PauseRoom = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+			if (Controller->CanOpenMatchRulesFromPause())
+			{
+				Y += 80.0f;
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
+					PauseRoom && PauseRoom->bRulesDecided ? TEXT("ルールを変える") : TEXT("ルールを決める"),
+					TEXT("start_match"), TEXT(""), Gold});
+			}
 			if (Controller->CanCloseRecruitment())
 			{
 				Y += 80.0f;
 				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("メンバー募集終了"), TEXT("close_recruit"),
 					TEXT(""), Gold});
 			}
+			if (Controller->CanReopenRecruitment())
+			{
+				Y += 80.0f;
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("メンバー募集を再開"), TEXT("reopen_recruit"),
+					TEXT(""), Ice});
+			}
+			if (Controller->CanRenameRoom())
+			{
+				Y += 80.0f;
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("へやの名前を変える"), TEXT("rename_room"),
+					TEXT(""), Ice});
+			}
+			Y += 80.0f;
+			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
+				AChaosImpactPlayerController::IsRumbleEnabled() ? TEXT("振動：ON") : TEXT("振動：OFF"),
+				TEXT("rumble"), TEXT(""), AChaosImpactPlayerController::IsRumbleEnabled() ? Ice : Muted});
 			Y += 80.0f;
 			const bool bLeaveArmed = ArmedIndex == Entries.Num();
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
@@ -746,7 +882,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(490, 245, 1110, 307), TEXT("ゲームに戻る"), TEXT(""), TEXT(""), Ice});
 		Entries.Add({FSlateRect(490, 325, 1110, 387),
 			bArc ? TEXT("投球軌道：放物線") : TEXT("投球軌道：直線"), TEXT(""), TEXT(""), bArc ? Fire : Ice});
-		if (Controller && Controller->IsTrainingMode())
+		if (Controller && Controller->ShowsTrainingPauseEntries())
 		{
 			Entries.Add({FSlateRect(490, 405, 1110, 467), TEXT("トレーニング設定"), TEXT(""), TEXT(""), Ice});
 			Entries.Add({FSlateRect(490, 485, 1110, 547), TEXT("トレーニングをリトライ"), TEXT(""), TEXT(""), Gold});
@@ -754,9 +890,12 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire});
 		Entries.Add({FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted});
 		// Appended last so the existing pause entry indices stay unchanged.
+		Entries.Add({FSlateRect(490, 725, 1110, 787),
+			AChaosImpactPlayerController::IsRumbleEnabled() ? TEXT("振動：ON") : TEXT("振動：OFF"),
+			TEXT("rumble"), TEXT(""), AChaosImpactPlayerController::IsRumbleEnabled() ? Ice : Muted});
 		if (Controller && Controller->IsSearchingForRoom())
 		{
-			Entries.Add({FSlateRect(490, 725, 1110, 787),
+			Entries.Add({FSlateRect(490, 805, 1110, 867),
 				ArmedIndex == Entries.Num() ? TEXT("もう一度おすと決定") : TEXT("へやをさがすのをやめる"),
 				TEXT("stop_search"), TEXT(""), Fire});
 		}
@@ -805,7 +944,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 		const EChaosImpactBallType SummonType = Controller
 				? Controller->GetTrainingSummonBallType() : EChaosImpactBallType::Fire;
 			const FLinearColor SummonAccent = SummonType == EChaosImpactBallType::Fire ? Fire
-				: SummonType == EChaosImpactBallType::Ice ? Ice : Gold;
+				: SummonType == EChaosImpactBallType::Ice ? Ice
+				: SummonType == EChaosImpactBallType::Normal ? Gold : ChaosImpactBallTypes::GetColor(SummonType);
 			Entries.Add({FSlateRect(78, 454, 624, 512),
 				FString::Printf(TEXT("呼び出すボール：%s"), ChaosImpactBallTypes::GetDisplayName(SummonType)),
 				TEXT(""), TEXT(""), SummonAccent});
@@ -814,6 +954,40 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(78, 684, 624, 742), TEXT("閉じる"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
+	case EChaosImpactScreen::MatchRules:
+	{
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const FChaosImpactMatchRules Rules = Controller ? Controller->GetPendingMatchRules() : FChaosImpactMatchRules();
+		Entries.Add({FSlateRect(430, 226, 1170, 298), FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
+			TEXT(""), TEXT(""), Ice});
+		Entries.Add({FSlateRect(430, 318, 1170, 390),
+			FString::Printf(TEXT("ルール　＜  %s  ＞"), *ChaosImpactMatch::DescribeTeams(Rules.TeamCount)),
+			TEXT(""), TEXT(""), Rules.IsTeamBattle() ? Gold : Fire});
+		Entries.Add({FSlateRect(430, 410, 1170, 482), FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
+			TEXT(""), TEXT(""), Rules.CPUCount > 0 ? Fire : Muted});
+		Entries.Add({FSlateRect(1030, 712, 1454, 800), TEXT("決定"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		break;
+	}
+	case EChaosImpactScreen::TeamSelect:
+	{
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const bool bCanStart = Controller && Controller->CanStartVersusMatch();
+		FMenuEntry Start{FSlateRect(1030, 712, 1454, 800), bCanStart ? TEXT("試合開始") : TEXT("ホスト待ち"),
+			TEXT(""), TEXT(""), Gold};
+		Start.bDisabled = !bCanStart;
+		Entries.Add(Start);
+		if (bCanStart)
+		{
+			Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("ルール変更"), TEXT(""), TEXT(""), Muted});
+		}
+		break;
+	}
+	case EChaosImpactScreen::MatchEnd:
+		Entries.Add({FSlateRect(230, 776, 630, 846), TEXT("もう一度"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(670, 776, 1070, 846), TEXT("ルールを変える"), TEXT(""), TEXT(""), Ice});
+		Entries.Add({FSlateRect(1110, 776, 1510, 846), TEXT("メニューへ"), TEXT(""), TEXT(""), Muted});
+		break;
 	default:
 		break;
 	}
@@ -833,7 +1007,7 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 			Index == SelectedIndex ? 1.0f : 0.0f, InDeltaTime, 16.0f);
 	}
 
-	if (NameInput && Screen == EChaosImpactScreen::OnlineName)
+	if (NameInput && (Screen == EChaosImpactScreen::OnlineName || Screen == EChaosImpactScreen::OnlineRoomName))
 	{
 		const float Scale = DesignScale(MyGeometry);
 		const FVector2D Offset = (MyGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
@@ -851,6 +1025,18 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 		{
 			bNameFocusPending = false;
 			NameInput->SetUserFocus(GetOwningPlayer());
+		}
+	}
+	if (Screen == EChaosImpactScreen::RoomList)
+	{
+		if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+			Sessions && Sessions->GetRoomListingsVersion() != LastRoomListingsVersion)
+		{
+			// The list refreshes every couple of seconds; keep the selection where it was.
+			LastRoomListingsVersion = Sessions->GetRoomListingsVersion();
+			const int32 PreviousSelection = SelectedIndex;
+			RefreshEntries();
+			SelectedIndex = FMath::Clamp(PreviousSelection, 0, FMath::Max(0, Entries.Num() - 1));
 		}
 	}
 	if (Screen == EChaosImpactScreen::OnlineStatus)
@@ -899,7 +1085,8 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	const float T = AnimationSeconds;
 	const double Now = FPlatformTime::Seconds();
 	const bool bFrontEnd = Screen != EChaosImpactScreen::TrainingOverlay
-		&& Screen != EChaosImpactScreen::Pause && Screen != EChaosImpactScreen::TrainingSettings;
+		&& Screen != EChaosImpactScreen::Pause && Screen != EChaosImpactScreen::TrainingSettings
+		&& Screen != EChaosImpactScreen::MatchEnd;
 
 	const FMenuPainter Full{AllottedGeometry, OutDrawElements, BaseLayer + 1};
 	FMenuPainter P{DesignGeometry, OutDrawElements, BaseLayer + 2};
@@ -917,6 +1104,13 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		P.Text(TEXT("TRAINING"), 66, 60, 44, Paper);
 		P.Box(68, 122, 150, 8, Fire);
 		P.Box(226, 122, 48, 8, Ice);
+	}
+	else if (Screen == EChaosImpactScreen::MatchEnd)
+	{
+		// The results stay visible above; only a band for the choices is added.
+		const FMenuPainter Band{DesignGeometry, OutDrawElements, BaseLayer + 1, EaseOut(T / 0.3f)};
+		Band.Box(-800.0f, 752.0f, 3200.0f, 118.0f, WithAlpha(Ink, 0.86f));
+		Band.Box(-800.0f, 752.0f, 3200.0f, 4.0f, Gold);
 	}
 	else
 	{
@@ -1040,9 +1234,10 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("VS ONLINE"), T);
 	}
-	else if (Screen == EChaosImpactScreen::OnlineName)
+	else if (Screen == EChaosImpactScreen::OnlineName || Screen == EChaosImpactScreen::OnlineRoomName)
 	{
-		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("なまえ"), T);
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2,
+			Screen == EChaosImpactScreen::OnlineRoomName ? TEXT("へやのなまえ") : TEXT("なまえ"), T);
 		const float E = EaseOut((T - 0.1f) / 0.35f);
 		const FGeometry Panel = MakeSkewed(DesignGeometry, 400.0f + (1.0f - E) * 120.0f, 340.0f, 800.0f, 160.0f, -0.18f);
 		const FMenuPainter Field{Panel, OutDrawElements, BaseLayer + 2, E};
@@ -1061,6 +1256,33 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		}
 		P.Text(FString::Printf(TEXT("%d/%d"), Typed.Len(), UChaosImpactSessionSubsystem::MaxNameLength),
 			1180.0f, 520.0f, 26.0f, Muted, ETextAlign::Right);
+	}
+	else if (Screen == EChaosImpactScreen::RoomList)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("へやをさがす"), T);
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
+		const FMenuPainter ChipPainter{MakeSkewed(DesignGeometry, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f),
+			OutDrawElements, BaseLayer + 2, ChipIn};
+		ChipPainter.Box(0.0f, 0.0f, 360.0f, 70.0f, Fire);
+		ChipPainter.Text(FString::Printf(TEXT("あいことば  %s"), Sessions ? *Sessions->GetPassword() : TEXT("")),
+			180.0f, 14.0f, 30.0f, Paper, ETextAlign::Center);
+		if (Sessions && Sessions->GetRoomListings().IsEmpty())
+		{
+			// Nothing yet: keep looking, with a small spinner.
+			const FMenuPainter Waiting{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
+			Waiting.Text(Sessions->HasSearchedOnce() ? TEXT("このあいことばのへやはまだありません") : TEXT("へやをさがしています"),
+				800.0f, 380.0f, 40.0f, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+			Waiting.Text(TEXT("見つかると ここに出ます"), 800.0f, 446.0f, 24.0f, Muted, ETextAlign::Center);
+			const FVector2D SpinCenter(800.0f, 540.0f);
+			for (int32 Dot = 0; Dot < 8; ++Dot)
+			{
+				const float Angle = T * 6.0f + Dot * UE_TWO_PI / 8.0f;
+				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+				Waiting.Line(SpinCenter + Direction * 18.0f, SpinCenter + Direction * 32.0f,
+					WithAlpha(Paper, 0.15f + 0.85f * Dot / 7.0f), 6.0f);
+			}
+		}
 	}
 	else if (Screen == EChaosImpactScreen::OnlinePassword)
 	{
@@ -1147,6 +1369,97 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		P.Box(650, 206, 150, 8, Ice);
 		P.Box(800, 206, 150, 8, Fire);
 	}
+	else if (Screen == EChaosImpactScreen::MatchRules)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("RULE"), T);
+		if (const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			const FChaosImpactMatchRules& Rules = Controller->GetPendingMatchRules();
+			const int32 Humans = Controller->GetMatchHumanCount();
+			const int32 Total = Humans + Rules.CPUCount;
+			const float In = EaseOut((T - 0.2f) / 0.35f);
+			const FGeometry Panel = MakeSkewed(DesignGeometry, 430.0f + (1.0f - In) * 80.0f, 512.0f, 740.0f, 168.0f, -0.12f);
+			const FMenuPainter Info{Panel, OutDrawElements, BaseLayer + 2, In};
+			Info.Box(12.0f, 14.0f, 740.0f, 168.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+			Info.Box(0.0f, 0.0f, 740.0f, 168.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
+			Info.Box(0.0f, 0.0f, 10.0f, 168.0f, Gold);
+			Info.Text(FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
+				36.0f, 14.0f, 30.0f, Paper);
+			Info.Text(Rules.IsTeamBattle()
+				? FString::Printf(TEXT("1チーム最大 %d人・チームの合計ポイントで勝負"),
+					ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
+				: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Gold);
+			Info.Text(TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"), 38.0f, 110.0f, 24.0f, Muted);
+		}
+	}
+	else if (Screen == EChaosImpactScreen::TeamSelect)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("TEAM SELECT"), T);
+		const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+		if (Match && Match->IsTeamBattle())
+		{
+			const int32 Teams = Match->Rules.TeamCount;
+			const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);
+			const int32 Capacity = ChaosImpactMatch::GetTeamCapacity(Teams, Humans.Num() + Match->Rules.CPUCount);
+			// Players on this machine, in local player order, so their cards can be marked P1-P4.
+			TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
+			if (const UGameInstance* OwningGameInstance = GetGameInstance())
+			{
+				for (const ULocalPlayer* LocalPlayer : OwningGameInstance->GetLocalPlayers())
+				{
+					const APlayerController* LocalController = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
+					LocalStates.Add(LocalController ? LocalController->PlayerState.Get() : nullptr);
+				}
+			}
+			P.Text(FString::Printf(TEXT("＜ ＞ でチームを選ぶ（それぞれのコントローラーで）　CPU %d人は人数の少ないチームに入ります"),
+				Match->Rules.CPUCount), 800.0f, 196.0f, 24.0f, Muted, ETextAlign::Center);
+			constexpr float Gap = 28.0f;
+			const float Width = (1300.0f - Gap * (Teams - 1)) / Teams;
+			for (int32 Team = 0; Team < Teams; ++Team)
+			{
+				const float ColumnIn = EaseOut((T - 0.1f - 0.05f * Team) / 0.35f);
+				const FGeometry Column = MakeSkewed(DesignGeometry, 150.0f + Team * (Width + Gap) + (1.0f - ColumnIn) * 100.0f,
+					244.0f, Width, 440.0f, -0.06f);
+				const FMenuPainter C{Column, OutDrawElements, BaseLayer + 3, ColumnIn};
+				const FLinearColor TeamColor = ChaosImpactMatch::GetTeamColor(Team);
+				FLinearColor Deep = TeamColor * 0.3f;
+				Deep.A = 1.0f;
+				int32 Count = 0;
+				for (const AChaosImpactPlayerState* Member : Humans)
+				{
+					Count += Member->TeamIndex == Team ? 1 : 0;
+				}
+				C.Box(12.0f, 14.0f, Width, 440.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+				C.Box(0.0f, 0.0f, Width, 440.0f, FLinearColor(0.02f, 0.026f, 0.045f, 0.96f));
+				C.Box(0.0f, 0.0f, Width, 74.0f, Deep);
+				C.Box(0.0f, 68.0f, Width, 6.0f, TeamColor);
+				C.Text(ChaosImpactMatch::GetTeamName(Team), 24.0f, 12.0f, 36.0f, Paper);
+				C.Text(FString::Printf(TEXT("%d/%d"), Count, Capacity), Width - 20.0f, 18.0f, 28.0f,
+					Count >= Capacity ? Fire : Gold, ETextAlign::Right);
+				int32 Row = 0;
+				for (const AChaosImpactPlayerState* Member : Humans)
+				{
+					if (Member->TeamIndex != Team)
+					{
+						continue;
+					}
+					const float Y = 92.0f + Row++ * 62.0f;
+					const int32 LocalIndex = LocalStates.IndexOfByKey(Member);
+					const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Member->GetPawn());
+					const FString Name = Character ? Character->GetOverheadDisplayName() : Member->GetPlayerName();
+					C.Box(14.0f, Y, Width - 28.0f, 52.0f, LocalIndex >= 0
+						? WithAlpha(TeamColor, 0.4f) : FLinearColor(0.035f, 0.045f, 0.075f, 0.96f));
+					C.Text(Name, 30.0f, Y + 8.0f, 27.0f, Paper);
+					if (LocalIndex >= 0)
+					{
+						C.Text(FString::Printf(TEXT("P%d"), LocalIndex + 1), Width - 30.0f, Y + 9.0f, 26.0f,
+							PlayerAccents[LocalIndex % 4], ETextAlign::Right, TEXT("BlackItalic"));
+						C.Outline(14.0f, Y, Width - 28.0f, 52.0f, WithAlpha(Paper, 0.55f + 0.35f * FMath::Sin(T * 6.0f)), 2.0f);
+					}
+				}
+			}
+		}
+	}
 	else if (Screen == EChaosImpactScreen::TrainingSettings)
 	{
 		P.Text(TEXT("TRAINING SETTINGS"), 800, 92, 62, Paper, ETextAlign::Center);
@@ -1178,6 +1491,44 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
 				Entry.Accent, Blend, bPressed, EntryIn, T, 170.0f, Index + 1);
 		}
+		else if (Screen == EChaosImpactScreen::RoomList && Entry.Detail != TEXT("refresh") && Entry.Detail != TEXT("back"))
+		{
+			// A room: name, host, members, connection bars, and why it cannot be joined when it cannot.
+			const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+			const float W = static_cast<float>(Rect.GetSize().X);
+			const float H = static_cast<float>(Rect.GetSize().Y);
+			const FMenuPainter Row{MakeSkewed(DesignGeometry, static_cast<float>(Rect.Left), static_cast<float>(Rect.Top), W, H, -0.12f),
+				OutDrawElements, BaseLayer + 4, EntryIn};
+			Row.Box(10.0f, 10.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+			Row.Box(0.0f, 0.0f, W, H, FMath::Lerp(FLinearColor(0.02f, 0.027f, 0.047f, 0.95f),
+				FLinearColor(0.05f, 0.09f, 0.16f, 0.98f), Blend));
+			Row.Box(0.0f, 0.0f, 12.0f + 10.0f * Blend, H, Entry.bDisabled ? Muted : Entry.Accent);
+			Row.Text(Entry.Title, 44.0f, 6.0f, 34.0f, Entry.bDisabled ? Muted : Paper, ETextAlign::Left, TEXT("Black"));
+			Row.Text(FString::Printf(TEXT("ホスト  %s"), *Entry.Detail), 46.0f, 48.0f, 20.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			Row.Text(Entry.Number, W - 210.0f, 20.0f, 32.0f, Entry.bDisabled ? Muted : Paper, ETextAlign::Right, TEXT("Bold"));
+			if (Sessions && Sessions->GetRoomListings().IsValidIndex(Index))
+			{
+				const FChaosImpactRoomListing& Listing = Sessions->GetRoomListings()[Index];
+				const int32 Level = Listing.PingMs <= 40 ? 4 : Listing.PingMs <= 80 ? 3 : Listing.PingMs <= 150 ? 2 : 1;
+				const FLinearColor SignalColor = Level == 4 ? FLinearColor(0.2f, 0.95f, 0.45f)
+					: Level == 3 ? FLinearColor(0.65f, 0.95f, 0.3f) : Level == 2 ? Gold : Fire;
+				for (int32 Bar = 0; Bar < 4; ++Bar)
+				{
+					const float BarHeight = 12.0f + Bar * 11.0f;
+					Row.Box(W - 170.0f + Bar * 16.0f, H - 16.0f - BarHeight, 11.0f, BarHeight,
+						Bar < Level ? SignalColor : WithAlpha(Paper, 0.16f));
+				}
+				if (Entry.bDisabled)
+				{
+					Row.Box(W - 104.0f, 22.0f, 92.0f, 36.0f, Fire);
+					Row.Text(Listing.bOpen ? TEXT("満員") : TEXT("締切"), W - 58.0f, 24.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
+				}
+			}
+			if (Blend > 0.01f)
+			{
+				Row.Outline(-4.0f, -4.0f, W + 8.0f, H + 8.0f, WithAlpha(Paper, 0.6f * Blend), 3.0f);
+			}
+		}
 		else
 		{
 			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Entry.Title, Entry.Accent,
@@ -1201,6 +1552,24 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	if (Key != EKeys::Tab && HandlePasswordKey(Key))
 	{
 		return;
+	}
+	const bool bLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
+	const bool bRight = Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right;
+	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		Controller && (bLeft || bRight))
+	{
+		// Rule rows change their value sideways; team select moves P1 between teams.
+		if (Screen == EChaosImpactScreen::MatchRules && SelectedIndex <= 2)
+		{
+			Controller->AdjustMatchRule(SelectedIndex, bRight ? 1 : -1);
+			BuildEntries();
+			return;
+		}
+		if (Screen == EChaosImpactScreen::TeamSelect)
+		{
+			Controller->ChangeOwnTeam(bRight ? 1 : -1);
+			return;
+		}
 	}
 	const bool bBack = Key == EKeys::Up || Key == EKeys::Left
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Left;
@@ -1326,8 +1695,64 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 	case EChaosImpactScreen::OnlinePassword:
 		if (SelectedIndex == 0) { SubmitPassword(); } else { GoBack(); }
 		break;
+	case EChaosImpactScreen::OnlineRoomName:
+		if (SelectedIndex == 0) { SubmitRoomNameEntry(); } else { GoBack(); }
+		break;
+	case EChaosImpactScreen::RoomList:
+		if (Entries[SelectedIndex].Detail == TEXT("refresh"))
+		{
+			Controller->RefreshRoomList();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("back"))
+		{
+			GoBack();
+		}
+		else if (!Entries[SelectedIndex].bDisabled)
+		{
+			Controller->JoinRoomListing(SelectedIndex);
+		}
+		break;
 	case EChaosImpactScreen::OnlineStatus:
 		Controller->CancelOnlineStatus();
+		break;
+	case EChaosImpactScreen::MatchRules:
+		if (SelectedIndex <= 2)
+		{
+			Controller->AdjustMatchRule(SelectedIndex, 1);
+			BuildEntries();
+		}
+		else if (SelectedIndex == 3)
+		{
+			Controller->ConfirmMatchRules();
+		}
+		else
+		{
+			GoBack();
+		}
+		break;
+	case EChaosImpactScreen::TeamSelect:
+		if (SelectedIndex == 0)
+		{
+			Controller->RequestStartTeamMatch();
+		}
+		else if (SelectedIndex == 1)
+		{
+			Controller->OpenMatchRules(EChaosImpactScreen::Playing);
+		}
+		break;
+	case EChaosImpactScreen::MatchEnd:
+		if (SelectedIndex == 0)
+		{
+			Controller->RetryVersusMatch();
+		}
+		else if (SelectedIndex == 1)
+		{
+			Controller->OpenMatchRules(EChaosImpactScreen::MatchEnd);
+		}
+		else
+		{
+			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+		}
 		break;
 	case EChaosImpactScreen::Pause:
 		// Gameplay keeps running behind the online pause menu, so a throw click or dash press
@@ -1344,13 +1769,32 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			BuildEntries();
 			break;
 		}
-		if (Entries[SelectedIndex].Detail == TEXT("resume"))
+		if (Entries[SelectedIndex].Detail == TEXT("rumble"))
+		{
+			Controller->ToggleRumbleEnabled();
+			const int32 KeepSelection = SelectedIndex;
+			BuildEntries();
+			SelectedIndex = KeepSelection;
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("resume"))
 		{
 			Controller->ResumeGameplay();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("start_match"))
+		{
+			Controller->OpenMatchRules(EChaosImpactScreen::Playing);
 		}
 		else if (Entries[SelectedIndex].Detail == TEXT("close_recruit"))
 		{
 			Controller->CloseRecruitment();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("reopen_recruit"))
+		{
+			Controller->ReopenRecruitment();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("rename_room"))
+		{
+			Controller->BeginRoomRename();
 		}
 		else if (Entries[SelectedIndex].Detail == TEXT("leave"))
 		{
@@ -1372,9 +1816,9 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else
 		{
-			const int32 SettingsIndex = Controller->IsTrainingMode() ? 2 : INDEX_NONE;
-			const int32 RetryIndex = Controller->IsTrainingMode() ? 3 : INDEX_NONE;
-			const int32 ModeIndex = Controller->IsTrainingMode() ? 4 : 2;
+			const int32 SettingsIndex = Controller->ShowsTrainingPauseEntries() ? 2 : INDEX_NONE;
+			const int32 RetryIndex = Controller->ShowsTrainingPauseEntries() ? 3 : INDEX_NONE;
+			const int32 ModeIndex = Controller->ShowsTrainingPauseEntries() ? 4 : 2;
 			if (SelectedIndex == SettingsIndex)
 			{
 				Controller->ResumeGameplay();
@@ -1504,8 +1948,24 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::OnlinePassword:
 			Controller->ShowMenuScreen(EChaosImpactScreen::MultiReady);
 			break;
+		case EChaosImpactScreen::OnlineRoomName:
+			if (Controller->IsRenamingRoom())
+			{
+				Controller->CancelRoomRename();
+			}
+			else
+			{
+				Controller->ShowMenuScreen(EChaosImpactScreen::OnlinePassword);
+			}
+			break;
+		case EChaosImpactScreen::RoomList:
+			Controller->CloseRoomList();
+			break;
 		case EChaosImpactScreen::OnlineStatus:
 			Controller->CancelOnlineStatus();
+			break;
+		case EChaosImpactScreen::MatchRules:
+			Controller->CancelMatchRules();
 			break;
 		default:
 			break;

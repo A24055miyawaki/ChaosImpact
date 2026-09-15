@@ -72,6 +72,8 @@ public:
 	void RecoverStaminaFromBallHit();
 	/** Called on the eliminating character so its own HUD can play the KO banner. */
 	void NotifyOpponentEliminated(const FString& VictimName);
+	/** Rumbles this character's controller when it is played on this machine (see AChaosImpactPlayerController::PlayRumble). */
+	void PlayControllerRumble(float Small, float Big, float Seconds, float DelaySeconds = 0.0f) const;
 	bool TryPickupBall(AChaosImpactBall* Ball);
 	/** Carried ball type per slot; slot 0 is the right hand and is thrown next. */
 	EChaosImpactBallType GetCarriedBallType(int32 Slot) const
@@ -79,6 +81,13 @@ public:
 		return ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, Slot);
 	}
 	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
+	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
+	void RequestBallSwap();
+	/** Name drawn above this character: CPUs are "CPU1", "CPU2"..., players use their room or local name. */
+	FString GetOverheadDisplayName() const;
+	/** 1-based number shown above a CPU character; 0 for human players. */
+	int32 GetCPUNumber() const { return CPUNumber; }
+	void SetCPUNumber(const int32 Number) { CPUNumber = static_cast<uint8>(FMath::Clamp(Number, 0, 255)); }
 	/** Server: an ice ball landed next to this player; they cannot move, dash or throw for Seconds. */
 	void ApplyIceFreeze(float Seconds);
 	bool IsIceFrozen() const;
@@ -97,6 +106,8 @@ public:
 	float GetAimGuideLength() const { return AimGuideLength; }
 	FVector GetAimGuideStartWorldLocation() const;
 	bool IsEliminated() const { return bEliminated; }
+	/** The last-hit smoke is rising from this character. */
+	bool IsShowingLastHitSmoke() const;
 	/** Server copy of a player on another machine. Such players move and judge ball hits on their own client. */
 	bool IsRemotePlayerOnServer() const;
 	/** Client: this player's own screen saw a ball touch it; the server sanity-checks and applies it. */
@@ -112,6 +123,10 @@ public:
 	bool IsEliminationPredicted() const;
 	/** This player's round trip to the host in seconds; 0 for the host's own player and CPUs. */
 	float GetNetworkRoundTripSeconds() const;
+	/** VS team select, opening (until GO) and results: no moving, throwing, dashing or jumping. */
+	bool IsMatchInputLocked() const;
+	/** Server: moves this character instantly (warp pads), on its own screen too when online, with the camera snapping along. */
+	void WarpTo(const FVector& Location);
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball Inventory")
 	int32 GetCarriedBallCount() const { return CarriedBallCount; }
@@ -209,6 +224,11 @@ protected:
 	/** A server-side change of this player's ball count (elimination, respawn, match start). */
 	UFUNCTION(Client, Reliable)
 	void ClientBallCountReset(int32 ServerBallCount, uint8 ServerBallTypes);
+	UFUNCTION(Server, Reliable)
+	void ServerSwapBalls();
+	/** Answer to a swap made on this player's screen; resolves it in the same ordered queue as pickups and throws. */
+	UFUNCTION(Client, Reliable)
+	void ClientSwapResolved(int32 ServerBallCount, uint8 ServerBallTypes);
 	/** Stamina is owned by each player's own machine; the server only sends changes it causes. */
 	UFUNCTION(Client, Reliable)
 	void ClientAddStamina(float Amount);
@@ -223,6 +243,11 @@ protected:
 	void ApplyEliminatedPresentation(bool bNowEliminated);
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual bool CanJumpInternal_Implementation() const override;
+	/** After an instant move: the camera jumps with the character instead of lagging across the stage. */
+	void SnapCameraToCharacter();
+	int32 CameraSnapFrames = 0;
+	bool bCameraLagBeforeSnap = true;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -319,9 +344,14 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, ReplicatedUsing=OnRep_CarriedBallCount, Category="Chaos Impact|Ball Inventory")
 	uint8 CarriedBallTypes = 0;
 
+	/** Set by the game mode when a CPU is spawned, so every machine can label it. */
+	UPROPERTY(Replicated)
+	uint8 CPUNumber = 0;
+
 	void PushCarriedBall(EChaosImpactBallType Type);
 	EChaosImpactBallType PopCarriedBall();
 	void ClearCarriedBalls();
+	void SwapCarriedBalls();
 	void ApplyHeldBallAppearance(UStaticMeshComponent* HandBall, EChaosImpactBallType Type);
 
 	UPROPERTY(Transient)
@@ -329,6 +359,12 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldIceMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldThunderMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldBlackMaterial;
 
 	/** Ball shown on the right hand while at least one ball is carried. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
@@ -427,6 +463,11 @@ protected:
 	double GetSharedServerTime() const;
 	/** Freeze transitions and the slide on frozen ground; movement changes only where this player is moved. */
 	void UpdateIceStatus(float DeltaSeconds);
+	/** Development (-CINetTrace): logs where this machine draws the character, for measuring online lag. */
+	void TraceNetPresentation(float DeltaSeconds);
+	float NetTraceSeconds = 0.0f;
+	/** Black holes draw this character in; applied where it is moved, like the slide on ice. */
+	void UpdateBlackHolePull(float DeltaSeconds);
 	void SetIceFreezePresentation(bool bFrozen);
 	void UpdateIceFreezePresentation(float DeltaSeconds);
 	bool bIceFreezeActive = false;
@@ -450,10 +491,35 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> LeftHeldFire;
 
+	/** Which ball type each hand's effect above was made for (fire, thunder or black). */
+	EChaosImpactBallType RightHeldEffectType = EChaosImpactBallType::Normal;
+	EChaosImpactBallType LeftHeldEffectType = EChaosImpactBallType::Normal;
+
 	TArray<FTransform> IceShardTransforms;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> IceOverlayMaterial;
+
+	/**
+	 * Down to the last hit (training, the room lobby, or a VS match in play): a small puff of smoke leaves the
+	 * body now and then, a quiet hint opponents can spot. Presentation only, on every machine.
+	 */
+	void UpdateLastHitPresentation();
+	bool bLastHitSmokeOn = false;
+	double NextLastHitPuffAt = 0.0;
+	double LastHitPuffEndsAt = 0.0;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraComponent> LastHitSmoke;
+
+	/** Rumble for what just happened to the player on this machine: hits, knockouts, a full charge, pickups, pulls. */
+	void UpdateControllerRumble();
+	float RumbleLastHealth = -1.0f;
+	bool bRumbleWasEliminated = false;
+	bool bRumbleChargeFull = false;
+	int32 RumbleLastBallCount = -1;
+	/** Set by UpdateBlackHolePull on the frames a black hole moved this character. */
+	bool bRumbleBlackHolePull = false;
 
 	double NextAimSendAt = 0.0;
 	FVector LastSentAim = FVector::ZeroVector;
@@ -488,6 +554,8 @@ protected:
 	 */
 	void UpdatePresentationLead(float DeltaSeconds);
 	static constexpr float MaxPresentationLeadSeconds = 0.3f;
+	/** How much of a remote player's round trip their drawn body is led ahead by. */
+	static constexpr float PresentationLeadShareOfPing = 0.55f;
 	static constexpr float MaxPresentationLeadDistance = 180.0f;
 	static constexpr float PresentationLeadBlendSpeed = 18.0f;
 	FVector CachedBaseTranslationOffset = FVector::ZeroVector;
@@ -504,7 +572,7 @@ protected:
 	TArray<int8> PendingBallActions;
 	int32 ServerAnsweredBallCount = 0;
 	uint8 ServerAnsweredBallTypes = 0;
-	/** Pickups are stored as 1 + EChaosImpactBallType, throws as -1. */
+	/** Pickups are stored as 1 + EChaosImpactBallType, throws as -1, swaps of the two hands as -2. */
 	void RefreshPredictedBallCount();
 	void ResolveOldestBallAction(int32 ServerBallCount, uint8 ServerBallTypes);
 	int32 GetPendingPickupCount() const;
@@ -566,6 +634,8 @@ protected:
 	FRotator InitialSpawnRotation = FRotator::ZeroRotator;
 	float ThrowChargeStartedAt = 0.0f;
 	float DashElapsedSeconds = 0.0f;
+	/** World time the last dash ended; a black hole does not pull for a moment after. */
+	double DashEndedAtSeconds = -100.0;
 	float DashDistanceApplied = 0.0f;
 	float NextDashAvailableAtSeconds = 0.0f;
 	bool bIsChargingThrow = false;

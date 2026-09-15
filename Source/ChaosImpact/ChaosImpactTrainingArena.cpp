@@ -13,6 +13,10 @@
 AChaosImpactTrainingArena::AChaosImpactTrainingArena()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	// Spawned by the server at runtime; online members move their own characters and need the walls too.
+	bReplicates = true;
+	bAlwaysRelevant = true;
+	SetReplicateMovement(false);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);

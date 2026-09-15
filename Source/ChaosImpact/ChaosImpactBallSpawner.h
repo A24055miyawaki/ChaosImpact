@@ -19,6 +19,8 @@ class AChaosImpactBallSpawner : public AActor
 public:
 	AChaosImpactBallSpawner();
 	AChaosImpactBall* GetActiveBall() const { return ActiveBall.Get(); }
+	/** Set before FinishSpawning: VS stage pads spawn balls outside the training arena too. */
+	void SetAlwaysActive(const bool bActive) { bAlwaysActive = bActive; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -55,6 +57,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float IceBallChance = 0.15f;
 
+	/** Chance (0-1) that a new ball is a thunder ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float ThunderBallChance = 0.1f;
+
+	/** Chance (0-1) that a new ball is a black ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float BlackBallChance = 0.1f;
+
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;
+	bool bAlwaysActive = false;
 };

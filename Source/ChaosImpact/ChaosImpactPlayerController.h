@@ -6,6 +6,7 @@
 #include "GameFramework/PlayerController.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactScreen.h"
+#include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -14,6 +15,8 @@ class UChaosImpactMenuWidget;
 class AChaosImpactBallSpawner;
 class AChaosImpactTrainingTarget;
 class AChaosImpactTrainingArena;
+class ACameraActor;
+class AChaosImpactWarpPad;
 
 /**
  *  Basic PlayerController class for a third person game
@@ -94,6 +97,18 @@ public:
 	bool WillPrimaryUseGamepad() const { return bRequestedPrimaryUsesGamepad; }
 	/** True when this local player's assigned gameplay device is a controller. */
 	bool IsUsingGamepad() const;
+	/**
+	 * Controller rumble for this player alone: Small drives the light high-frequency motors, Big the heavy ones
+	 * (0-1). Nothing happens for a keyboard/mouse player or with rumble turned off in the pause menu.
+	 */
+	void PlayRumble(float Small, float Big, float Seconds, float DelaySeconds = 0.0f);
+	/** A rumble held for as long as something lasts (a black hole's pull, a warp charging). Set it every frame. */
+	void SetSustainedRumble(float Small, float Big);
+	void StopRumble();
+	static bool IsRumbleEnabled();
+	void ToggleRumbleEnabled();
+	/** True when this device's key belongs to this player (its assigned device, or any device online). */
+	bool AcceptsInputKey(const FKey Key) const { return IsKeyAllowedForThisPlayer(Key); }
 	/** Human-readable automatic device assignment for the current requested setup. */
 	FString GetLocalInputAssignmentText(int32 PlayerCount = INDEX_NONE) const;
 	FString GetLocalInputAssignmentForPlayer(int32 PlayerIndex) const;
@@ -127,9 +142,55 @@ public:
 	bool IsPendingCreateRoom() const { return bPendingCreateRoom; }
 	bool IsSearchingForRoom() const;
 	bool CanCloseRecruitment() const;
+	/** Room name screen: names a new room, or renames this room from the lobby. */
+	void SubmitRoomName(const FString& Name);
+	void BeginRoomRename();
+	void CancelRoomRename();
+	bool IsRenamingRoom() const { return bRenamingRoom; }
+	bool CanRenameRoom() const;
+	bool CanReopenRecruitment() const;
+	void ReopenRecruitment();
+	/** Room list: join the listed room, search again, or go back to the password. */
+	void JoinRoomListing(int32 Index);
+	void RefreshRoomList();
+	void CloseRoomList();
+	/** Lobby: this player's 準備OK for the decided rules (R / D-pad up); pressing again cancels it. */
+	void ToggleReadyForMatch();
+	bool CanToggleReady() const;
+
+	// VS match
+	/** Rule screen: local VS before its level opens, or inside a room or match where the rules apply at once. */
+	void OpenMatchRules(EChaosImpactScreen ReturnScreen);
+	/** Row 0 = minutes, 1 = free-for-all / teams, 2 = CPUs. */
+	void AdjustMatchRule(int32 Row, int32 Direction);
+	const FChaosImpactMatchRules& GetPendingMatchRules() const { return PendingMatchRules; }
+	int32 GetMatchHumanCount() const;
+	void ConfirmMatchRules();
+	void CancelMatchRules();
+	/** Team select: this player's own team. Other local players change theirs from their own devices. */
+	void ChangeOwnTeam(int32 Direction);
+	/** The local game or the room host decides when a team battle starts. */
+	bool CanStartVersusMatch() const;
+	void RequestStartTeamMatch();
+	void RetryVersusMatch();
+	bool IsVersusMatchWorld() const;
+	bool CanOpenMatchRulesFromPause() const;
+	/** Pause entries that only belong to the training arena. */
+	bool ShowsTrainingPauseEntries() const { return bTrainingMode && !IsVersusMatchWorld(); }
+
+	UFUNCTION(Server, Reliable)
+	void ServerChangeTeam(int32 Direction);
+	UFUNCTION(Server, Reliable)
+	void ServerStartTeamMatch();
+	/** This machine played the opening that started at IntroStartedAt (server time) to the end. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportIntroFinished(double IntroStartedAt);
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetPlayerName(const FString& Name);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetReadyForMatch(bool bReady);
 	
 protected:
 	UPROPERTY(Transient)
@@ -160,9 +221,31 @@ protected:
 	bool bTrainingOverlayPresentationActive = false;
 	bool bPendingCreateRoom = true;
 	bool bOnlineNameOnly = false;
+	bool bRenamingRoom = false;
+	/** へやをつくる: the password waits here while the room name is entered. */
+	FString PendingRoomPassword;
+	/** Development (-CIAutoReady=<seconds>): when this player presses 準備OK by itself. */
+	double DevAutoReadyAt = 0.0;
 	/** Online rooms and room search accept keyboard and pad alike, following the last one used. */
 	bool bOnlineAnyInput = false;
 	bool bLastInputGamepad = false;
+
+	// Rumble: pulses waiting for their start time, and the two held channels for sustained rumble.
+	struct FPendingRumble
+	{
+		double StartAt = 0.0;
+		float Small = 0.0f;
+		float Big = 0.0f;
+		float Seconds = 0.0f;
+	};
+	TArray<FPendingRumble> PendingRumbles;
+	void StartRumbleNow(float Small, float Big, float Seconds);
+	void UpdateRumble();
+	bool CanRumble() const;
+	FDynamicForceFeedbackHandle SustainedSmallHandle = 0;
+	FDynamicForceFeedbackHandle SustainedBigHandle = 0;
+	float SustainedSmall = 0.0f;
+	float SustainedBig = 0.0f;
 	EChaosImpactPlayFlow PlayFlow = EChaosImpactPlayFlow::Training;
 	/** Online clients have no game mode: pair this machine's controllers once all its players exist. */
 	void ApplyClientControllerAssignments();
@@ -170,6 +253,30 @@ protected:
 	int32 ClientAssignmentWaits = 0;
 	/** CILocalPlayers / CIKeyboardPlayer / CIPadDevice options for the current assignment. */
 	FString BuildLocalSetupOptions();
+
+	virtual void PlayerTick(float DeltaTime) override;
+	/** Follows the match phase: team select screen, and for a local match the rematch menu after the results. */
+	void UpdateMatchScreens();
+	/** Opening camera: flies over the stage, then dives into this player's own view. */
+	void UpdateMatchIntroCamera();
+	/** Back to play from a match screen, without the pause-only checks of ResumeGameplay. */
+	void EnterPlayingScreen();
+
+	UPROPERTY(Transient)
+	TObjectPtr<ACameraActor> IntroCamera;
+
+	/** Full-viewport Ready? / GO! / countdown / FINISH, one per machine. */
+	UPROPERTY(Transient)
+	TObjectPtr<UUserWidget> MatchAnnouncer;
+	/** Primary player: split screen is held off so the flyover fills the whole screen. */
+	bool bIntroFullScreen = false;
+	/** The opening this controller already reported finished, by its server start time. */
+	double ReportedIntroStartedAt = -1.0;
+
+	FChaosImpactMatchRules PendingMatchRules;
+	/** Local VS: rules were chosen, so the level opens as a match. */
+	bool bLocalMatchRulesChosen = false;
+	EChaosImpactScreen MatchRulesReturnScreen = EChaosImpactScreen::ControllerAssignment;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	EChaosImpactBallFlightMode BallFlightMode = EChaosImpactBallFlightMode::Arc;
@@ -197,6 +304,11 @@ protected:
 	void EnsureTrainingArena();
 	void EnsureTrainingBallSpawners();
 	void EnsureTrainingTargets();
+	/** Four warp pads around the training arena (group 0), unless the level already has pads. */
+	void EnsureTrainingWarpPads();
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AChaosImpactWarpPad>> TrainingWarpPads;
 	void OpenTrainingLevel(bool bKeepFlightMode, bool bOnlineSearch = false);
 	void ResetControllerJoinSequence();
 	void BuildFallbackControllerAssignments();

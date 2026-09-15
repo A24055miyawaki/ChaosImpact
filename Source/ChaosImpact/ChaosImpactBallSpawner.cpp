@@ -12,6 +12,9 @@
 AChaosImpactBallSpawner::AChaosImpactBallSpawner()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	// The server places pads at runtime; online members see them too.
+	bReplicates = true;
+	SetReplicateMovement(false);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -41,7 +44,7 @@ AChaosImpactBallSpawner::AChaosImpactBallSpawner()
 void AChaosImpactBallSpawner::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!ChaosImpact::IsTrainingWorld(GetWorld()))
+	if (!bAlwaysActive && !ChaosImpact::IsTrainingWorld(GetWorld()))
 	{
 		SetActorHiddenInGame(true);
 		SetActorEnableCollision(false);
@@ -57,14 +60,20 @@ void AChaosImpactBallSpawner::BeginPlay()
 
 EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
 {
+	const TPair<EChaosImpactBallType, float> Chances[] =
+	{
+		{EChaosImpactBallType::Fire, FireBallChance}, {EChaosImpactBallType::Ice, IceBallChance},
+		{EChaosImpactBallType::Thunder, ThunderBallChance}, {EChaosImpactBallType::Black, BlackBallChance}
+	};
 	const float Roll = FMath::FRand();
-	if (Roll < FireBallChance)
+	float Threshold = 0.0f;
+	for (const TPair<EChaosImpactBallType, float>& Chance : Chances)
 	{
-		return EChaosImpactBallType::Fire;
-	}
-	if (Roll < FireBallChance + IceBallChance)
-	{
-		return EChaosImpactBallType::Ice;
+		Threshold += Chance.Value;
+		if (Roll < Threshold)
+		{
+			return Chance.Key;
+		}
 	}
 	return EChaosImpactBallType::Normal;
 }

@@ -11,6 +11,7 @@ class UProgressBar;
 class UTextBlock;
 class UBorder;
 class UCanvasPanel;
+class USizeBox;
 
 /**
  * Runtime-built gameplay HUD. No Widget Blueprint setup is required.
@@ -38,6 +39,8 @@ public:
 	/** Plays the KO banner on this player's screen after they eliminate someone. */
 	void ShowKnockout(const FString& VictimName);
 	bool IsAimGuideVisible() const;
+	/** The two ball slots trade places after the player swaps hands. */
+	void PlayBallSwap();
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -70,6 +73,10 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UBorder>> BallSlots;
 
+	/** Outer box of each slot; moved as a whole by the swap animation. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USizeBox>> BallSlotBoxes;
+
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UBorder>> BallSlotAccents;
 
@@ -85,6 +92,22 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> InventoryCountLabel;
+
+	/** Hidden outside the match phase of a VS match. */
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> StaminaPanel;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UCanvasPanel> InventoryPanel;
+
+	/** VS: the "+N" pop-up next to this player's points. */
+	int32 LastOwnPoints = 0;
+	/** VS: the place shown in the rank badge, and when it last changed (tracked while painting). */
+	mutable int32 ShownOwnRank = 0;
+	mutable int32 OwnRankDelta = 0;
+	mutable double OwnRankChangedAt = -100.0;
+	int32 PointsGained = 0;
+	double PointsGainedAt = -100.0;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> VerticalDivider;
@@ -102,10 +125,23 @@ private:
 	bool bHealthKnown = false;
 	double HitAt = -100.0;
 
+	/** Bottom-left dial: HP arcs around the number, stamina as an open outer ring. */
+	float MaxHealthValue = 3.0f;
+	float StaminaValue = 5.0f;
+	float MaxStaminaValue = 5.0f;
+	/** Eases toward StaminaValue so a dash visibly drains its arc. */
+	float DisplayedStamina = 5.0f;
+	int32 LostHealthSegment = INDEX_NONE;
+	int32 SpentStaminaSegment = INDEX_NONE;
+	double StaminaSpentAt = -100.0;
+	/** Hidden with the rest of the gameplay HUD outside a VS match's play phase. */
+	bool bVitalsHidden = false;
+
 	int32 CarriedBalls = 0;
 	uint8 CarriedBallTypes = 0;
 	double BallGainedAt = -100.0;
 	int32 BallGainedSlot = INDEX_NONE;
+	double BallSwappedAt = -100.0;
 
 	bool bRespawnVisible = false;
 	double RespawnShownAt = -100.0;
@@ -123,5 +159,19 @@ private:
 	TMap<TWeakObjectPtr<APlayerState>, double> MemberSeenAt;
 
 	void PaintOnlineOverlay(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+		int32 BaseLayer) const;
+	/** Names above every character in view, and edge arrows toward nearby characters outside it. */
+	void PaintPlayerMarkers(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+		int32 BaseLayer) const;
+	/** HUD size for a view of this size: larger in split screen, where each view is only part of the screen. */
+	float GetHudScale(double Width, double Height) const;
+	/** Ball stock in the bottom-right corner: shaded balls per type on a slanted plate, with pickup and swap motion. */
+	void PaintBallInventory(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+		int32 BaseLayer) const;
+	/** HP and stamina dial in the bottom-left corner of this player's view. */
+	void PaintVitals(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+		int32 BaseLayer) const;
+	/** VS opening banners, match timer and standings, and the results. Drawn in every split-screen view. */
+	void PaintVersusMatch(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
 		int32 BaseLayer) const;
 };

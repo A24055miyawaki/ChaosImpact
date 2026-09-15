@@ -26,7 +26,17 @@ enum class EChaosImpactScreen : uint8
 	/** VS mode: local split screen or online. */
 	VSSelect,
 	/** VS online: one or two players on this machine. */
-	OnlinePlayers
+	OnlinePlayers,
+	/** VS match rules: time, free-for-all or teams, CPUs. */
+	MatchRules,
+	/** VS team battle: every player picks a team. */
+	TeamSelect,
+	/** Local VS results: rematch, change rules or leave. */
+	MatchEnd,
+	/** LAN multiplayer: the room's name, when creating a room or renaming it from the lobby. */
+	OnlineRoomName,
+	/** LAN multiplayer: the rooms found for the password; pick one to join. */
+	RoomList
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

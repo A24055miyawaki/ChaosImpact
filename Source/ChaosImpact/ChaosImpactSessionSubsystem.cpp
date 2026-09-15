@@ -6,7 +6,10 @@
 #include "Engine/GameInstance.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
+#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/Guid.h"
+#include "Misc/Parse.h"
 #include "OnlineSessionSettings.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemUtils.h"
@@ -17,8 +20,12 @@ namespace
 	const FName PasswordKey(TEXT("CIPASS"));
 	const FName OpenKey(TEXT("CIOPEN"));
 	const FName CountKey(TEXT("CICOUNT"));
+	const FName RoomNameKey(TEXT("CINAME"));
+	const FName HostNameKey(TEXT("CIHOST"));
 	const TCHAR* ConfigSection = TEXT("ChaosImpact.Online");
 	const TCHAR* NameConfigKey = TEXT("PlayerName");
+	/** How often the room list is refreshed while it is shown. */
+	constexpr float RoomListRefreshSeconds = 2.0f;
 }
 
 void UChaosImpactSessionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -36,6 +43,7 @@ void UChaosImpactSessionSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 
 void UChaosImpactSessionSubsystem::Deinitialize()
 {
+	CancelRefresh();
 	if (GEngine)
 	{
 		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
@@ -87,6 +95,26 @@ void UChaosImpactSessionSubsystem::SetPlayerName(const FString& Name)
 	GConfig->Flush(false, GGameUserSettingsIni);
 }
 
+FString UChaosImpactSessionSubsystem::GetDefaultRoomName() const
+{
+	return FString::Printf(TEXT("%sのへや"), *GetPlayerName()).Left(MaxRoomNameLength);
+}
+
+FString UChaosImpactSessionSubsystem::GetMachineToken() const
+{
+	if (!CachedMachineToken.IsEmpty())
+	{
+		return CachedMachineToken;
+	}
+	if (FParse::Value(FCommandLine::Get(), TEXT("CIMachineToken="), CachedMachineToken) && !CachedMachineToken.IsEmpty())
+	{
+		return CachedMachineToken;
+	}
+	// One per running game: leaving and coming back keeps it, while two copies of the game on one PC differ.
+	CachedMachineToken = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	return CachedMachineToken;
+}
+
 FString UChaosImpactSessionSubsystem::GetTrainingMapName()
 {
 	return TEXT("/Game/ThirdPerson/Lvl_ThirdPerson");
@@ -127,7 +155,7 @@ void UChaosImpactSessionSubsystem::BindSessionDelegates()
 	bSessionDelegatesBound = true;
 }
 
-void UChaosImpactSessionSubsystem::CreateRoom(const FString& InPassword)
+void UChaosImpactSessionSubsystem::CreateRoom(const FString& InPassword, const FString& InRoomName)
 {
 	IOnlineSessionPtr Sessions = GetSessions();
 	CreateError.Reset();
@@ -142,10 +170,11 @@ void UChaosImpactSessionSubsystem::CreateRoom(const FString& InPassword)
 		Sessions->DestroySession(NAME_GameSession);
 	}
 	Password = InPassword;
+	const FString Trimmed = InRoomName.TrimStartAndEnd().Left(MaxRoomNameLength);
+	RoomName = Trimmed.IsEmpty() ? GetDefaultRoomName() : Trimmed;
 	State = EChaosImpactRoomState::Creating;
-	// Search first so two rooms never share a password on the same network.
-	bCheckingPassword = true;
-	BeginFind();
+	// The password is shared by a group, so several rooms may use it; searchers pick from the list.
+	CreateSessionNow();
 }
 
 void UChaosImpactSessionSubsystem::StartSearch(const FString& InPassword)
@@ -156,8 +185,19 @@ void UChaosImpactSessionSubsystem::StartSearch(const FString& InPassword)
 		return;
 	}
 	BindSessionDelegates();
+	if (State == EChaosImpactRoomState::Searching && Password == InPassword && Search.IsValid()
+		&& Search->SearchState == EOnlineAsyncTaskState::InProgress)
+	{
+		return;
+	}
 	Password = InPassword;
 	State = EChaosImpactRoomState::Searching;
+	Listings.Reset();
+	bSearchedOnce = false;
+	++ListingsVersion;
+	FString AutoRoom;
+	bDevAutoJoin = FParse::Value(FCommandLine::Get(), TEXT("CIAutoRoom="), AutoRoom) && AutoRoom.StartsWith(TEXT("search"));
+	DevAutoJoinAt = 0.0;
 	BeginFind();
 }
 
@@ -168,13 +208,31 @@ void UChaosImpactSessionSubsystem::StopSearch()
 		return;
 	}
 	State = EChaosImpactRoomState::None;
-	if (UGameInstance* GameInstance = GetGameInstance())
-	{
-		GameInstance->GetTimerManager().ClearTimer(RetryTimer);
-	}
-	if (IOnlineSessionPtr Sessions = GetSessions())
+	CancelRefresh();
+	if (IOnlineSessionPtr Sessions = GetSessions(); Sessions && Search.IsValid()
+		&& Search->SearchState == EOnlineAsyncTaskState::InProgress)
 	{
 		Sessions->CancelFindSessions();
+	}
+}
+
+void UChaosImpactSessionSubsystem::ScheduleRefresh(const float DelaySeconds)
+{
+	CancelRefresh();
+	RefreshTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+	{
+		RefreshTicker.Reset();
+		BeginFind();
+		return false;
+	}), DelaySeconds);
+}
+
+void UChaosImpactSessionSubsystem::CancelRefresh()
+{
+	if (RefreshTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RefreshTicker);
+		RefreshTicker.Reset();
 	}
 }
 
@@ -186,10 +244,8 @@ void UChaosImpactSessionSubsystem::CancelCreate()
 		return;
 	}
 	State = EChaosImpactRoomState::None;
-	bCheckingPassword = false;
 	if (IOnlineSessionPtr Sessions = GetSessions())
 	{
-		Sessions->CancelFindSessions();
 		if (Sessions->GetNamedSession(NAME_GameSession))
 		{
 			Sessions->DestroySession(NAME_GameSession);
@@ -200,7 +256,7 @@ void UChaosImpactSessionSubsystem::CancelCreate()
 void UChaosImpactSessionSubsystem::BeginFind()
 {
 	IOnlineSessionPtr Sessions = GetSessions();
-	if (!Sessions || (State != EChaosImpactRoomState::Creating && State != EChaosImpactRoomState::Searching))
+	if (!Sessions || State != EChaosImpactRoomState::Searching)
 	{
 		return;
 	}
@@ -215,82 +271,101 @@ void UChaosImpactSessionSubsystem::BeginFind()
 
 void UChaosImpactSessionSubsystem::HandleFindComplete(const bool bWasSuccessful)
 {
-	UE_LOG(LogChaosImpact, Log, TEXT("Room search finished: success=%d results=%d state=%d password=%s"),
-		bWasSuccessful, Search.IsValid() ? Search->SearchResults.Num() : -1, static_cast<int32>(State), *Password);
-	const FOnlineSessionSearchResult* Match = nullptr;
+	if (State != EChaosImpactRoomState::Searching)
+	{
+		return;
+	}
+	TArray<FChaosImpactRoomListing> Found;
 	if (Search.IsValid())
 	{
 		for (const FOnlineSessionSearchResult& Result : Search->SearchResults)
 		{
 			FString ResultPassword;
-			if (Result.Session.SessionSettings.Get(PasswordKey, ResultPassword) && ResultPassword == Password)
+			if (!Result.Session.SessionSettings.Get(PasswordKey, ResultPassword) || ResultPassword != Password)
 			{
-				Match = &Result;
-				break;
+				continue;
+			}
+			FChaosImpactRoomListing& Listing = Found.AddDefaulted_GetRef();
+			int32 Open = 1;
+			Result.Session.SessionSettings.Get(RoomNameKey, Listing.RoomName);
+			Result.Session.SessionSettings.Get(HostNameKey, Listing.HostName);
+			Result.Session.SessionSettings.Get(CountKey, Listing.Members);
+			Result.Session.SessionSettings.Get(OpenKey, Open);
+			Listing.bOpen = Open != 0;
+			Listing.PingMs = FMath::Max(0, Result.PingInMs);
+			Listing.Result = Result;
+			if (Listing.RoomName.IsEmpty())
+			{
+				Listing.RoomName = TEXT("へや");
 			}
 		}
 	}
-
-	if (State == EChaosImpactRoomState::Creating && bCheckingPassword)
+	// Rooms that can be joined first, then the best connection.
+	Found.StableSort([](const FChaosImpactRoomListing& A, const FChaosImpactRoomListing& B)
 	{
-		bCheckingPassword = false;
-		if (Match)
+		return A.bOpen != B.bOpen ? A.bOpen : A.PingMs < B.PingMs;
+	});
+	UE_LOG(LogChaosImpact, Log, TEXT("Room search finished: success=%d rooms with the password=%d (of %d)"),
+		bWasSuccessful, Found.Num(), Search.IsValid() ? Search->SearchResults.Num() : -1);
+	Listings = MoveTemp(Found);
+	bSearchedOnce = true;
+	++ListingsVersion;
+
+	if (bDevAutoJoin && !Listings.IsEmpty() && Listings[0].bOpen && GetGameInstance())
+	{
+		const double Now = FPlatformTime::Seconds();
+		// Development: stay on the list for a moment (for screenshots), then take the first open room.
+		if (DevAutoJoinAt <= 0.0)
 		{
-			State = EChaosImpactRoomState::None;
-			CreateError = TEXT("このあいことばは使われています");
+			DevAutoJoinAt = Now + 3.0;
+		}
+		else if (Now >= DevAutoJoinAt)
+		{
+			bDevAutoJoin = false;
+			JoinRoomListing(0);
 			return;
 		}
-		CreateSessionNow();
-		return;
 	}
+	ScheduleRefresh(RoomListRefreshSeconds);
+}
 
-	if (State != EChaosImpactRoomState::Searching)
+bool UChaosImpactSessionSubsystem::JoinRoomListing(const int32 Index)
+{
+	IOnlineSessionPtr Sessions = GetSessions();
+	if (!Sessions || State != EChaosImpactRoomState::Searching || !Listings.IsValidIndex(Index))
 	{
-		return;
+		return false;
 	}
-	UGameInstance* GameInstance = GetGameInstance();
-	if (!Match)
+	const FChaosImpactRoomListing Listing = Listings[Index];
+	if (!Listing.bOpen)
 	{
-		if (GameInstance)
-		{
-			GameInstance->GetTimerManager().SetTimer(RetryTimer, this,
-				&UChaosImpactSessionSubsystem::BeginFind, 1.5f, false);
-		}
-		return;
-	}
-
-	int32 Open = 1;
-	int32 Count = 1;
-	Match->Session.SessionSettings.Get(OpenKey, Open);
-	Match->Session.SessionSettings.Get(CountKey, Count);
-	if (Open == 0)
-	{
-		State = EChaosImpactRoomState::None;
 		PostNotice(TEXT("メンバー募集が終了しています"));
-		return;
+		return false;
 	}
 	// Everyone playing on this machine needs a place (a room of 7 cannot take a pair).
-	if (Count + LocalPlayerCount > AChaosImpactGameState::MaxMembers)
+	if (Listing.Members + LocalPlayerCount > AChaosImpactGameState::MaxMembers)
 	{
-		State = EChaosImpactRoomState::None;
 		PostNotice(TEXT("へやが満員です"));
-		return;
+		return false;
 	}
-
-	IOnlineSessionPtr Sessions = GetSessions();
-	if (!Sessions)
+	CancelRefresh();
+	if (Search.IsValid() && Search->SearchState == EOnlineAsyncTaskState::InProgress)
 	{
-		return;
+		Sessions->CancelFindSessions();
 	}
 	if (Sessions->GetNamedSession(NAME_GameSession))
 	{
 		Sessions->DestroySession(NAME_GameSession);
 	}
 	State = EChaosImpactRoomState::Joining;
-	if (!Sessions->JoinSession(0, NAME_GameSession, *Match))
+	RoomName = Listing.RoomName;
+	UE_LOG(LogChaosImpact, Log, TEXT("Joining listed room \"%s\" hosted by %s"), *Listing.RoomName, *Listing.HostName);
+	if (!Sessions->JoinSession(0, NAME_GameSession, Listing.Result))
 	{
 		HandleJoinComplete(NAME_GameSession, EOnJoinSessionCompleteResult::UnknownError);
+		return false;
 	}
+	return true;
 }
 
 void UChaosImpactSessionSubsystem::CreateSessionNow()
@@ -313,6 +388,8 @@ void UChaosImpactSessionSubsystem::CreateSessionNow()
 	Settings.Set(PasswordKey, Password, EOnlineDataAdvertisementType::ViaOnlineService);
 	Settings.Set(OpenKey, 1, EOnlineDataAdvertisementType::ViaOnlineService);
 	Settings.Set(CountKey, 1, EOnlineDataAdvertisementType::ViaOnlineService);
+	Settings.Set(RoomNameKey, RoomName, EOnlineDataAdvertisementType::ViaOnlineService);
+	Settings.Set(HostNameKey, GetPlayerName(), EOnlineDataAdvertisementType::ViaOnlineService);
 	if (!Sessions->CreateSession(0, NAME_GameSession, Settings))
 	{
 		HandleCreateComplete(NAME_GameSession, false);
@@ -321,8 +398,8 @@ void UChaosImpactSessionSubsystem::CreateSessionNow()
 
 void UChaosImpactSessionSubsystem::HandleCreateComplete(FName SessionName, const bool bWasSuccessful)
 {
-	UE_LOG(LogChaosImpact, Log, TEXT("Room create finished: success=%d state=%d"), bWasSuccessful,
-		static_cast<int32>(State));
+	UE_LOG(LogChaosImpact, Log, TEXT("Room create finished: success=%d state=%d name=%s"), bWasSuccessful,
+		static_cast<int32>(State), *RoomName);
 	if (State != EChaosImpactRoomState::Creating)
 	{
 		return;
@@ -359,16 +436,19 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 	if (Result != EOnJoinSessionCompleteResult::Success || !Sessions || !Controller
 		|| !Sessions->GetResolvedConnectString(NAME_GameSession, ConnectString))
 	{
-		State = EChaosImpactRoomState::None;
+		// Back to the list, which keeps refreshing.
 		PostNotice(TEXT("へやに入れませんでした"));
+		State = EChaosImpactRoomState::Searching;
+		BeginFind();
 		return;
 	}
 	State = EChaosImpactRoomState::InRoom;
 	UE_LOG(LogChaosImpact, Log, TEXT("Joining room at %s"), *ConnectString);
 	// CIPlayers lets the host reserve a place for this machine's second player, who joins right after.
+	// CIMachine lets the host replace this machine's old place if it is still there after a drop.
 	// The local setup options also let this client pair its controllers again in the host's world.
-	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?%s"),
-		*ConnectString, LocalPlayerCount, *LocalSetupOptions), TRAVEL_Absolute);
+	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?CIMachine=%s?%s"),
+		*ConnectString, LocalPlayerCount, *GetMachineToken(), *LocalSetupOptions), TRAVEL_Absolute);
 }
 
 void UChaosImpactSessionSubsystem::LeaveRoom()
@@ -395,6 +475,17 @@ void UChaosImpactSessionSubsystem::SetMemberCount(const int32 Count)
 	PublishRoomSettings();
 }
 
+void UChaosImpactSessionSubsystem::SetRoomName(const FString& Name)
+{
+	const FString Trimmed = Name.TrimStartAndEnd().Left(MaxRoomNameLength);
+	if (Trimmed.IsEmpty())
+	{
+		return;
+	}
+	RoomName = Trimmed;
+	PublishRoomSettings();
+}
+
 void UChaosImpactSessionSubsystem::PublishRoomSettings()
 {
 	IOnlineSessionPtr Sessions = GetSessions();
@@ -406,6 +497,7 @@ void UChaosImpactSessionSubsystem::PublishRoomSettings()
 	FOnlineSessionSettings Updated = *Current;
 	Updated.Set(OpenKey, bRecruitmentOpen ? 1 : 0, EOnlineDataAdvertisementType::ViaOnlineService);
 	Updated.Set(CountKey, MemberCount, EOnlineDataAdvertisementType::ViaOnlineService);
+	Updated.Set(RoomNameKey, RoomName, EOnlineDataAdvertisementType::ViaOnlineService);
 	Sessions->UpdateSession(NAME_GameSession, Updated, true);
 }
 

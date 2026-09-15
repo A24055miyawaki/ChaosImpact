@@ -23,9 +23,16 @@ public:
 	int32 GetSelectedIndex() const { return SelectedIndex; }
 	bool HasLogo() const { return LogoTexture != nullptr; }
 	EChaosImpactScreen GetScreen() const { return Screen; }
+	/**
+	 * Player entry: a controller button from any controller joins it. Slate sends each controller's keys only
+	 * to its own user's focus, and this menu has only the first user's, so a second or third pad never reached
+	 * NativeOnKeyDown. Returns true for the press that joined, so it does not also press a menu entry.
+	 */
+	bool TryJoinControllerFromAnyUser(const FKeyEvent& InKeyEvent);
 
 protected:
 	virtual void NativeOnInitialized() override;
+	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 		const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements,
@@ -74,6 +81,7 @@ private:
 	void HandleNameChanged(const FText& Text);
 	void SubmitName();
 	void SubmitPassword();
+	void SubmitRoomNameEntry();
 	FString GetPasswordString() const;
 	/** Digit editing on the password screen. Returns true when the key was consumed. */
 	bool HandlePasswordKey(const FKey& Key);
@@ -85,6 +93,10 @@ private:
 	bool bNameFocusPending = false;
 	float NameInputFontScale = 0.0f;
 	FString LastCreateError;
+	/** Sees every controller's presses before focus routing, for player entry. */
+	TSharedPtr<class IInputProcessor> JoinInputProcessor;
+	/** The room list is rebuilt when the session subsystem's list changes. */
+	int32 LastRoomListingsVersion = -1;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> LogoTexture;

@@ -8,7 +8,9 @@
 #include "ChaosImpactBall.generated.h"
 
 class AChaosImpactHazardZone;
+class UMaterialInstanceDynamic;
 class UNiagaraComponent;
+class UProceduralMeshComponent;
 class UPointLightComponent;
 class UProjectileMovementComponent;
 class USphereComponent;
@@ -98,6 +100,12 @@ public:
 	EChaosImpactBallType GetBallType() const { return BallType; }
 	bool IsSpecialBall() const { return BallType != EChaosImpactBallType::Normal; }
 	bool HasDetonated() const { return bDetonated; }
+	/** Tuning and tests: how long a landed ball lies around, and how much of that time it spends blinking. */
+	void SetLandedPickupLifetime(const float Seconds, const float BlinkSeconds)
+	{
+		LandedPickupLifetimeSeconds = FMath::Max(Seconds, 0.1f);
+		LandedPickupBlinkSeconds = FMath::Max(BlinkSeconds, 0.0f);
+	}
 
 protected:
 	virtual void BeginPlay() override;
@@ -170,6 +178,28 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.1"))
 	float LifeSeconds = 8.0f;
 
+	/**
+	 * A thrown ball that has landed and rolls away disappears after this many seconds unless someone picks
+	 * it up. Balls placed by spawners or summoned in training hover instead and never expire.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.1"))
+	float LandedPickupLifetimeSeconds = 10.0f;
+
+	/** The final part of that time, shown by blinking faster and faster before the ball shrinks away. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.0"))
+	float LandedPickupBlinkSeconds = 3.0f;
+
+	/** Server time at which this landed ball is removed; 0 while flying, held, or a spawner pickup. */
+	UPROPERTY(Replicated)
+	double LandedPickupExpiresAt = 0.0;
+
+	/** Every machine blinks and shrinks the ball from the replicated expiry time. */
+	void UpdateExpiryPresentation(float DeltaSeconds);
+	FVector BallMeshBaseScale = FVector(0.48f);
+	float ExpiryBlinkPhase = 0.0f;
+	float ExpiryScale = 1.0f;
+	bool bExpiryShown = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float Bounciness = 1.0f;
 
@@ -235,6 +265,12 @@ protected:
 	int32 AdoptionWaitFrames = 0;
 	/** Client: correction speed; slower while continuing from this screen's own throw preview. */
 	float ActiveErrorDecayRate = 14.0f;
+	/**
+	 * Client, the thrower's own ball only: how far ahead of the arriving server state it is shown, kept from
+	 * the throw preview so the ball does not appear to slow down when the server's copy takes over.
+	 */
+	float ClientTimeLead = 0.0f;
+	static constexpr float MaxOwnThrowTimeLeadSeconds = 0.18f;
 	/** Server: when this ball last stopped flying, so hits reported a moment later still count. */
 	double FlightEndedAt = 0.0;
 
@@ -278,6 +314,26 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPointLightComponent> TypeLight;
+
+	/** Thunder: crackling shell; black: violet event horizon. Ignores the ball's own scale and spin. */
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> TypeGlow;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> TypeGlowMaterial;
+
+	/** Thunder: arcs of lightning jumping off the ball, rebuilt every few frames. */
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> TypeArcs;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> TypeArcMaterial;
+
+	/** Black: tilted rings spinning around the ball. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> TypeRings;
+
+	float NextArcFlickerTime = 0.0f;
 
 	bool bFlightTrailOn = false;
 	bool bTypePresentationBuilt = false;

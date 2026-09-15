@@ -57,13 +57,14 @@ namespace
 		FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(Key, FModifierKeysState(), 0, false, 0, 0));
 	}
 
-	void MenuDeviceKey(FKey Key, const int32 InputDeviceId)
+	/** UserIndex: the Slate user the pad belongs to. Real second and third pads arrive as users 1 and 2. */
+	void MenuDeviceKey(FKey Key, const int32 InputDeviceId, const int32 UserIndex = 0)
 	{
 		const FInputDeviceId DeviceId = FInputDeviceId::CreateFromInternalId(InputDeviceId);
 		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(
-			Key, FModifierKeysState(), DeviceId, false, 0, 0, TOptional<int32>(0)));
+			Key, FModifierKeysState(), DeviceId, false, 0, 0, TOptional<int32>(UserIndex)));
 		FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(
-			Key, FModifierKeysState(), DeviceId, false, 0, 0, TOptional<int32>(0)));
+			Key, FModifierKeysState(), DeviceId, false, 0, 0, TOptional<int32>(UserIndex)));
 	}
 
 	void PauseKey(AChaosImpactPlayerController* PC)
@@ -175,6 +176,12 @@ namespace
 					TEXT("Player count opens controller assignment"))) { return true; }
 					Test->TestTrue(TEXT("Assignment screen names the first player's device"),
 						!PC->GetLocalInputAssignmentForPlayer(0).IsEmpty());
+					// The D-pad presses above made the controller P1's device (the last device used picks it);
+					// start the checks below from keyboard P1.
+					if (PC->WillPrimaryUseGamepad())
+					{
+						PC->TogglePrimaryInputMode();
+					}
 					PC->TogglePrimaryInputMode();
 					Test->TestFalse(TEXT("A controller player waits for a join press"),
 						PC->AreControllerAssignmentsComplete());
@@ -665,7 +672,9 @@ namespace
 			PC->TogglePrimaryInputMode();
 			PC->PrepareTrainingControllerAssignment(3);
 			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 88);
-			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 99);
+			// The second pad is a separate Slate user whose keys never reach the menu's focus.
+			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 99, 1);
+			Test->TestTrue(TEXT("A second controller on another Slate user can join"), PC->IsControllerJoined(99));
 			MenuKey(EKeys::SpaceBar);
 			Test->TestTrue(TEXT("Keyboard and mouse can join after two controllers"),
 				PC->IsKeyboardMouseAssignedToPlayer(2));

@@ -1,8 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Interfaces/OnlineSessionInterface.h"
+#include "OnlineSessionSettings.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "ChaosImpactSessionSubsystem.generated.h"
 
@@ -13,20 +15,32 @@ UENUM(BlueprintType)
 enum class EChaosImpactRoomState : uint8
 {
 	None,
-	/** Checking the password is unused, then creating the LAN session. */
+	/** Creating the LAN session. */
 	Creating,
 	/** This machine is the listen-server host of a room. */
 	Hosting,
-	/** Playing local training while repeatedly looking for a room with the password. */
+	/** Listing the rooms that use the password, again and again while the list is shown. */
 	Searching,
 	Joining,
 	/** Connected to someone else's room as a client. */
 	InRoom
 };
 
+/** A room found by へやをさがす. */
+struct FChaosImpactRoomListing
+{
+	FString RoomName;
+	FString HostName;
+	int32 Members = 1;
+	bool bOpen = true;
+	/** Round trip of the LAN search reply, for the connection bars. */
+	int32 PingMs = 0;
+	FOnlineSessionSearchResult Result;
+};
+
 /**
- * Room lifecycle for the LAN multiplayer mode. Lives on the GameInstance so searching keeps
- * running while the player waits in the local training arena and survives map travel.
+ * Room lifecycle for the LAN multiplayer mode. Lives on the GameInstance so it survives map travel.
+ * The password is a group password: several rooms may share it, and searching lists all of them.
  */
 UCLASS()
 class UChaosImpactSessionSubsystem : public UGameInstanceSubsystem
@@ -42,10 +56,18 @@ public:
 	bool HasSavedPlayerName() const;
 	void SetPlayerName(const FString& Name);
 	static constexpr int32 MaxNameLength = 10;
+	static constexpr int32 MaxRoomNameLength = 12;
 
-	void CreateRoom(const FString& InPassword);
+	void CreateRoom(const FString& InPassword, const FString& InRoomName);
+	/** Lists the rooms using the password, refreshing until StopSearch or a join. */
 	void StartSearch(const FString& InPassword);
 	void StopSearch();
+	/** Joins a listed room. False (with a notice) when it has filled up or closed meanwhile. */
+	bool JoinRoomListing(int32 Index);
+	const TArray<FChaosImpactRoomListing>& GetRoomListings() const { return Listings; }
+	/** Changes whenever the room list changes, so screens know when to rebuild. */
+	int32 GetRoomListingsVersion() const { return ListingsVersion; }
+	bool HasSearchedOnce() const { return bSearchedOnce; }
 	/** Abandons a room that is still being created (before travelling to it). */
 	void CancelCreate();
 	/** Leaves or dissolves the room and returns this machine to its own training arena. */
@@ -53,10 +75,19 @@ public:
 	/** Host only: advertise whether new members may still join, and how many are inside. */
 	void SetRecruitmentOpen(bool bOpen);
 	void SetMemberCount(int32 Count);
+	/** Host only: the room's name as listed to searchers. */
+	void SetRoomName(const FString& Name);
+	const FString& GetRoomName() const { return RoomName; }
+	FString GetDefaultRoomName() const;
+	/**
+	 * Identifies this machine to hosts, so reconnecting after a drop replaces its old place in the room instead
+	 * of appearing twice. Saved once per machine; -CIMachineToken= overrides it for tests on one PC.
+	 */
+	FString GetMachineToken() const;
 
 	EChaosImpactRoomState GetState() const { return State; }
 	const FString& GetPassword() const { return Password; }
-	/** Non-empty when the last CreateRoom attempt failed (for example the password is in use). */
+	/** Non-empty when the last CreateRoom attempt failed. */
 	const FString& GetCreateError() const { return CreateError; }
 	const FString& GetNotice() const { return Notice; }
 	double GetNoticeTime() const { return NoticeAt; }
@@ -91,11 +122,11 @@ private:
 
 	EChaosImpactRoomState State = EChaosImpactRoomState::None;
 	FString Password;
+	FString RoomName;
 	FString CreateError;
 	FString Notice;
 	double NoticeAt = -100.0;
 	FString GeneratedName;
-	bool bCheckingPassword = false;
 	bool bReturnToTraining = false;
 	bool bSessionDelegatesBound = false;
 	bool bRecruitmentOpen = true;
@@ -103,7 +134,20 @@ private:
 	FString LocalSetupOptions = TEXT("CILocalPlayers=1?CIKeyboardPlayer=0");
 	int32 LocalPlayerCount = 1;
 	TSharedPtr<FOnlineSessionSearch> Search;
-	FTimerHandle RetryTimer;
+	TArray<FChaosImpactRoomListing> Listings;
+	int32 ListingsVersion = 0;
+	bool bSearchedOnce = false;
+	/** Development (-CIAutoRoom=search:...): join the first open room once it has been listed for a moment. */
+	bool bDevAutoJoin = false;
+	double DevAutoJoinAt = 0.0;
+	mutable FString CachedMachineToken;
+	/**
+	 * The list refreshes on the core ticker: menus pause the game world, and a paused world's timers
+	 * (the GameInstance timer manager included) do not run.
+	 */
+	void ScheduleRefresh(float DelaySeconds);
+	void CancelRefresh();
+	FTSTicker::FDelegateHandle RefreshTicker;
 	FDelegateHandle NetworkFailureHandle;
 	FDelegateHandle TravelFailureHandle;
 };

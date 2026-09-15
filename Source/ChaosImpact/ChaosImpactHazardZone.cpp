@@ -2,7 +2,9 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactGameState.h"
 #include "ChaosImpactIceMeshes.h"
+#include "ChaosImpactLightning.h"
 #include "ChaosImpactTrainingTarget.h"
 
 #include "Components/CapsuleComponent.h"
@@ -56,6 +58,29 @@ namespace
 	float HazardEaseOut(const float T)
 	{
 		return 1.0f - FMath::Pow(1.0f - FMath::Clamp(T, 0.0f, 1.0f), 3.0f);
+	}
+
+	/**
+	 * Places an effect shape by its size in centimetres (engine sphere and cylinder: 100 across, centred), and
+	 * sets its glow when Glow is not negative. A zero size hides it.
+	 */
+	void PlaceZoneShape(const FChaosImpactZoneMesh& Part, const FVector& Center, const float Diameter, const float Height,
+		const FRotator& Rotation, const float Glow)
+	{
+		if (UStaticMeshComponent* Shape = Part.Mesh.Get())
+		{
+			const bool bVisible = Diameter > 0.5f && Height > 0.05f;
+			Shape->SetVisibility(bVisible);
+			if (bVisible)
+			{
+				Shape->SetWorldLocationAndRotation(Center, Rotation);
+				Shape->SetWorldScale3D(FVector(Diameter / 100.0f, Diameter / 100.0f, Height / 100.0f));
+			}
+		}
+		if (Glow >= 0.0f)
+		{
+			SetIntensity(Part.Material.Get(), Glow);
+		}
 	}
 
 	/** Overshoots slightly before settling, for crystals snapping into place. */
@@ -187,7 +212,11 @@ namespace
 		ChaosImpactBallTypes::Effects::Explosion, ChaosImpactBallTypes::Effects::Fire,
 		ChaosImpactBallTypes::Effects::Smoke, ChaosImpactBallTypes::Effects::Shatter,
 		ChaosImpactBallTypes::Effects::FireTrail, ChaosImpactBallTypes::Effects::BallTrail,
-		ChaosImpactBallTypes::Effects::Damage
+		ChaosImpactBallTypes::Effects::Damage,
+		ChaosImpactBallTypes::Effects::Electricity, ChaosImpactBallTypes::Effects::SparkBurst,
+		ChaosImpactBallTypes::Effects::DarkAura,
+		ChaosImpactBallTypes::Effects::WarpAura, ChaosImpactBallTypes::Effects::WarpOut,
+		ChaosImpactBallTypes::Effects::WarpIn, ChaosImpactBallTypes::Effects::LastHitSmoke
 	};
 }
 
@@ -371,12 +400,24 @@ void AChaosImpactHazardZone::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 
 float AChaosImpactHazardZone::GetRadius() const
 {
-	return ZoneType == EChaosImpactBallType::Ice ? IceRadius : FireRadius;
+	switch (ZoneType)
+	{
+	case EChaosImpactBallType::Ice: return IceRadius;
+	case EChaosImpactBallType::Thunder: return ThunderRadius;
+	case EChaosImpactBallType::Black: return BlackHoleRadius;
+	default: return FireRadius;
+	}
 }
 
 float AChaosImpactHazardZone::GetActiveSeconds() const
 {
-	return ZoneType == EChaosImpactBallType::Ice ? IceFloorSeconds : FireBurnSeconds;
+	switch (ZoneType)
+	{
+	case EChaosImpactBallType::Ice: return IceFloorSeconds;
+	case EChaosImpactBallType::Thunder: return ThunderActiveSeconds;
+	case EChaosImpactBallType::Black: return BlackHoleSeconds;
+	default: return FireBurnSeconds;
+	}
 }
 
 AChaosImpactHazardZone* AChaosImpactHazardZone::Detonate(UWorld* World, const EChaosImpactBallType Type,
@@ -435,6 +476,38 @@ bool AChaosImpactHazardZone::IsSlipperyAt(const UWorld* World, const FVector& Fe
 	return false;
 }
 
+FVector AChaosImpactHazardZone::GetBlackHolePullOffset(const UWorld* World, AActor* Character, const float DeltaSeconds)
+{
+	FVector Offset = FVector::ZeroVector;
+	if (!World || !IsValid(Character))
+	{
+		return Offset;
+	}
+	const double Now = World->GetTimeSeconds();
+	for (TActorIterator<AChaosImpactHazardZone> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		AChaosImpactHazardZone* Zone = *It;
+		const float Age = static_cast<float>(Now - Zone->SpawnedAt);
+		if (Zone->ZoneType != EChaosImpactBallType::Black || Age > BlackHoleSeconds || Character == Zone->SourcePawn
+			|| AChaosImpactGameState::AreTeammates(Zone->GetWorld(), Zone->SourcePawn, Character))
+		{
+			continue;
+		}
+		const FVector ToCentre = Zone->GetActorLocation() - Character->GetActorLocation();
+		const FVector Flat(ToCentre.X, ToCentre.Y, 0.0f);
+		const float Distance = static_cast<float>(Flat.Size());
+		if (Distance > BlackHoleRadius || Distance < 6.0f || FMath::Abs(ToCentre.Z) > 320.0f)
+		{
+			continue;
+		}
+		// Takes hold as it opens and lets go as it closes; gentler at the core so nobody shoots past the centre.
+		const float Strength = FMath::Clamp(Age / 0.35f, 0.0f, 1.0f) * FMath::Clamp((BlackHoleSeconds - Age) / 0.25f, 0.0f, 1.0f);
+		const float Speed = FMath::Lerp(BlackHoleCoreSpeed, BlackHolePullSpeed, Distance / BlackHoleRadius) * Strength;
+		Offset += Flat / Distance * FMath::Min(Speed * DeltaSeconds, Distance);
+	}
+	return Offset;
+}
+
 void AChaosImpactHazardZone::BeginPlay()
 {
 	Super::BeginPlay();
@@ -449,8 +522,7 @@ void AChaosImpactHazardZone::BeginPlay()
 		ApplyDetonationEffects();
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("%s zone at %s (affected %d)"),
-		ZoneType == EChaosImpactBallType::Ice ? TEXT("Ice") : TEXT("Fire"),
-		*GetActorLocation().ToCompactString(), Affected.Num());
+		ChaosImpactBallTypes::GetInternalName(ZoneType), *GetActorLocation().ToCompactString(), Affected.Num());
 }
 
 AController* AChaosImpactHazardZone::GetSourceController() const
@@ -472,7 +544,8 @@ bool AChaosImpactHazardZone::IsInside(const AActor* Actor, const float Padding, 
 void AChaosImpactHazardZone::ApplyDetonationEffects()
 {
 	UWorld* World = GetWorld();
-	if (!World)
+	// A black hole only pulls (every machine, continuously); nothing happens at the moment it opens.
+	if (!World || ZoneType == EChaosImpactBallType::Black)
 	{
 		return;
 	}
@@ -481,15 +554,26 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 	const float BlastHeight = 260.0f + BurstHeight;
 	auto Affect = [&](AActor* Victim)
 	{
+		if (AChaosImpactGameState::AreTeammates(World, SourcePawn, Victim))
+		{
+			return;
+		}
 		Affected.Add(Victim);
-		if (ZoneType == EChaosImpactBallType::Fire)
+		if (ZoneType == EChaosImpactBallType::Fire || ZoneType == EChaosImpactBallType::Thunder)
 		{
 			// The direct victim already took the ball itself; the blast does not count twice.
 			if (Victim != DirectVictim.Get())
 			{
 				UGameplayStatics::ApplyDamage(Victim, ZoneDamage, SourceController, this, nullptr);
 			}
-			NextBurnAt.Add(Victim, Now + FireBurnInterval);
+			if (ZoneType == EChaosImpactBallType::Fire)
+			{
+				NextBurnAt.Add(Victim, Now + FireBurnInterval);
+			}
+			else
+			{
+				MulticastShock(Victim);
+			}
 		}
 		else if (AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Victim))
 		{
@@ -510,7 +594,7 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 		}
 		Affect(Character);
 	}
-	if (ZoneType == EChaosImpactBallType::Fire)
+	if (ZoneType == EChaosImpactBallType::Fire || ZoneType == EChaosImpactBallType::Thunder)
 	{
 		for (TActorIterator<AChaosImpactTrainingTarget> It(World); It; ++It)
 		{
@@ -525,21 +609,53 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 bool AChaosImpactHazardZone::TryApplyLateHit(AChaosImpactCharacter* Victim)
 {
 	if (!HasAuthority() || !IsValid(Victim) || Victim == SourcePawn || Victim->IsEliminated()
+		|| AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, Victim)
 		|| Affected.Contains(Victim) || !GetWorld())
 	{
 		return false;
 	}
 	Affected.Add(Victim);
 	UGameplayStatics::ApplyDamage(Victim, ZoneDamage, GetSourceController(), this, nullptr);
-	if (ZoneType == EChaosImpactBallType::Ice)
+	switch (ZoneType)
 	{
+	case EChaosImpactBallType::Ice:
 		Victim->ApplyIceFreeze(IceFreezeSeconds);
-	}
-	else
-	{
+		break;
+	case EChaosImpactBallType::Fire:
 		NextBurnAt.Add(Victim, GetWorld()->GetTimeSeconds() + FireBurnInterval);
+		break;
+	case EChaosImpactBallType::Thunder:
+		MulticastShock(Victim);
+		break;
+	default:
+		break;
 	}
 	return true;
+}
+
+void AChaosImpactHazardZone::MulticastShock_Implementation(AActor* Victim)
+{
+	if (GetNetMode() == NM_DedicatedServer || !IsValid(Victim) || !Victim->GetRootComponent())
+	{
+		return;
+	}
+	UNiagaraSystem* Electricity = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Electricity);
+	UNiagaraComponent* Shock = Electricity ? UNiagaraFunctionLibrary::SpawnSystemAttached(Electricity,
+		Victim->GetRootComponent(), NAME_None, FVector::ZeroVector, FRotator::ZeroRotator,
+		EAttachLocation::KeepRelativeOffset, true) : nullptr;
+	if (UNiagaraSystem* Sparks = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::SparkBurst))
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, Victim->GetActorLocation(), FRotator::ZeroRotator, FVector(1.2f));
+	}
+	if (Shock)
+	{
+		// Crackles for a moment, then dies out and removes itself.
+		FTimerHandle StopTimer;
+		GetWorldTimerManager().SetTimer(StopTimer, FTimerDelegate::CreateWeakLambda(Shock, [Shock]()
+		{
+			Shock->Deactivate();
+		}), 1.1f, false);
+	}
 }
 
 void AChaosImpactHazardZone::TickBurning()
@@ -559,7 +675,11 @@ void AChaosImpactHazardZone::TickBurning()
 		{
 			return;
 		}
-		const float Applied = UGameplayStatics::ApplyDamage(Victim, ZoneDamage, SourceController, this, nullptr);
+		float Applied = 0.0f;
+		{
+			TGuardValue<bool> BurnTickGuard(bApplyingBurnTick, true);
+			Applied = UGameplayStatics::ApplyDamage(Victim, ZoneDamage, SourceController, this, nullptr);
+		}
 		// A dodge in progress is not burned; check again right after it ends.
 		NextAt = Now + (Applied > 0.0f ? FireBurnInterval : 0.15f);
 		if (Applied > 0.0f)
@@ -569,7 +689,7 @@ void AChaosImpactHazardZone::TickBurning()
 	};
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
-		if (*It != SourcePawn && !It->IsEliminated())
+		if (*It != SourcePawn && !It->IsEliminated() && !AChaosImpactGameState::AreTeammates(World, SourcePawn, *It))
 		{
 			Burn(*It, It->GetCapsuleComponent()->GetScaledCapsuleRadius() * 0.5f);
 		}
@@ -612,13 +732,20 @@ void AChaosImpactHazardZone::Tick(const float DeltaSeconds)
 void AChaosImpactHazardZone::BuildPresentation()
 {
 	FRandomStream Stream(VisualSeed);
-	if (ZoneType == EChaosImpactBallType::Ice)
+	switch (ZoneType)
 	{
+	case EChaosImpactBallType::Ice:
 		BuildIcePresentation(Stream);
-	}
-	else
-	{
+		break;
+	case EChaosImpactBallType::Thunder:
+		BuildThunderPresentation();
+		break;
+	case EChaosImpactBallType::Black:
+		BuildBlackHolePresentation(Stream);
+		break;
+	default:
 		BuildFirePresentation(Stream);
+		break;
 	}
 	bPresentationBuilt = true;
 	UpdatePresentation(0.0f);
@@ -750,6 +877,322 @@ void AChaosImpactHazardZone::BuildIcePresentation(FRandomStream& Stream)
 	// No smoke plume here: the pack's plume is sized for scenery and buries the arena from this camera.
 }
 
+UStaticMeshComponent* AChaosImpactHazardZone::AddZoneMesh(FChaosImpactZoneMesh& Out, const bool bSphere,
+	UMaterialInstanceDynamic* Material)
+{
+	UStaticMeshComponent* Shape = NewObject<UStaticMeshComponent>(this);
+	Shape->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, bSphere
+		? TEXT("/Engine/BasicShapes/Sphere.Sphere") : TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
+	Shape->SetMaterial(0, Material);
+	Shape->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Shape->SetGenerateOverlapEvents(false);
+	Shape->SetCastShadow(false);
+	Shape->SetVisibility(false);
+	Shape->RegisterComponent();
+	Out.Mesh = Shape;
+	Out.Material = Material;
+	return Shape;
+}
+
+void AChaosImpactHazardZone::BuildThunderPresentation()
+{
+	using namespace ChaosImpactBallTypes;
+	// Yellow lightning, like the ball itself.
+	ZoneLight->SetLightColor(FLinearColor(1.0f, 0.88f, 0.55f));
+	if (UNiagaraSystem* Sparks = LoadEffect(Effects::SparkBurst))
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks,
+			GetActorLocation() + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 40.0f)), FRotator::ZeroRotator, FVector(2.4f));
+	}
+	AddLoopingEffect(Effects::Electricity, FVector(0.0f, 0.0f, 30.0f));
+	UMaterialInstanceDynamic* StrikeLook = MakeAdditive(this, FLinearColor(1.0f, 0.95f, 0.7f), 6.0f);
+	StrikeMaterial = StrikeLook;
+	StrikeMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, StrikeLook);
+	UMaterialInstanceDynamic* ArcLook = MakeAdditive(this, FLinearColor(1.0f, 0.8f, 0.22f), 3.5f);
+	ArcMaterial = ArcLook;
+	ArcMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, ArcLook);
+	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(1.0f, 0.92f, 0.65f), 0.0f));
+	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(1.0f, 0.82f, 0.3f), 0.0f);
+	RingMaterial = RingLook;
+	RingMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
+	RebuildThunderBolts(0);
+}
+
+void AChaosImpactHazardZone::RebuildThunderBolts(const int32 Flicker)
+{
+	FRandomStream Stream(VisualSeed + Flicker * 7919);
+	const FVector Facing = ChaosImpactLightning::GetViewDirection(GetWorld());
+	const float StrikeZ = FMath::Max(BurstHeight, 30.0f) * 0.3f;
+	if (UProceduralMeshComponent* Strike = StrikeMesh.Get())
+	{
+		ChaosImpactIceMeshes::FMeshBuffers Bolts;
+		// The main bolt from high above, with a thinner one or two coming down beside it.
+		const FVector Sky(Stream.FRandRange(-160.0f, 160.0f), Stream.FRandRange(-160.0f, 160.0f), 1900.0f);
+		ChaosImpactLightning::AppendBolt(Bolts, Sky, FVector(0.0f, 0.0f, StrikeZ), 28.0f, Facing, Stream, 3);
+		const int32 Extra = Stream.RandRange(1, 2);
+		for (int32 Index = 0; Index < Extra; ++Index)
+		{
+			const FVector Start = Sky + FVector(Stream.FRandRange(-280.0f, 280.0f), Stream.FRandRange(-280.0f, 280.0f),
+				Stream.FRandRange(-400.0f, 0.0f));
+			const FVector End(Stream.FRandRange(-0.6f, 0.6f) * ThunderRadius, Stream.FRandRange(-0.6f, 0.6f) * ThunderRadius, 0.0f);
+			ChaosImpactLightning::AppendBolt(Bolts, Start, End, 11.0f, Facing, Stream, 2);
+		}
+		ChaosImpactLightning::SetMesh(Strike, Bolts);
+	}
+	if (UProceduralMeshComponent* Arcs = ArcMesh.Get())
+	{
+		ChaosImpactIceMeshes::FMeshBuffers Bolts;
+		// Arcs racing out over the ground to the edge of the blast...
+		constexpr int32 ArcCount = 10;
+		for (int32 Index = 0; Index < ArcCount; ++Index)
+		{
+			const float Angle = (Index + Stream.FRandRange(-0.4f, 0.4f)) * UE_TWO_PI / ArcCount;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			ChaosImpactLightning::AppendBolt(Bolts, Out * 20.0f + FVector(0.0f, 0.0f, 6.0f),
+				Out * ThunderRadius * Stream.FRandRange(0.7f, 1.1f) + FVector(0.0f, 0.0f, 6.0f), 10.0f, FVector::UpVector, Stream, 2);
+		}
+		// ...and a few leaping up from the ground into the strike.
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			const float Angle = Stream.FRand() * UE_TWO_PI;
+			const FVector From = FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Stream.FRandRange(80.0f, ThunderRadius * 0.85f);
+			ChaosImpactLightning::AppendBolt(Bolts, From + FVector(0.0f, 0.0f, 4.0f),
+				FVector(0.0f, 0.0f, Stream.FRandRange(90.0f, 240.0f)), 6.0f, Facing, Stream, 1);
+		}
+		ChaosImpactLightning::SetMesh(Arcs, Bolts);
+	}
+}
+
+void AChaosImpactHazardZone::UpdateThunderPresentation(const float Age)
+{
+	if (Age >= NextFlickerAge && Age < 0.9f)
+	{
+		++FlickerIndex;
+		NextFlickerAge = Age + (Age < 0.6f ? 0.045f : 0.09f);
+		RebuildThunderBolts(FlickerIndex);
+	}
+	FRandomStream FlickerStream(VisualSeed + FlickerIndex * 31);
+	const float Crackle = FlickerStream.FRandRange(0.45f, 1.0f);
+	if (UProceduralMeshComponent* Strike = StrikeMesh.Get())
+	{
+		// On at once, then flickering: some frames it is gone.
+		Strike->SetVisibility(Age < 0.45f && (Age < 0.08f || Crackle > 0.55f));
+		SetIntensity(StrikeMaterial.Get(), 6.0f * Crackle);
+	}
+	if (UProceduralMeshComponent* Arcs = ArcMesh.Get())
+	{
+		Arcs->SetVisibility(Age < 0.9f && (Age < 0.3f || Crackle > 0.6f));
+		SetIntensity(ArcMaterial.Get(), 3.5f * Crackle * FMath::Exp(-Age * 2.0f));
+	}
+	const FVector Base = GetActorLocation();
+	const float FlashT = Age / 0.28f;
+	const float FlashSize = FlashT < 1.0f ? 2.0f * (30.0f + ThunderRadius * 0.6f * HazardEaseOut(FlashT)) : 0.0f;
+	PlaceZoneShape(FlashSphere, Base + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 40.0f)), FlashSize, FlashSize,
+		FRotator::ZeroRotator, 0.9f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
+	const float RingT = FMath::Clamp(Age / 0.4f, 0.0f, 1.0f);
+	if (UProceduralMeshComponent* Ring = RingMesh.Get())
+	{
+		// A shock wave racing out to the edge of the blast, thinning as it goes.
+		ChaosImpactIceMeshes::FMeshBuffers Rings;
+		if (RingT < 1.0f)
+		{
+			ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 12.0f),
+				40.0f + ThunderRadius * 1.05f * HazardEaseOut(RingT), 18.0f * (1.0f - RingT) + 3.0f, 96);
+		}
+		ChaosImpactLightning::SetMesh(Ring, Rings);
+		SetIntensity(RingMaterial.Get(), 3.0f * (1.0f - RingT));
+	}
+	const float GroundFade = FMath::Clamp(1.0f - Age / 1.6f, 0.0f, 1.0f);
+	PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 2.0f), GroundFade > 0.0f ? ThunderRadius * 1.4f : 0.0f, 2.0f,
+		FRotator::ZeroRotator, 0.1f * GroundFade * GroundFade * (0.75f + 0.25f * Crackle));
+	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, 220.0f));
+	ZoneLight->SetIntensity(Age < 0.6f ? 90000.0f * Crackle * FMath::Exp(-Age * 3.0f) : 0.0f);
+}
+
+void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
+{
+	using namespace ChaosImpactBallTypes;
+	ZoneLight->SetLightColor(FLinearColor(0.55f, 0.2f, 1.0f));
+	if (UNiagaraSystem* Sparks = LoadEffect(Effects::SparkBurst))
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks,
+			GetActorLocation() + FVector(0.0f, 0.0f, BlackHoleCoreHeight), FRotator::ZeroRotator, FVector(1.4f));
+	}
+	AddLoopingEffect(Effects::DarkAura, FVector(0.0f, 0.0f, 20.0f));
+	// Its reach is marked by thin rings (see UpdateBlackHolePresentation); a filled pool washed out the whole area.
+	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(0.75f, 0.35f, 1.0f), 0.0f);
+	RingMaterial = RingLook;
+	RingMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
+	AddZoneMesh(HaloSphere, true, MakeAdditive(this, FLinearColor(0.42f, 0.1f, 0.9f), 0.0f, 1.0f));
+	AddZoneMesh(HorizonSphere, true, MakeAdditive(this, FLinearColor(0.95f, 0.5f, 1.0f), 0.0f, 1.0f));
+	AddZoneMesh(CoreSphere, true, MakeEmissive(this, FLinearColor(0.0f, 0.0f, 0.0f), 0.0f));
+	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(1.0f, 0.4f, 0.92f), 0.0f, 1.0f));
+	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(0.52f, 0.32f, 1.0f), 0.0f, 1.0f));
+	constexpr int32 MoteCount = 32;
+	for (int32 Index = 0; Index < MoteCount; ++Index)
+	{
+		FChaosImpactZoneMesh& Mote = Motes.AddDefaulted_GetRef();
+		AddZoneMesh(Mote, true, MakeAdditive(this, Stream.FRand() < 0.5f
+			? FLinearColor(0.9f, 0.55f, 1.0f) : FLinearColor(0.5f, 0.36f, 1.0f), 0.0f));
+		Mote.Angle = Stream.FRand() * UE_TWO_PI;
+		Mote.Radius = BlackHoleRadius * Stream.FRandRange(0.25f, 1.0f);
+		Mote.Height = Stream.FRandRange(10.0f, 230.0f);
+		Mote.Seed = Stream.FRandRange(0.7f, 1.4f);
+	}
+	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(0.85f, 0.65f, 1.0f), 0.0f));
+}
+
+void AChaosImpactHazardZone::UpdateBlackHolePresentation(const float Age)
+{
+	const float Delta = FMath::Clamp(Age - LastPresentationAge, 0.0f, 0.1f);
+	LastPresentationAge = Age;
+	const FVector Base = GetActorLocation();
+	const FVector Core = Base + FVector(0.0f, 0.0f, BlackHoleCoreHeight);
+	const bool bOpen = Age < BlackHoleSeconds;
+	// Bursts open with a small overshoot, then collapses faster and faster when its time is up.
+	const float CollapseT = FMath::Clamp((Age - BlackHoleSeconds) / 0.4f, 0.0f, 1.0f);
+	const float Size = FMath::Max(EaseOutBack(Age / 0.4f), 0.0f) * (1.0f - CollapseT * CollapseT);
+	const float Pulse = 0.5f + 0.5f * FMath::Sin(Age * 9.0f);
+	const float Reach = bOpen ? FMath::Clamp(Age / 0.3f, 0.0f, 1.0f) : 1.0f - CollapseT;
+
+	PlaceZoneShape(CoreSphere, Core, 110.0f * Size * (1.0f + 0.04f * Pulse), 110.0f * Size * (1.0f + 0.04f * Pulse),
+		FRotator::ZeroRotator, -1.0f);
+	const float HorizonSize = 150.0f * Size * (1.0f + 0.07f * Pulse);
+	PlaceZoneShape(HorizonSphere, Core, HorizonSize, HorizonSize, FRotator::ZeroRotator, 1.6f + 0.8f * Pulse);
+	const float HaloSize = 300.0f * Size * (1.0f + 0.1f * FMath::Sin(Age * 4.0f));
+	PlaceZoneShape(HaloSphere, Core, HaloSize, HaloSize, FRotator::ZeroRotator, 0.3f);
+	for (int32 Index = 0; Index < DiskRings.Num(); ++Index)
+	{
+		const bool bInner = Index == 0;
+		PlaceZoneShape(DiskRings[Index], Core, (bInner ? 340.0f : 480.0f) * Size, 6.0f,
+			FRotator(bInner ? 14.0f : -9.0f, Age * (bInner ? 260.0f : -190.0f), bInner ? 6.0f : -12.0f),
+			(bInner ? 1.8f : 1.1f) * (0.8f + 0.2f * Pulse));
+	}
+	PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 3.0f), BlackHoleRadius * 2.0f * Reach, 2.0f,
+		FRotator::ZeroRotator, 0.07f * Reach);
+	if (UProceduralMeshComponent* Ring = RingMesh.Get())
+	{
+		// The edge of its reach, and three rings closing in on the centre, thin as they start and end.
+		ChaosImpactIceMeshes::FMeshBuffers Rings;
+		if (Reach > 0.01f)
+		{
+			ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 6.0f), BlackHoleRadius * Reach, 12.0f * (0.8f + 0.2f * Pulse));
+			for (int32 Index = 0; bOpen && Index < 3; ++Index)
+			{
+				const float Phase = FMath::Frac(Age * 0.9f + Index / 3.0f);
+				ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 8.0f), BlackHoleRadius * (1.0f - Phase) * Reach,
+					16.0f * FMath::Sin(Phase * UE_PI));
+			}
+		}
+		ChaosImpactLightning::SetMesh(Ring, Rings);
+		SetIntensity(RingMaterial.Get(), 1.1f * Reach);
+	}
+	// Motes of light spiral in, faster as they near the core, and start again from the rim.
+	for (FChaosImpactZoneMesh& Mote : Motes)
+	{
+		const float Closeness = 1.0f - FMath::Clamp(Mote.Radius / BlackHoleRadius, 0.0f, 1.0f);
+		if (bOpen)
+		{
+			Mote.Angle += (1.2f + 5.0f * Closeness) * Mote.Seed * Delta;
+			Mote.Radius -= (160.0f + 900.0f * Closeness) * Mote.Seed * Delta;
+			Mote.Height = FMath::Lerp(Mote.Height, BlackHoleCoreHeight, FMath::Min(Delta * 1.8f, 1.0f));
+			if (Mote.Radius < 70.0f)
+			{
+				Mote.Radius = BlackHoleRadius * FMath::FRandRange(0.75f, 1.0f);
+				Mote.Angle = FMath::FRand() * UE_TWO_PI;
+				Mote.Height = FMath::FRandRange(10.0f, 230.0f);
+			}
+		}
+		else
+		{
+			Mote.Radius *= FMath::Exp(-Delta * 9.0f);
+		}
+		if (UStaticMeshComponent* Shape = Mote.Mesh.Get())
+		{
+			const bool bShow = Size > 0.02f && Mote.Radius > 8.0f;
+			Shape->SetVisibility(bShow);
+			if (bShow)
+			{
+				// A streak along its path, longer as it speeds up.
+				const float Length = 16.0f + 60.0f * Closeness;
+				Shape->SetWorldLocationAndRotation(
+					Base + FVector(FMath::Cos(Mote.Angle) * Mote.Radius, FMath::Sin(Mote.Angle) * Mote.Radius, Mote.Height),
+					FRotator(0.0f, FMath::RadiansToDegrees(Mote.Angle) + 90.0f, 0.0f));
+				Shape->SetWorldScale3D(FVector(Length, 7.0f, 7.0f) / 100.0f);
+			}
+			SetIntensity(Mote.Material.Get(), 1.8f * Reach * FMath::Min(Closeness * 4.0f + 0.2f, 1.0f));
+		}
+	}
+	UpdateBlackHoleTethers(Core, bOpen ? Reach : 0.0f);
+
+	// Closing: a violet implosion flash where the core was.
+	if (!bCollapseBurstPlayed && Age >= BlackHoleSeconds + 0.35f)
+	{
+		bCollapseBurstPlayed = true;
+		if (UNiagaraSystem* Sparks = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::SparkBurst))
+		{
+			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, Core, FRotator::ZeroRotator, FVector(1.8f));
+		}
+	}
+	const float FlashT = (Age - BlackHoleSeconds - 0.35f) / 0.3f;
+	const float FlashSize = FlashT >= 0.0f && FlashT < 1.0f ? 40.0f + 360.0f * HazardEaseOut(FlashT) : 0.0f;
+	PlaceZoneShape(FlashSphere, Core, FlashSize, FlashSize, FRotator::ZeroRotator,
+		1.4f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
+	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, BlackHoleCoreHeight));
+	ZoneLight->SetIntensity(bOpen
+		? (1400.0f + 600.0f * Pulse) * Size
+		: FlashT >= 0.0f ? 60000.0f * FMath::Exp(-FlashT * 3.0f) : 4000.0f * Size);
+}
+
+void AChaosImpactHazardZone::UpdateBlackHoleTethers(const FVector& Core, const float Strength)
+{
+	TSet<AActor*> Pulled;
+	if (Strength > 0.0f && GetWorld())
+	{
+		for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+		{
+			AChaosImpactCharacter* Character = *It;
+			const FVector Offset = Character->GetActorLocation() - GetActorLocation();
+			if (Character->IsEliminated() || Character == SourcePawn
+				|| AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, Character)
+				|| FVector(Offset.X, Offset.Y, 0.0f).SizeSquared() > FMath::Square(BlackHoleRadius)
+				|| FMath::Abs(Offset.Z) > 320.0f)
+			{
+				continue;
+			}
+			Pulled.Add(Character);
+			FChaosImpactZoneMesh& Tether = Tethers.FindOrAdd(Character);
+			if (!Tether.Mesh.IsValid())
+			{
+				AddZoneMesh(Tether, false, ChaosImpactBallTypes::MakeAdditive(this, FLinearColor(0.82f, 0.42f, 1.0f), 0.0f));
+			}
+			// A flickering thread of violet light from their body into the core.
+			const FVector From = Character->GetPresentationLocation();
+			const FVector Span = Core - From;
+			const float Length = static_cast<float>(Span.Size());
+			if (UStaticMeshComponent* Shape = Tether.Mesh.Get(); Shape && Length > 1.0f)
+			{
+				const float Width = 4.0f + 3.0f * FMath::FRand();
+				Shape->SetVisibility(true);
+				Shape->SetWorldLocationAndRotation(From + Span * 0.5f, FRotationMatrix::MakeFromZ(Span / Length).Rotator());
+				Shape->SetWorldScale3D(FVector(Width / 100.0f, Width / 100.0f, Length / 100.0f));
+			}
+			SetIntensity(Tether.Material.Get(), 1.4f * Strength * FMath::FRandRange(0.5f, 1.0f));
+		}
+	}
+	for (auto It = Tethers.CreateIterator(); It; ++It)
+	{
+		if (!Pulled.Contains(It.Key().Get()))
+		{
+			if (UStaticMeshComponent* Shape = It.Value().Mesh.Get())
+			{
+				Shape->DestroyComponent();
+			}
+			It.RemoveCurrent();
+		}
+	}
+}
+
 void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 {
 	const bool bIce = ZoneType == EChaosImpactBallType::Ice;
@@ -777,6 +1220,17 @@ void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 		{
 			ImpactMist->Deactivate();
 		}
+	}
+
+	if (ZoneType == EChaosImpactBallType::Thunder)
+	{
+		UpdateThunderPresentation(Age);
+		return;
+	}
+	if (ZoneType == EChaosImpactBallType::Black)
+	{
+		UpdateBlackHolePresentation(Age);
+		return;
 	}
 
 	if (bIce)

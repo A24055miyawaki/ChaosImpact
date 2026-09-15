@@ -10,6 +10,7 @@
 #include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactBallTypes.h"
 #include "GameFramework/PlayerState.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
@@ -28,13 +29,22 @@
 #include "InputKeyEventArgs.h"
 #include "GameMapsSettings.h"
 #include "Components/CapsuleComponent.h"
+#include "Engine/ChildConnection.h"
+#include "Engine/NetConnection.h"
 #include "Framework/Application/SlateApplication.h"
+#include "TimerManager.h"
 
 void AChaosImpactPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 	bTrainingMode = ChaosImpact::IsTrainingWorld(GetWorld());
-	bOnlineAnyInput = IsOnlineRoom() || (GetWorld() && GetWorld()->URL.HasOption(TEXT("CIOnlineSearch=1")));
+	const UGameInstance* OwningGameInstance = GetGameInstance();
+	const int32 MachinePlayers = FMath::Max(
+		GetWorld() ? FCString::Atoi(GetWorld()->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))) : 1,
+		OwningGameInstance ? OwningGameInstance->GetLocalPlayers().Num() : 1);
+	// A single player online follows whichever device was used last; a pair keeps its assigned devices apart.
+	bOnlineAnyInput = MachinePlayers <= 1
+		&& (IsOnlineRoom() || (GetWorld() && GetWorld()->URL.HasOption(TEXT("CIOnlineSearch=1"))));
 	ActiveKeyboardPlayerIndex = 0;
 	if (GetWorld())
 	{
@@ -112,12 +122,19 @@ void AChaosImpactPlayerController::BeginPlay()
 		}
 	}
 
-	if (IsLocalController() && IsOnlineRoom())
+	if (IsLocalController() && IsOnlineRoom() && GetThisLocalPlayerIndex() == 0)
 	{
+		// The host names this machine's second player "<name>(2)" itself.
 		if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
 		{
 			ServerSetPlayerName(Sessions->GetPlayerName());
 		}
+	}
+	if (GetNetMode() == NM_Client && !bOnlineAnyInput)
+	{
+		ClientAssignmentWaits = 0;
+		GetWorldTimerManager().SetTimer(ClientAssignmentTimer, this,
+			&AChaosImpactPlayerController::ApplyClientControllerAssignments, 0.2f, true, 0.2f);
 	}
 	// After being disconnected from a room the engine lands on the title map;
 	// continue straight into this player's own training arena instead.
@@ -155,6 +172,14 @@ void AChaosImpactPlayerController::BeginPlay()
 			FString Password;
 			if (AutoRoom.Split(TEXT(":"), &Mode, &Password))
 			{
+				// -CIAutoPlayers=2 joins as a split-screen pair (keyboard P1, first pad P2).
+				int32 AutoPlayers = 1;
+				FParse::Value(FCommandLine::Get(), TEXT("CIAutoPlayers="), AutoPlayers);
+				PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+				RequestedLocalPlayerCount = FMath::Clamp(AutoPlayers, 1, 2);
+				RequestedKeyboardPlayerIndex = 0;
+				JoinedInputDeviceIds.Reset();
+				JoinedLegacyControllerIds.Reset();
 				bPendingCreateRoom = Mode == TEXT("create");
 				SubmitRoomPassword(Password);
 				return;
@@ -163,12 +188,10 @@ void AChaosImpactPlayerController::BeginPlay()
 		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 			Sessions && Sessions->ConsumeReturnToTraining())
 		{
-			RequestedLocalPlayerCount = 1;
-			RequestedKeyboardPlayerIndex = 0;
-			bRequestedPrimaryUsesGamepad = false;
-			JoinedInputDeviceIds.Reset();
-			JoinedLegacyControllerIds.Reset();
-			OpenTrainingLevel(false);
+			// Back to this machine's own training with the same players and controllers as before.
+			bTravelPending = true;
+			UGameplayStatics::OpenLevel(this, FName(*TrainingLevel.GetLongPackageName()), true,
+				Sessions->GetOfflineTrainingOptions());
 			return;
 		}
 	}
@@ -176,6 +199,19 @@ void AChaosImpactPlayerController::BeginPlay()
 	EnsureTrainingArena();
 	EnsureTrainingBallSpawners();
 	EnsureTrainingTargets();
+
+	if (bTrainingMode && IsLocalController() && IsPrimaryLocalPlayerController())
+	{
+		// Ball effects are loaded at game start; show each once now, out of sight below the arena, so the
+		// first real fire or ice ball does not stall while pipeline states and GPU resources are created.
+		FTimerHandle WarmUpTimer;
+		GetWorldTimerManager().SetTimer(WarmUpTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			FVector Below = GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
+			Below.Z -= 1500.0f;
+			ChaosImpactBallTypes::WarmUpEffects(GetWorld(), Below);
+		}), 0.3f, false);
+	}
 }
 
 bool AChaosImpactPlayerController::IsPrimaryLocalPlayerController() const
@@ -747,20 +783,96 @@ void AChaosImpactPlayerController::PrepareTrainingControllerAssignment(const int
 	{
 		return;
 	}
-	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, 4);
+	const bool bOnline = PlayFlow == EChaosImpactPlayFlow::VersusOnline;
+	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, bOnline ? 2 : 4);
 	ResetControllerJoinSequence();
 	bControllerAssignmentKeepsFlightMode = false;
-	ControllerAssignmentReturnScreen = EChaosImpactScreen::TrainingSetup;
+	ControllerAssignmentReturnScreen = bOnline ? EChaosImpactScreen::OnlinePlayers : EChaosImpactScreen::TrainingSetup;
 	ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
 }
 
 void AChaosImpactPlayerController::ConfirmControllerAssignments()
 {
-	if (CurrentScreen == EChaosImpactScreen::ControllerAssignment && !bTravelPending
-		&& AreControllerAssignmentsComplete())
+	if (CurrentScreen != EChaosImpactScreen::ControllerAssignment || bTravelPending
+		|| !AreControllerAssignmentsComplete())
 	{
-		OpenTrainingLevel(bControllerAssignmentKeepsFlightMode);
+		return;
 	}
+	// Decide by where the assignment was opened from, not by the current world: after leaving an online
+	// room or search, the title menu is shown inside a training world, and VS online must still lead to
+	// へやをつくる / へやをさがす there instead of restarting training.
+	if (PlayFlow == EChaosImpactPlayFlow::VersusOnline
+		&& ControllerAssignmentReturnScreen == EChaosImpactScreen::OnlinePlayers)
+	{
+		// Matching only for now: the players are set, next comes へやをつくる / へやをさがす.
+		ShowMenuScreen(EChaosImpactScreen::MultiReady);
+		return;
+	}
+	OpenTrainingLevel(bControllerAssignmentKeepsFlightMode);
+}
+
+void AChaosImpactPlayerController::BeginTrainingSetup()
+{
+	PlayFlow = EChaosImpactPlayFlow::Training;
+	bTrainingTargetsEnabled = true;
+	ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
+}
+
+void AChaosImpactPlayerController::BeginVersusLocal()
+{
+	// Proper versus rules come later; until then a local VS is the arena without targets or CPUs.
+	PlayFlow = EChaosImpactPlayFlow::VersusLocal;
+	bTrainingTargetsEnabled = false;
+	TrainingCPUCount = 0;
+	ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
+}
+
+void AChaosImpactPlayerController::BeginVersusOnline()
+{
+	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+	ShowMenuScreen(EChaosImpactScreen::OnlinePlayers);
+}
+
+FString AChaosImpactPlayerController::BuildLocalSetupOptions()
+{
+	BuildFallbackControllerAssignments();
+	FString Options = FString::Printf(TEXT("CILocalPlayers=%d?CIKeyboardPlayer=%d"),
+		FMath::Clamp(RequestedLocalPlayerCount, 1, 4), RequestedKeyboardPlayerIndex);
+	for (int32 PadIndex = 0; PadIndex < JoinedInputDeviceIds.Num(); ++PadIndex)
+	{
+		Options += FString::Printf(TEXT("?CIPadDevice%d=%d"), PadIndex, JoinedInputDeviceIds[PadIndex]);
+		if (JoinedLegacyControllerIds.IsValidIndex(PadIndex))
+		{
+			Options += FString::Printf(TEXT("?CIPadController%d=%d"), PadIndex, JoinedLegacyControllerIds[PadIndex]);
+		}
+	}
+	return Options;
+}
+
+void AChaosImpactPlayerController::ApplyClientControllerAssignments()
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	UWorld* World = GetWorld();
+	if (!GameInstance || !World || !IsPrimaryLocalPlayerController())
+	{
+		GetWorldTimerManager().ClearTimer(ClientAssignmentTimer);
+		return;
+	}
+	const int32 Expected = FMath::Clamp(FCString::Atoi(World->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))), 1, 4);
+	int32 Ready = 0;
+	for (const ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+	{
+		Ready += LocalPlayer && LocalPlayer->GetPlayerController(World) ? 1 : 0;
+	}
+	// The second player's controller arrives a moment after the first; wait up to about five seconds.
+	constexpr int32 MaxWaits = 25;
+	if (Ready < Expected && ++ClientAssignmentWaits < MaxWaits)
+	{
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(ClientAssignmentTimer);
+	AChaosImpactGameMode::ApplyLocalControllerAssignments(World, Ready, ActiveKeyboardPlayerIndex);
+	UE_LOG(LogChaosImpact, Log, TEXT("Client controller pairing applied for %d of %d local player(s)"), Ready, Expected);
 }
 
 void AChaosImpactPlayerController::RetryTraining()
@@ -835,6 +947,52 @@ void AChaosImpactPlayerController::ApplyTrainingSettings()
 	}
 }
 
+void AChaosImpactPlayerController::CycleTrainingSummonBallType()
+{
+	TrainingSummonBallType = ChaosImpactBallTypes::FromIndex(
+		(static_cast<int32>(TrainingSummonBallType) + 1) % ChaosImpactBallTypes::Count);
+}
+
+void AChaosImpactPlayerController::SummonTrainingBall()
+{
+	if (bTrainingMode && !bTravelPending)
+	{
+		ServerSummonTrainingBall(TrainingSummonBallType);
+	}
+}
+
+void AChaosImpactPlayerController::ServerSummonTrainingBall_Implementation(const EChaosImpactBallType Type)
+{
+	UWorld* World = GetWorld();
+	const AChaosImpactCharacter* TrainingPawn = Cast<AChaosImpactCharacter>(GetPawn());
+	if (!World || !TrainingPawn || TrainingPawn->IsEliminated() || !ChaosImpact::IsTrainingWorld(World))
+	{
+		return;
+	}
+	FVector Forward = TrainingPawn->GetAimDirection().GetSafeNormal2D();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = TrainingPawn->GetActorForwardVector().GetSafeNormal2D();
+	}
+	// One step ahead of the player, hovering at the same height as a spawn point ball.
+	FVector Location = TrainingPawn->GetActorLocation() + Forward * 150.0f;
+	FHitResult Ground;
+	if (World->LineTraceSingleByObjectType(Ground, Location + FVector::UpVector * 100.0f,
+		Location - FVector::UpVector * 600.0f, FCollisionObjectQueryParams(ECC_WorldStatic)))
+	{
+		Location = Ground.ImpactPoint + FVector::UpVector * 38.0f;
+	}
+	const FTransform SpawnTransform(FRotator::ZeroRotator, Location);
+	if (AChaosImpactBall* Ball = World->SpawnActorDeferred<AChaosImpactBall>(AChaosImpactBall::StaticClass(),
+		SpawnTransform, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+	{
+		Ball->SetBallType(Type);
+		Ball->FinishSpawning(SpawnTransform);
+		Ball->MakePickup();
+		UE_LOG(LogChaosImpact, Log, TEXT("Training ball summoned: %s"), ChaosImpactBallTypes::GetDisplayName(Type));
+	}
+}
+
 void AChaosImpactPlayerController::ToggleBallFlightMode()
 {
 	BallFlightMode = BallFlightMode == EChaosImpactBallFlightMode::Straight
@@ -876,20 +1034,16 @@ void AChaosImpactPlayerController::SubmitRoomPassword(const FString& Password)
 	{
 		return;
 	}
+	// The players and controllers chosen on the assignment screen come along into every online level.
+	Sessions->SetLocalSetup(BuildLocalSetupOptions(), RequestedLocalPlayerCount);
 	if (bPendingCreateRoom)
 	{
 		Sessions->CreateRoom(Password);
 		ShowMenuScreen(EChaosImpactScreen::OnlineStatus);
 		return;
 	}
-	// Search in the background while this player waits in their own training arena.
+	// Search in the background while this machine's players wait in their own training arena.
 	Sessions->StartSearch(Password);
-	RemoveSecondaryLocalPlayers();
-	RequestedLocalPlayerCount = 1;
-	RequestedKeyboardPlayerIndex = 0;
-	bRequestedPrimaryUsesGamepad = false;
-	JoinedInputDeviceIds.Reset();
-	JoinedLegacyControllerIds.Reset();
 	OpenTrainingLevel(false, true);
 }
 
@@ -954,6 +1108,19 @@ void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FStr
 	if (PlayerState && !Trimmed.IsEmpty())
 	{
 		PlayerState->SetPlayerName(Trimmed);
+		// This machine's second player may have joined before the name arrived.
+		if (const UNetConnection* Connection = GetNetConnection())
+		{
+			for (const UChildConnection* Child : Connection->Children)
+			{
+				if (Child && Child->PlayerController && Child->PlayerController->PlayerState)
+				{
+					Child->PlayerController->PlayerState->SetPlayerName(
+						AChaosImpactPlayerState::MakeSecondPlayerName(Trimmed));
+				}
+			}
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Player name set: %s"), *Trimmed);
 	}
 }
 
@@ -970,8 +1137,7 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode,
 	SetPause(false);
 	const bool bOpenWithStraight = bKeepFlightMode
 		&& BallFlightMode == EChaosImpactBallFlightMode::Straight;
-	FString Options = FString::Printf(TEXT("CITraining=1?CILocalPlayers=%d"),
-		FMath::Clamp(RequestedLocalPlayerCount, 1, 4));
+	FString Options = FString::Printf(TEXT("CITraining=1?%s"), *BuildLocalSetupOptions());
 	if (!bTrainingTargetsEnabled)
 	{
 		Options += TEXT("?CITargets=0");
@@ -980,17 +1146,9 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode,
 	{
 		Options += FString::Printf(TEXT("?CICPUCount=%d"), FMath::Clamp(TrainingCPUCount, 0, 4));
 	}
-	Options += FString::Printf(TEXT("?CIKeyboardPlayer=%d"), RequestedKeyboardPlayerIndex);
-	BuildFallbackControllerAssignments();
-	for (int32 PadIndex = 0; PadIndex < JoinedInputDeviceIds.Num(); ++PadIndex)
+	if (PlayFlow == EChaosImpactPlayFlow::VersusLocal)
 	{
-		Options += FString::Printf(TEXT("?CIPadDevice%d=%d"),
-			PadIndex, JoinedInputDeviceIds[PadIndex]);
-		if (JoinedLegacyControllerIds.IsValidIndex(PadIndex))
-		{
-			Options += FString::Printf(TEXT("?CIPadController%d=%d"),
-				PadIndex, JoinedLegacyControllerIds[PadIndex]);
-		}
+		Options += TEXT("?CIVersus=1");
 	}
 	if (bOpenWithStraight)
 	{

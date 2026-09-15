@@ -1,11 +1,16 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameMode.h"
+#include "ChaosImpactHazardZone.h"
+#include "ChaosImpactIceMeshes.h"
+#include "NiagaraComponent.h"
+#include "ProceduralMeshComponent.h"
 #include "ChaosImpactPlayerController.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "ChaosImpactTrainingTarget.h"
@@ -18,6 +23,7 @@
 #include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -38,6 +44,8 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "ChaosImpact.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 namespace
 {
@@ -80,6 +88,9 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 	GetCharacterMovement()->BrakingDecelerationWalking = 100000.0f;
 	GetCharacterMovement()->GroundFriction = 100.0f;
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
+	// Online: draw other players closer to their latest replicated position.
+	GetCharacterMovement()->NetworkSimulatedSmoothLocationTime = 0.06f;
+	GetCharacterMovement()->NetworkSimulatedSmoothRotationTime = 0.04f;
 	SetCanBeDamaged(true);
 
 	// Fixed-angle top-down camera that follows the player.
@@ -216,8 +227,12 @@ void AChaosImpactCharacter::BeginPlay()
 
 	Health = MaxHealth;
 	Stamina = MaxStamina;
-	CarriedBallCount = 0;
+	ClearCarriedBalls();
 	NextDashAvailableAtSeconds = 0.0f;
+	// Restored when leaving frozen ground.
+	DefaultGroundFriction = GetCharacterMovement()->GroundFriction;
+	DefaultBrakingDecelerationWalking = GetCharacterMovement()->BrakingDecelerationWalking;
+	DefaultMaxAcceleration = GetCharacterMovement()->MaxAcceleration;
 	InitialSpawnLocation = GetActorLocation();
 	InitialSpawnRotation = GetActorRotation();
 	LocomotionAnimInstanceClass = GetMesh() ? GetMesh()->GetAnimClass() : nullptr;
@@ -264,11 +279,21 @@ void AChaosImpactCharacter::BeginPlay()
 	UpdateBallPresentation();
 
 	TryCreateChargeWidget();
+	CachedBaseTranslationOffset = BaseTranslationOffset;
+#if !UE_BUILD_SHIPPING
+	bDevAutoInput = FParse::Param(FCommandLine::Get(), TEXT("CIAutoInput"));
+#endif
 }
 
 void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (HasAuthority())
+	{
+		UpdateMovementAuthority();
+	}
+	UpdatePresentationLead(DeltaSeconds);
+	UpdateIceStatus(DeltaSeconds);
 	if (CameraBoom)
 	{
 		const float DesiredArmLength = bTrainingMenuCameraActive
@@ -319,6 +344,10 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 			bMouseChargeActive = false;
 		}
 		bWasMouseDownLastTick = bMouseDown;
+	}
+	if (bDevAutoInput && IsLocallyControlled() && !HasAuthority())
+	{
+		TickDevAutoInput();
 	}
 
 	if (!bEliminated)
@@ -393,7 +422,7 @@ void AChaosImpactCharacter::TryCreateChargeWidget()
 		ChargeWidget->SetCharging(false);
 		ChargeWidget->SetHealth(Health, MaxHealth);
 		ChargeWidget->SetStamina(Stamina, MaxStamina);
-		ChargeWidget->SetBallInventory(CarriedBallCount, MaximumCarriedBalls);
+		ChargeWidget->SetBallInventory(CarriedBallCount, MaximumCarriedBalls, CarriedBallTypes);
 		const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(PlayerController);
 		ChargeWidget->SetVisibility(!MenuController || MenuController->IsGameplayActive()
 			? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
@@ -540,7 +569,8 @@ void AChaosImpactCharacter::StopAimingWithStick(const FInputActionValue& Value)
 void AChaosImpactCharacter::DoMove(float Right, float Forward)
 {
 	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(GetController());
-	if (bEliminated || bTrainingMenuFrozen || (MenuController && !MenuController->IsGameplayActive()))
+	if (bEliminated || bTrainingMenuFrozen || IsIceFrozen()
+		|| (MenuController && !MenuController->IsGameplayActive()))
 	{
 		return;
 	}
@@ -600,7 +630,7 @@ void AChaosImpactCharacter::StartChargingThrow()
 		return;
 	}
 	if (bEliminated || bTrainingMenuFrozen || bIsDashing || bIsChargingThrow || bThrowReleasePending
-		|| CarriedBallCount <= 0 || !GetWorld())
+		|| CarriedBallCount <= 0 || !GetWorld() || IsEliminationPredicted() || IsIceFrozen())
 	{
 		return;
 	}
@@ -627,7 +657,7 @@ void AChaosImpactCharacter::StartDash()
 		return;
 	}
 	if (!GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
-		|| GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds)
+		|| GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds || IsIceFrozen())
 	{
 		return;
 	}
@@ -730,7 +760,11 @@ void AChaosImpactCharacter::UpdateDash(const float DeltaSeconds)
 	const float StepDistance = FMath::Max(0.0f, TargetDistance - DashDistanceApplied);
 
 	FHitResult DashHit;
-	AddActorWorldOffset(DashDirection * StepDistance, true, &DashHit);
+	// A trusted remote client moves itself; the server copy only keeps the dash state and timing.
+	if (!IsRemotePlayerOnServer() || !GetCharacterMovement()->bServerAcceptClientAuthoritativePosition)
+	{
+		AddActorWorldOffset(DashDirection * StepDistance, true, &DashHit);
+	}
 	DashDistanceApplied = TargetDistance;
 
 	UpdateDashTrailPresentation(true);
@@ -793,7 +827,7 @@ void AChaosImpactCharacter::UpdateDashTrailPresentation(const bool bVisible)
 
 	const FVector Direction = DashDirection.GetSafeNormal2D();
 	const FVector Side = FVector::CrossProduct(FVector::UpVector, Direction).GetSafeNormal();
-	const FVector Center = GetActorLocation() + FVector::UpVector * 48.0f;
+	const FVector Center = GetPresentationLocation() + FVector::UpVector * 48.0f;
 	for (int32 PieceIndex = 0; PieceIndex < DashTrailPieces.Num(); ++PieceIndex)
 	{
 		const int32 LineIndex = PieceIndex - DashTrailPieces.Num() / 2;
@@ -825,10 +859,30 @@ void AChaosImpactCharacter::ReleaseChargedThrow()
 	{
 		SpawnBall(ChargeAlpha);
 	}
+	else if (IsEliminationPredicted())
+	{
+		// This screen already reported the lethal hit; the server would refuse the throw.
+	}
+	else if (GetPendingPickupCount() > 0 && CarriedBallCount - GetPendingPickupCount() <= 0)
+	{
+		// The only ball in hand is a pickup the server has not confirmed yet: throw once it is.
+		bThrowAwaitingPickup = true;
+		AwaitingThrowChargeAlpha = ChargeAlpha;
+	}
 	else
 	{
-		ServerReleaseThrow(ChargeAlpha, AimDirection);
+		ReleaseThrowNow(ChargeAlpha);
 	}
+}
+
+void AChaosImpactCharacter::ReleaseThrowNow(const float ChargeAlpha)
+{
+	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation());
+	PendingBallActions.Add(-1);
+	// Throw on this screen immediately with a cosmetic ball. The server trims its release delay
+	// by this player's ping, and its ball takes over from the cosmetic one when it arrives.
+	SpawnBall(ChargeAlpha);
+	RefreshPredictedBallCount();
 }
 
 void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
@@ -842,6 +896,10 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	if (!IsLocallyControlled())
 	{
 		// Server copy of a remote player: aim arrives through ServerUpdateAim.
+	}
+	else if (bDevAutoInput)
+	{
+		// Development auto-play sets AimDirection itself.
 	}
 	else if (StickAimInput.Size() >= StickAimDeadZone)
 	{
@@ -877,7 +935,7 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		{
 			ServerUpdateAim(AimDirection);
 			LastSentAim = AimDirection;
-			NextAimSendAt = Now + 0.05;
+			NextAimSendAt = Now + 1.0 / 30.0;
 		}
 	}
 }
@@ -991,12 +1049,18 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		+ GetActorRightVector() * ThrowSocketOffset.Y
 		+ FVector::UpVector * ThrowSocketOffset.Z;
 	const FTransform SpawnTransform(AimDirection.Rotation(), SpawnLocation);
-	FActorSpawnParameters SpawnParameters;
-	SpawnParameters.Owner = this;
-	SpawnParameters.Instigator = this;
-	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-
-	if (AChaosImpactBall* Ball = GetWorld()->SpawnActor<AChaosImpactBall>(BallClass, SpawnTransform, SpawnParameters))
+	// An online client spawns a purely cosmetic local ball; only the server's ball has gameplay effect.
+	const bool bCosmeticPrediction = !HasAuthority();
+	AChaosImpactBall* Ball = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(BallClass, SpawnTransform,
+		this, this, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
+	if (Ball)
+	{
+		Ball->SetCosmeticPrediction(bCosmeticPrediction);
+		// Slot 0 (the right hand) is thrown first.
+		Ball->SetBallType(GetCarriedBallType(0));
+		Ball->FinishSpawning(SpawnTransform);
+	}
+	if (IsValid(Ball))
 	{
 		const float ThrowSpeed = FMath::Lerp(MinimumThrowSpeed, MaximumThrowSpeed, ChargeAlpha);
 		const AChaosImpactPlayerController* PlayerController =
@@ -1023,12 +1087,19 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		bThrowReleasePending = true;
 		Ball->PrepareForAnimatedThrow(GetMesh(), TEXT("hand_r"),
 			HeldBallRelativeLocation, HeldBallRelativeRotation);
-		CarriedBallCount = FMath::Max(0, CarriedBallCount - 1);
+		PopCarriedBall();
 		UpdateBallPresentation();
 		// The spawned projectile itself replaces the cosmetic hand ball until the cue.
 		HeldBallMesh->SetVisibility(false, true);
 		LeftHeldBallMesh->SetVisibility(false, true);
-		if (GetNetMode() == NM_Standalone)
+		if (bCosmeticPrediction)
+		{
+			PlayThrowAnimation();
+			bPredictedThrowAnimation = true;
+			PredictedThrowBall = Ball;
+			PredictedThrowSpawnedAt = GetWorld()->GetTimeSeconds();
+		}
+		else if (GetNetMode() == NM_Standalone)
 		{
 			PlayThrowAnimation();
 		}
@@ -1036,14 +1107,24 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		{
 			MulticastPlayThrowAnimation();
 		}
-		if (ThrowReleaseDelaySeconds <= UE_SMALL_NUMBER)
+		// A remote thrower started the motion one round trip ago on their own screen.
+		float ReleaseDelay = ThrowReleaseDelaySeconds;
+		if (IsRemotePlayerOnServer())
+		{
+			if (const APlayerState* ThrowerState = GetPlayerState())
+			{
+				ReleaseDelay = FMath::Max(0.0f,
+					ReleaseDelay - ThrowerState->GetPingInMilliseconds() / 1000.0f);
+			}
+		}
+		if (ReleaseDelay <= UE_SMALL_NUMBER)
 		{
 			CompleteAnimatedThrow();
 		}
 		else
 		{
 			GetWorldTimerManager().SetTimer(ThrowReleaseTimer, this,
-				&AChaosImpactCharacter::CompleteAnimatedThrow, ThrowReleaseDelaySeconds, false);
+				&AChaosImpactCharacter::CompleteAnimatedThrow, ReleaseDelay, false);
 		}
 		return true;
 	}
@@ -1057,6 +1138,14 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 	PendingThrowBall.Reset();
 	if (IsValid(Ball))
 	{
+		if (HasAuthority() && !ThrowOriginOffset.IsNearlyZero())
+		{
+			// Start from where the thrower's own screen had them, not from this slightly older copy.
+			Ball->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+			Ball->SetActorLocation(Ball->GetActorLocation() + ThrowOriginOffset, false, nullptr,
+				ETeleportType::TeleportPhysics);
+		}
+		ThrowOriginOffset = FVector::ZeroVector;
 		Ball->Launch(PendingThrowDirection, PendingThrowSpeed,
 			PendingThrowFlightMode, PendingThrowArcUpwardSpeed);
 	}
@@ -1107,7 +1196,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	{
 		return 0.0f;
 	}
-	if (bIsDashing)
+	if (bIsDashing && !bApplyingReportedHit)
 	{
 		return 0.0f;
 	}
@@ -1133,7 +1222,12 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		}
 		PendingThrowBall.Reset();
 		bThrowReleasePending = false;
-		CarriedBallCount = 0;
+		ClearCarriedBalls();
+		IceFrozenUntilServerTime = 0.0;
+		if (IsRemotePlayerOnServer())
+		{
+			ClientBallCountReset(0, 0);
+		}
 		UpdateBallPresentation();
 		RestoreLocomotionAnimation();
 		UpdateAimGuidePresentation(false);
@@ -1220,9 +1314,15 @@ void AChaosImpactCharacter::ResetAfterElimination()
 	}
 	SetActorLocationAndRotation(InitialSpawnLocation, InitialSpawnRotation, false, nullptr,
 		ETeleportType::TeleportPhysics);
+	NotifyServerTeleport();
 	Health = MaxHealth;
 	Stamina = MaxStamina;
-	CarriedBallCount = 0;
+	ClearCarriedBalls();
+	IceFrozenUntilServerTime = 0.0;
+	if (IsRemotePlayerOnServer())
+	{
+		ClientBallCountReset(0, 0);
+	}
 	bIsDashing = false;
 	DashElapsedSeconds = 0.0f;
 	DashDistanceApplied = 0.0f;
@@ -1256,8 +1356,7 @@ void AChaosImpactCharacter::StartEliminationEffect()
 	{
 		EliminationFlash->SetIntensity(26000.0f);
 	}
-	if (UNiagaraSystem* Burst = LoadObject<UNiagaraSystem>(
-		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst,
 			GetActorLocation() + FVector::UpVector * 70.0f, GetActorRotation(), FVector(2.7f));
@@ -1326,8 +1425,7 @@ void AChaosImpactCharacter::StartRespawnEffect()
 		EliminationFlash->SetLightColor(FLinearColor(0.0f, 0.8f, 1.0f));
 		EliminationFlash->SetIntensity(22000.0f);
 	}
-	if (UNiagaraSystem* Burst = LoadObject<UNiagaraSystem>(
-		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst,
 			GetActorLocation() + FVector::UpVector * 70.0f, GetActorRotation(), FVector(1.8f));
@@ -1447,9 +1545,12 @@ void AChaosImpactCharacter::NotifyOpponentEliminated(const FString& VictimName)
 void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(AChaosImpactCharacter, CarriedBallCount);
+	// The owner predicts its own count and reconciles through ordered answers (PendingBallActions);
+	// a replicated value would overwrite predictions the server has not processed yet.
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CarriedBallCount, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CarriedBallTypes, COND_SkipOwner);
+	DOREPLIFETIME(AChaosImpactCharacter, IceFrozenUntilServerTime);
 	DOREPLIFETIME(AChaosImpactCharacter, Health);
-	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, Stamina, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, bReplicatedDashing, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, ReplicatedDashDirection, COND_SkipOwner);
 	DOREPLIFETIME(AChaosImpactCharacter, bEliminated);
@@ -1465,24 +1566,53 @@ void AChaosImpactCharacter::ServerStartCharge_Implementation()
 }
 
 void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float ChargeAlpha,
-	FVector_NetQuantizeNormal Aim)
+	FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation)
 {
 	bIsChargingThrow = false;
-	if (bEliminated || bIsDashing || bTrainingMenuFrozen)
+	const bool bRemote = IsRemotePlayerOnServer();
+	bool bThrown = false;
+	// A remote owner's dash may still be finishing here only because of latency.
+	if (!bEliminated && !(bIsDashing && !bRemote) && !bTrainingMenuFrozen)
 	{
-		return;
+		const FVector Direction = FVector(Aim).GetSafeNormal2D();
+		if (!Direction.IsNearlyZero())
+		{
+			AimDirection = Direction;
+		}
+		if (bRemote && bThrowReleasePending)
+		{
+			// The previous release is still waiting here only because of latency; let it go now.
+			GetWorldTimerManager().ClearTimer(ThrowReleaseTimer);
+			CompleteAnimatedThrow();
+		}
+		ThrowOriginOffset = bRemote
+			? (FVector(ClientLocation) - GetActorLocation()).GetClampedToMaxSize(250.0f) : FVector::ZeroVector;
+		bThrown = SpawnBall(FMath::Clamp(ChargeAlpha, 0.0f, 1.0f));
 	}
-	const FVector Direction = FVector(Aim).GetSafeNormal2D();
-	if (!Direction.IsNearlyZero())
+	if (bRemote)
 	{
-		AimDirection = Direction;
+		if (!bThrown)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Throw rejected for %s (balls=%d)"), *GetName(), CarriedBallCount);
+		}
+		ClientThrowResolved(bThrown, CarriedBallCount, CarriedBallTypes);
 	}
-	SpawnBall(FMath::Clamp(ChargeAlpha, 0.0f, 1.0f));
 }
 
 void AChaosImpactCharacter::ServerStartDash_Implementation(FVector_NetQuantizeNormal Direction)
 {
 	bIsChargingThrow = false;
+	if (IsRemotePlayerOnServer() && GetWorld())
+	{
+		// The owner already dashed; a previous dash or cooldown may still be running here only because of latency.
+		if (bIsDashing)
+		{
+			FinishDash();
+		}
+		NextDashAvailableAtSeconds = FMath::Min(NextDashAvailableAtSeconds, GetWorld()->GetTimeSeconds());
+		// Stamina belongs to the owner's machine, which already paid for this dash.
+		Stamina = FMath::Max(Stamina, DashCost);
+	}
 	PerformDash(Direction);
 }
 
@@ -1497,7 +1627,367 @@ void AChaosImpactCharacter::ServerUpdateAim_Implementation(FVector_NetQuantizeNo
 
 void AChaosImpactCharacter::MulticastPlayThrowAnimation_Implementation()
 {
+	if (bPredictedThrowAnimation && IsLocallyControlled() && !HasAuthority())
+	{
+		bPredictedThrowAnimation = false;
+		return;
+	}
 	PlayThrowAnimation();
+}
+
+bool AChaosImpactCharacter::IsRemotePlayerOnServer() const
+{
+	return HasAuthority() && GetNetMode() != NM_Standalone && IsPlayerControlled() && !IsLocallyControlled();
+}
+
+void AChaosImpactCharacter::ReportBallHitFromClient(AChaosImpactBall* Ball, const FVector& HitLocation)
+{
+	if (!HasAuthority() && IsLocallyControlled() && !bEliminated && IsValid(Ball) && GetWorld())
+	{
+		ServerReportBallHit(Ball, HitLocation);
+		// Remember the expected health until the server's value has had a round trip to catch up,
+		// so a lethal hit stops throws and pickups right away instead of being refused later.
+		const double Now = GetWorld()->GetTimeSeconds();
+		const float BaseHealth = Now < PredictedHealthUntil ? FMath::Min(PredictedHealth, Health) : Health;
+		PredictedHealth = BaseHealth - Ball->GetDamage();
+		PredictedHealthUntil = Now + GetNetworkRoundTripSeconds() + 0.35;
+		if (IsEliminationPredicted())
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Predicted own elimination from a reported hit"));
+			bThrowAwaitingPickup = false;
+			if (bIsChargingThrow)
+			{
+				CancelChargingThrow();
+			}
+		}
+	}
+}
+
+void AChaosImpactCharacter::ServerReportBallHit_Implementation(AChaosImpactBall* Ball,
+	FVector_NetQuantize HitLocation)
+{
+	if (!IsValid(Ball) || bEliminated)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Reported ball hit rejected: victim=%s reason=%s"), *GetName(),
+			bEliminated ? TEXT("eliminated") : TEXT("ball gone"));
+		return;
+	}
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Ball->AcceptReportedHit(this, HitLocation);
+}
+
+void AChaosImpactCharacter::ClientTeleportTo_Implementation(FVector_NetQuantize Location, FRotator Rotation)
+{
+	SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
+	GetCharacterMovement()->StopMovementImmediately();
+}
+
+void AChaosImpactCharacter::NotifyServerTeleport()
+{
+	if (!IsRemotePlayerOnServer() || !GetWorld())
+	{
+		return;
+	}
+	// Moves already in flight still carry the old position; ignore them briefly so the teleport sticks.
+	ServerAuthoritativeUntil = GetWorld()->GetTimeSeconds() + ServerTeleportAuthoritySeconds;
+	UpdateMovementAuthority();
+	ClientTeleportTo(GetActorLocation(), GetActorRotation());
+}
+
+void AChaosImpactCharacter::UpdateMovementAuthority()
+{
+	if (!IsRemotePlayerOnServer() || !GetWorld())
+	{
+		return;
+	}
+	const bool bTrustClient = !bEliminated && GetWorld()->GetTimeSeconds() >= ServerAuthoritativeUntil;
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->bIgnoreClientMovementErrorChecksAndCorrection = bTrustClient;
+	Movement->bServerAcceptClientAuthoritativePosition = bTrustClient;
+}
+
+AChaosImpactBall* AChaosImpactCharacter::TakePredictedThrowBall()
+{
+	AChaosImpactBall* Predicted = PredictedThrowBall.Get();
+	PredictedThrowBall.Reset();
+	if (!IsValid(Predicted))
+	{
+		return nullptr;
+	}
+	// Only a recent prediction can belong to the server ball that has just started flying.
+	if (!GetWorld() || GetWorld()->GetTimeSeconds() - PredictedThrowSpawnedAt > 1.5)
+	{
+		Predicted->Destroy();
+		return nullptr;
+	}
+	return Predicted;
+}
+
+void AChaosImpactCharacter::ClaimPickupFromClient(AChaosImpactBall* Ball)
+{
+	if (HasAuthority() || !IsLocallyControlled() || bEliminated || !IsValid(Ball)
+		|| CarriedBallCount >= MaximumCarriedBalls || IsEliminationPredicted())
+	{
+		return;
+	}
+	// Predicted: the ball is in hand the moment it is touched on this screen.
+	PendingBallActions.Add(static_cast<int8>(1 + static_cast<int32>(Ball->GetBallType())));
+	RefreshPredictedBallCount();
+	ServerClaimPickup(Ball);
+}
+
+void AChaosImpactCharacter::ServerClaimPickup_Implementation(AChaosImpactBall* Ball)
+{
+	// Generous reach: this copy of the player can trail the owner's own screen by a round trip.
+	constexpr float MaxClaimDistance = 320.0f;
+	const TCHAR* RejectReason = !IsValid(Ball) ? TEXT("ball gone")
+		: bEliminated ? TEXT("eliminated")
+		: CarriedBallCount >= MaximumCarriedBalls ? TEXT("hands full")
+		: !Ball->IsPickupAvailable() ? TEXT("not available yet")
+		: FVector::Dist2D(Ball->GetActorLocation(), GetActorLocation()) > MaxClaimDistance ? TEXT("too far")
+		: nullptr;
+	const bool bAccepted = !RejectReason && Ball->ConsumePickup(this);
+	UE_LOG(LogChaosImpact, Log, TEXT("Pickup claim %s for %s (balls=%d%s%s)"),
+		bAccepted ? TEXT("accepted") : TEXT("rejected"), *GetName(), CarriedBallCount,
+		RejectReason ? TEXT(", ") : TEXT(""), RejectReason ? RejectReason : TEXT(""));
+	ClientPickupResolved(bAccepted, CarriedBallCount, CarriedBallTypes, bAccepted ? nullptr : Ball);
+}
+
+void AChaosImpactCharacter::ClientPickupResolved_Implementation(const bool bAccepted,
+	const int32 ServerBallCount, const uint8 ServerBallTypes, AChaosImpactBall* Ball)
+{
+	ResolveOldestBallAction(ServerBallCount, ServerBallTypes);
+	if (!bAccepted && IsValid(Ball))
+	{
+		Ball->CancelLocalPickupClaim();
+	}
+	if (bThrowAwaitingPickup && GetPendingPickupCount() == 0)
+	{
+		bThrowAwaitingPickup = false;
+		if (CarriedBallCount > 0 && !bEliminated && !IsEliminationPredicted() && !IsIceFrozen())
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Throw released after pickup confirmation"));
+			ReleaseThrowNow(AwaitingThrowChargeAlpha);
+		}
+		else
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Throw cancelled: the ball was taken by someone else first"));
+		}
+	}
+}
+
+void AChaosImpactCharacter::ClientThrowResolved_Implementation(const bool bAccepted, const int32 ServerBallCount,
+	const uint8 ServerBallTypes)
+{
+	if (!bAccepted)
+	{
+		GetWorldTimerManager().ClearTimer(ThrowReleaseTimer);
+		bThrowReleasePending = false;
+		if (AChaosImpactBall* Cosmetic = PendingThrowBall.Get())
+		{
+			Cosmetic->Destroy();
+		}
+		PendingThrowBall.Reset();
+		if (AChaosImpactBall* Predicted = PredictedThrowBall.Get())
+		{
+			Predicted->Destroy();
+		}
+		PredictedThrowBall.Reset();
+	}
+	ResolveOldestBallAction(ServerBallCount, ServerBallTypes);
+}
+
+void AChaosImpactCharacter::ClientBallCountReset_Implementation(const int32 ServerBallCount,
+	const uint8 ServerBallTypes)
+{
+	// Arrives in the same ordered stream as the answers, so pending changes still apply on top.
+	ServerAnsweredBallCount = ServerBallCount;
+	ServerAnsweredBallTypes = ServerBallTypes;
+	RefreshPredictedBallCount();
+}
+
+int32 AChaosImpactCharacter::GetPendingPickupCount() const
+{
+	int32 Pickups = 0;
+	for (const int8 Action : PendingBallActions)
+	{
+		Pickups += Action > 0 ? 1 : 0;
+	}
+	return Pickups;
+}
+
+void AChaosImpactCharacter::RefreshPredictedBallCount()
+{
+	// Replay the waiting pickups (append their type) and throws (take slot 0) over the last answer.
+	TArray<EChaosImpactBallType, TInlineAllocator<4>> Types;
+	const int32 Answered = FMath::Clamp(ServerAnsweredBallCount, 0, MaximumCarriedBalls);
+	for (int32 Slot = 0; Slot < Answered; ++Slot)
+	{
+		Types.Add(ChaosImpactBallTypes::GetPackedSlot(ServerAnsweredBallTypes, Slot));
+	}
+	for (const int8 Action : PendingBallActions)
+	{
+		if (Action > 0)
+		{
+			if (Types.Num() < MaximumCarriedBalls)
+			{
+				Types.Add(ChaosImpactBallTypes::FromIndex(Action - 1));
+			}
+		}
+		else if (Action < 0 && !Types.IsEmpty())
+		{
+			Types.RemoveAt(0);
+		}
+	}
+	const uint8 PackedTypes = ChaosImpactBallTypes::Pack(Types);
+	if (Types.Num() != CarriedBallCount || PackedTypes != CarriedBallTypes)
+	{
+		CarriedBallCount = Types.Num();
+		CarriedBallTypes = PackedTypes;
+		UpdateBallPresentation();
+	}
+}
+
+void AChaosImpactCharacter::ResolveOldestBallAction(const int32 ServerBallCount, const uint8 ServerBallTypes)
+{
+	if (!PendingBallActions.IsEmpty())
+	{
+		PendingBallActions.RemoveAt(0);
+	}
+	ServerAnsweredBallCount = ServerBallCount;
+	ServerAnsweredBallTypes = ServerBallTypes;
+	RefreshPredictedBallCount();
+}
+
+void AChaosImpactCharacter::ClientAddStamina_Implementation(const float Amount)
+{
+	Stamina = FMath::Clamp(Stamina + Amount, 0.0f, MaxStamina);
+}
+
+void AChaosImpactCharacter::TickDevAutoInput()
+{
+	if (bEliminated || !GetWorld())
+	{
+		return;
+	}
+	const double Now = GetWorld()->GetTimeSeconds();
+	// Walk to the nearest free ball while there is room in hand, otherwise toward the nearest opponent.
+	AActor* Goal = nullptr;
+	float GoalDistance = TNumericLimits<float>::Max();
+	if (CarriedBallCount < MaximumCarriedBalls)
+	{
+		for (TActorIterator<AChaosImpactBall> It(GetWorld()); It; ++It)
+		{
+			const float Distance = FVector::Dist2D(It->GetActorLocation(), GetActorLocation());
+			if (It->IsPickup() && !It->IsHidden() && Distance < GoalDistance)
+			{
+				GoalDistance = Distance;
+				Goal = *It;
+			}
+		}
+	}
+	AChaosImpactCharacter* Opponent = nullptr;
+	float OpponentDistance = TNumericLimits<float>::Max();
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		const float Distance = FVector::Dist2D(It->GetActorLocation(), GetActorLocation());
+		if (*It != this && !It->IsEliminated() && Distance < OpponentDistance)
+		{
+			OpponentDistance = Distance;
+			Opponent = *It;
+		}
+	}
+	if (!Goal && Opponent && OpponentDistance > 700.0f)
+	{
+		Goal = Opponent;
+	}
+	if (Goal)
+	{
+		const FVector Direction = (Goal->GetActorLocation() - GetActorLocation()).GetSafeNormal2D();
+		AddMovementInput(Direction, 1.0f);
+		LastMoveDirection = Direction;
+	}
+	if (Opponent)
+	{
+		SetAIAimDirection(Opponent->GetActorLocation() - GetActorLocation());
+	}
+	if (bIsChargingThrow && Now >= DevReleaseAt)
+	{
+		ReleaseChargedThrow();
+	}
+	else if (!bIsChargingThrow && Opponent && CarriedBallCount > 0 && Now >= DevNextThrowAt)
+	{
+		StartChargingThrow();
+		DevReleaseAt = Now + 0.35;
+		DevNextThrowAt = Now + 1.6;
+	}
+	if (Now >= DevNextDashAt && CanDashNow())
+	{
+		LastMoveDirection = FVector(FMath::FRandRange(-1.0f, 1.0f), FMath::FRandRange(-1.0f, 1.0f), 0.0f)
+			.GetSafeNormal2D();
+		StartDash();
+		DevNextDashAt = Now + 2.5;
+	}
+}
+
+float AChaosImpactCharacter::GetNetworkRoundTripSeconds() const
+{
+	const APlayerState* State = GetPlayerState();
+	return State ? FMath::Clamp(State->GetPingInMilliseconds() / 1000.0f, 0.0f, 0.5f) : 0.0f;
+}
+
+bool AChaosImpactCharacter::IsEliminationPredicted() const
+{
+	// Expires by itself if the server refused the reported hit.
+	return !HasAuthority() && !bEliminated && GetWorld()
+		&& GetWorld()->GetTimeSeconds() < PredictedHealthUntil
+		&& FMath::Min(PredictedHealth, Health) <= 0.0f;
+}
+
+FVector AChaosImpactCharacter::GetPresentationLocation() const
+{
+	const USkeletalMeshComponent* CharacterMesh = GetMesh();
+	return CharacterMesh
+		? CharacterMesh->GetComponentLocation() - GetActorQuat().RotateVector(CachedBaseTranslationOffset)
+		: GetActorLocation();
+}
+
+void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
+{
+	USkeletalMeshComponent* CharacterMesh = GetMesh();
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!CharacterMesh || !Movement || CharacterMesh->IsSimulatingPhysics())
+	{
+		return;
+	}
+	FVector TargetLead = FVector::ZeroVector;
+	const bool bDrawnFromNetwork = GetNetMode() != NM_Standalone && !IsLocallyControlled()
+		&& (GetLocalRole() == ROLE_SimulatedProxy || IsRemotePlayerOnServer());
+	if (bDrawnFromNetwork && !bEliminated)
+	{
+		// This copy trails the player's own screen by their round trip plus smoothing; draw it that far ahead.
+		const float SmoothingLag = HasAuthority()
+			? Movement->ListenServerNetworkSimulatedSmoothLocationTime
+			: Movement->NetworkSimulatedSmoothLocationTime;
+		const float LeadSeconds = FMath::Clamp(GetNetworkRoundTripSeconds() + SmoothingLag,
+			0.0f, MaxPresentationLeadSeconds);
+		FVector HorizontalVelocity = GetVelocity();
+		HorizontalVelocity.Z = 0.0f;
+		if (!IsDashingForPresentation())
+		{
+			HorizontalVelocity = HorizontalVelocity.GetClampedToMaxSize(Movement->MaxWalkSpeed * 1.1f);
+		}
+		TargetLead = (HorizontalVelocity * LeadSeconds).GetClampedToMaxSize(MaxPresentationLeadDistance);
+	}
+	PresentationLeadWorld = bEliminated ? FVector::ZeroVector
+		: FMath::VInterpTo(PresentationLeadWorld, TargetLead, DeltaSeconds, PresentationLeadBlendSpeed);
+	const FVector NewBase = CachedBaseTranslationOffset + GetActorQuat().UnrotateVector(PresentationLeadWorld);
+	if (!NewBase.Equals(BaseTranslationOffset, 0.01f))
+	{
+		// Keep movement smoothing's current offset and only swap the lead underneath it.
+		CharacterMesh->SetRelativeLocation(CharacterMesh->GetRelativeLocation() - BaseTranslationOffset + NewBase);
+		BaseTranslationOffset = NewBase;
+	}
 }
 
 void AChaosImpactCharacter::ClientShowRespawn_Implementation(const FString& DefeatedBy, const float Seconds,
@@ -1523,6 +2013,7 @@ void AChaosImpactCharacter::ShowRespawnLocally(const FString& DefeatedBy, const 
 void AChaosImpactCharacter::ClientRespawned_Implementation()
 {
 	RespawnAtWorldSeconds = 0.0f;
+	Stamina = MaxStamina;
 	EndEliminationSpectate();
 	if (ChargeWidget)
 	{
@@ -1561,6 +2052,23 @@ void AChaosImpactCharacter::ApplyEliminatedPresentation(const bool bNowEliminate
 	{
 		bIsChargingThrow = false;
 		bIsDashing = false;
+		if (!HasAuthority())
+		{
+			// Drop any throw this screen predicted; the server resolves the real ball.
+			GetWorldTimerManager().ClearTimer(ThrowReleaseTimer);
+			bThrowReleasePending = false;
+			if (AChaosImpactBall* Cosmetic = PendingThrowBall.Get())
+			{
+				Cosmetic->Destroy();
+			}
+			PendingThrowBall.Reset();
+			if (AChaosImpactBall* Predicted = PredictedThrowBall.Get())
+			{
+				Predicted->Destroy();
+			}
+			PredictedThrowBall.Reset();
+			bThrowAwaitingPickup = false;
+		}
 		UpdateDashTrailPresentation(false);
 		if (ChargeWidget)
 		{
@@ -1598,13 +2106,20 @@ void AChaosImpactCharacter::ResetForOnlineMatch(const FVector& Location, const F
 	PendingThrowBall.Reset();
 	bThrowReleasePending = false;
 	TeleportTo(Location, Rotation);
+	NotifyServerTeleport();
 	InitialSpawnLocation = GetActorLocation();
 	InitialSpawnRotation = Rotation;
 	Health = MaxHealth;
 	Stamina = MaxStamina;
-	CarriedBallCount = 0;
+	ClearCarriedBalls();
+	IceFrozenUntilServerTime = 0.0;
 	NextDashAvailableAtSeconds = 0.0f;
 	UpdateBallPresentation();
+	if (IsRemotePlayerOnServer())
+	{
+		ClientAddStamina(MaxStamina);
+		ClientBallCountReset(0, 0);
+	}
 }
 
 void AChaosImpactCharacter::SetGameplayUIVisible(const bool bVisible)
@@ -1640,7 +2155,7 @@ void AChaosImpactCharacter::SetTrainingMenuFrozen(const bool bFrozen)
 	}
 	else
 	{
-		if (!bEliminated)
+		if (!bEliminated && !bIceFreezeActive)
 		{
 			EMovementMode RestoredMode = static_cast<EMovementMode>(SavedTrainingMenuMovementMode);
 			if (RestoredMode == MOVE_None)
@@ -1703,6 +2218,10 @@ void AChaosImpactCharacter::RecoverStaminaFromBallHit()
 	{
 		ChargeWidget->SetStamina(Stamina, MaxStamina);
 	}
+	if (IsRemotePlayerOnServer())
+	{
+		ClientAddStamina(StaminaRecoveredPerBallHit);
+	}
 }
 
 void AChaosImpactCharacter::SetTrainingStartTransform(
@@ -1710,6 +2229,7 @@ void AChaosImpactCharacter::SetTrainingStartTransform(
 {
 	SetActorLocationAndRotation(Location, Rotation, false, nullptr,
 		ETeleportType::TeleportPhysics);
+	NotifyServerTeleport();
 	InitialSpawnLocation = Location;
 	InitialSpawnRotation = Rotation;
 }
@@ -1725,7 +2245,7 @@ void AChaosImpactCharacter::SetAIAimDirection(const FVector& Direction)
 
 bool AChaosImpactCharacter::CanDashNow() const
 {
-	return GetWorld() && !bEliminated && !bTrainingMenuFrozen && !bIsDashing
+	return GetWorld() && !bEliminated && !bTrainingMenuFrozen && !bIsDashing && !IsIceFrozen()
 		&& Stamina + UE_SMALL_NUMBER >= DashCost
 		&& GetWorld()->GetTimeSeconds() >= NextDashAvailableAtSeconds;
 }
@@ -1748,7 +2268,7 @@ bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 		return false;
 	}
 
-	++CarriedBallCount;
+	PushCarriedBall(Ball->GetBallType());
 	UpdateBallPresentation();
 	return true;
 }
@@ -1766,15 +2286,318 @@ void AChaosImpactCharacter::UpdateBallPresentation()
 		HeldBallMesh->SetRelativeLocation(HeldBallRelativeLocation);
 		HeldBallMesh->SetRelativeRotation(HeldBallRelativeRotation);
 		HeldBallMesh->SetVisibility(CarriedBallCount > 0, true);
+		ApplyHeldBallAppearance(HeldBallMesh, GetCarriedBallType(0));
 	}
 	if (LeftHeldBallMesh)
 	{
 		LeftHeldBallMesh->SetRelativeLocation(LeftHeldBallRelativeLocation);
 		LeftHeldBallMesh->SetRelativeRotation(LeftHeldBallRelativeRotation);
 		LeftHeldBallMesh->SetVisibility(CarriedBallCount > 1, true);
+		ApplyHeldBallAppearance(LeftHeldBallMesh, GetCarriedBallType(1));
 	}
 	if (ChargeWidget)
 	{
-		ChargeWidget->SetBallInventory(CarriedBallCount, MaximumCarriedBalls);
+		ChargeWidget->SetBallInventory(CarriedBallCount, MaximumCarriedBalls, CarriedBallTypes);
+	}
+}
+
+void AChaosImpactCharacter::PushCarriedBall(const EChaosImpactBallType Type)
+{
+	if (CarriedBallCount >= MaximumCarriedBalls)
+	{
+		return;
+	}
+	const int32 Shift = FMath::Max(CarriedBallCount, 0) * 2;
+	CarriedBallTypes = static_cast<uint8>((CarriedBallTypes & ~(0x3 << Shift)) | (static_cast<int32>(Type) << Shift));
+	++CarriedBallCount;
+}
+
+EChaosImpactBallType AChaosImpactCharacter::PopCarriedBall()
+{
+	const EChaosImpactBallType Type = GetCarriedBallType(0);
+	CarriedBallTypes = static_cast<uint8>(CarriedBallTypes >> 2);
+	CarriedBallCount = FMath::Max(0, CarriedBallCount - 1);
+	return Type;
+}
+
+void AChaosImpactCharacter::ClearCarriedBalls()
+{
+	CarriedBallCount = 0;
+	CarriedBallTypes = 0;
+}
+
+void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBall, const EChaosImpactBallType Type)
+{
+	if (!HandBall)
+	{
+		return;
+	}
+	using namespace ChaosImpactBallTypes;
+	UMaterialInterface* Material = nullptr;
+	if (Type == EChaosImpactBallType::Fire)
+	{
+		if (!HeldFireMaterial)
+		{
+			HeldFireMaterial = MakeEmissive(this, FLinearColor(1.0f, 0.24f, 0.01f), 1.1f);
+		}
+		Material = HeldFireMaterial;
+	}
+	else if (Type == EChaosImpactBallType::Ice)
+	{
+		if (!HeldIceMaterial)
+		{
+			HeldIceMaterial = MakeIceCrystal(this, 0.85f, 0.4f, FLinearColor(0.68f, 0.86f, 1.0f));
+		}
+		Material = HeldIceMaterial;
+	}
+	// No override for a normal ball: the mesh's own material.
+	HandBall->SetMaterial(0, Material);
+
+	// A carried fire ball keeps burning in the hand.
+	TObjectPtr<UNiagaraComponent>& Flames = HandBall == LeftHeldBallMesh ? LeftHeldFire : RightHeldFire;
+	const bool bWantFlames = Type == EChaosImpactBallType::Fire && HandBall->IsVisible()
+		&& GetNetMode() != NM_DedicatedServer;
+	if (bWantFlames && !Flames)
+	{
+		if (UNiagaraSystem* FireSystem = LoadEffect(Effects::Fire))
+		{
+			Flames = UNiagaraFunctionLibrary::SpawnSystemAttached(FireSystem, HandBall, NAME_None,
+				FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, false);
+			if (Flames)
+			{
+				Flames->SetUsingAbsoluteScale(true);
+				Flames->SetWorldScale3D(FVector::OneVector);
+				SetEffectFloat(Flames, TEXT("Flame Scale"), 0.7f);
+				SetEffectFloat(Flames, TEXT("Smoke Spawn Scale"), 0.1f);
+				SetEffectFloat(Flames, TEXT("Base Light Intentsity"), 0.0f);
+			}
+		}
+	}
+	else if (Flames && bWantFlames != Flames->IsActive())
+	{
+		if (bWantFlames)
+		{
+			Flames->Activate(true);
+		}
+		else
+		{
+			Flames->Deactivate();
+		}
+	}
+}
+
+double AChaosImpactCharacter::GetSharedServerTime() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0;
+	}
+	const AGameStateBase* GameState = World->GetGameState();
+	return GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+}
+
+bool AChaosImpactCharacter::IsIceFrozen() const
+{
+	return IceFrozenUntilServerTime > 0.0 && GetSharedServerTime() < IceFrozenUntilServerTime;
+}
+
+void AChaosImpactCharacter::ApplyIceFreeze(const float Seconds)
+{
+	// A dodge in progress escapes the ice, like it escapes a hit.
+	if (!HasAuthority() || bEliminated || Seconds <= 0.0f || (bIsDashing && !bApplyingReportedHit))
+	{
+		return;
+	}
+	IceFrozenUntilServerTime = FMath::Max(IceFrozenUntilServerTime, GetSharedServerTime() + Seconds);
+	UE_LOG(LogChaosImpact, Log, TEXT("%s frozen for %.1fs"), *GetName(), Seconds);
+	UpdateIceStatus(0.0f);
+	ForceNetUpdate();
+}
+
+void AChaosImpactCharacter::UpdateIceStatus(const float DeltaSeconds)
+{
+	const bool bFrozen = !bEliminated && IsIceFrozen();
+	if (bFrozen != bIceFreezeActive)
+	{
+		bIceFreezeActive = bFrozen;
+		// Movement is changed only where this character is actually moved (its owner, the host, a CPU).
+		if (IsLocallyControlled())
+		{
+			if (bFrozen)
+			{
+				if (bIsDashing)
+				{
+					FinishDash();
+				}
+				if (bIsChargingThrow)
+				{
+					CancelChargingThrow();
+				}
+				bThrowAwaitingPickup = false;
+				GetCharacterMovement()->StopMovementImmediately();
+				GetCharacterMovement()->DisableMovement();
+			}
+			else if (!bEliminated && !bTrainingMenuFrozen && !bIsDashing)
+			{
+				GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+			}
+		}
+		SetIceFreezePresentation(bFrozen);
+	}
+	UpdateIceFreezePresentation(DeltaSeconds);
+
+	if (IsLocallyControlled())
+	{
+		const FVector Feet = GetActorLocation()
+			- FVector::UpVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		const bool bOnIce = !bEliminated && AChaosImpactHazardZone::IsSlipperyAt(GetWorld(), Feet);
+		if (bOnIce != bOnSlipperyIce)
+		{
+			// Low friction and weak acceleration: turning and stopping take a long slide.
+			bOnSlipperyIce = bOnIce;
+			UCharacterMovementComponent* Movement = GetCharacterMovement();
+			Movement->GroundFriction = bOnIce ? 0.45f : DefaultGroundFriction;
+			Movement->BrakingDecelerationWalking = bOnIce ? 170.0f : DefaultBrakingDecelerationWalking;
+			Movement->MaxAcceleration = bOnIce ? 1100.0f : DefaultMaxAcceleration;
+		}
+	}
+}
+
+void AChaosImpactCharacter::SetIceFreezePresentation(const bool bFrozen)
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!bFrozen)
+	{
+		if (Body)
+		{
+			Body->SetOverlayMaterial(nullptr);
+			Body->bPauseAnims = false;
+		}
+		// Shatter outward, unless the elimination burst is taking over.
+		IceFreezeVisualSeconds = 0.0f;
+		bIceThawing = IceBlockMesh && !bEliminated;
+		if (bIceThawing)
+		{
+			ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation(), 1.1f, 2.0f);
+		}
+		else if (IceBlockMesh)
+		{
+			IceBlockMesh->SetHiddenInGame(true);
+			for (UProceduralMeshComponent* Shard : IceShardMeshes)
+			{
+				Shard->SetHiddenInGame(true);
+			}
+		}
+		return;
+	}
+	if (!IceBlockMesh)
+	{
+		using namespace ChaosImpactIceMeshes;
+		FRandomStream Stream(static_cast<int32>(GetUniqueID()));
+		const float HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		FMeshBuffers Block;
+		AppendChunk(Block, FTransform::Identity, 54.0f, HalfHeight + 10.0f, Stream);
+		IceBlockMesh = CreateComponent(this, GetCapsuleComponent(), Block,
+			ChaosImpactBallTypes::MakeIceCrystal(this, 0.3f, 0.14f));
+		UMaterialInstanceDynamic* ShardMaterial = ChaosImpactBallTypes::MakeIceCrystal(this, 0.6f, 0.18f);
+		for (int32 Index = 0; Index < 9; ++Index)
+		{
+			// Seven crystals jut from the sides of the block and two from its top.
+			const bool bTop = Index >= 7;
+			const float Angle = Index * UE_TWO_PI / 7.0f + 0.4f * FMath::Sin(Index * 3.1f);
+			const FVector Outward(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			const float Tilt = FMath::DegreesToRadians(bTop ? 22.0f : 38.0f + 12.0f * FMath::Sin(Index * 1.7f));
+			const FVector Axis = (FVector::UpVector * FMath::Cos(Tilt) + Outward * FMath::Sin(Tilt)).GetSafeNormal();
+			const FVector Base = bTop
+				? FVector(Outward.X * 16.0f, Outward.Y * 16.0f, HalfHeight - 6.0f)
+				: FVector(Outward.X * 42.0f, Outward.Y * 42.0f, -HalfHeight + 8.0f + (Index % 3) * 26.0f);
+			FMeshBuffers Shard;
+			AppendCrystal(Shard, FTransform::Identity, Stream.FRandRange(8.0f, 12.0f),
+				bTop ? 50.0f : Stream.FRandRange(52.0f, 80.0f), Stream);
+			if (UProceduralMeshComponent* ShardMesh = CreateComponent(this, GetCapsuleComponent(), Shard, ShardMaterial))
+			{
+				IceShardTransforms.Add(FTransform(FRotationMatrix::MakeFromZ(Axis).Rotator(), Base));
+				IceShardMeshes.Add(ShardMesh);
+			}
+		}
+		IceOverlayMaterial = ChaosImpactBallTypes::MakeIceCrystal(this, 0.35f, 0.14f);
+	}
+	if (!IceBlockMesh)
+	{
+		return;
+	}
+	bIceThawing = false;
+	IceFreezeVisualSeconds = 0.0f;
+	if (UMaterialInstanceDynamic* BlockMaterial = Cast<UMaterialInstanceDynamic>(IceBlockMesh->GetMaterial(0)))
+	{
+		BlockMaterial->SetScalarParameterValue(TEXT("Opacity"), 0.3f);
+	}
+	if (Body)
+	{
+		// Tinted and stopped mid-pose inside the block.
+		Body->SetOverlayMaterial(IceOverlayMaterial);
+		Body->bPauseAnims = true;
+	}
+	ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation(), 0.7f, 1.0f);
+	UpdateIceFreezePresentation(0.0f);
+}
+
+void AChaosImpactCharacter::UpdateIceFreezePresentation(const float DeltaSeconds)
+{
+	if (!IceBlockMesh || (!bIceFreezeActive && !bIceThawing))
+	{
+		return;
+	}
+	IceFreezeVisualSeconds += DeltaSeconds;
+	if (bIceFreezeActive)
+	{
+		// Snap shut with a small overshoot, then tremble just before breaking free.
+		const float X = FMath::Clamp(IceFreezeVisualSeconds / 0.16f, 0.0f, 1.0f) - 1.0f;
+		const float Pop = 1.0f + X * X * (3.2f * X + 2.2f);
+		const float Remaining = static_cast<float>(IceFrozenUntilServerTime - GetSharedServerTime());
+		const FVector Tremble = Remaining < 0.45f
+			? FVector(FMath::Sin(IceFreezeVisualSeconds * 90.0f) * 2.2f, FMath::Cos(IceFreezeVisualSeconds * 77.0f) * 2.2f, 0.0f)
+			: FVector::ZeroVector;
+		IceBlockMesh->SetHiddenInGame(false);
+		IceBlockMesh->SetRelativeLocationAndRotation(Tremble, FRotator(0.0f, 15.0f, 0.0f));
+		IceBlockMesh->SetRelativeScale3D(FVector(FMath::Lerp(0.55f, 1.0f, Pop)));
+		for (int32 Index = 0; Index < IceShardMeshes.Num(); ++Index)
+		{
+			const FTransform& Shard = IceShardTransforms[Index];
+			IceShardMeshes[Index]->SetHiddenInGame(false);
+			IceShardMeshes[Index]->SetRelativeLocationAndRotation(Shard.GetLocation() + Tremble, Shard.Rotator());
+			IceShardMeshes[Index]->SetRelativeScale3D(FVector(FMath::Max(0.01f, Pop)));
+		}
+		return;
+	}
+	const float T = IceFreezeVisualSeconds / 0.3f;
+	if (T >= 1.0f)
+	{
+		bIceThawing = false;
+		IceBlockMesh->SetHiddenInGame(true);
+		for (UProceduralMeshComponent* Shard : IceShardMeshes)
+		{
+			Shard->SetHiddenInGame(true);
+		}
+		return;
+	}
+	IceBlockMesh->SetRelativeScale3D(FVector(1.0f + 0.25f * T));
+	if (UMaterialInstanceDynamic* BlockMaterial = Cast<UMaterialInstanceDynamic>(IceBlockMesh->GetMaterial(0)))
+	{
+		BlockMaterial->SetScalarParameterValue(TEXT("Opacity"), 0.3f * (1.0f - T));
+	}
+	for (int32 Index = 0; Index < IceShardMeshes.Num(); ++Index)
+	{
+		const FTransform& Shard = IceShardTransforms[Index];
+		const FVector Outward = FVector(Shard.GetLocation().X, Shard.GetLocation().Y, 0.0f).GetSafeNormal();
+		IceShardMeshes[Index]->SetRelativeLocationAndRotation(
+			Shard.GetLocation() + Outward * (T * 150.0f) + FVector::UpVector * (T * 80.0f - T * T * 120.0f),
+			Shard.Rotator() + FRotator(T * 220.0f, 0.0f, T * 160.0f));
+		IceShardMeshes[Index]->SetRelativeScale3D(FVector(FMath::Max(0.01f, 1.0f - T)));
 	}
 }

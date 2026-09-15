@@ -92,9 +92,16 @@ FString UChaosImpactSessionSubsystem::GetTrainingMapName()
 	return TEXT("/Game/ThirdPerson/Lvl_ThirdPerson");
 }
 
-FString UChaosImpactSessionSubsystem::GetOfflineTrainingOptions()
+FString UChaosImpactSessionSubsystem::GetOfflineTrainingOptions() const
 {
-	return TEXT("CITraining=1?CILocalPlayers=1?CIKeyboardPlayer=0");
+	return FString::Printf(TEXT("CITraining=1?%s"), *LocalSetupOptions);
+}
+
+void UChaosImpactSessionSubsystem::SetLocalSetup(const FString& Options, const int32 LocalPlayers)
+{
+	LocalSetupOptions = Options;
+	LocalPlayerCount = FMath::Clamp(LocalPlayers, 1, 2);
+	UE_LOG(LogChaosImpact, Log, TEXT("Online local setup: %d player(s), %s"), LocalPlayerCount, *LocalSetupOptions);
 }
 
 IOnlineSessionPtr UChaosImpactSessionSubsystem::GetSessions() const
@@ -262,7 +269,8 @@ void UChaosImpactSessionSubsystem::HandleFindComplete(const bool bWasSuccessful)
 		PostNotice(TEXT("メンバー募集が終了しています"));
 		return;
 	}
-	if (Count >= AChaosImpactGameState::MaxMembers)
+	// Everyone playing on this machine needs a place (a room of 7 cannot take a pair).
+	if (Count + LocalPlayerCount > AChaosImpactGameState::MaxMembers)
 	{
 		State = EChaosImpactRoomState::None;
 		PostNotice(TEXT("へやが満員です"));
@@ -328,8 +336,14 @@ void UChaosImpactSessionSubsystem::HandleCreateComplete(FName SessionName, const
 	State = EChaosImpactRoomState::Hosting;
 	MemberCount = 1;
 	bRecruitmentOpen = true;
-	UGameplayStatics::OpenLevel(GetGameInstance(), FName(*GetTrainingMapName()), true,
-		TEXT("listen?CITraining=1?CIOnline=1?CILocalPlayers=1?CIKeyboardPlayer=0"));
+	FString Options = FString::Printf(TEXT("listen?CITraining=1?CIOnline=1?%s"), *LocalSetupOptions);
+	// Development: -CIRoomCPU=N adds CPUs to the room so network hits can be tested without a second person.
+	int32 DevRoomCPUs = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("CIRoomCPU="), DevRoomCPUs) && DevRoomCPUs > 0)
+	{
+		Options += FString::Printf(TEXT("?CICPUCount=%d"), FMath::Clamp(DevRoomCPUs, 1, 4));
+	}
+	UGameplayStatics::OpenLevel(GetGameInstance(), FName(*GetTrainingMapName()), true, Options);
 }
 
 void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
@@ -351,7 +365,10 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 	}
 	State = EChaosImpactRoomState::InRoom;
 	UE_LOG(LogChaosImpact, Log, TEXT("Joining room at %s"), *ConnectString);
-	Controller->ClientTravel(ConnectString + TEXT("?CIOnline=1"), TRAVEL_Absolute);
+	// CIPlayers lets the host reserve a place for this machine's second player, who joins right after.
+	// The local setup options also let this client pair its controllers again in the host's world.
+	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?%s"),
+		*ConnectString, LocalPlayerCount, *LocalSetupOptions), TRAVEL_Absolute);
 }
 
 void UChaosImpactSessionSubsystem::LeaveRoom()
@@ -396,6 +413,7 @@ void UChaosImpactSessionSubsystem::PostNotice(const FString& Message)
 {
 	Notice = Message;
 	NoticeAt = FPlatformTime::Seconds();
+	UE_LOG(LogChaosImpact, Log, TEXT("Room notice: %s"), *Message);
 }
 
 bool UChaosImpactSessionSubsystem::ConsumeReturnToTraining()

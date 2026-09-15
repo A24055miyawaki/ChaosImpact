@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactGameState.h"
@@ -217,8 +219,6 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 		UTextBlock* BallIcon = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
 		BallIcon->SetText(FText::FromString(TEXT("●")));
 		BallIcon->SetJustification(ETextJustify::Center);
-		BallIcon->SetShadowOffset(FVector2D(4.0f, 5.0f));
-		BallIcon->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.88f));
 		BallIcon->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 		FSlateFontInfo IconFont = BallIcon->GetFont();
 		IconFont.Size = 58;
@@ -244,6 +244,23 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 			SeamSlot->SetHorizontalAlignment(HAlign_Fill);
 			SeamSlot->SetVerticalAlignment(VAlign_Center);
 		}
+		BallSeams.Add(Seam);
+
+		UTextBlock* TypeLabel = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+		TypeLabel->SetJustification(ETextJustify::Center);
+		FSlateFontInfo LabelFont = TypeLabel->GetFont();
+		LabelFont.Size = 13;
+		LabelFont.TypefaceFontName = TEXT("Bold");
+		LabelFont.OutlineSettings.OutlineSize = 2;
+		LabelFont.OutlineSettings.OutlineColor = FLinearColor(0.0f, 0.02f, 0.05f, 1.0f);
+		TypeLabel->SetFont(LabelFont);
+		if (UOverlaySlot* LabelSlot = SlotOverlay->AddChildToOverlay(TypeLabel))
+		{
+			LabelSlot->SetHorizontalAlignment(HAlign_Fill);
+			LabelSlot->SetVerticalAlignment(VAlign_Bottom);
+			LabelSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 6.0f));
+		}
+		BallTypeLabels.Add(TypeLabel);
 
 		UBorder* AccentDot = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
 		USizeBox* AccentSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
@@ -264,8 +281,6 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 	InventoryCountLabel->SetText(FText::FromString(TEXT("× 0")));
 	InventoryCountLabel->SetJustification(ETextJustify::Center);
 	InventoryCountLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.56f, 0.68f, 1.0f)));
-	InventoryCountLabel->SetShadowOffset(FVector2D(3.0f, 3.0f));
-	InventoryCountLabel->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.9f));
 	InventoryCountLabel->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 	FSlateFontInfo CountFont = InventoryCountLabel->GetFont();
 	CountFont.Size = 27;
@@ -512,7 +527,8 @@ void UChaosImpactChargeWidget::SetStamina(const float CurrentStamina, const floa
 	}
 }
 
-void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const int32 MaximumBalls)
+void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const int32 MaximumBalls,
+	const uint8 BallTypes)
 {
 	const int32 ClampedMaximum = FMath::Clamp(MaximumBalls, 0, BallIcons.Num());
 	const int32 ClampedCurrent = FMath::Clamp(CurrentBalls, 0, ClampedMaximum);
@@ -522,42 +538,80 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 		BallGainedSlot = ClampedCurrent - 1;
 	}
 	CarriedBalls = ClampedCurrent;
+	CarriedBallTypes = BallTypes;
+
+	struct FSlotLook
+	{
+		FLinearColor Icon;
+		FLinearColor Fill;
+		FLinearColor Ring;
+		FLinearColor Seam;
+		FLinearColor Accent;
+		FLinearColor Label;
+	};
+	const auto LookFor = [](const EChaosImpactBallType Type) -> FSlotLook
+	{
+		switch (Type)
+		{
+		case EChaosImpactBallType::Fire:
+			return {FLinearColor(1.0f, 0.62f, 0.12f), FLinearColor(0.26f, 0.045f, 0.0f, 0.97f),
+				FLinearColor(1.0f, 0.38f, 0.03f), FLinearColor(0.55f, 0.1f, 0.0f, 0.95f),
+				FLinearColor(1.0f, 0.86f, 0.25f), FLinearColor(1.0f, 0.86f, 0.55f)};
+		case EChaosImpactBallType::Ice:
+			return {FLinearColor(0.84f, 0.97f, 1.0f), FLinearColor(0.02f, 0.16f, 0.3f, 0.97f),
+				FLinearColor(0.62f, 0.93f, 1.0f), FLinearColor(0.3f, 0.6f, 0.85f, 0.95f),
+				FLinearColor(0.9f, 0.98f, 1.0f), FLinearColor(0.86f, 0.97f, 1.0f)};
+		default:
+			return {FLinearColor(0.78f, 0.96f, 1.0f), FLinearColor(0.0f, 0.1f, 0.22f, 0.96f),
+				FLinearColor(0.0f, 0.82f, 1.0f), FLinearColor(0.0f, 0.12f, 0.24f, 0.9f),
+				FLinearColor(1.0f, 0.18f, 0.055f), FLinearColor::Transparent};
+		}
+	};
+
 	if (InventoryCountLabel)
 	{
 		InventoryCountLabel->SetText(FText::FromString(FString::Printf(TEXT("× %d"), ClampedCurrent)));
+		// Colored like the ball that will be thrown next.
 		InventoryCountLabel->SetColorAndOpacity(FSlateColor(ClampedCurrent > 0
-			? FLinearColor(0.0f, 0.82f, 1.0f, 1.0f)
+			? LookFor(ChaosImpactBallTypes::GetPackedSlot(BallTypes, 0)).Ring
 			: FLinearColor(0.44f, 0.5f, 0.62f, 1.0f)));
 	}
 	for (int32 SlotIndex = 0; SlotIndex < BallIcons.Num(); ++SlotIndex)
 	{
 		const bool bEnabledSlot = SlotIndex < ClampedMaximum;
 		const bool bFilled = SlotIndex < ClampedCurrent;
+		const EChaosImpactBallType Type = bFilled
+			? ChaosImpactBallTypes::GetPackedSlot(BallTypes, SlotIndex) : EChaosImpactBallType::Normal;
+		const FSlotLook Look = LookFor(Type);
 		if (UTextBlock* Icon = BallIcons[SlotIndex])
 		{
 			Icon->SetText(FText::FromString(TEXT("●")));
-			Icon->SetColorAndOpacity(FSlateColor(bFilled
-				? FLinearColor(0.78f, 0.96f, 1.0f, 1.0f)
-				: FLinearColor(0.11f, 0.14f, 0.21f, 1.0f)));
+			Icon->SetColorAndOpacity(FSlateColor(bFilled ? Look.Icon : FLinearColor(0.11f, 0.14f, 0.21f, 1.0f)));
+		}
+		if (UTextBlock* Seam = BallSeams.IsValidIndex(SlotIndex) ? BallSeams[SlotIndex] : nullptr)
+		{
+			Seam->SetColorAndOpacity(FSlateColor(bFilled ? Look.Seam : FLinearColor(0.0f, 0.12f, 0.24f, 0.9f)));
+		}
+		if (UTextBlock* Label = BallTypeLabels.IsValidIndex(SlotIndex) ? BallTypeLabels[SlotIndex] : nullptr)
+		{
+			const bool bSpecial = bFilled && Type != EChaosImpactBallType::Normal;
+			Label->SetText(bSpecial ? FText::FromString(ChaosImpactBallTypes::GetDisplayName(Type)) : FText::GetEmpty());
+			Label->SetColorAndOpacity(FSlateColor(Look.Label));
 		}
 		if (UBorder* InventorySlot = BallSlots.IsValidIndex(SlotIndex) ? BallSlots[SlotIndex] : nullptr)
 		{
-			const FLinearColor FillColor = bFilled
-				? FLinearColor(0.0f, 0.1f, 0.22f, 0.96f)
+			const FLinearColor FillColor = bFilled ? Look.Fill
 				: bEnabledSlot ? FLinearColor(0.015f, 0.022f, 0.045f, 0.82f)
 				: FLinearColor(0.01f, 0.01f, 0.015f, 0.6f);
-			const FLinearColor RingColor = bFilled
-				? FLinearColor(0.0f, 0.82f, 1.0f, 1.0f)
-				: FLinearColor(0.15f, 0.19f, 0.28f, 0.82f);
-			InventorySlot->SetBrush(FSlateRoundedBoxBrush(
-				FillColor, RingColor, bFilled ? 4.0f : 2.0f));
+			const FLinearColor RingColor = bFilled ? Look.Ring : FLinearColor(0.15f, 0.19f, 0.28f, 0.82f);
+			InventorySlot->SetBrush(FSlateRoundedBoxBrush(FillColor, RingColor,
+				bFilled ? (Type == EChaosImpactBallType::Normal ? 4.0f : 5.0f) : 2.0f));
 		}
 		if (UBorder* Accent = BallSlotAccents.IsValidIndex(SlotIndex)
 			? BallSlotAccents[SlotIndex] : nullptr)
 		{
 			Accent->SetBrush(FSlateRoundedBoxBrush(
-				bFilled ? FLinearColor(1.0f, 0.18f, 0.055f, 1.0f)
-					: FLinearColor(0.08f, 0.1f, 0.16f, 1.0f),
+				bFilled ? Look.Accent : FLinearColor(0.08f, 0.1f, 0.16f, 1.0f),
 				bFilled ? FLinearColor::White : FLinearColor(0.18f, 0.22f, 0.3f, 1.0f), 1.0f));
 		}
 	}
@@ -741,6 +795,13 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 {
 	using namespace ChaosImpactPaint;
 
+	// Split screen: the room overlay is about the whole machine, so only the first player's view shows it.
+	if (const UGameInstance* OwningGameInstance = GetGameInstance();
+		OwningGameInstance && OwningGameInstance->GetLocalPlayers().IndexOfByKey(GetOwningLocalPlayer()) > 0)
+	{
+		return;
+	}
+
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
 	const double Clock = FPlatformTime::Seconds();
 	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f);
@@ -795,6 +856,19 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 	}
 	const TArray<AChaosImpactPlayerState*> Members = Room->GetMembersInJoinOrder();
 	const APlayerState* Self = GetOwningPlayer() ? GetOwningPlayer()->GetPlayerState<APlayerState>() : nullptr;
+	// The single list outlines every player on this machine.
+	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
+	if (const UGameInstance* OwningGameInstance = GetGameInstance())
+	{
+		for (const ULocalPlayer* LocalPlayer : OwningGameInstance->GetLocalPlayers())
+		{
+			const APlayerController* LocalController = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
+			if (const APlayerState* LocalState = LocalController ? LocalController->GetPlayerState<APlayerState>() : nullptr)
+			{
+				LocalStates.Add(LocalState);
+			}
+		}
+	}
 
 	// Member list: host at the top, then everyone in the order they came in.
 	if (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Countdown)
@@ -832,7 +906,26 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				R.Box(296.0f, 9.0f, 70.0f, 26.0f, Gold);
 				R.Text(TEXT("HOST"), 331.0f, 8.0f, 18.0f, Ink, ETextAlign::Center);
 			}
-			if (Member == Self)
+			if (!Member->bSecondOfMachine)
+			{
+				// Connection quality from the round-trip time. A pair shares one connection, so only its
+				// first player shows it; players on the host's machine have no network delay at all.
+				const float PingMs = Member->GetPingInMilliseconds();
+				const bool bMeasured = Member->bHostMachine || PingMs > 0.0f;
+				const int32 Level = Member->bHostMachine || PingMs <= 60.0f ? 4
+					: PingMs <= 120.0f ? 3 : PingMs <= 200.0f ? 2 : 1;
+				const FLinearColor SignalColor = Level == 4 ? FLinearColor(0.2f, 0.95f, 0.45f)
+					: Level == 3 ? FLinearColor(0.65f, 0.95f, 0.3f) : Level == 2 ? Gold : Fire;
+				R.Box(392.0f, 2.0f, 56.0f, 40.0f, FLinearColor(0.02f, 0.026f, 0.045f, 0.9f));
+				for (int32 Bar = 0; Bar < 4; ++Bar)
+				{
+					const float BarHeight = 8.0f + Bar * 8.0f;
+					const bool bLit = bMeasured && Bar < Level;
+					R.Box(400.0f + Bar * 11.0f, 36.0f - BarHeight, 8.0f, BarHeight,
+						bLit ? SignalColor : WithAlpha(Paper, 0.16f));
+				}
+			}
+			if (LocalStates.Contains(Member))
 			{
 				R.Outline(-3.0f, -3.0f, 386.0f, 50.0f, WithAlpha(Paper, 0.85f), 2.0f);
 			}

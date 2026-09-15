@@ -6,6 +6,7 @@
 #include "GameFramework/Character.h"
 #include "Engine/NetSerialization.h"
 #include "Logging/LogMacros.h"
+#include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.generated.h"
 
 class USpringArmComponent;
@@ -16,6 +17,9 @@ class UInputAction;
 class UChaosImpactChargeWidget;
 class UAnimSequenceBase;
 class UAnimInstance;
+class UMaterialInstanceDynamic;
+class UNiagaraComponent;
+class UProceduralMeshComponent;
 class AChaosImpactBall;
 enum class EChaosImpactBallFlightMode : uint8;
 struct FInputActionValue;
@@ -69,6 +73,15 @@ public:
 	/** Called on the eliminating character so its own HUD can play the KO banner. */
 	void NotifyOpponentEliminated(const FString& VictimName);
 	bool TryPickupBall(AChaosImpactBall* Ball);
+	/** Carried ball type per slot; slot 0 is the right hand and is thrown next. */
+	EChaosImpactBallType GetCarriedBallType(int32 Slot) const
+	{
+		return ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, Slot);
+	}
+	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
+	/** Server: an ice ball landed next to this player; they cannot move, dash or throw for Seconds. */
+	void ApplyIceFreeze(float Seconds);
+	bool IsIceFrozen() const;
 	void SetTrainingStartTransform(const FVector& Location, const FRotator& Rotation);
 	void SetAIAimDirection(const FVector& Direction);
 	void RequestAIDash(const FVector& Direction);
@@ -84,6 +97,21 @@ public:
 	float GetAimGuideLength() const { return AimGuideLength; }
 	FVector GetAimGuideStartWorldLocation() const;
 	bool IsEliminated() const { return bEliminated; }
+	/** Server copy of a player on another machine. Such players move and judge ball hits on their own client. */
+	bool IsRemotePlayerOnServer() const;
+	/** Client: this player's own screen saw a ball touch it; the server sanity-checks and applies it. */
+	void ReportBallHitFromClient(AChaosImpactBall* Ball, const FVector& HitLocation);
+	/** Client: this player's own screen touched a pickup; predicted now, confirmed by the server. */
+	void ClaimPickupFromClient(AChaosImpactBall* Ball);
+	/** Client: hands over the locally predicted throw so the server's ball can continue from it. */
+	AChaosImpactBall* TakePredictedThrowBall();
+	/** Where this character is drawn this frame (network smoothing and latency lead included). */
+	FVector GetPresentationLocation() const;
+	bool IsDashingForPresentation() const { return bIsDashing || bReplicatedDashing; }
+	/** Client: this screen reported a lethal hit that the server has not reflected yet. */
+	bool IsEliminationPredicted() const;
+	/** This player's round trip to the host in seconds; 0 for the host's own player and CPUs. */
+	float GetNetworkRoundTripSeconds() const;
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball Inventory")
 	int32 GetCarriedBallCount() const { return CarriedBallCount; }
@@ -152,7 +180,7 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerStartCharge();
 	UFUNCTION(Server, Reliable)
-	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim);
+	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation);
 	UFUNCTION(Server, Reliable)
 	void ServerStartDash(FVector_NetQuantizeNormal Direction);
 	UFUNCTION(Server, Unreliable)
@@ -165,6 +193,25 @@ protected:
 	void ClientRespawned();
 	UFUNCTION(Client, Reliable)
 	void ClientShowKnockout(const FString& VictimName);
+	UFUNCTION(Server, Reliable)
+	void ServerReportBallHit(AChaosImpactBall* Ball, FVector_NetQuantize HitLocation);
+	/** Server moved this player (respawn, start point); the owner's trusted position must follow. */
+	UFUNCTION(Client, Reliable)
+	void ClientTeleportTo(FVector_NetQuantize Location, FRotator Rotation);
+	UFUNCTION(Server, Reliable)
+	void ServerClaimPickup(AChaosImpactBall* Ball);
+	/** Answer to a pickup claimed from this player's screen; a refusal adopts the server's ball count. */
+	UFUNCTION(Client, Reliable)
+	void ClientPickupResolved(bool bAccepted, int32 ServerBallCount, uint8 ServerBallTypes, AChaosImpactBall* Ball);
+	/** Answer to a throw released on this player's screen; a refusal also removes the preview. */
+	UFUNCTION(Client, Reliable)
+	void ClientThrowResolved(bool bAccepted, int32 ServerBallCount, uint8 ServerBallTypes);
+	/** A server-side change of this player's ball count (elimination, respawn, match start). */
+	UFUNCTION(Client, Reliable)
+	void ClientBallCountReset(int32 ServerBallCount, uint8 ServerBallTypes);
+	/** Stamina is owned by each player's own machine; the server only sends changes it causes. */
+	UFUNCTION(Client, Reliable)
+	void ClientAddStamina(float Amount);
 	UFUNCTION()
 	void OnRep_CarriedBallCount();
 	UFUNCTION()
@@ -268,6 +315,21 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, ReplicatedUsing=OnRep_CarriedBallCount, BlueprintReadOnly, Category="Chaos Impact|Ball Inventory")
 	int32 CarriedBallCount = 0;
 
+	/** EChaosImpactBallType per carried slot, packed by ChaosImpactBallTypes::Pack; slot 0 is thrown first. */
+	UPROPERTY(VisibleInstanceOnly, ReplicatedUsing=OnRep_CarriedBallCount, Category="Chaos Impact|Ball Inventory")
+	uint8 CarriedBallTypes = 0;
+
+	void PushCarriedBall(EChaosImpactBallType Type);
+	EChaosImpactBallType PopCarriedBall();
+	void ClearCarriedBalls();
+	void ApplyHeldBallAppearance(UStaticMeshComponent* HandBall, EChaosImpactBallType Type);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldFireMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldIceMaterial;
+
 	/** Ball shown on the right hand while at least one ball is carried. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
 	TObjectPtr<UStaticMeshComponent> HeldBallMesh;
@@ -344,7 +406,8 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Dash", meta=(ClampMin="0.0"))
 	float DashCooldownSeconds = 0.8f;
 
-	UPROPERTY(VisibleInstanceOnly, Replicated, BlueprintReadOnly, Category="Chaos Impact|Dash")
+	/** Owned by each player's own machine online; the server only sends the changes it causes. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Dash")
 	float Stamina = 5.0f;
 
 	/** Other machines only draw the dash trail; the dash itself runs on the owner and server. */
@@ -357,8 +420,98 @@ protected:
 	UPROPERTY(ReplicatedUsing=OnRep_Eliminated)
 	bool bEliminated = false;
 
+	/** Server time until which this player is encased in ice (0 when not frozen). */
+	UPROPERTY(Replicated)
+	double IceFrozenUntilServerTime = 0.0;
+
+	double GetSharedServerTime() const;
+	/** Freeze transitions and the slide on frozen ground; movement changes only where this player is moved. */
+	void UpdateIceStatus(float DeltaSeconds);
+	void SetIceFreezePresentation(bool bFrozen);
+	void UpdateIceFreezePresentation(float DeltaSeconds);
+	bool bIceFreezeActive = false;
+	bool bIceThawing = false;
+	float IceFreezeVisualSeconds = 0.0f;
+	bool bOnSlipperyIce = false;
+	float DefaultGroundFriction = 100.0f;
+	float DefaultBrakingDecelerationWalking = 100000.0f;
+	float DefaultMaxAcceleration = 100000.0f;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> IceBlockMesh;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UProceduralMeshComponent>> IceShardMeshes;
+
+	/** Flames on a carried fire ball, one per hand. */
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraComponent> RightHeldFire;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraComponent> LeftHeldFire;
+
+	TArray<FTransform> IceShardTransforms;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> IceOverlayMaterial;
+
 	double NextAimSendAt = 0.0;
 	FVector LastSentAim = FVector::ZeroVector;
+
+	/**
+	 * Online movement: a remote player's client position is trusted (no rubber-banding), except for a
+	 * short window after the server teleports them and while they are eliminated.
+	 */
+	void UpdateMovementAuthority();
+	void NotifyServerTeleport();
+	static constexpr float ServerTeleportAuthoritySeconds = 0.75f;
+	float ServerAuthoritativeUntil = 0.0f;
+	/** Set while applying a client-reported hit, whose dash invulnerability was already checked by the owner. */
+	bool bApplyingReportedHit = false;
+	/** The owner already started the throw motion locally; skip the echo from the server. */
+	bool bPredictedThrowAnimation = false;
+	/** Client: the cosmetic ball thrown on this screen before the server's ball arrives. */
+	TWeakObjectPtr<AChaosImpactBall> PredictedThrowBall;
+	double PredictedThrowSpawnedAt = 0.0;
+	/** Server: how far ahead the remote thrower's own screen had them when they released. */
+	FVector ThrowOriginOffset = FVector::ZeroVector;
+	/** Development: -CIAutoInput lets an online client play by itself for latency testing. */
+	void TickDevAutoInput();
+	bool bDevAutoInput = false;
+	double DevNextThrowAt = 0.0;
+	double DevReleaseAt = 0.0;
+	double DevNextDashAt = 0.0;
+
+	/**
+	 * Online: another player's copy trails their own screen by their round trip plus smoothing.
+	 * The mesh is drawn that far ahead along their velocity; the capsule and gameplay are untouched.
+	 */
+	void UpdatePresentationLead(float DeltaSeconds);
+	static constexpr float MaxPresentationLeadSeconds = 0.3f;
+	static constexpr float MaxPresentationLeadDistance = 180.0f;
+	static constexpr float PresentationLeadBlendSpeed = 18.0f;
+	FVector CachedBaseTranslationOffset = FVector::ZeroVector;
+	FVector PresentationLeadWorld = FVector::ZeroVector;
+
+	/** Client: health expected after this screen's own hit reports, valid until PredictedHealthUntil. */
+	float PredictedHealth = 0.0f;
+	double PredictedHealthUntil = 0.0;
+	/**
+	 * Client ball count reconciliation. Pickups (+1) and throws (-1) sent to the server, oldest first,
+	 * wait here for their answer. Answers and server events arrive in the same ordered reliable stream,
+	 * so the drawn count is always: last answered server count + the changes still waiting.
+	 */
+	TArray<int8> PendingBallActions;
+	int32 ServerAnsweredBallCount = 0;
+	uint8 ServerAnsweredBallTypes = 0;
+	/** Pickups are stored as 1 + EChaosImpactBallType, throws as -1. */
+	void RefreshPredictedBallCount();
+	void ResolveOldestBallAction(int32 ServerBallCount, uint8 ServerBallTypes);
+	int32 GetPendingPickupCount() const;
+	/** Client: a release waiting for the pickup it depends on to be confirmed. */
+	bool bThrowAwaitingPickup = false;
+	float AwaitingThrowChargeAlpha = 0.0f;
+	void ReleaseThrowNow(float ChargeAlpha);
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Aim")
 	FVector AimDirection = FVector::ForwardVector;

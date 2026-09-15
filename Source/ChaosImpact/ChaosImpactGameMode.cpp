@@ -8,7 +8,9 @@
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactTrainingTarget.h"
 
+#include "Engine/ChildConnection.h"
 #include "Engine/GameInstance.h"
+#include "Engine/NetConnection.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -38,7 +40,13 @@ void AChaosImpactGameMode::BeginPlay()
 		{
 			RoomState->RoomPassword = Sessions->GetPassword();
 		}
+		if (FParse::Value(FCommandLine::Get(), TEXT("CIReserveSlots="), DevReservedSlots))
+		{
+			DevReservedSlots = FMath::Clamp(DevReservedSlots, 0, AChaosImpactGameState::MaxMembers - 1);
+		}
 		UpdateRoomMemberCount();
+		GetWorldTimerManager().SetTimer(PingMirrorTimer, this,
+			&AChaosImpactGameMode::MirrorSplitscreenPings, 0.25f, true);
 
 		float OverrideSeconds = 0.0f;
 		if (FParse::Value(FCommandLine::Get(), TEXT("CIMatchSeconds="), OverrideSeconds) && OverrideSeconds > 1.0f)
@@ -173,8 +181,14 @@ void AChaosImpactGameMode::SetupLocalTrainingPlayers()
 void AChaosImpactGameMode::ApplyTrainingControllerAssignments(
 	const int32 DesiredPlayers, const int32 KeyboardPlayerIndex)
 {
-	UGameInstance* GameInstance = GetGameInstance();
-	if (!GameInstance || !GetWorld())
+	ApplyLocalControllerAssignments(GetWorld(), DesiredPlayers, KeyboardPlayerIndex);
+}
+
+void AChaosImpactGameMode::ApplyLocalControllerAssignments(UWorld* World,
+	const int32 DesiredPlayers, const int32 KeyboardPlayerIndex)
+{
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	if (!GameInstance)
 	{
 		return;
 	}
@@ -227,7 +241,7 @@ void AChaosImpactGameMode::ApplyTrainingControllerAssignments(
 
 		int32 AssignedInputDeviceId = INDEX_NONE;
 		const FString DeviceOption = FString::Printf(TEXT("CIPadDevice%d="), PadIndex);
-		if (const TCHAR* DeviceValue = GetWorld()->URL.GetOption(*DeviceOption, nullptr))
+		if (const TCHAR* DeviceValue = World->URL.GetOption(*DeviceOption, nullptr))
 		{
 			const int32 RequestedInputDeviceId = FCString::Atoi(DeviceValue);
 			const bool bRequestedDeviceIsConnected = ConnectedControllers.ContainsByPredicate(
@@ -267,7 +281,7 @@ void AChaosImpactGameMode::ApplyTrainingControllerAssignments(
 		}
 		UsedInputDeviceIds.Add(AssignedInputDeviceId);
 
-		APlayerController* Controller = LocalPlayer->GetPlayerController(GetWorld());
+		APlayerController* Controller = LocalPlayer->GetPlayerController(World);
 		const FJSL4UControllerInfo* ControllerInfo = ConnectedControllers.FindByPredicate(
 			[AssignedInputDeviceId](const FJSL4UControllerInfo& Info)
 			{
@@ -416,28 +430,130 @@ void AChaosImpactGameMode::PreLogin(const FString& Options, const FString& Addre
 	{
 		return;
 	}
+	// The engine adds SplitscreenCount=2 when a machine already inside sends its second player;
+	// that place was reserved when the machine joined, so only the hard limit applies.
+	const bool bSecondPlayerOfMachine = UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) >= 2;
+	const int32 Arriving = bSecondPlayerOfMachine
+		? 1 : FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("CIPlayers"), 1), 1, 2);
+	const int32 Occupied = bSecondPlayerOfMachine
+		? RoomState->PlayerArray.Num() + DevReservedSlots
+		: RoomState->PlayerArray.Num() + GetReservedRoomSlots() + DevReservedSlots;
 	// The client's session subsystem turns these codes into a readable notice.
-	if (RoomState->PlayerArray.Num() >= AChaosImpactGameState::MaxMembers)
+	if (Occupied + Arriving > AChaosImpactGameState::MaxMembers)
 	{
 		ErrorMessage = TEXT("CIFULL");
 	}
-	else if (RoomState->bRecruitmentClosed || RoomState->Phase != EChaosImpactOnlinePhase::Lobby)
+	else if (!bSecondPlayerOfMachine
+		&& (RoomState->bRecruitmentClosed || RoomState->Phase != EChaosImpactOnlinePhase::Lobby))
 	{
 		ErrorMessage = TEXT("CICLOSED");
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Room login check: arriving=%d occupied=%d second=%d result=%s"),
+		Arriving, Occupied, bSecondPlayerOfMachine, ErrorMessage.IsEmpty() ? TEXT("ok") : *ErrorMessage);
+}
+
+FString AChaosImpactGameMode::InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId,
+	const FString& Options, const FString& Portal)
+{
+	const FString Error = Super::InitNewPlayer(NewPlayerController, UniqueId, Options, Portal);
+	AChaosImpactPlayerState* Member = NewPlayerController
+		? NewPlayerController->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	if (Member && UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) < 2)
+	{
+		Member->ExpectedMachinePlayers = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("CIPlayers"), 1), 1, 2);
+		Member->MachinePlayersJoined = 1;
+		Member->MachineLoginAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	}
+	return Error;
+}
+
+int32 AChaosImpactGameMode::GetReservedRoomSlots() const
+{
+	const AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
+	if (!RoomState || !GetWorld())
+	{
+		return 0;
+	}
+	// A reservation lapses if the second player never shows up.
+	constexpr double ReservationSeconds = 15.0;
+	int32 Reserved = 0;
+	for (const APlayerState* State : RoomState->PlayerArray)
+	{
+		const AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
+		if (Member && Member->ExpectedMachinePlayers > Member->MachinePlayersJoined
+			&& GetWorld()->GetTimeSeconds() - Member->MachineLoginAt < ReservationSeconds)
+		{
+			Reserved += Member->ExpectedMachinePlayers - Member->MachinePlayersJoined;
+		}
+	}
+	return Reserved;
+}
+
+void AChaosImpactGameMode::MirrorSplitscreenPings()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		const APlayerController* Controller = It->Get();
+		const UChildConnection* ChildConnection = Controller ? Cast<UChildConnection>(Controller->Player) : nullptr;
+		const APlayerController* ParentController = ChildConnection && ChildConnection->Parent
+			? ChildConnection->Parent->PlayerController.Get() : nullptr;
+		if (Controller->PlayerState && ParentController && ParentController->PlayerState)
+		{
+			Controller->PlayerState->UpdatePing(ParentController->PlayerState->GetPingInMilliseconds() / 1000.0f);
+		}
 	}
 }
 
 void AChaosImpactGameMode::PostLogin(APlayerController* NewPlayer)
 {
-	if (AChaosImpactPlayerState* Member = NewPlayer ? NewPlayer->GetPlayerState<AChaosImpactPlayerState>() : nullptr)
+	AChaosImpactPlayerState* Member = NewPlayer ? NewPlayer->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	const UChildConnection* ChildConnection = NewPlayer ? Cast<UChildConnection>(NewPlayer->Player) : nullptr;
+	if (Member)
 	{
-		Member->bRoomHost = NewPlayer->IsLocalController();
-		Member->JoinOrder = Member->bRoomHost ? 0 : NextJoinOrder++;
+		const bool bLocal = NewPlayer->IsLocalController();
+		const UGameInstance* GameInstance = GetGameInstance();
+		const ULocalPlayer* LocalPlayer = NewPlayer->GetLocalPlayer();
+		// Only the host machine's first player is "the host"; a second local player there joins like anyone else.
+		const bool bPrimaryLocal = bLocal && (!GameInstance || !LocalPlayer
+			|| GameInstance->GetLocalPlayers().IndexOfByKey(LocalPlayer) <= 0);
+		Member->bHostMachine = bLocal;
+		Member->bRoomHost = bPrimaryLocal;
+		Member->JoinOrder = bPrimaryLocal ? 0 : NextJoinOrder++;
 	}
 	Super::PostLogin(NewPlayer);
 	if (!IsOnlineRoom())
 	{
 		return;
+	}
+	if (Member)
+	{
+		// A machine's second player is named after its first player.
+		if (ChildConnection)
+		{
+			const APlayerController* ParentController = ChildConnection->Parent
+				? ChildConnection->Parent->PlayerController.Get() : nullptr;
+			if (AChaosImpactPlayerState* ParentState = ParentController
+				? ParentController->GetPlayerState<AChaosImpactPlayerState>() : nullptr)
+			{
+				++ParentState->MachinePlayersJoined;
+				Member->SetPlayerName(AChaosImpactPlayerState::MakeSecondPlayerName(ParentState->GetPlayerName()));
+			}
+		}
+		else if (Member->bHostMachine && !Member->bRoomHost)
+		{
+			if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+			{
+				Member->SetPlayerName(AChaosImpactPlayerState::MakeSecondPlayerName(Sessions->GetPlayerName()));
+			}
+		}
+		Member->bSecondOfMachine = ChildConnection || (Member->bHostMachine && !Member->bRoomHost);
+		UE_LOG(LogChaosImpact, Log, TEXT("Room member joined: order=%d host=%d hostMachine=%d secondOfMachine=%d"),
+			Member->JoinOrder, Member->bRoomHost, Member->bHostMachine,
+			ChildConnection || (Member->bHostMachine && !Member->bRoomHost));
 	}
 	if (AChaosImpactCharacter* Character = NewPlayer ? Cast<AChaosImpactCharacter>(NewPlayer->GetPawn()) : nullptr)
 	{
@@ -495,7 +611,8 @@ void AChaosImpactGameMode::UpdateRoomMemberCount()
 	const AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>();
 	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this); Sessions && RoomState)
 	{
-		Sessions->SetMemberCount(RoomState->PlayerArray.Num());
+		// Advertise reserved places too, so a searching pair is turned away before it travels.
+		Sessions->SetMemberCount(RoomState->PlayerArray.Num() + GetReservedRoomSlots() + DevReservedSlots);
 	}
 }
 

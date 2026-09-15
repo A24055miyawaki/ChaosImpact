@@ -8,6 +8,8 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, JoinOrder);
 	DOREPLIFETIME(AChaosImpactPlayerState, bRoomHost);
 	DOREPLIFETIME(AChaosImpactPlayerState, Knockouts);
+	DOREPLIFETIME(AChaosImpactPlayerState, bHostMachine);
+	DOREPLIFETIME(AChaosImpactPlayerState, bSecondOfMachine);
 }
 
 void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

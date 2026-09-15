@@ -30,7 +30,8 @@ public:
 	/** Only used to detect damage for the screen-edge hit flash. */
 	void SetHealth(float CurrentHealth, float MaxHealth);
 	void SetStamina(float CurrentStamina, float MaxStamina);
-	void SetBallInventory(int32 CurrentBalls, int32 MaximumBalls);
+	/** BallTypes: packed EChaosImpactBallType per slot (ChaosImpactBallTypes::Pack), slot 0 thrown next. */
+	void SetBallInventory(int32 CurrentBalls, int32 MaximumBalls, uint8 BallTypes = 0);
 	void ShowRespawn(const FString& DefeatedBy, float TotalSeconds);
 	void UpdateRespawn(float RemainingSeconds, float TotalSeconds);
 	void HideRespawn();
@@ -75,6 +76,13 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTextBlock>> BallIcons;
 
+	/** Small ファイア / アイス caption inside each filled slot. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextBlock>> BallTypeLabels;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextBlock>> BallSeams;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> InventoryCountLabel;
 
@@ -95,6 +103,7 @@ private:
 	double HitAt = -100.0;
 
 	int32 CarriedBalls = 0;
+	uint8 CarriedBallTypes = 0;
 	double BallGainedAt = -100.0;
 	int32 BallGainedSlot = INDEX_NONE;
 

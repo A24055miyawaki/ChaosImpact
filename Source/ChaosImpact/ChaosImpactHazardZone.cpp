@@ -51,7 +51,8 @@ namespace
 		}
 	}
 
-	float EaseOut(const float T)
+	// Named uniquely: unity builds merge this file with others that define their own EaseOut.
+	float HazardEaseOut(const float T)
 	{
 		return 1.0f - FMath::Pow(1.0f - FMath::Clamp(T, 0.0f, 1.0f), 3.0f);
 	}
@@ -637,7 +638,7 @@ void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 	const float Active = GetActiveSeconds();
 	// 1 while active, then down to 0 over the fade.
 	const float Fade = FMath::Clamp((Active + FadeSeconds - Age) / FadeSeconds, 0.0f, 1.0f);
-	const float Appear = EaseOut(Age / 0.25f);
+	const float Appear = HazardEaseOut(Age / 0.25f);
 
 	if (!bLoopingStopped && Age >= Active)
 	{

@@ -127,14 +127,14 @@ namespace
 				Player->ResetForOnlineMatch(Origin, Player->GetActorRotation());
 				CPU->SetActorLocation(Origin + Toward * 430.0f, false, nullptr, ETeleportType::TeleportPhysics);
 
-				AChaosImpactBall* Fire = SpawnTypedBall(World, EChaosImpactBallType::Fire, Origin + FVector(0, 0, 400), nullptr);
-				AChaosImpactBall* Ice = SpawnTypedBall(World, EChaosImpactBallType::Ice, Origin + FVector(0, 0, 400), nullptr);
-				Fire->MakePickup();
-				Ice->MakePickup();
-				Test->TestTrue(TEXT("A fire ball can be picked up"), Player->TryPickupBall(Fire));
-				Test->TestTrue(TEXT("An ice ball can be picked up"), Player->TryPickupBall(Ice));
-				Fire->Destroy();
-				Ice->Destroy();
+				AChaosImpactBall* FireBall = SpawnTypedBall(World, EChaosImpactBallType::Fire, Origin + FVector(0, 0, 400), nullptr);
+				AChaosImpactBall* IceBall = SpawnTypedBall(World, EChaosImpactBallType::Ice, Origin + FVector(0, 0, 400), nullptr);
+				FireBall->MakePickup();
+				IceBall->MakePickup();
+				Test->TestTrue(TEXT("A fire ball can be picked up"), Player->TryPickupBall(FireBall));
+				Test->TestTrue(TEXT("An ice ball can be picked up"), Player->TryPickupBall(IceBall));
+				FireBall->Destroy();
+				IceBall->Destroy();
 				Test->TestEqual(TEXT("Right hand holds the first ball picked up"),
 					Player->GetCarriedBallType(0), EChaosImpactBallType::Fire);
 				Test->TestEqual(TEXT("Left hand holds the second ball picked up"),

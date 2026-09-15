@@ -121,14 +121,21 @@ namespace
 					Capture(TEXT("02-Modes-TrainingClick.png"));
 					PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 					Menu->Navigate(EKeys::Gamepad_DPad_Right);
-					Test->TestEqual(TEXT("D-pad selects Multi"), Menu->GetSelectedIndex(), 1);
+					Test->TestEqual(TEXT("D-pad selects VS"), Menu->GetSelectedIndex(), 1);
 					Menu->ConfirmSelection();
-				if (!Check(EChaosImpactScreen::MultiReady, TEXT("Gamepad A opens Multi"))) { return true; }
+				if (!Check(EChaosImpactScreen::VSSelect, TEXT("Gamepad A opens VS mode"))) { return true; }
 				break;
 			case 4:
-				Capture(TEXT("03-Multi.png"));
+				Capture(TEXT("03-VS.png"));
+				Menu->Navigate(EKeys::Gamepad_DPad_Right);
+				Test->TestEqual(TEXT("D-pad selects online VS"), Menu->GetSelectedIndex(), 1);
+				Menu->ConfirmSelection();
+				if (!Check(EChaosImpactScreen::OnlinePlayers, TEXT("Online VS asks for the player count"))) { return true; }
+				Test->TestTrue(TEXT("Online VS flow is remembered"), PC->GetPlayFlow() == EChaosImpactPlayFlow::VersusOnline);
 				break;
 			case 5:
+					Menu->GoBack();
+				if (!Check(EChaosImpactScreen::VSSelect, TEXT("Back from player count returns to VS mode"))) { return true; }
 					Menu->GoBack();
 				if (!Check(EChaosImpactScreen::ModeSelect, TEXT("Gamepad B returns to modes"))) { return true; }
 				MenuKey(EKeys::Enter);
@@ -501,10 +508,11 @@ namespace
 				Capture(TEXT("06-Live-Training-Overlay.png"));
 				break;
 			case 18:
-				MenuKey(EKeys::Down);
-				MenuKey(EKeys::Down);
-				MenuKey(EKeys::Down);
-				MenuKey(EKeys::Down);
+				// Flight, players, targets, CPU, summon type, summon ball, then reset.
+				for (int32 Press = 0; Press < 6; ++Press)
+				{
+					MenuKey(EKeys::Down);
+				}
 				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
@@ -560,6 +568,17 @@ namespace
 				if (!Check(EChaosImpactScreen::Title, TEXT("Pause title button returns to title"))) { return true; }
 				break;
 			case 23:
+				// Regression: the title shown inside a training world (after leaving training, an online
+				// room or a room search) must still lead VS online to the room screen, not back to training.
+				Test->TestTrue(TEXT("Title is being shown inside the training world"), PC->IsTrainingMode());
+				PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+				PC->BeginVersusOnline();
+				if (!Check(EChaosImpactScreen::OnlinePlayers, TEXT("VS online opens player count from training world"))) { return true; }
+				PC->PrepareTrainingControllerAssignment(1);
+				if (!Check(EChaosImpactScreen::ControllerAssignment, TEXT("Online player count opens assignment"))) { return true; }
+				Test->TestTrue(TEXT("Keyboard P1 is ready for online"), PC->AreControllerAssignmentsComplete());
+				PC->ConfirmControllerAssignments();
+				if (!Check(EChaosImpactScreen::MultiReady, TEXT("Online assignment leads to the room screen, not training"))) { return true; }
 				Test->AddInfo(TEXT("Menu and ball flow complete: inventory, both trajectories, retry, spawners and navigation."));
 				return true;
 			}

@@ -130,10 +130,7 @@ namespace ChaosImpactPaint
 				X -= Align == ETextAlign::Center ? Width * 0.5f : Width;
 			}
 			const FVector2f Area(2400.0f, Size * 2.4f);
-			FSlateDrawElement::MakeText(Elements, Layer,
-				Geometry.ToPaintGeometry(Area, FSlateLayoutTransform(FVector2f(X + 4.0f, Y + 5.0f))),
-				Value, FCoreStyle::GetDefaultFontStyle(Face, Size), ESlateDrawEffect::None,
-				FLinearColor(0.0f, 0.0f, 0.0f, 0.6f * Alpha * Color.A));
+			// Drawn once: an offset drop-shadow copy read as doubled text.
 			FSlateDrawElement::MakeText(Elements, Layer,
 				Geometry.ToPaintGeometry(Area, FSlateLayoutTransform(FVector2f(X, Y))),
 				Value, Font, ESlateDrawEffect::None, WithAlpha(Color, Alpha));

@@ -60,6 +60,10 @@ public:
 	void CloseTrainingOverlay();
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Ball")
 	void ToggleBallFlightMode();
+	/** Training panel: the ball type ボールを呼び出す places in front of this player. */
+	void CycleTrainingSummonBallType();
+	void SummonTrainingBall();
+	EChaosImpactBallType GetTrainingSummonBallType() const { return TrainingSummonBallType; }
 	void TogglePauseMenu();
 	bool IsGameplayActive() const { return CurrentScreen == EChaosImpactScreen::Playing && !bTravelPending; }
 	bool IsTrainingMode() const { return bTrainingMode; }
@@ -106,6 +110,11 @@ public:
 	/** Starts へやをつくる / へやをさがす; asks for a user name first if none was saved. */
 	void BeginOnlineFlow(bool bCreateRoom);
 	void BeginOnlineRename();
+	/** Mode-select entries: they decide what the player-count and controller-assignment screens set up. */
+	void BeginTrainingSetup();
+	void BeginVersusLocal();
+	void BeginVersusOnline();
+	EChaosImpactPlayFlow GetPlayFlow() const { return PlayFlow; }
 	void SubmitOnlineName(const FString& Name);
 	void SubmitRoomPassword(const FString& Password);
 	void CancelOnlineStatus();
@@ -154,9 +163,21 @@ protected:
 	/** Online rooms and room search accept keyboard and pad alike, following the last one used. */
 	bool bOnlineAnyInput = false;
 	bool bLastInputGamepad = false;
+	EChaosImpactPlayFlow PlayFlow = EChaosImpactPlayFlow::Training;
+	/** Online clients have no game mode: pair this machine's controllers once all its players exist. */
+	void ApplyClientControllerAssignments();
+	FTimerHandle ClientAssignmentTimer;
+	int32 ClientAssignmentWaits = 0;
+	/** CILocalPlayers / CIKeyboardPlayer / CIPadDevice options for the current assignment. */
+	FString BuildLocalSetupOptions();
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	EChaosImpactBallFlightMode BallFlightMode = EChaosImpactBallFlightMode::Arc;
+
+	EChaosImpactBallType TrainingSummonBallType = EChaosImpactBallType::Fire;
+
+	UFUNCTION(Server, Reliable)
+	void ServerSummonTrainingBall(EChaosImpactBallType Type);
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactBallSpawner>> TrainingBallSpawners;

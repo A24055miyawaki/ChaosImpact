@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ChaosImpactBallTypes.h"
 #include "ChaosImpactBallSpawner.generated.h"
 
 class AChaosImpactBall;
@@ -25,6 +26,9 @@ protected:
 	UFUNCTION()
 	void TrySpawnBall();
 
+	/** Mostly normal balls; a special one now and then. */
+	EChaosImpactBallType RollBallType() const;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
 	TObjectPtr<USceneComponent> SceneRoot;
 
@@ -42,6 +46,14 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training")
 	float BallHeight = 38.0f;
+
+	/** Chance (0-1) that a new ball is a fire ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float FireBallChance = 0.15f;
+
+	/** Chance (0-1) that a new ball is an ice ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float IceBallChance = 0.15f;
 
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;

@@ -34,6 +34,22 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	int32 Knockouts = 0;
+
+	/** Plays on the host's machine (either local player there): hits on them are decided by the host at once. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	bool bHostMachine = false;
+
+	/** The second player on a machine; it shares the first player's connection. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	bool bSecondOfMachine = false;
+
+	/** Server only: how many players this member's machine brings (1 or 2), and how many have joined. */
+	int32 ExpectedMachinePlayers = 1;
+	int32 MachinePlayersJoined = 1;
+	double MachineLoginAt = 0.0;
+
+	/** A second player on the same machine is shown as "<first player's name>(2)". */
+	static FString MakeSecondPlayerName(const FString& FirstPlayerName) { return FirstPlayerName + TEXT("(2)"); }
 };
 
 /** Replicated room and match state for the online multiplayer mode. */

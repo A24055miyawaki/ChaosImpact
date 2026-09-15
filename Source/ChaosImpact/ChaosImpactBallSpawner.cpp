@@ -55,6 +55,20 @@ void AChaosImpactBallSpawner::BeginPlay()
 	}
 }
 
+EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
+{
+	const float Roll = FMath::FRand();
+	if (Roll < FireBallChance)
+	{
+		return EChaosImpactBallType::Fire;
+	}
+	if (Roll < FireBallChance + IceBallChance)
+	{
+		return EChaosImpactBallType::Ice;
+	}
+	return EChaosImpactBallType::Normal;
+}
+
 void AChaosImpactBallSpawner::TrySpawnBall()
 {
 	if (!GetWorld() || !HasAuthority() || !BallClass || ActiveBall.IsValid())
@@ -62,13 +76,20 @@ void AChaosImpactBallSpawner::TrySpawnBall()
 		return;
 	}
 
-	FActorSpawnParameters Parameters;
-	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	const FVector Location = GetActorLocation() + FVector::UpVector * BallHeight;
-	if (AChaosImpactBall* Ball = GetWorld()->SpawnActor<AChaosImpactBall>(
-		BallClass, Location, GetActorRotation(), Parameters))
+	const FTransform SpawnTransform(GetActorRotation(), GetActorLocation() + FVector::UpVector * BallHeight);
+	AChaosImpactBall* Ball = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(BallClass, SpawnTransform,
+		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!Ball)
 	{
-		Ball->MakePickup();
-		ActiveBall = Ball;
+		return;
 	}
+	const EChaosImpactBallType Type = RollBallType();
+	Ball->SetBallType(Type);
+	Ball->FinishSpawning(SpawnTransform);
+	Ball->MakePickup();
+	ActiveBall = Ball;
+	// The pad glows in the ball's color, so a special ball is noticeable from a distance.
+	SpawnLight->SetLightColor(Type == EChaosImpactBallType::Normal
+		? FLinearColor(0.0f, 0.55f, 1.0f) : ChaosImpactBallTypes::GetColor(Type));
+	SpawnLight->SetIntensity(Type == EChaosImpactBallType::Normal ? 1800.0f : 4200.0f);
 }

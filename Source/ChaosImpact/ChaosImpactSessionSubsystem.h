@@ -63,8 +63,16 @@ public:
 	/** True once after a disconnect, so the title world can send the player back to training. */
 	bool ConsumeReturnToTraining();
 
+	/**
+	 * This machine's split-screen setup for VS online (CILocalPlayers / CIKeyboardPlayer / CIPadDevice options).
+	 * Every level opened while online uses it: the room, the search lobby and the way back to training.
+	 */
+	void SetLocalSetup(const FString& Options, int32 LocalPlayers);
+	int32 GetLocalPlayerCount() const { return LocalPlayerCount; }
+	const FString& GetLocalSetupOptions() const { return LocalSetupOptions; }
+
 	static FString GetTrainingMapName();
-	static FString GetOfflineTrainingOptions();
+	FString GetOfflineTrainingOptions() const;
 
 private:
 	IOnlineSessionPtr GetSessions() const;
@@ -92,6 +100,8 @@ private:
 	bool bSessionDelegatesBound = false;
 	bool bRecruitmentOpen = true;
 	int32 MemberCount = 1;
+	FString LocalSetupOptions = TEXT("CILocalPlayers=1?CIKeyboardPlayer=0");
+	int32 LocalPlayerCount = 1;
 	TSharedPtr<FOnlineSessionSearch> Search;
 	FTimerHandle RetryTimer;
 	FDelegateHandle NetworkFailureHandle;

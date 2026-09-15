@@ -30,6 +30,12 @@ public:
 	void RegisterKnockout(AController* Killer);
 	bool IsOnlineRoom() const { return GetNetMode() == NM_ListenServer; }
 
+	/**
+	 * Pairs input devices with this machine's local players using the world URL
+	 * (CIPadDevice options). Online clients have no game mode and call this themselves.
+	 */
+	static void ApplyLocalControllerAssignments(UWorld* World, int32 DesiredPlayers, int32 KeyboardPlayerIndex);
+
 	static constexpr float MatchCountdownSeconds = 3.0f;
 	static constexpr float MatchSeconds = 180.0f;
 	static constexpr float ResultsSeconds = 7.0f;
@@ -40,6 +46,8 @@ protected:
 		FString& ErrorMessage) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
+	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId,
+		const FString& Options, const FString& Portal) override;
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
 
 private:
@@ -52,6 +60,13 @@ private:
 	void ReapplyTrainingControllerAssignments();
 	void LogTrainingControllerRouting() const;
 	void UpdateRoomMemberCount();
+	/** The engine measures ping per machine; a second player's state gets their machine's value. */
+	void MirrorSplitscreenPings();
+	/** Places held for second players whose machine has joined but who have not arrived yet. */
+	int32 GetReservedRoomSlots() const;
+	FTimerHandle PingMirrorTimer;
+	/** Development: -CIReserveSlots=N pretends N more members are inside (capacity testing). */
+	int32 DevReservedSlots = 0;
 	void BeginOnlineMatch();
 	void EndOnlineMatch();
 	void ReturnToOnlineLobby();

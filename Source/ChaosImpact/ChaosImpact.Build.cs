@@ -28,6 +28,7 @@ public class ChaosImpact : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"JoyShockLibrary4Unreal",
 			"NetCore",
+			"ProceduralMeshComponent",
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils"
 		});

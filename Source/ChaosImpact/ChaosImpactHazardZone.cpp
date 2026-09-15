@@ -22,6 +22,7 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "ProceduralMeshComponent.h"
+#include "TimerManager.h"
 
 namespace
 {
@@ -158,7 +159,124 @@ UMaterialInstanceDynamic* ChaosImpactBallTypes::MakeIceSurface(UObject* Outer)
 
 UNiagaraSystem* ChaosImpactBallTypes::LoadEffect(const TCHAR* ObjectPath)
 {
-	return LoadObject<UNiagaraSystem>(nullptr, ObjectPath);
+	// Resolved once per path; the assets themselves are kept loaded by UChaosImpactFxPreloadSubsystem.
+	static TMap<FString, TWeakObjectPtr<UNiagaraSystem>> Resolved;
+	if (const TWeakObjectPtr<UNiagaraSystem>* Cached = Resolved.Find(ObjectPath); Cached && Cached->IsValid())
+	{
+		return Cached->Get();
+	}
+	const double StartedAt = FPlatformTime::Seconds();
+	const bool bAlreadyLoaded = FindObject<UNiagaraSystem>(nullptr, ObjectPath) != nullptr;
+	UNiagaraSystem* System = LoadObject<UNiagaraSystem>(nullptr, ObjectPath);
+	if (System)
+	{
+		Resolved.Add(ObjectPath, System);
+	}
+	if (!bAlreadyLoaded)
+	{
+		UE_LOG(LogChaosImpact, Warning, TEXT("Effect loaded on demand during play (not preloaded): %s in %.1f ms"),
+			ObjectPath, (FPlatformTime::Seconds() - StartedAt) * 1000.0);
+	}
+	return System;
+}
+
+namespace
+{
+	const TCHAR* const AllEffectPaths[] =
+	{
+		ChaosImpactBallTypes::Effects::Explosion, ChaosImpactBallTypes::Effects::Fire,
+		ChaosImpactBallTypes::Effects::Smoke, ChaosImpactBallTypes::Effects::Shatter,
+		ChaosImpactBallTypes::Effects::FireTrail, ChaosImpactBallTypes::Effects::BallTrail,
+		ChaosImpactBallTypes::Effects::Damage
+	};
+}
+
+void ChaosImpactBallTypes::PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAlive)
+{
+	const double StartedAt = FPlatformTime::Seconds();
+	for (const TCHAR* Path : AllEffectPaths)
+	{
+		if (UNiagaraSystem* System = LoadObject<UNiagaraSystem>(nullptr, Path))
+		{
+#if WITH_EDITOR
+			// Uncooked (editor / PIE) systems compile their scripts on first use; do it now instead.
+			System->WaitForCompilationComplete(true, false);
+#endif
+			OutKeepAlive.AddUnique(System);
+		}
+	}
+	const UMaterialInterface* const Materials[] =
+	{
+		GetAdditiveMaterial(), GetEmissiveMaterial(), GetIceMaterial(),
+		LoadMaterialWithFallback(TEXT("/Game/ChaosImpact/FX/M_CI_IceCrystal.M_CI_IceCrystal"), TEXT("/Game/ChaosImpact/FX/M_CI_Ice.M_CI_Ice")),
+		LoadMaterialWithFallback(TEXT("/Game/ChaosImpact/FX/M_CI_IceSurface.M_CI_IceSurface"), TEXT("/Game/ChaosImpact/FX/M_CI_Ice.M_CI_Ice"))
+	};
+	for (const UMaterialInterface* Material : Materials)
+	{
+		if (Material)
+		{
+			OutKeepAlive.AddUnique(const_cast<UMaterialInterface*>(Material));
+		}
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Preloaded %d ball FX assets in %.0f ms"), OutKeepAlive.Num(),
+		(FPlatformTime::Seconds() - StartedAt) * 1000.0);
+}
+
+void ChaosImpactBallTypes::WarmUpEffects(UWorld* World, const FVector& Location)
+{
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	const double StartedAt = FPlatformTime::Seconds();
+	TArray<TWeakObjectPtr<USceneComponent>> Temporary;
+	for (const TCHAR* Path : AllEffectPaths)
+	{
+		if (UNiagaraSystem* System = LoadEffect(Path))
+		{
+			// No pre-cull check: the point is to create it even though nobody can see it.
+			if (UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, System, Location,
+				FRotator::ZeroRotator, FVector::OneVector, false, true, ENCPoolMethod::None, false))
+			{
+				Temporary.Add(Effect);
+			}
+		}
+	}
+	// One small sphere per FX material, so its shaders and pipeline states are ready too.
+	if (UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")))
+	{
+		UObject* Outer = World->GetWorldSettings();
+		const FLinearColor Neutral(0.5f, 0.7f, 1.0f);
+		UMaterialInterface* const Materials[] =
+		{
+			MakeAdditive(Outer, Neutral, 1.0f), MakeEmissive(Outer, Neutral, 1.0f), MakeIce(Outer, Neutral, 0.5f),
+			MakeIceCrystal(Outer, 0.5f), MakeIceSurface(Outer)
+		};
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Materials); ++Index)
+		{
+			UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(Outer);
+			Mesh->SetStaticMesh(Sphere);
+			Mesh->SetMaterial(0, Materials[Index]);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetCastShadow(false);
+			Mesh->SetWorldLocation(Location + FVector(Index * 120.0f, 0.0f, 0.0f));
+			Mesh->RegisterComponentWithWorld(World);
+			Temporary.Add(Mesh);
+		}
+	}
+	FTimerHandle CleanupTimer;
+	World->GetTimerManager().SetTimer(CleanupTimer, FTimerDelegate::CreateLambda([Temporary]()
+	{
+		for (const TWeakObjectPtr<USceneComponent>& Component : Temporary)
+		{
+			if (Component.IsValid())
+			{
+				Component->DestroyComponent();
+			}
+		}
+	}), 1.5f, false);
+	UE_LOG(LogChaosImpact, Log, TEXT("Warmed up %d ball FX components in %.0f ms"), Temporary.Num(),
+		(FPlatformTime::Seconds() - StartedAt) * 1000.0);
 }
 
 void ChaosImpactBallTypes::SetEffectColor(UNiagaraComponent* Effect, const TCHAR* Name, const FLinearColor& Color)
@@ -467,7 +585,7 @@ void AChaosImpactHazardZone::TickBurning()
 
 void AChaosImpactHazardZone::MulticastBurnHit_Implementation(FVector_NetQuantize Location)
 {
-	if (UNiagaraSystem* Burst = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst, Location, FRotator::ZeroRotator, FVector(0.7f));
 	}

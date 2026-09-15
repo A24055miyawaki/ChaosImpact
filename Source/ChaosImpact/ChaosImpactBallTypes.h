@@ -8,6 +8,7 @@ class UMaterialInstanceDynamic;
 class UNiagaraComponent;
 class UNiagaraSystem;
 class UObject;
+class UWorld;
 
 /** What a ball does when it lands. Special balls detonate instead of becoming a pickup again. */
 UENUM(BlueprintType)
@@ -90,8 +91,16 @@ namespace ChaosImpactBallTypes
 		inline const TCHAR* Shatter = TEXT("/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Glass.NS_Impact_Glass");
 		inline const TCHAR* FireTrail = TEXT("/Game/NiagaraExamples/FX_Weapons/Trails/NS_RocketTrail.NS_RocketTrail");
 		inline const TCHAR* BallTrail = TEXT("/Game/NiagaraExamples/FX_Weapons/Trails/NS_SimpleRibbonTrail.NS_SimpleRibbonTrail");
+		inline const TCHAR* Damage = TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage");
 	}
 	CHAOSIMPACT_API UNiagaraSystem* LoadEffect(const TCHAR* ObjectPath);
+	/** Loads every FX system and material up front (game start); the caller keeps the objects alive. */
+	CHAOSIMPACT_API void PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAlive);
+	/**
+	 * Shows each FX system and material once, out of sight, when a play world starts, so the first-use
+	 * costs (component and PSO creation, GPU buffers) do not land on the first throw.
+	 */
+	CHAOSIMPACT_API void WarmUpEffects(UWorld* World, const FVector& Location);
 	/** Sets a user parameter by its display name; the pack also exposes a space-less spelling, set too. */
 	CHAOSIMPACT_API void SetEffectColor(UNiagaraComponent* Effect, const TCHAR* Name, const FLinearColor& Color);
 	CHAOSIMPACT_API void SetEffectFloat(UNiagaraComponent* Effect, const TCHAR* Name, float Value);

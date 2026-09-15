@@ -10,6 +10,7 @@
 #include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactBallTypes.h"
 #include "GameFramework/PlayerState.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
@@ -198,6 +199,19 @@ void AChaosImpactPlayerController::BeginPlay()
 	EnsureTrainingArena();
 	EnsureTrainingBallSpawners();
 	EnsureTrainingTargets();
+
+	if (bTrainingMode && IsLocalController() && IsPrimaryLocalPlayerController())
+	{
+		// Ball effects are loaded at game start; show each once now, out of sight below the arena, so the
+		// first real fire or ice ball does not stall while pipeline states and GPU resources are created.
+		FTimerHandle WarmUpTimer;
+		GetWorldTimerManager().SetTimer(WarmUpTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			FVector Below = GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
+			Below.Z -= 1500.0f;
+			ChaosImpactBallTypes::WarmUpEffects(GetWorld(), Below);
+		}), 0.3f, false);
+	}
 }
 
 bool AChaosImpactPlayerController::IsPrimaryLocalPlayerController() const

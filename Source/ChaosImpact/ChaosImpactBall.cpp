@@ -876,8 +876,7 @@ void AChaosImpactBall::UpdateContactPresentation(const float DeltaSeconds)
 
 void AChaosImpactBall::MulticastContactBurst_Implementation(FVector_NetQuantize Location, FRotator Rotation)
 {
-	if (UNiagaraSystem* ContactBurst = LoadObject<UNiagaraSystem>(
-		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	if (UNiagaraSystem* ContactBurst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, ContactBurst,
 			Location, Rotation, FVector(ContactEffectScale));

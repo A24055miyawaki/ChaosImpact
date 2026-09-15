@@ -1356,8 +1356,7 @@ void AChaosImpactCharacter::StartEliminationEffect()
 	{
 		EliminationFlash->SetIntensity(26000.0f);
 	}
-	if (UNiagaraSystem* Burst = LoadObject<UNiagaraSystem>(
-		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst,
 			GetActorLocation() + FVector::UpVector * 70.0f, GetActorRotation(), FVector(2.7f));
@@ -1426,8 +1425,7 @@ void AChaosImpactCharacter::StartRespawnEffect()
 		EliminationFlash->SetLightColor(FLinearColor(0.0f, 0.8f, 1.0f));
 		EliminationFlash->SetIntensity(22000.0f);
 	}
-	if (UNiagaraSystem* Burst = LoadObject<UNiagaraSystem>(
-		nullptr, TEXT("/Game/Variant_Combat/VFX/NS_Damage.NS_Damage")))
+	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst,
 			GetActorLocation() + FVector::UpVector * 70.0f, GetActorRotation(), FVector(1.8f));

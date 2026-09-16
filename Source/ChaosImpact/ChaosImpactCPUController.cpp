@@ -148,7 +148,13 @@ void AChaosImpactCPUController::UpdatePerception(
 			}
 		}
 		FVector& Smoothed = ObservedVelocities.FindOrAdd(Observed);
+		const FVector Previous = Smoothed;
 		Smoothed = FMath::Lerp(Smoothed, Measured, Blend);
+		// A player who is turning or starting to run keeps changing speed; leading with it lands the shot.
+		FVector& Acceleration = ObservedAccelerations.FindOrAdd(Observed);
+		Acceleration = FMath::Lerp(Acceleration, (Smoothed - Previous) / SafeDelta, Blend)
+			.GetClampedToMaxSize(4000.0f);
+		Acceleration.Z = 0.0f;
 		LastObservedLocations.Add(Observed, Location);
 	}
 
@@ -189,6 +195,12 @@ FVector AChaosImpactCPUController::GetObservedVelocity(const AChaosImpactCharact
 		return *Velocity;
 	}
 	return Observed ? Observed->GetVelocity() : FVector::ZeroVector;
+}
+
+FVector AChaosImpactCPUController::GetObservedAcceleration(const AChaosImpactCharacter* Observed) const
+{
+	const FVector* Acceleration = ObservedAccelerations.Find(Observed);
+	return Acceleration ? *Acceleration : FVector::ZeroVector;
 }
 
 float AChaosImpactCPUController::GetReactionSeconds() const
@@ -559,12 +571,19 @@ AChaosImpactCPUController::FShotPlan AChaosImpactCPUController::PlanShot(
 	TargetVelocity = TargetVelocity.GetClampedToMaxSize(1200.0f);
 	const FVector TargetLocation = Target->GetActorLocation();
 
-	// Solve for the interception point: the target keeps moving during release and flight.
+	// Solve for the interception point: the target keeps moving during release and flight, and a player who
+	// is turning or picking up speed is still changing that motion while the ball is in the air.
+	// Only a target that is already running gets the acceleration term: on a standing player the smoothed
+	// value is just noise, and leading by it throws the shot wide of someone who never moved.
+	const FVector TargetAcceleration = TargetVelocity.Size2D() > 150.0f
+		? GetObservedAcceleration(Target).GetClampedToMaxSize(2000.0f) : FVector::ZeroVector;
 	FVector Predicted = TargetLocation;
 	float Flight = FVector::Dist2D(Origin, Predicted) / Speed;
 	for (int32 Iteration = 0; Iteration < 5; ++Iteration)
 	{
-		Predicted = TargetLocation + TargetVelocity * (Delay + Flight);
+		const float Ahead = Delay + Flight;
+		const FVector Curve = (TargetAcceleration * (0.5f * Ahead * Ahead)).GetClampedToMaxSize(140.0f);
+		Predicted = TargetLocation + TargetVelocity * Ahead + Curve;
 		Flight = FVector::Dist2D(Origin, Predicted) / Speed;
 	}
 	const FVector Direction = (Predicted - Origin).GetSafeNormal2D()
@@ -579,7 +598,26 @@ AChaosImpactCPUController::FShotPlan AChaosImpactCPUController::PlanShot(
 		Plan.bValid = true;
 		Plan.Direction = Direction;
 	}
-	else if (bAllowBank)
+	else
+	{
+		// The straight-line solution can miss by a hair once the simulated flight bends or clips a corner.
+		// Sweep a narrow fan around it rather than giving up and walking closer.
+		static constexpr float TrimDegrees[] = {1.5f, -1.5f, 3.0f, -3.0f, 5.0f, -5.0f, 8.0f, -8.0f};
+		for (const float Trim : TrimDegrees)
+		{
+			const FVector Trimmed = Direction.RotateAngleAxis(Trim, FVector::UpVector);
+			SimulateBallPath(Origin, Trimmed * Speed, bArc, Horizon, ShotStepSeconds, Self, Target, Path);
+			const float TrimmedArrival = FindShotArrival(Path, ShotStepSeconds, Target, TargetVelocity, Delay);
+			if (TrimmedArrival >= 0.0f)
+			{
+				Arrival = TrimmedArrival;
+				Plan.bValid = true;
+				Plan.Direction = Trimmed;
+				break;
+			}
+		}
+	}
+	if (!Plan.bValid && bAllowBank)
 	{
 		// Search reflections off nearby walls when the direct line is blocked or out of reach.
 		float BestArrival = TNumericLimits<float>::Max();
@@ -606,6 +644,29 @@ AChaosImpactCPUController::FShotPlan AChaosImpactCPUController::PlanShot(
 	if (!Plan.bValid)
 	{
 		return Plan;
+	}
+	// Never throw through a teammate: the ball would stop on them and the shot is wasted.
+	SimulateBallPath(Origin, Plan.Direction * Speed, bArc, FMath::Min(Arrival + 0.05f, 1.6f),
+		ShotStepSeconds, Self, Target, Path);
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		const AChaosImpactCharacter* Mate = *It;
+		if (Mate == Self || Mate == Target || Mate->IsEliminated()
+			|| !AChaosImpactGameState::AreTeammates(GetWorld(), Mate, Self))
+		{
+			continue;
+		}
+		const float BlockRadius = Mate->GetCapsuleComponent()->GetScaledCapsuleRadius() + BallRadius;
+		for (const FVector& Point : Path)
+		{
+			if (FVector::Dist2D(Point, Mate->GetActorLocation()) < BlockRadius
+				&& FMath::Abs(Point.Z - Mate->GetActorLocation().Z)
+					<= Mate->GetCapsuleComponent()->GetScaledCapsuleHalfHeight())
+			{
+				Plan.bValid = false;
+				return Plan;
+			}
+		}
 	}
 	Plan.ArrivalSeconds = Delay + Arrival;
 
@@ -676,7 +737,7 @@ void AChaosImpactCPUController::UpdateOffense(
 			return;
 		}
 		DesiredChargeAlpha = ChooseDesiredCharge(Self, Target);
-		ShotAimErrorDegrees = FMath::FRandRange(-1.0f, 1.0f) * FMath::Lerp(7.0f, 0.6f, Skill);
+		ShotAimErrorDegrees = FMath::FRandRange(-1.0f, 1.0f) * FMath::Lerp(7.0f, 0.15f, Skill);
 		const FShotPlan Preview = PlanShot(Self, Target, DesiredChargeAlpha, bBankSearch);
 		if (bBankSearch)
 		{
@@ -872,13 +933,21 @@ void AChaosImpactCPUController::UpdatePositioning(
 		Scale = 0.6f;
 	}
 
+	// Step out of a crowd before anything else; two characters pushing into each other go nowhere.
+	const FVector Separation = GetSeparationDirection(Self);
+	if (!Separation.IsNearlyZero())
+	{
+		Desired = (Desired + Separation * 0.75f).GetSafeNormal2D();
+		Scale = FMath::Max(Scale, 0.6f);
+	}
+
 	if (Desired.IsNearlyZero())
 	{
 		DesiredMoveDirection = FVector::ZeroVector;
 		DesiredMoveScale = 0.0f;
 		return;
 	}
-	const FVector AvoidedDirection = AvoidNearbyObstacle(Location, Desired);
+	const FVector AvoidedDirection = SteerAroundObstacles(Location, Desired, Now);
 	DesiredMoveDirection = FMath::VInterpTo(DesiredMoveDirection,
 		AvoidedDirection, 0.07f, 8.5f).GetSafeNormal2D();
 	DesiredMoveScale = Scale;
@@ -914,9 +983,24 @@ FVector AChaosImpactCPUController::AvoidNearbyObstacle(
 	{
 		return Forward;
 	}
-	if (IsPathClear(Origin, Forward, 430.0f))
+	constexpr float LookAhead = 430.0f;
+	FVector WallNormal;
+	const float ForwardFree = SweepWalls(Origin, Forward, LookAhead, WallNormal);
+	if (ForwardFree >= LookAhead)
 	{
 		return Forward;
+	}
+
+	// Slide along the wall that is in the way: at a shallow angle this keeps the CPU moving past it
+	// instead of stopping dead and picking a whole new direction every decision.
+	if (!WallNormal.IsNearlyZero())
+	{
+		const FVector Slide = (Forward - WallNormal * FVector::DotProduct(Forward, WallNormal)).GetSafeNormal2D();
+		if (!Slide.IsNearlyZero() && FVector::DotProduct(Slide, Forward) > 0.15f
+			&& GetFreeTravel(Origin, Slide, 260.0f) >= 250.0f)
+		{
+			return Slide;
+		}
 	}
 
 	static constexpr float CandidateAngles[] =
@@ -925,19 +1009,16 @@ FVector AChaosImpactCPUController::AvoidNearbyObstacle(
 	};
 	FVector BestDirection = -Forward;
 	float BestScore = -TNumericLimits<float>::Max();
-	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUObstacle), false, GetPawn());
-	const FVector SweepStart = Origin + FVector::UpVector * 68.0f;
-	const FCollisionShape Shape = FCollisionShape::MakeCapsule(38.0f, 62.0f);
 	for (const float Angle : CandidateAngles)
 	{
 		const FVector Candidate = Forward.RotateAngleAxis(Angle, FVector::UpVector).GetSafeNormal2D();
-		FHitResult Hit;
-		const bool bBlocked = GetWorld()->SweepSingleByChannel(Hit, SweepStart,
-			SweepStart + Candidate * 430.0f, FQuat::Identity, ECC_Visibility, Shape, Parameters);
-		const float Clearance = bBlocked ? Hit.Time : 1.0f;
+		const float Clearance = GetFreeTravel(Origin, Candidate, LookAhead) / LookAhead;
 		const float Alignment = FVector::DotProduct(Candidate, Forward);
 		const float PreferredSide = FMath::Sign(Angle) == FMath::Sign(StrafeSign) ? 0.12f : 0.0f;
-		const float Score = Clearance * 3.2f + Alignment * 1.65f + PreferredSide;
+		// Keeping the way already taken beats a mirror-image detour that is only marginally better.
+		const float Continuity = AvoidCommitDirection.IsNearlyZero()
+			? 0.0f : FVector::DotProduct(Candidate, AvoidCommitDirection) * 0.35f;
+		const float Score = Clearance * 3.2f + Alignment * 1.65f + PreferredSide + Continuity;
 		if (Score > BestScore)
 		{
 			BestScore = Score;
@@ -953,21 +1034,92 @@ bool AChaosImpactCPUController::IsPathClear(
 	return !Direction.IsNearlyZero() && GetFreeTravel(Origin, Direction, Distance) >= Distance;
 }
 
-float AChaosImpactCPUController::GetFreeTravel(const FVector& Origin, const FVector& Direction,
-	const float MaxDistance, const AActor* IgnoredActor) const
+float AChaosImpactCPUController::SweepWalls(const FVector& Origin, const FVector& Direction,
+	const float MaxDistance, FVector& OutWallNormal, const AActor* IgnoredActor) const
 {
+	OutWallNormal = FVector::ZeroVector;
 	if (!GetWorld() || Direction.IsNearlyZero())
 	{
 		return 0.0f;
 	}
-	FHitResult Hit;
+	// Only the level's own geometry counts as an obstacle. Balls are world-dynamic and other characters are
+	// pawns: treating either as a wall is what used to leave the CPU shuffling against nothing.
+	FCollisionObjectQueryParams WallObjects;
+	WallObjects.AddObjectTypesToQuery(ECC_WorldStatic);
 	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUClearance), false, GetPawn());
 	Parameters.AddIgnoredActor(IgnoredActor);
+	FHitResult Hit;
 	const FVector Start = Origin + FVector::UpVector * 68.0f;
-	return GetWorld()->SweepSingleByChannel(Hit, Start,
-		Start + Direction.GetSafeNormal2D() * MaxDistance, FQuat::Identity, ECC_Visibility,
-		FCollisionShape::MakeCapsule(38.0f, 62.0f), Parameters)
-		? Hit.Time * MaxDistance : MaxDistance;
+	const FVector Unit = Direction.GetSafeNormal2D();
+	if (!GetWorld()->SweepSingleByObjectType(Hit, Start, Start + Unit * MaxDistance, FQuat::Identity,
+		WallObjects, FCollisionShape::MakeCapsule(38.0f, 62.0f), Parameters))
+	{
+		return MaxDistance;
+	}
+	OutWallNormal = Hit.ImpactNormal.GetSafeNormal2D();
+	return Hit.Time * MaxDistance;
+}
+
+float AChaosImpactCPUController::GetFreeTravel(const FVector& Origin, const FVector& Direction,
+	const float MaxDistance, const AActor* IgnoredActor) const
+{
+	FVector WallNormal;
+	return SweepWalls(Origin, Direction, MaxDistance, WallNormal, IgnoredActor);
+}
+
+FVector AChaosImpactCPUController::GetSeparationDirection(const AChaosImpactCharacter* Self) const
+{
+	if (!Self || !GetWorld())
+	{
+		return FVector::ZeroVector;
+	}
+	constexpr float PersonalSpace = 170.0f;
+	const FVector Location = Self->GetActorLocation();
+	FVector Away = FVector::ZeroVector;
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		const AChaosImpactCharacter* Other = *It;
+		if (Other == Self || Other->IsEliminated())
+		{
+			continue;
+		}
+		const FVector Offset = Location - Other->GetActorLocation();
+		const float Distance = Offset.Size2D();
+		if (Distance > KINDA_SMALL_NUMBER && Distance < PersonalSpace)
+		{
+			Away += Offset.GetSafeNormal2D() * (1.0f - Distance / PersonalSpace);
+		}
+	}
+	return Away.GetClampedToMaxSize(1.0f);
+}
+
+FVector AChaosImpactCPUController::SteerAroundObstacles(const FVector& Origin, const FVector& DesiredDirection,
+	const float Now)
+{
+	const FVector Forward = DesiredDirection.GetSafeNormal2D();
+	if (Forward.IsNearlyZero())
+	{
+		return Forward;
+	}
+	// The way already chosen is kept while it still leads somewhere; changing it every decision is what
+	// made the CPU rock left and right in a doorway instead of going through it.
+	if (Now < AvoidCommitUntil && !AvoidCommitDirection.IsNearlyZero()
+		&& FVector::DotProduct(AvoidCommitDirection, Forward) > -0.75f
+		&& IsPathClear(Origin, AvoidCommitDirection, 220.0f))
+	{
+		return AvoidCommitDirection;
+	}
+	const FVector Steered = AvoidNearbyObstacle(Origin, Forward);
+	if (!Steered.Equals(Forward, 0.02f))
+	{
+		AvoidCommitDirection = Steered;
+		AvoidCommitUntil = Now + 0.45f;
+	}
+	else
+	{
+		AvoidCommitUntil = 0.0f;
+	}
+	return Steered;
 }
 
 void AChaosImpactCPUController::TryTraverseObstacle(
@@ -988,7 +1140,7 @@ void AChaosImpactCPUController::TryTraverseObstacle(
 void AChaosImpactCPUController::UpdateStuckRecovery(
 	AChaosImpactCharacter* ControlledCharacter, const float Now)
 {
-	if (!ControlledCharacter || Now - LastProgressCheckAt < 0.55f)
+	if (!ControlledCharacter || Now - LastProgressCheckAt < 0.4f)
 	{
 		return;
 	}
@@ -996,18 +1148,38 @@ void AChaosImpactCPUController::UpdateStuckRecovery(
 	const float Progress = FVector::Dist2D(Location, LastProgressLocation);
 	const bool bWasTryingToMove = DesiredMoveScale > 0.25f && Now >= EvadeUntil
 		&& !DesiredMoveDirection.IsNearlyZero() && !ControlledCharacter->IsDashing();
-	if (bWasTryingToMove && Progress < 34.0f)
+	// Expected travel for the time that passed; anything far below it means something is in the way.
+	const float Expected = ControlledCharacter->GetCharacterMovement()->MaxWalkSpeed
+		* (Now - LastProgressCheckAt) * DesiredMoveScale;
+	if (bWasTryingToMove && Progress < FMath::Max(34.0f, Expected * 0.35f))
 	{
+		++StuckStreak;
+		// Each try gets bolder: a sidestep, then the other way and a wider angle, then straight back out.
+		const float Angle = StuckStreak == 1 ? 92.0f : StuckStreak == 2 ? 132.0f : 180.0f;
 		StrafeSign *= -1.0f;
 		const FVector SideStep = DesiredMoveDirection.RotateAngleAxis(
-			StrafeSign * 92.0f, FVector::UpVector).GetSafeNormal2D();
+			StrafeSign * Angle, FVector::UpVector).GetSafeNormal2D();
+		AvoidCommitUntil = 0.0f;
 		EscapeMoveDirection = AvoidNearbyObstacle(Location, SideStep);
 		if (EscapeMoveDirection.IsNearlyZero())
 		{
 			EscapeMoveDirection = -DesiredMoveDirection;
 		}
+		AvoidCommitDirection = EscapeMoveDirection;
+		AvoidCommitUntil = Now + 0.6f;
 		EscapeUntil = Now + 0.85f;
 		TryTraverseObstacle(ControlledCharacter, EscapeMoveDirection, Now);
+		// Still wedged after three tries: a dash breaks free of geometry a walk cannot leave.
+		if (StuckStreak >= 3 && ControlledCharacter->CanDashNow()
+			&& GetFreeTravel(Location, EscapeMoveDirection, 420.0f) > ControlledCharacter->GetDashDistance())
+		{
+			ControlledCharacter->RequestAIDash(EscapeMoveDirection);
+			StuckStreak = 0;
+		}
+	}
+	else if (Progress > 60.0f)
+	{
+		StuckStreak = 0;
 	}
 	LastProgressLocation = Location;
 	LastProgressCheckAt = Now;
@@ -1020,15 +1192,18 @@ bool AChaosImpactCPUController::HasLowObstacleAhead(
 	{
 		return false;
 	}
+	FCollisionObjectQueryParams WallObjects;
+	WallObjects.AddObjectTypesToQuery(ECC_WorldStatic);
 	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUJump), false, GetPawn());
 	FHitResult LowHit;
 	FHitResult HighHit;
 	const FVector LowStart = Origin + FVector::UpVector * 32.0f;
 	const FVector HighStart = Origin + FVector::UpVector * 125.0f;
 	const FVector Offset = DesiredDirection * 150.0f;
-	const bool bLowBlocked = GetWorld()->LineTraceSingleByChannel(
-		LowHit, LowStart, LowStart + Offset, ECC_Visibility, Parameters);
-	const bool bHighBlocked = GetWorld()->LineTraceSingleByChannel(
-		HighHit, HighStart, HighStart + Offset, ECC_Visibility, Parameters);
+	// Only real ledges are jumped: a ball rolling past used to read as a step and set the CPU hopping.
+	const bool bLowBlocked = GetWorld()->LineTraceSingleByObjectType(
+		LowHit, LowStart, LowStart + Offset, WallObjects, Parameters);
+	const bool bHighBlocked = GetWorld()->LineTraceSingleByObjectType(
+		HighHit, HighStart, HighStart + Offset, WallObjects, Parameters);
 	return bLowBlocked && !bHighBlocked;
 }

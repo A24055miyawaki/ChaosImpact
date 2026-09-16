@@ -80,6 +80,13 @@ private:
 
 	// Navigation
 	FVector AvoidNearbyObstacle(const FVector& Origin, const FVector& DesiredDirection) const;
+	/** Steering with a short commitment, so the CPU cannot dither between two ways around the same wall. */
+	FVector SteerAroundObstacles(const FVector& Origin, const FVector& DesiredDirection, float Now);
+	/** Walls are hit; balls and other characters are not. Returns how far it got and the wall it met. */
+	float SweepWalls(const FVector& Origin, const FVector& Direction, float MaxDistance,
+		FVector& OutWallNormal, const AActor* IgnoredActor = nullptr) const;
+	/** Keeps characters from piling into each other while they share a lane. */
+	FVector GetSeparationDirection(const AChaosImpactCharacter* Self) const;
 	bool IsPathClear(const FVector& Origin, const FVector& Direction, float Distance) const;
 	float GetFreeTravel(const FVector& Origin, const FVector& Direction, float MaxDistance,
 		const AActor* IgnoredActor = nullptr) const;
@@ -90,6 +97,9 @@ private:
 
 	TMap<TWeakObjectPtr<AChaosImpactCharacter>, FVector> LastObservedLocations;
 	TMap<TWeakObjectPtr<AChaosImpactCharacter>, FVector> ObservedVelocities;
+	/** How the target's speed is changing, so a shot leads a player who is still turning. */
+	TMap<TWeakObjectPtr<AChaosImpactCharacter>, FVector> ObservedAccelerations;
+	FVector GetObservedAcceleration(const AChaosImpactCharacter* Observed) const;
 	TMap<TWeakObjectPtr<AChaosImpactBall>, double> BallFirstSeenAt;
 	TWeakObjectPtr<AChaosImpactCharacter> CurrentTarget;
 
@@ -110,6 +120,11 @@ private:
 	FVector EscapeMoveDirection = FVector::ZeroVector;
 	FVector EvadeDirection = FVector::ZeroVector;
 	FVector LastProgressLocation = FVector::ZeroVector;
+	/** The way around an obstacle that is being followed, and how long it is kept before rethinking. */
+	FVector AvoidCommitDirection = FVector::ZeroVector;
+	float AvoidCommitUntil = 0.0f;
+	/** Consecutive checks that made no progress; each one tries a stronger way out. */
+	int32 StuckStreak = 0;
 	FVector HomeLocation = FVector::ZeroVector;
 	float DesiredMoveScale = 0.0f;
 	float LastProgressCheckAt = 0.0f;

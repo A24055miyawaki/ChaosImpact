@@ -270,15 +270,27 @@ namespace
 				CPU->SetActorEnableCollision(true);
 				PlaceAt(CPU, Origin + Toward * 700.0f);
 				CPUHealth = CPU->GetHealth();
+				// Let the burst above fade first. Counting live zones while it lingers hides the new one.
+				Stage = 90;
+				NextAt = Now + AChaosImpactHazardZone::ThunderActiveSeconds + 0.3;
+				return false;
+			case 90:
 				ZonesBefore = Count(EChaosImpactBallType::Thunder);
 				Throw(EChaosImpactBallType::Thunder, Toward, EChaosImpactBallFlightMode::Straight);
+				PhaseStartedAt = Now;
 				Stage = 10;
 				NextAt = Now + 0.17;
 				return false;
 			case 10:
 				CaptureThunderBlack(TEXT("TB-07-Thunder-Hit.png"));
+				// Wait for the burst rather than assuming one flight time: the throw's own release delay
+				// varies, and a fixed window fails on a hit that lands a frame later.
+				if (Count(EChaosImpactBallType::Thunder) <= ZonesBefore && Now - PhaseStartedAt < 1.6)
+				{
+					return false;
+				}
 				Stage = 11;
-				NextAt = Now + 0.4;
+				NextAt = Now + 0.1;
 				return false;
 			case 11:
 			{

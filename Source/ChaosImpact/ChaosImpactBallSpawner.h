@@ -65,6 +65,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float BlackBallChance = 0.1f;
 
+	/** Chance (0-1) that a new ball is a wind ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float WindBallChance = 0.1f;
+
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;
 	bool bAlwaysActive = false;

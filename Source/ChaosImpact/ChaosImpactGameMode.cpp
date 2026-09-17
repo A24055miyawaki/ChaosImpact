@@ -5,10 +5,12 @@
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactTornado.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactVersusStage.h"
 #include "GameFramework/GameSession.h"
@@ -63,6 +65,65 @@ void AChaosImpactGameMode::BeginPlay()
 				}
 			}
 		}), DevBlackHoleSeconds, true, DevBlackHoleSeconds);
+	}
+	// Development: -CIDevWind=<seconds> releases the host player's tornado toward every remote player, with a ball
+	// lying on its way and another thrown into it a moment later, to check a wind ball online (see -CIWindLog).
+	float DevWindSeconds = 0.0f;
+	if (IsOnlineRoom() && FParse::Value(FCommandLine::Get(), TEXT("CIDevWind="), DevWindSeconds) && DevWindSeconds > 1.0f)
+	{
+		GetWorldTimerManager().SetTimer(DevWindTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			const UGameInstance* GameInstance = GetGameInstance();
+			const APlayerController* HostController = GameInstance ? GameInstance->GetFirstLocalPlayerController(GetWorld()) : nullptr;
+			APawn* HostPawn = HostController ? HostController->GetPawn() : nullptr;
+			for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It && HostPawn; ++It)
+			{
+				if (!It->IsRemotePlayerOnServer() || It->IsEliminated())
+				{
+					continue;
+				}
+				const FVector Target = It->GetActorLocation();
+				FVector Toward = (Target - HostPawn->GetActorLocation()).GetSafeNormal2D();
+				if (Toward.IsNearlyZero())
+				{
+					Toward = FVector::ForwardVector;
+				}
+				const FVector From = Target - Toward * 650.0f;
+				AChaosImpactTornado::Release(GetWorld(), From, Toward, HostPawn);
+				const FTransform Lying(FRotator::ZeroRotator, Target - Toward * 330.0f + FVector(0.0f, 0.0f, -40.0f));
+				if (AChaosImpactBall* Pickup = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(AChaosImpactBall::StaticClass(),
+					Lying, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+				{
+					Pickup->FinishSpawning(Lying);
+					Pickup->MakePickup();
+				}
+				UE_LOG(LogChaosImpact, Log, TEXT("DevWind released by %s toward %s"), *HostPawn->GetName(),
+					*GetNameSafe(It->GetPlayerState()));
+				// A ball thrown into the funnel from the side, after it has passed the player.
+				FTimerHandle ThrowTimer;
+				TWeakObjectPtr<APawn> WeakHost = HostPawn;
+				GetWorldTimerManager().SetTimer(ThrowTimer, FTimerDelegate::CreateWeakLambda(this, [this, WeakHost]()
+				{
+					APawn* Thrower = WeakHost.Get();
+					for (TActorIterator<AChaosImpactTornado> Tornado(GetWorld()); Tornado && Thrower; ++Tornado)
+					{
+						if (!Tornado->IsActive())
+						{
+							continue;
+						}
+						const FVector From = Tornado->GetCenter() + FVector(0.0f, 280.0f, 60.0f);
+						const FTransform Flight(FRotator::ZeroRotator, From);
+						if (AChaosImpactBall* Ball = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(AChaosImpactBall::StaticClass(),
+							Flight, Thrower, Thrower, ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+						{
+							Ball->FinishSpawning(Flight);
+							Ball->Launch((Tornado->GetCenter() - From).GetSafeNormal2D(), 2200.0f, EChaosImpactBallFlightMode::Straight, 0.0f);
+							UE_LOG(LogChaosImpact, Log, TEXT("DevWind ball thrown into the tornado"));
+						}
+					}
+				}), 2.4f, false);
+			}
+		}), DevWindSeconds, true, 3.0f);
 	}
 #endif
 	if (AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>(); RoomState && IsOnlineRoom())
@@ -1439,5 +1500,38 @@ void AChaosImpactGameMode::SpawnTrainingCPU(
 	if (APlayerState* CPUState = CPUController->PlayerState)
 	{
 		CPUState->SetPlayerName(FString::Printf(TEXT("CPU%d"), CPUIndex + 1));
+		if (AChaosImpactPlayerState* CPULoadout = Cast<AChaosImpactPlayerState>(CPUState))
+		{
+			CPULoadout->CharacterIndex = PickCPUCharacter(CPUState);
+			CPULoadout->ForceNetUpdate();
+		}
 	}
+}
+
+int32 AChaosImpactGameMode::PickCPUCharacter(const APlayerState* NewCPU) const
+{
+	// Counted over everyone already here, so CPUs spread over the roster (and a roster that grows needs no change).
+	TArray<int32> Uses;
+	Uses.Init(0, ChaosImpactRoster::Num());
+	if (const AGameStateBase* State = GetGameState<AGameStateBase>())
+	{
+		for (const APlayerState* Member : State->PlayerArray)
+		{
+			if (const AChaosImpactPlayerState* Loadout = Cast<AChaosImpactPlayerState>(Member);
+				Loadout && Loadout != NewCPU && !Loadout->IsPendingKillPending())
+			{
+				++Uses[ChaosImpactRoster::ClampIndex(Loadout->CharacterIndex)];
+			}
+		}
+	}
+	const int32 Fewest = FMath::Min(Uses);
+	TArray<int32, TInlineAllocator<8>> Candidates;
+	for (int32 Character = 0; Character < Uses.Num(); ++Character)
+	{
+		if (Uses[Character] == Fewest)
+		{
+			Candidates.Add(Character);
+		}
+	}
+	return Candidates.IsEmpty() ? 0 : Candidates[FMath::RandRange(0, Candidates.Num() - 1)];
 }

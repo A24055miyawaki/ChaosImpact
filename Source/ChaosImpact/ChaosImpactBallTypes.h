@@ -22,12 +22,14 @@ enum class EChaosImpactBallType : uint8
 	/** Flies straight at a fixed high speed, rebounding off walls; bursts into lightning on an opponent or after 3 s. */
 	Thunder UMETA(DisplayName="Thunder"),
 	/** Opens a black hole where it lands that draws opponents to its centre for a few seconds (no damage). */
-	Black UMETA(DisplayName="Black")
+	Black UMETA(DisplayName="Black"),
+	/** Never flies: the throw releases a tornado that weaves forward for a few seconds, hitting and blowing away. */
+	Wind UMETA(DisplayName="Wind")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 5;
+	constexpr int32 Count = 6;
 
 	/** A thrown thunder ball's speed, however long the throw was charged. */
 	constexpr float ThunderSpeed = 4000.0f;
@@ -47,6 +49,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Ice: return FLinearColor(0.42f, 0.86f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Thunder: return FLinearColor(1.0f, 0.88f, 0.22f, 1.0f);
 		case EChaosImpactBallType::Black: return FLinearColor(0.62f, 0.24f, 1.0f, 1.0f);
+		case EChaosImpactBallType::Wind: return FLinearColor(0.35f, 1.0f, 0.45f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -59,6 +62,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Ice: return TEXT("アイス");
 		case EChaosImpactBallType::Thunder: return TEXT("サンダー");
 		case EChaosImpactBallType::Black: return TEXT("ブラック");
+		case EChaosImpactBallType::Wind: return TEXT("ウィンド");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -72,6 +76,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Ice: return TEXT("Ice");
 		case EChaosImpactBallType::Thunder: return TEXT("Thunder");
 		case EChaosImpactBallType::Black: return TEXT("Black");
+		case EChaosImpactBallType::Wind: return TEXT("Wind");
 		default: return TEXT("Normal");
 		}
 	}
@@ -132,6 +137,10 @@ namespace ChaosImpactBallTypes
 		inline const TCHAR* Electricity = TEXT("/Game/NiagaraExamples/FX_Player/NS_Player_Electricity_Looping.NS_Player_Electricity_Looping");
 		inline const TCHAR* SparkBurst = TEXT("/Game/NiagaraExamples/FX_Sparks/NS_Spark_Burst.NS_Spark_Burst");
 		inline const TCHAR* DarkAura = TEXT("/Game/NiagaraExamples/FX_Player/NS_Player_DeBuff_Looping.NS_Player_DeBuff_Looping");
+		// Wind ball tornado.
+		inline const TCHAR* WindSparks = TEXT("/Game/NiagaraExamples/FX_Sparks/NS_Spark_Continuous.NS_Spark_Continuous");
+		inline const TCHAR* DirtBurstSmall = TEXT("/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Small.NS_Dirt_Explosion_Small");
+		inline const TCHAR* DirtBurstMedium = TEXT("/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Medium.NS_Dirt_Explosion_Medium");
 		// Warp pads.
 		inline const TCHAR* WarpAura = TEXT("/Game/NiagaraExamples/FX_Player/NS_Player_Buff_Looping.NS_Player_Buff_Looping");
 		inline const TCHAR* WarpOut = TEXT("/Game/NiagaraExamples/FX_Player/NS_Player_Teleport_Out.NS_Player_Teleport_Out");

@@ -100,6 +100,21 @@ public:
 	EChaosImpactBallType GetBallType() const { return BallType; }
 	bool IsSpecialBall() const { return BallType != EChaosImpactBallType::Normal; }
 	bool HasDetonated() const { return bDetonated; }
+
+	/** Server: a real ball in flight (not held, landed, burst or a throw preview). */
+	bool IsFlyingOnServer() const;
+	/** Server: a tornado turned this flying ball; it keeps flying along NewVelocity. False when not flying. */
+	bool DeflectByWind(const FVector& NewVelocity);
+	/** Server: a lying ball is swept up by a tornado; it cannot be collected until released. False if not lying. */
+	bool CatchInWind();
+	bool IsCarriedByWind() const { return bCarriedByWind; }
+	/** Server: where a swept-up ball is carried to this frame. */
+	void CarryInWind(const FVector& Location);
+	/**
+	 * Server: drops a swept-up ball at Ground: a spawner's ball hovers there again, a thrown ball that had landed
+	 * rolls away along FlingVelocity.
+	 */
+	void ReleaseFromWind(const FVector& Ground, const FVector& FlingVelocity);
 	/** Tuning and tests: how long a landed ball lies around, and how much of that time it spends blinking. */
 	void SetLandedPickupLifetime(const float Seconds, const float BlinkSeconds)
 	{
@@ -344,5 +359,10 @@ protected:
 	float FlightSeconds = 0.0f;
 	float PickupAvailableAtSeconds = 0.0f;
 	bool bPickupConsumed = false;
+	/** Server: swept up by a tornado (see CatchInWind); bWindCaughtHovering: it was a hovering pickup before. */
+	bool bCarriedByWind = false;
+	bool bWindCaughtHovering = false;
+	/** How high it hovered over the floor when swept up. */
+	float WindHoverHeight = 50.0f;
 	TWeakObjectPtr<APawn> ThrowingPawn;
 };

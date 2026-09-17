@@ -21,6 +21,7 @@ class UMaterialInstanceDynamic;
 class UNiagaraComponent;
 class UProceduralMeshComponent;
 class AChaosImpactBall;
+class AChaosImpactTornado;
 class UChaosImpactPuppetComponent;
 enum class EChaosImpactBallFlightMode : uint8;
 struct FInputActionValue;
@@ -113,6 +114,23 @@ public:
 	bool IsRemotePlayerOnServer() const;
 	/** Client: this player's own screen saw a ball touch it; the server sanity-checks and applies it. */
 	void ReportBallHitFromClient(AChaosImpactBall* Ball, const FVector& HitLocation);
+	/** Client: this player's own screen saw a wind ball's tornado catch it; the server checks and applies the hit. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportTornadoHit(AChaosImpactTornado* Tornado);
+	/**
+	 * Blown away by a tornado: moved along Velocity (horizontal), easing out over Seconds. Takes effect where this
+	 * character is moved (its owner, the host, a CPU), like a black hole's pull.
+	 */
+	void StartWindKnockback(const FVector& Velocity, float Seconds);
+	/**
+	 * Caught by a tornado: drawn in and whirled round it, lifted off the ground, for WindCarrySeconds, then thrown
+	 * out. Called where the catch is judged (and on the server for everyone); the position moves where this character
+	 * is moved, the lift and spin show on every machine.
+	 */
+	void BeginWindCarry(AChaosImpactTornado* Tornado);
+	bool IsCarriedByWind() const { return WindCarrier != nullptr; }
+	virtual bool IsMoveInputIgnored() const override;
+	static constexpr float WindCarrySeconds = 1.1f;
 	/** Client: this player's own screen touched a pickup; predicted now, confirmed by the server. */
 	void ClaimPickupFromClient(AChaosImpactBall* Ball);
 	/** Client: hands over the locally predicted throw so the server's ball can continue from it. */
@@ -367,6 +385,9 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldBlackMaterial;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldWindMaterial;
+
 	/** Ball shown on the right hand while at least one ball is carried. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
 	TObjectPtr<UStaticMeshComponent> HeldBallMesh;
@@ -469,6 +490,21 @@ protected:
 	float NetTraceSeconds = 0.0f;
 	/** Black holes draw this character in; applied where it is moved, like the slide on ice. */
 	void UpdateBlackHolePull(float DeltaSeconds);
+	/** A tornado's blow (StartWindKnockback), applied where this character is moved. */
+	void UpdateWindKnockback(float DeltaSeconds);
+	void UpdateWindCarry(float DeltaSeconds);
+	UPROPERTY(Replicated)
+	TObjectPtr<AChaosImpactTornado> WindCarrier;
+	UPROPERTY(Replicated)
+	double WindCarryStartServerTime = 0.0;
+	float WindCarryAngle = 0.0f;
+	float WindCarryRadius = 0.0f;
+	bool bWindCarryPosed = false;
+	FVector MeshRestLocation = FVector::ZeroVector;
+	FRotator MeshRestRotation = FRotator::ZeroRotator;
+	FVector WindKnockbackVelocity = FVector::ZeroVector;
+	double WindKnockbackStartedAt = -100.0;
+	float WindKnockbackSeconds = 0.0f;
 	/**
 	 * Client: keeps this frame's direct move (a dash step, a black hole's pull) from being erased. A client folds
 	 * similar moves into one before sending them and rewinds to the first move's start to do it.

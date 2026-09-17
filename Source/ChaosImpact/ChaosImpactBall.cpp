@@ -10,6 +10,7 @@
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
+#include "ChaosImpactTornado.h"
 #include "Engine/StaticMesh.h"
 #include "NiagaraComponent.h"
 #include "ProceduralMeshComponent.h"
@@ -1026,6 +1027,33 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 {
 	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 	ResetContactPresentation();
+	if (BallType == EChaosImpactBallType::Wind)
+	{
+		// A wind ball never flies: leaving the hand, it becomes a tornado (the server's; a throw preview just goes).
+		if (!ThrowingPawn.IsValid())
+		{
+			ThrowingPawn = GetInstigator();
+		}
+		ProjectileMovement->StopMovementImmediately();
+		ProjectileMovement->Deactivate();
+		CollisionSphere->SetSimulatePhysics(false);
+		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		SetActorHiddenInGame(true);
+		if (bCosmeticPrediction || !HasAuthority() || !GetWorld())
+		{
+			SetActorTickEnabled(false);
+			SetLifeSpan(0.25f);
+			return;
+		}
+		bDetonated = true;
+		DetonatedAt = GetWorld()->GetTimeSeconds();
+		FlightEndedAt = DetonatedAt;
+		SetActorTickEnabled(false);
+		AChaosImpactTornado::Release(GetWorld(), GetActorLocation(), Direction, ThrowingPawn.Get());
+		SetLifeSpan(1.0f);
+		ForceNetUpdate();
+		return;
+	}
 	const FVector HorizontalDirection(Direction.X, Direction.Y, 0.0f);
 	// A thunder ball always flies straight at the same speed, however the throw was charged or aimed.
 	const bool bThunder = BallType == EChaosImpactBallType::Thunder;
@@ -1196,6 +1224,97 @@ FVector AChaosImpactBall::GetBallVelocity() const
 	return bIsRolling && CollisionSphere
 		? CollisionSphere->GetPhysicsLinearVelocity()
 		: ProjectileMovement ? ProjectileMovement->Velocity : FVector::ZeroVector;
+}
+
+bool AChaosImpactBall::IsFlyingOnServer() const
+{
+	return HasAuthority() && !bCosmeticPrediction && !bIsPickup && !bDetonated && !GetAttachParentActor()
+		&& ProjectileMovement && ProjectileMovement->IsActive();
+}
+
+bool AChaosImpactBall::DeflectByWind(const FVector& NewVelocity)
+{
+	if (!IsFlyingOnServer())
+	{
+		return false;
+	}
+	FVector Velocity = NewVelocity;
+	if (ActiveFlightMode != EChaosImpactBallFlightMode::Arc)
+	{
+		// A level flight stays level.
+		Velocity.Z = 0.0f;
+	}
+	ProjectileMovement->Velocity = Velocity;
+	bHasReflected = true;
+	++ReflectionCount;
+	// It starts a new flight from the tornado rather than landing moments later.
+	FlightSeconds = 0.0f;
+	UpdateNetState();
+	ForceNetUpdate();
+	return true;
+}
+
+bool AChaosImpactBall::CatchInWind()
+{
+	if (!HasAuthority() || bCosmeticPrediction || !bIsPickup || bPickupConsumed || bCarriedByWind || bDetonated
+		|| !GetWorld())
+	{
+		return false;
+	}
+	bCarriedByWind = true;
+	bWindCaughtHovering = !bIsRolling;
+	WindHoverHeight = CollisionSphere->GetScaledSphereRadius() + 30.0f;
+	FHitResult GroundHit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ChaosImpactBallHoverHeight), false, this);
+	if (GetWorld()->LineTraceSingleByChannel(GroundHit, GetActorLocation() + FVector::UpVector * 20.0f,
+		GetActorLocation() - FVector::UpVector * 2000.0f, ECC_WorldStatic, QueryParams))
+	{
+		WindHoverHeight = FMath::Clamp(static_cast<float>(GetActorLocation().Z - GroundHit.ImpactPoint.Z), 20.0f, 160.0f);
+	}
+	// Carried like a hovering ball (its moving base replicates), out of everyone's reach.
+	if (bIsRolling)
+	{
+		CollisionSphere->SetSimulatePhysics(false);
+		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+		CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+		bIsRolling = false;
+	}
+	LandedPickupExpiresAt = 0.0;
+	PickupAvailableAtSeconds = TNumericLimits<float>::Max();
+	PickupBaseLocation = GetActorLocation();
+	UpdateNetState();
+	return true;
+}
+
+void AChaosImpactBall::CarryInWind(const FVector& Location)
+{
+	if (!bCarriedByWind)
+	{
+		return;
+	}
+	PickupBaseLocation = Location;
+	SetActorLocation(Location);
+}
+
+void AChaosImpactBall::ReleaseFromWind(const FVector& Ground, const FVector& FlingVelocity)
+{
+	if (!bCarriedByWind)
+	{
+		return;
+	}
+	bCarriedByWind = false;
+	if (bWindCaughtHovering)
+	{
+		SetActorLocation(Ground + FVector(0.0f, 0.0f, WindHoverHeight));
+		MakePickup();
+	}
+	else
+	{
+		SetActorLocation(Ground + FVector(0.0f, 0.0f, CollisionSphere->GetScaledSphereRadius() + 2.0f));
+		MakeRollingPickup(FlingVelocity);
+	}
+	ForceNetUpdate();
 }
 
 bool AChaosImpactBall::IsPickupAvailable() const
@@ -1426,6 +1545,19 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		LightIntensity = 5200.0f;
 		LightRadius = 460.0f;
 	}
+	else if (BallType == EChaosImpactBallType::Wind)
+	{
+		// A green core wrapped in a swirling shell, with two rings whirling flat around it.
+		BallMesh->SetMaterial(0, MakeEmissive(this, FLinearColor(0.2f, 0.9f, 0.35f), 1.0f));
+		TypeGlowMaterial = MakeAdditive(this, FLinearColor(0.45f, 1.0f, 0.5f), 1.2f, 1.0f);
+		TypeGlow = AttachShell(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")), TypeGlowMaterial);
+		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+		TypeRings.Add(AttachShell(Cylinder, MakeAdditive(this, FLinearColor(0.8f, 1.0f, 0.75f), 2.0f, 1.0f)));
+		TypeRings.Add(AttachShell(Cylinder, MakeAdditive(this, FLinearColor(0.3f, 0.95f, 0.45f), 1.6f, 1.0f)));
+		LightColor = FLinearColor(0.45f, 1.0f, 0.5f);
+		LightIntensity = 2400.0f;
+		LightRadius = 340.0f;
+	}
 	else if (BallType == EChaosImpactBallType::Black)
 	{
 		// A lightless core inside a violet event horizon, circled by two tilted, spinning rings.
@@ -1543,7 +1675,10 @@ void AChaosImpactBall::UpdateBallTypePresentation(const float DeltaSeconds)
 		if (UStaticMeshComponent* Ring = TypeRings[Index])
 		{
 			const bool bInner = Index == 0;
-			Ring->SetWorldRotation(FRotator(bInner ? 62.0f : -48.0f, T * (bInner ? 230.0f : -170.0f), bInner ? 10.0f : -25.0f));
+			// Wind: nearly flat and much faster, stacked a little apart like a small whirlwind.
+			const bool bWind = BallType == EChaosImpactBallType::Wind;
+			Ring->SetWorldRotation(bWind ? FRotator(bInner ? 8.0f : -6.0f, T * (bInner ? 620.0f : 480.0f), 0.0f)
+				: FRotator(bInner ? 62.0f : -48.0f, T * (bInner ? 230.0f : -170.0f), bInner ? 10.0f : -25.0f));
 			const float RingSize = (bInner ? 0.95f : 1.25f) * ExpiryScale;
 			Ring->SetWorldScale3D(FVector(RingSize, RingSize, 0.03f));
 		}

@@ -829,8 +829,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 	case EChaosImpactScreen::MultiReady:
 	{
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
-		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("へやをつくる"), TEXT(""), TEXT("CREATE"), Ice});
-		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("へやをさがす"), TEXT(""), TEXT("SEARCH"), Fire});
+		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("部屋をつくる"), TEXT(""), TEXT("CREATE"), Ice});
+		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("部屋をさがす"), TEXT(""), TEXT("SEARCH"), Fire});
 		const AChaosImpactPlayerController* OnlineController =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bPair = OnlineController && OnlineController->GetRequestedLocalPlayerCount() >= 2;
@@ -905,7 +905,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 			if (Controller->CanRenameRoom())
 			{
 				Y += 80.0f;
-				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("へやの名前を変える"), TEXT("rename_room"),
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("部屋の名前を変える"), TEXT("rename_room"),
 					TEXT(""), Ice});
 			}
 			Y += 80.0f;
@@ -916,7 +916,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 			const bool bLeaveArmed = ArmedIndex == Entries.Num();
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
 				bLeaveArmed ? TEXT("もう一度おすと決定")
-					: Controller->IsOnlineRoomHost() ? TEXT("へやを解散する") : TEXT("へやをぬける"),
+					: Controller->IsOnlineRoomHost() ? TEXT("部屋を解散する") : TEXT("部屋をぬける"),
 				TEXT("leave"), TEXT(""), Fire});
 			break;
 		}
@@ -1291,7 +1291,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	else if (Screen == EChaosImpactScreen::OnlineName || Screen == EChaosImpactScreen::OnlineRoomName)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2,
-			Screen == EChaosImpactScreen::OnlineRoomName ? TEXT("へやのなまえ") : TEXT("なまえ"), T);
+			Screen == EChaosImpactScreen::OnlineRoomName ? TEXT("部屋のなまえ") : TEXT("なまえ"), T);
 		const float E = EaseOut((T - 0.1f) / 0.35f);
 		const FGeometry Panel = MakeSkewed(DesignGeometry, 400.0f + (1.0f - E) * 120.0f, 340.0f, 800.0f, 160.0f, -0.18f);
 		const FMenuPainter Field{Panel, OutDrawElements, BaseLayer + 2, E};
@@ -1313,7 +1313,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	}
 	else if (Screen == EChaosImpactScreen::RoomList)
 	{
-		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("へやをさがす"), T);
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("部屋をさがす"), T);
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 		const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
 		const FMenuPainter ChipPainter{MakeSkewed(DesignGeometry, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f),
@@ -1325,7 +1325,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		{
 			// Nothing yet: keep looking, with a small spinner.
 			const FMenuPainter Waiting{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
-			Waiting.Text(Sessions->HasSearchedOnce() ? TEXT("このあいことばのへやはまだありません") : TEXT("へやをさがしています"),
+			Waiting.Text(Sessions->HasSearchedOnce() ? TEXT("このあいことばの部屋はまだありません") : TEXT("部屋をさがしています"),
 				800.0f, 380.0f, 40.0f, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 			Waiting.Text(TEXT("見つかると ここに出ます"), 800.0f, 446.0f, 24.0f, Muted, ETextAlign::Center);
 			const FVector2D SpinCenter(800.0f, 540.0f);
@@ -1348,7 +1348,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const FGeometry Chip = MakeSkewed(DesignGeometry, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f);
 		const FMenuPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 2, ChipIn};
 		ChipPainter.Box(0.0f, 0.0f, 360.0f, 70.0f, ModeColor);
-		ChipPainter.Text(bCreate ? TEXT("へやをつくる") : TEXT("へやをさがす"), 180.0f, 10.0f, 34.0f, Paper,
+		ChipPainter.Text(bCreate ? TEXT("部屋をつくる") : TEXT("部屋をさがす"), 180.0f, 10.0f, 34.0f, Paper,
 			ETextAlign::Center);
 
 		for (int32 Digit = 0; Digit < 4; ++Digit)
@@ -1391,7 +1391,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		BandPainter.Box(0.0f, 0.0f, 2000.0f, 8.0f, Error.IsEmpty() ? Ice : Fire);
 		BandPainter.Box(0.0f, 232.0f, 2000.0f, 8.0f, Error.IsEmpty() ? Fire : Fire);
 		const FMenuPainter Label{DesignGeometry, OutDrawElements, BaseLayer + 3, E};
-		Label.Text(Error.IsEmpty() ? FString(TEXT("へやをつくっています")) : Error, 800.0f, 350.0f, 54.0f,
+		Label.Text(Error.IsEmpty() ? FString(TEXT("部屋をつくっています")) : Error, 800.0f, 350.0f, 54.0f,
 			Error.IsEmpty() ? Paper : Fire, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 		Label.Text(FString::Printf(TEXT("あいことば  %s"), Sessions ? *Sessions->GetPassword() : TEXT("")),
 			800.0f, 450.0f, 30.0f, Muted, ETextAlign::Center);

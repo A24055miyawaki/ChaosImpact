@@ -63,6 +63,8 @@ private:
 		const FVector& Direction, float TravelLimit, bool bDash, bool bJump) const;
 	float EarliestContactSeconds(const AChaosImpactCharacter* Self, const TArray<FBallThreat>& Threats) const;
 	bool UpdateEvasion(AChaosImpactCharacter* Self, float Now);
+	/** Steps off the line of an opponent's tornado heading this way, dashing out when it is already close. */
+	bool UpdateTornadoEvasion(AChaosImpactCharacter* Self, float Now);
 
 	// Offence
 	AChaosImpactCharacter* SelectTarget(const AChaosImpactCharacter* Self) const;
@@ -130,6 +132,8 @@ private:
 	float LastProgressCheckAt = 0.0f;
 	float EscapeUntil = 0.0f;
 	float EvadeUntil = 0.0f;
+	/** The current dodge is out of a tornado's way (kept while it lasts, over ball dodges). */
+	float TornadoEvadeUntil = 0.0f;
 	float StrafeSign = 1.0f;
 	bool bHoldingJump = false;
 };

@@ -4,6 +4,7 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactTornado.h"
 #include "CollisionShape.h"
 #include "CollisionQueryParams.h"
 #include "Components/CapsuleComponent.h"
@@ -93,6 +94,17 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 		Self->StopJumping();
 		bHoldingJump = false;
 	}
+	if (Self->IsCarriedByWind())
+	{
+		// Whirled round a tornado: nothing to do until it lets go.
+		if (Self->IsChargingThrow())
+		{
+			Self->CancelChargingThrow();
+		}
+		EvadeUntil = 0.0f;
+		TornadoEvadeUntil = 0.0f;
+		return;
+	}
 
 	if (Now >= NextDecisionAt)
 	{
@@ -100,7 +112,7 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 		AChaosImpactCharacter* Target = SelectTarget(Self);
 		CurrentTarget = Target;
 		TryCollectNearbyBall(Self, Now);
-		const bool bEvading = UpdateEvasion(Self, Now);
+		const bool bEvading = UpdateTornadoEvasion(Self, Now) || UpdateEvasion(Self, Now);
 		UpdateOffense(Self, Target, Now);
 		if (!bEvading)
 		{
@@ -396,6 +408,74 @@ float AChaosImpactCPUController::EarliestContactSeconds(
 		}
 	}
 	return Earliest;
+}
+
+bool AChaosImpactCPUController::UpdateTornadoEvasion(AChaosImpactCharacter* Self, const float Now)
+{
+	const FVector Location = Self->GetActorLocation();
+	const float CapsuleRadius = Self->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	// Better CPUs look further ahead along its way.
+	const float LookAhead = FMath::Lerp(0.3f, 0.9f, Skill);
+	const AChaosImpactTornado* Threat = nullptr;
+	float ThreatMiss = TNumericLimits<float>::Max();
+	float ThreatDistance = 0.0f;
+	for (TActorIterator<AChaosImpactTornado> It(GetWorld()); It; ++It)
+	{
+		const AChaosImpactTornado* Tornado = *It;
+		if (!Tornado->IsActive() || Tornado->GetSourcePawn() == Self
+			|| AChaosImpactGameState::AreTeammates(GetWorld(), Tornado->GetSourcePawn(), Self))
+		{
+			continue;
+		}
+		const FVector Heading = Tornado->GetTravelDirection();
+		const FVector Offset = Location - Tornado->GetCenter();
+		const float Ahead = FMath::Clamp(static_cast<float>(FVector::DotProduct(FVector(Offset.X, Offset.Y, 0.0f), Heading))
+			/ AChaosImpactTornado::TravelSpeed, 0.0f, LookAhead);
+		const FVector Future = Tornado->GetCenter() + Heading * AChaosImpactTornado::TravelSpeed * Ahead;
+		// Its weave swings it about a funnel's width either side of its line.
+		const float Reach = AChaosImpactTornado::CatchRadius + CapsuleRadius + 110.0f;
+		const float Miss = static_cast<float>(FVector::Dist2D(Location, Future));
+		if (Miss < Reach && Miss < ThreatMiss)
+		{
+			Threat = Tornado;
+			ThreatMiss = Miss;
+			ThreatDistance = static_cast<float>(FVector::Dist2D(Location, Tornado->GetCenter()));
+		}
+	}
+	if (!Threat)
+	{
+		return Now < TornadoEvadeUntil && Now < EvadeUntil;
+	}
+
+	// Off its line to the side already nearer, into open floor, never back into its way.
+	const FVector Heading = Threat->GetTravelDirection();
+	const FVector Across = FVector::CrossProduct(FVector::UpVector, Heading);
+	const float Sign = FVector::DotProduct(Location - Threat->GetCenter(), Across) >= 0.0 ? 1.0f : -1.0f;
+	FVector Best = Across * Sign;
+	float BestScore = -TNumericLimits<float>::Max();
+	for (int32 Candidate = 0; Candidate < 16; ++Candidate)
+	{
+		const FVector Direction = FVector::ForwardVector.RotateAngleAxis(Candidate * 22.5f, FVector::UpVector);
+		const float Free = GetFreeTravel(Location, Direction, 500.0f);
+		const float Score = Free + 260.0f * FVector::DotProduct(Direction, Across * Sign)
+			- 320.0f * FMath::Max(0.0f, static_cast<float>(FVector::DotProduct(Direction, Heading)))
+			- (Free < 150.0f ? 400.0f : 0.0f);
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			Best = Direction;
+		}
+	}
+	EvadeDirection = Best;
+	EvadeUntil = Now + 0.4f;
+	TornadoEvadeUntil = EvadeUntil;
+	// Too close to walk clear: dash out.
+	if (Skill > 0.25f && ThreatDistance < AChaosImpactTornado::CatchRadius + CapsuleRadius + 90.0f && Self->CanDashNow()
+		&& GetFreeTravel(Location, Best, 600.0f) > Self->GetDashDistance() * 0.6f)
+	{
+		Self->RequestAIDash(Best);
+	}
+	return true;
 }
 
 bool AChaosImpactCPUController::UpdateEvasion(AChaosImpactCharacter* Self, const float Now)

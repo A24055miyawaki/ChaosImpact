@@ -215,6 +215,8 @@ namespace
 		ChaosImpactBallTypes::Effects::Damage,
 		ChaosImpactBallTypes::Effects::Electricity, ChaosImpactBallTypes::Effects::SparkBurst,
 		ChaosImpactBallTypes::Effects::DarkAura,
+		ChaosImpactBallTypes::Effects::WindSparks, ChaosImpactBallTypes::Effects::DirtBurstSmall,
+		ChaosImpactBallTypes::Effects::DirtBurstMedium,
 		ChaosImpactBallTypes::Effects::WarpAura, ChaosImpactBallTypes::Effects::WarpOut,
 		ChaosImpactBallTypes::Effects::WarpIn, ChaosImpactBallTypes::Effects::LastHitSmoke
 	};

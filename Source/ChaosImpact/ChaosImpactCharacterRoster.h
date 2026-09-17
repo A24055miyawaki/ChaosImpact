@@ -3,6 +3,17 @@
 #include "CoreMinimal.h"
 #include "ChaosImpactMatchTypes.h"
 
+/** How a character's model is built and animated. */
+enum class EChaosImpactModelKind : uint8
+{
+	/** SM_<Prefix>_Body plus four separately skinned limbs, coloured with T_<Prefix>_<Colour>. */
+	Limbs,
+	/** SM_<Prefix>_Body alone: bobs and leans with the animation, no limbs. */
+	Rigid,
+	/** SK_<Prefix>, one skinned mesh on a HumanIK skeleton (Character1_*) that follows the game's animation. */
+	Skinned,
+};
+
 /** One playable character: what the menus call it and where its model lives. */
 struct FChaosImpactCharacterInfo
 {
@@ -16,10 +27,10 @@ struct FChaosImpactCharacterInfo
 	 */
 	const TCHAR* AssetPrefix;
 	/**
-	 * False for a model that is a single rigid mesh (SM_<Prefix>_Body with M_CI_<Prefix>, coloured through its
-	 * BodyColor parameter): it bobs and leans with the animation but has no limbs to pose.
+	 * Rigid and skinned models keep their own slot materials and are coloured through their BodyColor parameter
+	 * (which the material applies to the red parts of the texture).
 	 */
-	bool bPosedLimbs = true;
+	EChaosImpactModelKind Kind = EChaosImpactModelKind::Limbs;
 };
 
 namespace ChaosImpactRoster
@@ -33,8 +44,7 @@ namespace ChaosImpactRoster
 	inline const FChaosImpactCharacterInfo Characters[] =
 	{
 		{TEXT("スマイリー"), TEXT("/Game/ChaosImpact/Character"), TEXT("Player")},
-		// Temporary model (muscle_2.fbx) for checking how a heavy mesh performs; no name yet.
-		{TEXT(""), TEXT("/Game/ChaosImpact/Muscle"), TEXT("Muscle"), false},
+		{TEXT("シマエナガ"), TEXT("/Game/ChaosImpact/Simae"), TEXT("Simae"), EChaosImpactModelKind::Skinned},
 	};
 
 	/** Tiles on the select screen; the ones past the roster show as locked, so it reads as a roster that grows. */

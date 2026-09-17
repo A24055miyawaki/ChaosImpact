@@ -78,6 +78,8 @@ private:
 	/** Re-pairs every active local player after startup or an in-place player-count change. */
 	void ApplyTrainingControllerAssignments(int32 DesiredPlayers, int32 KeyboardPlayerIndex);
 	void SpawnTrainingCPU(const FVector& Anchor, const FRotator& Facing, int32 CPUIndex);
+	/** A roster character for a new CPU: the one fewest players are using, picked at random among equals. */
+	int32 PickCPUCharacter(const APlayerState* NewCPU) const;
 	void SyncTrainingCPUCount(int32 DesiredCPUCount, const FVector& Anchor, const FRotator& Facing);
 	/** Re-pairs after spawning/possession settles; player creation can remap device ids. */
 	void ReapplyTrainingControllerAssignments();
@@ -130,6 +132,7 @@ private:
 	void RunDevAutoLobby();
 	FTimerHandle LobbyReadyTimer;
 	FTimerHandle DevBlackHoleTimer;
+	FTimerHandle DevWindTimer;
 	FTimerHandle StartingTimer;
 	FTimerHandle DevAutoLobbyTimer;
 	FChaosImpactMatchRules DevAutoLobbyRules;

@@ -73,7 +73,23 @@ private:
 		bool bSolved = false;
 	};
 
+	/** A bone of a skinned model that turns with one of the source skeleton's bones. */
+	struct FDrivenBone
+	{
+		FName Name;
+		int32 Source = INDEX_NONE;
+		/** Component-space rotations in the reference pose (the source's in this component's space). */
+		FQuat Reference = FQuat::Identity;
+		FQuat SourceReference = FQuat::Identity;
+	};
+
 	UPoseableMeshComponent* CreateLimb(const TCHAR* AssetName);
+	UPoseableMeshComponent* CreatePoseable(USkeletalMesh* Mesh);
+	bool InitializeSkinned(USkeletalMesh* Mesh);
+	void UpdateSkinnedPose();
+	void PlaceHeldBalls();
+	FQuat SourceRotation(int32 BoneIndex) const;
+	FQuat SourceReferenceRotation(int32 BoneIndex) const;
 	bool SetUpChain(FLimbChain& Chain, UPoseableMeshComponent* Limb, const TCHAR* JointPrefix, bool bArm, bool bLeft);
 	/** Two-bone reach from Root toward Target, the middle joint bending toward Pole. */
 	static void SolveTwoBone(const FVector& Root, const FVector& Target, const FVector& Pole, float UpperLength,
@@ -101,8 +117,16 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UPoseableMeshComponent> LegR;
 
+	/** The whole model, for a skinned character. */
+	UPROPERTY(Transient)
+	TObjectPtr<UPoseableMeshComponent> Skin;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> Material;
+
+	/** A rigid model keeps each slot's own material (a head can have its own texture); each gets the colour. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> SlotMaterials;
 
 	TWeakObjectPtr<USceneComponent> RightHeldBall;
 	TWeakObjectPtr<USceneComponent> LeftHeldBall;
@@ -123,7 +147,20 @@ private:
 	float RightHandExactWeight = 0.0f;
 	int32 ColourIndex = INDEX_NONE;
 	int32 CharacterIndex = 0;
-	/** A single rigid mesh with no limbs (see FChaosImpactCharacterInfo::bPosedLimbs). */
+	/** A single rigid mesh with no limbs (see EChaosImpactModelKind). */
 	bool bRigid = false;
+	bool bSkinned = false;
+	/** Skinned model: hips, spine, neck, head and shoulders, parents first. */
+	TArray<FDrivenBone> DrivenBody;
+	FDrivenBone DrivenLegs[2];
+	FVector HipsReference = FVector::ZeroVector;
+	/** Hips height here over the source pelvis height. */
+	float HeightRatio = 1.0f;
+	/** Skinned model with knee and ankle joints (Character1_*Leg, *Foot): legs follow the source's steps like arms. */
+	bool bSkinnedLegChains = false;
+	/** Skinned model: from each thigh joint to the floor, in the reference pose. */
+	float LegLengths[2] = {1.0f, 1.0f};
+	/** From the hand joint toward the fingers, in model units, where a held ball sits. */
+	float PalmOffset = 9.0f;
 	bool bReady = false;
 };

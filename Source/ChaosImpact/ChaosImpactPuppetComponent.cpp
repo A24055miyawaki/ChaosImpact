@@ -24,12 +24,29 @@ namespace
 	/** From the hand joint to the middle of the palm, along the forearm, in model units. */
 	constexpr float PalmDistance = 9.0f;
 
+	/** Skinned models: the HumanIK joints that follow the template mannequin's, parents first. */
+	struct FBoneMatch
+	{
+		const TCHAR* Model;
+		const TCHAR* Source;
+	};
+	const FBoneMatch SkinnedBodyBones[] = {
+		{TEXT("Character1_Hips"), TEXT("pelvis")},
+		{TEXT("Character1_Spine"), TEXT("spine_01")},
+		{TEXT("Character1_Spine1"), TEXT("spine_03")},
+		{TEXT("Character1_Spine2"), TEXT("spine_05")},
+		{TEXT("Character1_Neck"), TEXT("neck_01")},
+		{TEXT("Character1_Head"), TEXT("head")},
+		{TEXT("Character1_LeftShoulder"), TEXT("clavicle_l")},
+		{TEXT("Character1_RightShoulder"), TEXT("clavicle_r")},
+	};
+
 	/** Kind is SM, SK, M or T; Part completes the name after the character's prefix. */
 	FString AssetPath(const int32 CharacterIndex, const TCHAR* Kind, const TCHAR* Part)
 	{
 		const FChaosImpactCharacterInfo& Info = ChaosImpactRoster::Get(CharacterIndex);
-		const FString Name = FCString::Strcmp(Kind, TEXT("M")) == 0
-			? FString::Printf(TEXT("M_CI_%s"), Info.AssetPrefix)
+		const FString Name = FCString::Strcmp(Kind, TEXT("M")) == 0 ? FString::Printf(TEXT("M_CI_%s"), Info.AssetPrefix)
+			: *Part == 0 ? FString::Printf(TEXT("%s_%s"), Kind, Info.AssetPrefix)
 			: FString::Printf(TEXT("%s_%s_%s"), Kind, Info.AssetPrefix, Part);
 		return FString::Printf(TEXT("%s/%s.%s"), Info.AssetFolder, *Name, *Name);
 	}
@@ -51,16 +68,22 @@ UPoseableMeshComponent* UChaosImpactPuppetComponent::CreateLimb(const TCHAR* Ass
 		UE_LOG(LogChaosImpact, Warning, TEXT("Character model: missing limb %s"), AssetName);
 		return nullptr;
 	}
+	UPoseableMeshComponent* Limb = CreatePoseable(Mesh);
+	for (int32 Slot = 0; Slot < Limb->GetNumMaterials(); ++Slot)
+	{
+		Limb->SetMaterial(Slot, Material);
+	}
+	return Limb;
+}
+
+UPoseableMeshComponent* UChaosImpactPuppetComponent::CreatePoseable(USkeletalMesh* Mesh)
+{
 	UPoseableMeshComponent* Limb = NewObject<UPoseableMeshComponent>(GetOwner());
 	Limb->SetupAttachment(this);
 	Limb->SetSkinnedAssetAndUpdate(Mesh);
 	Limb->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Limb->SetGenerateOverlapEvents(false);
 	Limb->RegisterComponent();
-	for (int32 Slot = 0; Slot < Limb->GetNumMaterials(); ++Slot)
-	{
-		Limb->SetMaterial(Slot, Material);
-	}
 	return Limb;
 }
 
@@ -85,6 +108,27 @@ FVector UChaosImpactPuppetComponent::SourceReferenceLocation(const int32 BoneInd
 	const FTransform Reference = FAnimationRuntime::GetComponentSpaceTransformRefPose(Asset->GetRefSkeleton(), BoneIndex);
 	return GetComponentTransform().InverseTransformPosition(
 		Source->GetComponentTransform().TransformPosition(Reference.GetLocation()));
+}
+
+FQuat UChaosImpactPuppetComponent::SourceRotation(const int32 BoneIndex) const
+{
+	const TArray<FTransform>& Pose = Source->GetComponentSpaceTransforms();
+	if (!Pose.IsValidIndex(BoneIndex))
+	{
+		return FQuat::Identity;
+	}
+	return GetComponentQuat().Inverse() * Source->GetComponentQuat() * Pose[BoneIndex].GetRotation();
+}
+
+FQuat UChaosImpactPuppetComponent::SourceReferenceRotation(const int32 BoneIndex) const
+{
+	const USkinnedAsset* Asset = Source ? Source->GetSkinnedAsset() : nullptr;
+	if (!Asset || BoneIndex == INDEX_NONE)
+	{
+		return FQuat::Identity;
+	}
+	return GetComponentQuat().Inverse() * Source->GetComponentQuat()
+		* FAnimationRuntime::GetComponentSpaceTransformRefPose(Asset->GetRefSkeleton(), BoneIndex).GetRotation();
 }
 
 bool UChaosImpactPuppetComponent::SetUpChain(FLimbChain& Chain, UPoseableMeshComponent* Limb, const TCHAR* JointPrefix,
@@ -126,6 +170,22 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	Source = InSource;
 	CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
 	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, *AssetPath(CharacterIndex, TEXT("M"), TEXT("")));
+	const EChaosImpactModelKind Kind = ChaosImpactRoster::Get(CharacterIndex).Kind;
+	bRigid = Kind == EChaosImpactModelKind::Rigid;
+	bSkinned = Kind == EChaosImpactModelKind::Skinned;
+	ColourIndex = INDEX_NONE;
+	if (bSkinned)
+	{
+		USkeletalMesh* SkinnedMesh = LoadObject<USkeletalMesh>(nullptr, *AssetPath(CharacterIndex, TEXT("SK"), TEXT("")));
+		if (!Source || !Source->GetSkinnedAsset() || !Parent || !SkinnedMesh || !GetOwner())
+		{
+			UE_LOG(LogChaosImpact, Warning, TEXT("Character model: assets missing, keeping the template character"));
+			return false;
+		}
+		Material = UMaterialInstanceDynamic::Create(Parent, this);
+		ColourTextures.Reset();
+		return InitializeSkinned(SkinnedMesh);
+	}
 	UStaticMesh* BodyMesh = LoadObject<UStaticMesh>(nullptr, *AssetPath(CharacterIndex, TEXT("SM"), TEXT("Body")));
 	if (!Source || !Source->GetSkinnedAsset() || !Parent || !BodyMesh || !GetOwner())
 	{
@@ -133,8 +193,6 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 		return false;
 	}
 	Material = UMaterialInstanceDynamic::Create(Parent, this);
-	bRigid = !ChaosImpactRoster::Get(CharacterIndex).bPosedLimbs;
-	ColourIndex = INDEX_NONE;
 	ColourTextures.Reset();
 	for (const TCHAR* Suffix : ChaosImpactRoster::ColourTextureSuffixes)
 	{
@@ -150,9 +208,18 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Body->SetGenerateOverlapEvents(false);
 	Body->RegisterComponent();
+	SlotMaterials.Reset();
 	for (int32 Slot = 0; Slot < Body->GetNumMaterials(); ++Slot)
 	{
-		Body->SetMaterial(Slot, Material);
+		UMaterialInterface* Own = bRigid ? BodyMesh->GetMaterial(Slot) : nullptr;
+		if (Own)
+		{
+			SlotMaterials.Add(Body->CreateDynamicMaterialInstance(Slot, Own));
+		}
+		else
+		{
+			Body->SetMaterial(Slot, Material);
+		}
 	}
 	SourcePelvis = Source->GetBoneIndex(TEXT("pelvis"));
 	SourceNeck = Source->GetBoneIndex(TEXT("neck_01"));
@@ -198,17 +265,100 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	return true;
 }
 
+bool UChaosImpactPuppetComponent::InitializeSkinned(USkeletalMesh* Mesh)
+{
+	Skin = CreatePoseable(Mesh);
+	SlotMaterials.Reset();
+	for (int32 Slot = 0; Slot < Skin->GetNumMaterials(); ++Slot)
+	{
+		if (UMaterialInterface* Own = Skin->GetMaterial(Slot))
+		{
+			SlotMaterials.Add(Skin->CreateDynamicMaterialInstance(Slot, Own));
+		}
+	}
+	const auto Fail = [this](const FString& Missing)
+	{
+		UE_LOG(LogChaosImpact, Warning, TEXT("Character model: %s not found, keeping the template character"), *Missing);
+		OnComponentDestroyed(false);
+		return false;
+	};
+	DrivenBody.Reset();
+	for (const FBoneMatch& Match : SkinnedBodyBones)
+	{
+		FDrivenBone Bone;
+		Bone.Name = Match.Model;
+		Bone.Source = Source->GetBoneIndex(Match.Source);
+		if (Skin->GetBoneIndex(Bone.Name) == INDEX_NONE || Bone.Source == INDEX_NONE)
+		{
+			return Fail(FString::Printf(TEXT("joint %s / %s"), Match.Model, Match.Source));
+		}
+		Bone.Reference = Skin->GetBoneTransformByName(Bone.Name, EBoneSpaces::ComponentSpace).GetRotation();
+		Bone.SourceReference = SourceReferenceRotation(Bone.Source);
+		DrivenBody.Add(Bone);
+	}
+	// The legs are one joint each (no knee or ankle): they swing toward where the source foot is.
+	const FName LegNames[2] = {TEXT("Character1_LeftUpLeg"), TEXT("Character1_RightUpLeg")};
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		FDrivenBone& Leg = DrivenLegs[Side];
+		Leg.Name = LegNames[Side];
+		if (Skin->GetBoneIndex(Leg.Name) == INDEX_NONE)
+		{
+			return Fail(Leg.Name.ToString());
+		}
+		const FTransform LegReference = Skin->GetBoneTransformByName(Leg.Name, EBoneSpaces::ComponentSpace);
+		Leg.Reference = LegReference.GetRotation();
+		LegLengths[Side] = FMath::Max(10.0f, static_cast<float>(LegReference.GetLocation().Z));
+	}
+	ChainLegL.SourceJoints[0] = Source->GetBoneIndex(TEXT("thigh_l"));
+	ChainLegL.SourceJoints[2] = Source->GetBoneIndex(TEXT("foot_l"));
+	ChainLegR.SourceJoints[0] = Source->GetBoneIndex(TEXT("thigh_r"));
+	ChainLegR.SourceJoints[2] = Source->GetBoneIndex(TEXT("foot_r"));
+	if (ChainLegL.SourceJoints[0] == INDEX_NONE || ChainLegL.SourceJoints[2] == INDEX_NONE
+		|| ChainLegR.SourceJoints[0] == INDEX_NONE || ChainLegR.SourceJoints[2] == INDEX_NONE)
+	{
+		return Fail(TEXT("source leg joints"));
+	}
+	if (!SetUpChain(ChainArmL, Skin, TEXT("Left"), true, true) || !SetUpChain(ChainArmR, Skin, TEXT("Right"), true, false))
+	{
+		return Fail(TEXT("arm joints"));
+	}
+	bSkinnedLegChains = true;
+	for (const TCHAR* Joint : {TEXT("Character1_LeftLeg"), TEXT("Character1_LeftFoot"), TEXT("Character1_RightLeg"), TEXT("Character1_RightFoot")})
+	{
+		bSkinnedLegChains &= Skin->GetBoneIndex(Joint) != INDEX_NONE;
+	}
+	bSkinnedLegChains = bSkinnedLegChains && SetUpChain(ChainLegL, Skin, TEXT("Left"), false, true)
+		&& SetUpChain(ChainLegR, Skin, TEXT("Right"), false, false);
+	SourcePelvis = DrivenBody[0].Source;
+	HipsReference = Skin->GetBoneTransformByName(DrivenBody[0].Name, EBoneSpaces::ComponentSpace).GetLocation();
+	const float PelvisHeight = static_cast<float>(SourceReferenceLocation(SourcePelvis).Z);
+	HeightRatio = PelvisHeight > 1.0f ? static_cast<float>(HipsReference.Z) / PelvisHeight : 1.0f;
+	const FName Finger(TEXT("Character1_RightHandMiddle1"));
+	PalmOffset = Skin->GetBoneIndex(Finger) != INDEX_NONE
+		? 0.6f * static_cast<float>(FVector::Dist(Skin->GetBoneTransformByName(Finger, EBoneSpaces::ComponentSpace).GetLocation(),
+			ChainArmR.Reference[2].GetLocation()))
+		: PalmDistance;
+	AddTickPrerequisiteComponent(Source);
+	SetColourIndex(0);
+	bReady = true;
+	UE_LOG(LogChaosImpact, Log, TEXT("Character model ready: skinned %s, arm ratio %.2f, height ratio %.2f"),
+		*GetNameSafe(Mesh), ChainArmR.LengthRatio, HeightRatio);
+	return true;
+}
+
 void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHierarchy)
 {
 	// The parts belong to the owning actor, so they would outlive this component unless removed with it.
 	bReady = false;
-	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR})
+	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin})
 	{
 		if (IsValid(Part) && !Part->IsBeingDestroyed())
 		{
 			Part->DestroyComponent();
 		}
 	}
+	Skin = nullptr;
 	Body = nullptr;
 	ArmL = nullptr;
 	ArmR = nullptr;
@@ -220,12 +370,20 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 {
 	const int32 Clamped = FMath::Clamp(Index, 0, ChaosImpactRoster::ColourCount - 1);
-	if (bRigid)
+	if (bRigid || bSkinned)
 	{
 		if (Clamped != ColourIndex && Material)
 		{
 			ColourIndex = Clamped;
-			Material->SetVectorParameterValue(TEXT("BodyColor"), ChaosImpactRoster::GetColourSwatch(Clamped));
+			const FLinearColor Swatch = ChaosImpactRoster::GetColourSwatch(Clamped);
+			Material->SetVectorParameterValue(TEXT("BodyColor"), Swatch);
+			for (UMaterialInstanceDynamic* SlotMaterial : SlotMaterials)
+			{
+				if (SlotMaterial)
+				{
+					SlotMaterial->SetVectorParameterValue(TEXT("BodyColor"), Swatch);
+				}
+			}
 		}
 		return;
 	}
@@ -242,7 +400,7 @@ void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 void UChaosImpactPuppetComponent::SetPartsVisible(const bool bShow)
 {
 	SetVisibility(bShow, false);
-	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR})
+	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin})
 	{
 		if (Part)
 		{
@@ -253,7 +411,7 @@ void UChaosImpactPuppetComponent::SetPartsVisible(const bool bShow)
 
 void UChaosImpactPuppetComponent::SetPartsOverlayMaterial(UMaterialInterface* Overlay)
 {
-	for (UMeshComponent* Part : TArray<UMeshComponent*>{Body, ArmL, ArmR, LegL, LegR})
+	for (UMeshComponent* Part : TArray<UMeshComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin})
 	{
 		if (Part)
 		{
@@ -270,7 +428,7 @@ bool UChaosImpactPuppetComponent::GetPalmLocation(const bool bRightHand, FVector
 		return false;
 	}
 	const FVector Along = (Chain.SolvedEnd - Chain.SolvedMid).GetSafeNormal();
-	OutLocation = GetComponentTransform().TransformPosition(Chain.SolvedEnd + Along * PalmDistance);
+	OutLocation = GetComponentTransform().TransformPosition(Chain.SolvedEnd + Along * (bSkinned ? PalmOffset : PalmDistance));
 	return true;
 }
 
@@ -336,6 +494,16 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 {
 	if (!bReady || !IsValid(Source) || !Source->GetSkinnedAsset() || !IsVisible())
 	{
+		return;
+	}
+	if (bSkinned)
+	{
+		UpdateSkinnedPose();
+		if (bPushNow)
+		{
+			Skin->RefreshBoneTransforms();
+		}
+		PlaceHeldBalls();
 		return;
 	}
 
@@ -430,6 +598,122 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 		}
 	}
 
+	PlaceHeldBalls();
+}
+
+void UChaosImpactPuppetComponent::UpdateSkinnedPose()
+{
+	// Legs first. They are one straight joint each (no knee), so copying the source's bent-knee steps swings them up
+	// stiffly. Instead each leg only swings forward and back with the source stride, pulled in under the hips (the
+	// model stands with its feet wide apart), and the hips sit as low as the planted leg allows.
+	// This model faces +Y; +X is its left.
+	constexpr float StrideScale = 0.75f;
+	constexpr float MaxSwingDegrees = 38.0f;
+	/** The bind pose spreads each leg about 15 degrees out from its hip; this stands the legs straight down. */
+	constexpr float InwardDegrees = 15.0f;
+	FVector LegDirections[2];
+	float PlantedDrop = TNumericLimits<float>::Max();
+	for (int32 Side = 0; Side < (bSkinnedLegChains ? 0 : 2); ++Side)
+	{
+		const FLimbChain& SourceLeg = Side == 0 ? ChainLegL : ChainLegR;
+		const FVector Step = SourceLocation(SourceLeg.SourceJoints[2]) - SourceLocation(SourceLeg.SourceJoints[0]);
+		const float SourceLength = FMath::Max(1.0f, static_cast<float>(FVector::Dist(
+			SourceReferenceLocation(SourceLeg.SourceJoints[0]), SourceReferenceLocation(SourceLeg.SourceJoints[2]))));
+		const float Swing = FMath::Clamp(FMath::Asin(FMath::Clamp(static_cast<float>(Step.Y) / SourceLength, -1.0f, 1.0f))
+			* StrideScale, FMath::DegreesToRadians(-MaxSwingDegrees), FMath::DegreesToRadians(MaxSwingDegrees));
+		const float Inward = FMath::DegreesToRadians(InwardDegrees) * (Side == 0 ? -1.0f : 1.0f);
+		LegDirections[Side] = FVector(FMath::Sin(Inward), FMath::Sin(Swing) * FMath::Cos(Inward),
+			-FMath::Cos(Swing) * FMath::Cos(Inward)).GetSafeNormal();
+		PlantedDrop = FMath::Min(PlantedDrop, LegLengths[Side] * (1.0f - static_cast<float>(-LegDirections[Side].Z)));
+	}
+	const FVector PelvisMove = (SourceLocation(SourcePelvis) - SourceReferenceLocation(SourcePelvis)) * HeightRatio;
+	// Only rises above the standing height come from the source (jumps); crouching knees have no match here.
+	// With knees the hips simply follow the source pelvis. Without, only rises above the standing height come from the
+	// source (jumps); crouching knees have no match there.
+	const FVector HipsLocation = bSkinnedLegChains ? HipsReference + PelvisMove
+		: FVector(HipsReference.X + PelvisMove.X, HipsReference.Y + PelvisMove.Y,
+			HipsReference.Z - PlantedDrop + FMath::Max(0.0f, static_cast<float>(PelvisMove.Z)));
+
+	// Hips, spine, neck, head and shoulders turn exactly as the source's do, measured from each skeleton's own
+	// reference pose.
+	FQuat HipsTurn = FQuat::Identity;
+	FQuat ShoulderTurns[2] = {FQuat::Identity, FQuat::Identity};
+	for (int32 Index = 0; Index < DrivenBody.Num(); ++Index)
+	{
+		const FDrivenBone& Bone = DrivenBody[Index];
+		FQuat Turn = SourceRotation(Bone.Source) * Bone.SourceReference.Inverse();
+		FTransform Transform = Skin->GetBoneTransformByName(Bone.Name, EBoneSpaces::ComponentSpace);
+		if (Index == 0)
+		{
+			HipsTurn = Turn;
+			Transform.SetLocation(HipsLocation);
+		}
+		Transform.SetRotation(Turn * Bone.Reference);
+		Skin->SetBoneTransformByName(Bone.Name, Transform, EBoneSpaces::ComponentSpace);
+		// The last two are the left and right shoulders.
+		if (Index >= DrivenBody.Num() - 2)
+		{
+			ShoulderTurns[Index - (DrivenBody.Num() - 2)] = Turn;
+		}
+	}
+
+	// Legs with knees: each foot goes where the source foot is relative to its hip, stretched to these legs, the knee
+	// bending the way the source knee does; the foot stays level with the hips.
+	for (int32 Side = 0; Side < (bSkinnedLegChains ? 2 : 0); ++Side)
+	{
+		FLimbChain& Chain = Side == 0 ? ChainLegL : ChainLegR;
+		const FVector Hip = Skin->GetBoneTransformByName(Chain.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
+		const FVector SourceHip = SourceLocation(Chain.SourceJoints[0]);
+		const FVector SourceKnee = SourceLocation(Chain.SourceJoints[1]);
+		const FVector SourceFoot = SourceLocation(Chain.SourceJoints[2]);
+		FVector Pole = SourceKnee - (SourceHip + SourceFoot) * 0.5f;
+		if (Pole.SizeSquared() < 1.0f)
+		{
+			Pole = FVector(0.0f, 1.0f, 0.0f);
+		}
+		FVector Mid;
+		FVector End;
+		SolveTwoBone(Hip, Hip + (SourceFoot - SourceHip) * Chain.LengthRatio, Pole.GetSafeNormal(), Chain.UpperLength,
+			Chain.LowerLength, Mid, End);
+		PoseChain(Chain, Skin, HipsTurn, Hip, Mid, End, true);
+	}
+
+	const FVector Down = HipsTurn.RotateVector(FVector(0.0f, 0.0f, -1.0f));
+	for (int32 Side = 0; Side < (bSkinnedLegChains ? 0 : 2); ++Side)
+	{
+		const FDrivenBone& Leg = DrivenLegs[Side];
+		const FQuat Swing = FQuat::FindBetweenNormals(Down, LegDirections[Side]);
+		FTransform Transform = Skin->GetBoneTransformByName(Leg.Name, EBoneSpaces::ComponentSpace);
+		Transform.SetRotation(Swing * HipsTurn * Leg.Reference);
+		Skin->SetBoneTransformByName(Leg.Name, Transform, EBoneSpaces::ComponentSpace);
+	}
+
+	// Arms: the hand goes where the source hand is relative to its shoulder, stretched to these arms, and exactly
+	// into the source hand while a throw is released.
+	const auto PoseArm = [&](FLimbChain& Chain, const bool bRight)
+	{
+		const FVector Shoulder = Skin->GetBoneTransformByName(Chain.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
+		const FVector SourceShoulder = SourceLocation(Chain.SourceJoints[0]);
+		const FVector SourceElbow = SourceLocation(Chain.SourceJoints[1]);
+		const FVector SourceHand = SourceLocation(Chain.SourceJoints[2]);
+		const float Exact = bRight ? RightHandExactWeight : 0.0f;
+		const FVector Target = FMath::Lerp(Shoulder + (SourceHand - SourceShoulder) * Chain.LengthRatio, SourceHand, Exact);
+		FVector Pole = SourceElbow - (SourceShoulder + SourceHand) * 0.5f;
+		if (Pole.SizeSquared() < 1.0f)
+		{
+			Pole = FVector(0.0f, -1.0f, -0.4f);
+		}
+		FVector Mid;
+		FVector End;
+		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);
+		PoseChain(Chain, Skin, ShoulderTurns[bRight ? 1 : 0], Shoulder, Mid, End, false);
+	};
+	PoseArm(ChainArmL, false);
+	PoseArm(ChainArmR, true);
+}
+
+void UChaosImpactPuppetComponent::PlaceHeldBalls()
+{
 	// Held balls sit in these palms; they are attached to the source hands, so they are moved here every frame.
 	for (const bool bRight : {true, false})
 	{

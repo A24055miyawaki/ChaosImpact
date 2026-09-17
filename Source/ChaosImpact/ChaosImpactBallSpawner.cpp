@@ -63,7 +63,8 @@ EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
 	const TPair<EChaosImpactBallType, float> Chances[] =
 	{
 		{EChaosImpactBallType::Fire, FireBallChance}, {EChaosImpactBallType::Ice, IceBallChance},
-		{EChaosImpactBallType::Thunder, ThunderBallChance}, {EChaosImpactBallType::Black, BlackBallChance}
+		{EChaosImpactBallType::Thunder, ThunderBallChance}, {EChaosImpactBallType::Black, BlackBallChance},
+		{EChaosImpactBallType::Wind, WindBallChance}
 	};
 	const float Roll = FMath::FRand();
 	float Threshold = 0.0f;

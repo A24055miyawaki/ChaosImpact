@@ -11,6 +11,7 @@
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactPuppetComponent.h"
+#include "ChaosImpactTornado.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactWarpPad.h"
 #include "NiagaraComponent.h"
@@ -323,6 +324,8 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	TraceNetPresentation(DeltaSeconds);
 	UpdateIceStatus(DeltaSeconds);
 	UpdateBlackHolePull(DeltaSeconds);
+	UpdateWindKnockback(DeltaSeconds);
+	UpdateWindCarry(DeltaSeconds);
 	if (CameraSnapFrames > 0 && CameraBoom && --CameraSnapFrames == 0)
 	{
 		CameraBoom->bEnableCameraLag = bCameraLagBeforeSnap;
@@ -1761,6 +1764,9 @@ void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CarriedBallCount, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CarriedBallTypes, COND_SkipOwner);
 	DOREPLIFETIME(AChaosImpactCharacter, IceFrozenUntilServerTime);
+	// The owner starts its own carry the moment its screen sees the catch.
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, WindCarrier, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, WindCarryStartServerTime, COND_SkipOwner);
 	DOREPLIFETIME(AChaosImpactCharacter, Health);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, bReplicatedDashing, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, ReplicatedDashDirection, COND_SkipOwner);
@@ -1886,6 +1892,150 @@ void AChaosImpactCharacter::ServerReportBallHit_Implementation(AChaosImpactBall*
 	}
 	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
 	Ball->AcceptReportedHit(this, HitLocation);
+}
+
+void AChaosImpactCharacter::ServerReportTornadoHit_Implementation(AChaosImpactTornado* Tornado)
+{
+	if (!IsValid(Tornado) || bEliminated)
+	{
+		return;
+	}
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Tornado->TryApplyReportedHit(this);
+}
+
+void AChaosImpactCharacter::StartWindKnockback(const FVector& Velocity, const float Seconds)
+{
+	if (!IsLocallyControlled() || bEliminated || !GetWorld())
+	{
+		return;
+	}
+	WindKnockbackVelocity = FVector(Velocity.X, Velocity.Y, 0.0f);
+	WindKnockbackSeconds = FMath::Max(Seconds, 0.05f);
+	WindKnockbackStartedAt = GetWorld()->GetTimeSeconds();
+	UE_LOG(LogChaosImpact, Log, TEXT("Wind knockback on %s (authority=%d) from %s"), *GetNameSafe(GetPlayerState()), HasAuthority(),
+		*GetActorLocation().ToCompactString());
+	// Blown off the ground a little too.
+	if (GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
+	{
+		LaunchCharacter(FVector(0.0f, 0.0f, 420.0f), false, false);
+	}
+	PlayControllerRumble(0.6f, 0.9f, 0.25f);
+}
+
+void AChaosImpactCharacter::BeginWindCarry(AChaosImpactTornado* Tornado)
+{
+	if (!IsValid(Tornado) || bEliminated || !GetWorld() || WindCarrier == Tornado)
+	{
+		return;
+	}
+	WindCarrier = Tornado;
+	WindCarryStartServerTime = GetSharedServerTime();
+	const FVector Offset = GetActorLocation() - Tornado->GetCenter();
+	WindCarryAngle = FMath::Atan2(static_cast<float>(Offset.Y), static_cast<float>(Offset.X));
+	WindCarryRadius = FMath::Max(static_cast<float>(Offset.Size2D()), 40.0f);
+	if (IsLocallyControlled())
+	{
+		if (bIsChargingThrow)
+		{
+			CancelChargingThrow();
+		}
+		GetCharacterMovement()->StopMovementImmediately();
+		PlayControllerRumble(0.5f, 0.8f, WindCarrySeconds);
+	}
+	if (HasAuthority())
+	{
+		ForceNetUpdate();
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Wind carry on %s (authority=%d local=%d)"), *GetNameSafe(GetPlayerState()), HasAuthority(),
+		IsLocallyControlled());
+}
+
+bool AChaosImpactCharacter::IsMoveInputIgnored() const
+{
+	return Super::IsMoveInputIgnored() || WindCarrier != nullptr;
+}
+
+void AChaosImpactCharacter::UpdateWindCarry(const float DeltaSeconds)
+{
+	const auto RestMesh = [this]()
+	{
+		if (bWindCarryPosed && GetMesh())
+		{
+			GetMesh()->SetRelativeLocationAndRotation(MeshRestLocation, MeshRestRotation);
+		}
+		bWindCarryPosed = false;
+	};
+	AChaosImpactTornado* Tornado = WindCarrier.Get();
+	if (!Tornado)
+	{
+		RestMesh();
+		return;
+	}
+	const float Elapsed = FMath::Max(0.0f, static_cast<float>(GetSharedServerTime() - WindCarryStartServerTime));
+	if (bEliminated || !IsValid(Tornado) || Elapsed >= WindCarrySeconds || !GetWorld())
+	{
+		if (IsLocallyControlled() && IsValid(Tornado) && !bEliminated)
+		{
+			// Thrown out of the funnel, along its whirl.
+			FVector Outward = (GetActorLocation() - Tornado->GetCenter()).GetSafeNormal2D();
+			if (Outward.IsNearlyZero())
+			{
+				Outward = GetActorForwardVector().GetSafeNormal2D();
+			}
+			StartWindKnockback((Outward + FVector::CrossProduct(FVector::UpVector, Outward) * 0.5f).GetSafeNormal2D() * 1200.0f, 0.4f);
+		}
+		WindCarrier = nullptr;
+		RestMesh();
+		return;
+	}
+	const float Progress = Elapsed / WindCarrySeconds;
+	if (IsLocallyControlled())
+	{
+		// Drawn in toward the funnel and whirled round it, faster as it goes on.
+		const float Delta = FMath::Clamp(DeltaSeconds, 0.0f, 0.1f);
+		WindCarryAngle += (7.0f + 6.0f * Progress) * Delta;
+		WindCarryRadius = FMath::FInterpTo(WindCarryRadius, 55.0f, Delta, 6.0f);
+		const FVector Target = Tornado->GetCenter()
+			+ FVector(FMath::Cos(WindCarryAngle) * WindCarryRadius, FMath::Sin(WindCarryAngle) * WindCarryRadius, 0.0f);
+		const FVector Move(Target.X - GetActorLocation().X, Target.Y - GetActorLocation().Y, 0.0f);
+		AddActorWorldOffset(Move, true);
+		bRumbleBlackHolePull = true;
+		PreventClientMoveCombining();
+	}
+	// Everyone sees the body lifted and spinning in the wind.
+	if (USkeletalMeshComponent* Body = GetMesh())
+	{
+		if (!bWindCarryPosed)
+		{
+			MeshRestLocation = Body->GetRelativeLocation();
+			MeshRestRotation = Body->GetRelativeRotation();
+			bWindCarryPosed = true;
+		}
+		const float Lift = 160.0f * FMath::Sin(FMath::Min(Progress * 1.15f, 1.0f) * UE_PI * 0.5f)
+			* (Progress > 0.8f ? 1.0f - (Progress - 0.8f) / 0.2f * 0.6f : 1.0f);
+		Body->SetRelativeLocationAndRotation(MeshRestLocation + FVector(0.0f, 0.0f, Lift),
+			MeshRestRotation + FRotator(0.0f, Elapsed * 1300.0f, 0.0f));
+	}
+}
+
+void AChaosImpactCharacter::UpdateWindKnockback(const float DeltaSeconds)
+{
+	if (!IsLocallyControlled() || DeltaSeconds <= 0.0f || !GetWorld() || WindKnockbackSeconds <= 0.0f)
+	{
+		return;
+	}
+	const float Elapsed = static_cast<float>(GetWorld()->GetTimeSeconds() - WindKnockbackStartedAt);
+	if (bEliminated || Elapsed >= WindKnockbackSeconds)
+	{
+		WindKnockbackSeconds = 0.0f;
+		return;
+	}
+	// Strongest at once, easing out.
+	const float Remaining = 1.0f - Elapsed / WindKnockbackSeconds;
+	AddActorWorldOffset(WindKnockbackVelocity * (Remaining * Remaining * 1.6f) * DeltaSeconds, true);
+	bRumbleBlackHolePull = true;
+	PreventClientMoveCombining();
 }
 
 void AChaosImpactCharacter::ClientTeleportTo_Implementation(FVector_NetQuantize Location, FRotator Rotation)
@@ -2725,6 +2875,13 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 			HeldBlackMaterial = MakeEmissive(this, FLinearColor(0.012f, 0.0f, 0.025f), 1.0f);
 		}
 		Material = HeldBlackMaterial;
+		break;
+	case EChaosImpactBallType::Wind:
+		if (!HeldWindMaterial)
+		{
+			HeldWindMaterial = MakeEmissive(this, FLinearColor(0.2f, 0.9f, 0.35f), 1.4f);
+		}
+		Material = HeldWindMaterial;
 		break;
 	default:
 		// No override for a normal ball: the mesh's own material.

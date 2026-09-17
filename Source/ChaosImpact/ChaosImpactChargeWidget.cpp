@@ -683,6 +683,10 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(0.5f, 0.26f, 0.82f), FLinearColor(0.045f, 0.0f, 0.09f, 0.97f),
 				FLinearColor(0.68f, 0.3f, 1.0f), FLinearColor(0.24f, 0.07f, 0.4f, 0.95f),
 				FLinearColor(0.86f, 0.62f, 1.0f), FLinearColor(0.86f, 0.72f, 1.0f)};
+		case EChaosImpactBallType::Wind:
+			return {FLinearColor(0.8f, 1.0f, 0.78f), FLinearColor(0.0f, 0.16f, 0.04f, 0.97f),
+				FLinearColor(0.35f, 1.0f, 0.45f), FLinearColor(0.06f, 0.42f, 0.14f, 0.95f),
+				FLinearColor(0.84f, 1.0f, 0.8f), FLinearColor(0.78f, 1.0f, 0.74f)};
 		default:
 			return {FLinearColor(0.78f, 0.96f, 1.0f), FLinearColor(0.0f, 0.1f, 0.22f, 0.96f),
 				FLinearColor(0.0f, 0.82f, 1.0f), FLinearColor(0.0f, 0.12f, 0.24f, 0.9f),
@@ -977,6 +981,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		case EChaosImpactBallType::Ice: Body = FLinearColor(0.58f, 0.88f, 1.0f, 1.0f); break;
 		case EChaosImpactBallType::Thunder: Body = FLinearColor(1.0f, 0.8f, 0.1f, 1.0f); break;
 		case EChaosImpactBallType::Black: Body = FLinearColor(0.2f, 0.06f, 0.34f, 1.0f); break;
+		case EChaosImpactBallType::Wind: Body = FLinearColor(0.2f, 0.8f, 0.32f, 1.0f); break;
 		default: break;
 		}
 		const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -1020,6 +1025,18 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 			{
 				Paint.Line(Center + Points[Index] * Radius, Center + Points[Index + 1] * Radius,
 					FLinearColor(1.0f, 1.0f, 0.86f, Flicker), 3.0f);
+			}
+			break;
+		}
+		case EChaosImpactBallType::Wind:
+		{
+			// Three gusts curling round the middle.
+			const float Swirl = FMath::Fmod(Time * 260.0f, 360.0f);
+			for (int32 Gust = 0; Gust < 3; ++Gust)
+			{
+				const float Start = Swirl + Gust * 120.0f;
+				Paint.Arc(Center, Radius * (0.28f + 0.16f * Gust), Start, Start + 150.0f,
+					FLinearColor(0.88f, 1.0f, 0.84f, 0.95f - 0.15f * Gust), 2.5f);
 			}
 			break;
 		}

@@ -81,6 +81,11 @@ EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
 
 void AChaosImpactBallSpawner::TrySpawnBall()
 {
+	// A ball carried away from the pad (by a tornado) no longer holds its place.
+	if (ActiveBall.IsValid() && ActiveBall->HasLeftSpawnPoint())
+	{
+		ActiveBall.Reset();
+	}
 	if (!GetWorld() || !HasAuthority() || !BallClass || ActiveBall.IsValid())
 	{
 		return;

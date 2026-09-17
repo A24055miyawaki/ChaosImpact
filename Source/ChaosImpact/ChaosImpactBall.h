@@ -111,10 +111,12 @@ public:
 	/** Server: where a swept-up ball is carried to this frame. */
 	void CarryInWind(const FVector& Location);
 	/**
-	 * Server: drops a swept-up ball at Ground: a spawner's ball hovers there again, a thrown ball that had landed
-	 * rolls away along FlingVelocity.
+	 * Server: drops a swept-up ball at Ground, rolling away along FlingVelocity like a thrown ball that landed (and
+	 * disappearing like one if nobody collects it).
 	 */
 	void ReleaseFromWind(const FVector& Ground, const FVector& FlingVelocity);
+	/** A ball placed by a spawner that has since been carried off (its spawner puts out another). */
+	bool HasLeftSpawnPoint() const { return bLeftSpawnPoint; }
 	/** Tuning and tests: how long a landed ball lies around, and how much of that time it spends blinking. */
 	void SetLandedPickupLifetime(const float Seconds, const float BlinkSeconds)
 	{
@@ -359,10 +361,8 @@ protected:
 	float FlightSeconds = 0.0f;
 	float PickupAvailableAtSeconds = 0.0f;
 	bool bPickupConsumed = false;
-	/** Server: swept up by a tornado (see CatchInWind); bWindCaughtHovering: it was a hovering pickup before. */
+	/** Server: swept up by a tornado (see CatchInWind). */
 	bool bCarriedByWind = false;
-	bool bWindCaughtHovering = false;
-	/** How high it hovered over the floor when swept up. */
-	float WindHoverHeight = 50.0f;
+	bool bLeftSpawnPoint = false;
 	TWeakObjectPtr<APawn> ThrowingPawn;
 };

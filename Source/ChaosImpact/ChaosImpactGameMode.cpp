@@ -1321,6 +1321,10 @@ void AChaosImpactGameMode::ClearMatchBalls()
 	{
 		It->Destroy();
 	}
+	for (TActorIterator<AChaosImpactTornado> It(GetWorld()); It; ++It)
+	{
+		It->Destroy();
+	}
 }
 
 void AChaosImpactGameMode::DestroyStageBallSpawners()

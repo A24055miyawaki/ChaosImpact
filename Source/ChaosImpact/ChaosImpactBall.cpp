@@ -1262,15 +1262,8 @@ bool AChaosImpactBall::CatchInWind()
 		return false;
 	}
 	bCarriedByWind = true;
-	bWindCaughtHovering = !bIsRolling;
-	WindHoverHeight = CollisionSphere->GetScaledSphereRadius() + 30.0f;
-	FHitResult GroundHit;
-	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ChaosImpactBallHoverHeight), false, this);
-	if (GetWorld()->LineTraceSingleByChannel(GroundHit, GetActorLocation() + FVector::UpVector * 20.0f,
-		GetActorLocation() - FVector::UpVector * 2000.0f, ECC_WorldStatic, QueryParams))
-	{
-		WindHoverHeight = FMath::Clamp(static_cast<float>(GetActorLocation().Z - GroundHit.ImpactPoint.Z), 20.0f, 160.0f);
-	}
+	// Whatever it was (a spawner's or a summoned ball), it is an ordinary loose ball from now on.
+	bLeftSpawnPoint = true;
 	// Carried like a hovering ball (its moving base replicates), out of everyone's reach.
 	if (bIsRolling)
 	{
@@ -1304,16 +1297,8 @@ void AChaosImpactBall::ReleaseFromWind(const FVector& Ground, const FVector& Fli
 		return;
 	}
 	bCarriedByWind = false;
-	if (bWindCaughtHovering)
-	{
-		SetActorLocation(Ground + FVector(0.0f, 0.0f, WindHoverHeight));
-		MakePickup();
-	}
-	else
-	{
-		SetActorLocation(Ground + FVector(0.0f, 0.0f, CollisionSphere->GetScaledSphereRadius() + 2.0f));
-		MakeRollingPickup(FlingVelocity);
-	}
+	SetActorLocation(Ground + FVector(0.0f, 0.0f, CollisionSphere->GetScaledSphereRadius() + 2.0f));
+	MakeRollingPickup(FlingVelocity);
 	ForceNetUpdate();
 }
 

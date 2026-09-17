@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "ChaosImpactBall.h"
+#include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactHazardZone.h"
@@ -427,6 +428,143 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactWindDodgeTest, "ChaosImpact.Trainin
 bool FChaosImpactWindDodgeTest::RunTest(const FString& Parameters)
 {
 	ADD_LATENT_AUTOMATION_COMMAND(FWindDodgeCommand(this));
+	return true;
+}
+
+namespace
+{
+	/**
+	 * Run in training (?CITraining=1?CICPUCount=1?CITargets=0): a tornado sweeps the ball off a spawner pad. The pad puts
+	 * out a new ball, and the swept one ends up an ordinary loose ball that disappears when nobody collects it.
+	 */
+	class FWindSpawnerCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FWindSpawnerCommand(FAutomationTestBase* InTest) : Test(InTest) {}
+
+		virtual bool Update() override
+		{
+			const double Now = FPlatformTime::Seconds();
+			UWorld* World = nullptr;
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				if (Context.World() && Context.World()->IsGameWorld())
+				{
+					World = Context.World();
+					break;
+				}
+			}
+			AChaosImpactPlayerController* PC = World ? Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController()) : nullptr;
+			AChaosImpactCharacter* Player = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+			if (!Player || !PC->IsGameplayActive())
+			{
+				if (Now - StartedAt > 120.0)
+				{
+					Test->AddError(TEXT("No playable character."));
+					return true;
+				}
+				return false;
+			}
+			AChaosImpactBall* Swept = SweptBall.Get();
+			if (Swept && Swept->IsCarriedByWind())
+			{
+				bSawCarried = true;
+			}
+			if (Now < NextAt)
+			{
+				return false;
+			}
+			switch (Stage)
+			{
+			case 0:
+			{
+				for (TActorIterator<AChaosImpactCPUController> It(World); It; ++It)
+				{
+					It->SetActorTickEnabled(false);
+				}
+				// The spawner furthest from the player, holding a ball, with open floor to release a tornado from.
+				AChaosImpactBallSpawner* Best = nullptr;
+				for (TActorIterator<AChaosImpactBallSpawner> It(World); It; ++It)
+				{
+					AChaosImpactBall* Ball = It->GetActiveBall();
+					if (Ball && Ball->IsPickup() && (!Best
+						|| FVector::Dist2D(It->GetActorLocation(), Player->GetActorLocation()) > FVector::Dist2D(Best->GetActorLocation(), Player->GetActorLocation())))
+					{
+						Best = *It;
+					}
+				}
+				if (!Best)
+				{
+					if (Now - StartedAt < 60.0)
+					{
+						NextAt = Now + 0.5;
+						return false;
+					}
+					Test->AddError(TEXT("No ball spawner with a ball in this level."));
+					return true;
+				}
+				Spawner = Best;
+				SweptBall = Best->GetActiveBall();
+				const FVector Pad = Best->GetActorLocation();
+				FVector From = Pad;
+				float BestOpen = -1.0f;
+				for (int32 Turn = 0; Turn < 16; ++Turn)
+				{
+					const FVector Candidate = FRotator(0.0f, Turn * 22.5f, 0.0f).Vector();
+					FHitResult Blocked;
+					const FVector Lift(0.0f, 0.0f, 70.0f);
+					const float Open = World->SweepSingleByObjectType(Blocked, Pad + Lift, Pad + Lift + Candidate * 400.0f, FQuat::Identity,
+						FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(60.0f),
+						FCollisionQueryParams(SCENE_QUERY_STAT(WindSpawnerTestOpen), false))
+						? static_cast<float>(Blocked.Distance) : 400.0f;
+					if (Open > BestOpen)
+					{
+						BestOpen = Open;
+						From = Pad + Candidate * FMath::Min(Open - 20.0f, 350.0f);
+					}
+				}
+				AChaosImpactTornado::Release(World, From + FVector(0.0f, 0.0f, 80.0f), Pad - From, Player);
+				Stage = 1;
+				NextAt = Now + AChaosImpactTornado::ActiveSeconds + AChaosImpactTornado::CollapseSeconds + 5.0;
+				return false;
+			}
+			case 1:
+			{
+				AChaosImpactBallSpawner* Pad = Spawner.Get();
+				Test->TestTrue(TEXT("The tornado sweeps up the pad's ball"), bSawCarried);
+				Test->TestTrue(TEXT("The pad puts out a new ball"), Pad && Pad->GetActiveBall() && Pad->GetActiveBall() != Swept);
+				Test->TestTrue(TEXT("The swept ball lies loose again"), !Swept || (Swept->IsPickup() && !Swept->IsCarriedByWind()));
+				Stage = 2;
+				// A loose ball's lifetime (10 s, counted from when it was dropped) and a margin.
+				NextAt = Now + 8.0;
+				return false;
+			}
+			case 2:
+				Test->TestFalse(TEXT("The swept ball disappears when nobody collects it"), SweptBall.IsValid());
+				return true;
+			default:
+				return true;
+			}
+		}
+
+	private:
+		FAutomationTestBase* Test;
+		double StartedAt = FPlatformTime::Seconds();
+		double NextAt = 0.0;
+		int32 Stage = 0;
+		bool bSawCarried = false;
+		TWeakObjectPtr<AChaosImpactBallSpawner> Spawner;
+		TWeakObjectPtr<AChaosImpactBall> SweptBall;
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactWindSpawnerTest, "ChaosImpact.Training.WindBallSpawner",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+	| EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactWindSpawnerTest::RunTest(const FString& Parameters)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FWindSpawnerCommand(this));
 	return true;
 }
 

@@ -55,8 +55,6 @@ public:
 
 	EChaosImpactBallType GetZoneType() const { return ZoneType; }
 	APawn* GetSourcePawn() const { return SourcePawn; }
-	/** True while a repeating burn tick is being applied, so it is not scored as a new hit. */
-	bool IsApplyingBurnTick() const { return bApplyingBurnTick; }
 	float GetRadius() const;
 	float GetActiveSeconds() const;
 
@@ -124,7 +122,6 @@ protected:
 	TSet<TWeakObjectPtr<AActor>> Affected;
 	TMap<TWeakObjectPtr<AActor>, double> NextBurnAt;
 	double SpawnedAt = 0.0;
-	bool bApplyingBurnTick = false;
 
 	// Presentation: Niagara Examples Pack systems plus runtime ice geometry.
 	struct FCrystal

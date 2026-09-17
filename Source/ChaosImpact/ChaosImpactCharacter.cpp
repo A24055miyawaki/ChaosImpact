@@ -1303,11 +1303,9 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	{
 		if (AChaosImpactGameMode* ScoringMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
 		{
-			// A burning zone keeps hurting; only its first contact scores the hit, but a knockout always counts.
-			const bool bHit = !(SourceZone && SourceZone->IsApplyingBurnTick());
+			// Every hit scores, each burn of the fire zone included, and a knockout adds its bonus.
 			const bool bKnockout = Health <= 0.0f;
-			const int32 Points = (bHit ? ChaosImpactMatch::HitPoints : 0)
-				+ (bKnockout ? ChaosImpactMatch::KnockoutBonusPoints : 0);
+			const int32 Points = ChaosImpactMatch::HitPoints + (bKnockout ? ChaosImpactMatch::KnockoutBonusPoints : 0);
 			if (Points > 0)
 			{
 				ScoringMode->AwardMatchPoints(SourcePawn->GetPlayerState(), Points, bKnockout);

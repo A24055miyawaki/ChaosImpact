@@ -31,8 +31,8 @@ namespace
 	constexpr float IconGap = 12.0f;
 	constexpr float GridLeft = 76.0f;
 	constexpr float GridTop = 180.0f;
-	constexpr float PanelTop = 140.0f;
-	constexpr float PanelBottom = 790.0f;
+	constexpr float SelectPanelTop = 140.0f;
+	constexpr float SelectPanelBottom = 790.0f;
 	constexpr float WindowsLeft = 930.0f;
 	constexpr float WindowsWidth = 614.0f;
 	constexpr float WindowGap = 20.0f;
@@ -126,21 +126,21 @@ FVector2D UChaosImpactCharacterSelect::TileOrigin(const int32 Tile) const
 
 FBox2D UChaosImpactCharacterSelect::WindowRect(const int32 Player) const
 {
-	const float Height = PanelBottom - PanelTop;
+	const float Height = SelectPanelBottom - SelectPanelTop;
 	if (Slots.Num() <= 1)
 	{
-		return FBox2D(FVector2D(WindowsLeft, PanelTop), FVector2D(WindowsLeft + WindowsWidth, PanelBottom));
+		return FBox2D(FVector2D(WindowsLeft, SelectPanelTop), FVector2D(WindowsLeft + WindowsWidth, SelectPanelBottom));
 	}
 	if (Slots.Num() == 2)
 	{
 		const float Each = (Height - WindowGap) * 0.5f;
-		const float Top = PanelTop + Player * (Each + WindowGap);
+		const float Top = SelectPanelTop + Player * (Each + WindowGap);
 		return FBox2D(FVector2D(WindowsLeft, Top), FVector2D(WindowsLeft + WindowsWidth, Top + Each));
 	}
 	const float EachWidth = (WindowsWidth - WindowGap) * 0.5f;
 	const float EachHeight = (Height - WindowGap) * 0.5f;
 	const float Left = WindowsLeft + (Player % 2) * (EachWidth + WindowGap);
-	const float Top = PanelTop + (Player / 2) * (EachHeight + WindowGap);
+	const float Top = SelectPanelTop + (Player / 2) * (EachHeight + WindowGap);
 	return FBox2D(FVector2D(Left, Top), FVector2D(Left + EachWidth, Top + EachHeight));
 }
 
@@ -620,7 +620,7 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 	{
 		const float In = EaseOut((T - 0.05f) / 0.3f);
 		const FPainter Panel{Design, Elements, Layer + 1, In};
-		RoundBox(Panel, 56.0f, PanelTop, 850.0f, PanelBottom - PanelTop, 30.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.88f));
+		RoundBox(Panel, 56.0f, SelectPanelTop, 850.0f, SelectPanelBottom - SelectPanelTop, 30.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.88f));
 	}
 	for (int32 Tile = 0; Tile < GetTileCount(); ++Tile)
 	{

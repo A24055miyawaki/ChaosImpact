@@ -675,11 +675,7 @@ void AChaosImpactHazardZone::TickBurning()
 		{
 			return;
 		}
-		float Applied = 0.0f;
-		{
-			TGuardValue<bool> BurnTickGuard(bApplyingBurnTick, true);
-			Applied = UGameplayStatics::ApplyDamage(Victim, ZoneDamage, SourceController, this, nullptr);
-		}
+		const float Applied = UGameplayStatics::ApplyDamage(Victim, ZoneDamage, SourceController, this, nullptr);
 		// A dodge in progress is not burned; check again right after it ends.
 		NextAt = Now + (Applied > 0.0f ? FireBurnInterval : 0.15f);
 		if (Applied > 0.0f)

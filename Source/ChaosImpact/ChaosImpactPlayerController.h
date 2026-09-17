@@ -38,6 +38,14 @@ public:
 	void PrepareTrainingControllerAssignment(int32 LocalPlayerCount);
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
 	void ConfirmControllerAssignments();
+	/** Character select, right after controller assignment: every local player picks a character and a colour. */
+	void OpenCharacterSelect();
+	/** Everyone is ready: on to wherever the assignment was leading (training, the rules, the room choice). */
+	void ConfirmCharacterSelection();
+	/** Back to controller assignment. */
+	void CancelCharacterSelection();
+	/** Which of this machine's players (0-3) a device belongs to on the menus; INDEX_NONE when nobody holds it. */
+	int32 GetLocalPlayerIndexForDevice(bool bKeyboard, int32 InputDeviceId) const;
 	/** Called by the viewport before normal routing so an unassigned pad can join. */
 	bool RegisterControllerJoin(int32 InputDeviceId, int32 LegacyControllerId);
 	/** Registers the single keyboard/mouse pair into the next open player slot. */
@@ -191,6 +199,10 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetReadyForMatch(bool bReady);
+
+	/** The character and colour this player picked on their own machine. */
+	UFUNCTION(Server, Reliable)
+	void ServerSetLoadout(int32 InCharacterIndex, int32 InColour);
 	
 protected:
 	UPROPERTY(Transient)
@@ -255,6 +267,9 @@ protected:
 	FString BuildLocalSetupOptions();
 
 	virtual void PlayerTick(float DeltaTime) override;
+	/** Hands this player's character select pick to their player state once it exists. */
+	void SendLoadout();
+	bool bLoadoutSent = false;
 	/** Follows the match phase: team select screen, and for a local match the rematch menu after the results. */
 	void UpdateMatchScreens();
 	/** Opening camera: flies over the stage, then dives into this player's own view. */

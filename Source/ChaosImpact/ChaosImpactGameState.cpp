@@ -8,6 +8,8 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactPlayerState, JoinOrder);
+	DOREPLIFETIME(AChaosImpactPlayerState, CharacterIndex);
+	DOREPLIFETIME(AChaosImpactPlayerState, ColourChoice);
 	DOREPLIFETIME(AChaosImpactPlayerState, bRoomHost);
 	DOREPLIFETIME(AChaosImpactPlayerState, Knockouts);
 	DOREPLIFETIME(AChaosImpactPlayerState, Points);

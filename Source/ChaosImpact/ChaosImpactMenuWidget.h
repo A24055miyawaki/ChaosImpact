@@ -7,6 +7,7 @@
 
 class UTexture2D;
 class UEditableText;
+class UChaosImpactCharacterSelect;
 
 /** Native, resolution-independent front end. All hit regions and D-pad focus share one layout. */
 UCLASS()
@@ -29,6 +30,10 @@ public:
 	 * NativeOnKeyDown. Returns true for the press that joined, so it does not also press a menu entry.
 	 */
 	bool TryJoinControllerFromAnyUser(const FKeyEvent& InKeyEvent);
+	/** Every device's key and stick events, before Slate focus decides who gets them. True when consumed. */
+	bool HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent);
+	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
+	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -97,6 +102,9 @@ private:
 	TSharedPtr<class IInputProcessor> JoinInputProcessor;
 	/** The room list is rebuilt when the session subsystem's list changes. */
 	int32 LastRoomListingsVersion = -1;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactCharacterSelect> CharacterSelect;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> LogoTexture;

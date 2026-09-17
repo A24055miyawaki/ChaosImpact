@@ -33,6 +33,13 @@ class AChaosImpactPlayerState : public APlayerState
 public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	/** Character select: roster index and colour (0-3; INDEX_NONE until this player's machine has sent it). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Character")
+	int32 CharacterIndex = 0;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Character")
+	int32 ColourChoice = INDEX_NONE;
+
 	/** 0 for the host, then 1, 2, ... in the order members entered the room. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	int32 JoinOrder = 0;

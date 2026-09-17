@@ -194,6 +194,13 @@ namespace
 					Test->TestTrue(TEXT("Keyboard P1 is ready without a controller"),
 						PC->AreControllerAssignmentsComplete());
 					MenuKey(EKeys::Enter);
+					if (!Check(EChaosImpactScreen::CharacterSelect,
+						TEXT("Assignment leads to character select"))) { return true; }
+					// Enter picks the character, Enter again its colour, and a third Enter starts once everyone
+					// (here, only 1P) is done.
+					MenuKey(EKeys::Enter);
+					MenuKey(EKeys::Enter);
+					MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
 			}
@@ -554,6 +561,11 @@ namespace
 				if (!Check(EChaosImpactScreen::ControllerAssignment,
 					TEXT("Restart also shows controller assignment"))) { return true; }
 				MenuKey(EKeys::Enter);
+				if (!Check(EChaosImpactScreen::CharacterSelect,
+					TEXT("Restart also shows character select"))) { return true; }
+				MenuKey(EKeys::Enter);
+				MenuKey(EKeys::Enter);
+				MenuKey(EKeys::Enter);
 				TravelStartedAt = Now;
 				break;
 			case 21:
@@ -585,6 +597,8 @@ namespace
 				if (!Check(EChaosImpactScreen::ControllerAssignment, TEXT("Online player count opens assignment"))) { return true; }
 				Test->TestTrue(TEXT("Keyboard P1 is ready for online"), PC->AreControllerAssignmentsComplete());
 				PC->ConfirmControllerAssignments();
+				if (!Check(EChaosImpactScreen::CharacterSelect, TEXT("Online assignment leads to character select"))) { return true; }
+				PC->ConfirmCharacterSelection();
 				if (!Check(EChaosImpactScreen::MultiReady, TEXT("Online assignment leads to the room screen, not training"))) { return true; }
 				Test->AddInfo(TEXT("Menu and ball flow complete: inventory, both trajectories, retry, spawners and navigation."));
 				return true;

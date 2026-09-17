@@ -10,6 +10,8 @@
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
+#include "ChaosImpactPuppetComponent.h"
+#include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactWarpPad.h"
 #include "NiagaraComponent.h"
 #include "ProceduralMeshComponent.h"
@@ -63,6 +65,25 @@ namespace
 		const float RemappedMagnitude = FMath::Clamp(
 			(Magnitude - DeadZone) / FMath::Max(1.0f - DeadZone, UE_SMALL_NUMBER), 0.0f, 1.0f);
 		return Input.GetSafeNormal() * RemappedMagnitude;
+	}
+
+	/** The roster character a player's model shows. */
+	int32 ShownCharacterIndex(const AChaosImpactPlayerState* State)
+	{
+#if !UE_BUILD_SHIPPING
+		// Development (-CIDevCharacter=<index>): every character, CPUs included, shows that model (performance checks).
+		static const int32 DevCharacter = []()
+		{
+			int32 Value = INDEX_NONE;
+			FParse::Value(FCommandLine::Get(), TEXT("CIDevCharacter="), Value);
+			return Value;
+		}();
+		if (DevCharacter >= 0)
+		{
+			return ChaosImpactRoster::ClampIndex(DevCharacter);
+		}
+#endif
+		return ChaosImpactRoster::ClampIndex(State ? State->CharacterIndex : 0);
 	}
 }
 
@@ -242,6 +263,7 @@ void AChaosImpactCharacter::BeginPlay()
 	LocomotionAnimInstanceClass = GetMesh() ? GetMesh()->GetAnimClass() : nullptr;
 	AimDirection = GetActorForwardVector().GetSafeNormal2D();
 	InitialMeshRelativeScale = GetMesh()->GetRelativeScale3D();
+	CreateToonCharacter();
 	for (UStaticMeshComponent* GuidePiece : AimGuidePieces)
 	{
 		if (UMaterialInstanceDynamic* Material = GuidePiece->CreateDynamicMaterialInstance(0))
@@ -297,6 +319,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		UpdateMovementAuthority();
 	}
 	UpdatePresentationLead(DeltaSeconds);
+	UpdateToonCharacter();
 	TraceNetPresentation(DeltaSeconds);
 	UpdateIceStatus(DeltaSeconds);
 	UpdateBlackHolePull(DeltaSeconds);
@@ -743,6 +766,7 @@ void AChaosImpactCharacter::PerformDash(const FVector& Direction)
 
 	Stamina = FMath::Clamp(Stamina - DashCost, 0.0f, MaxStamina);
 	bIsDashing = true;
+	DashStartLocation = GetActorLocation();
 	DashElapsedSeconds = 0.0f;
 	DashDistanceApplied = 0.0f;
 	bWasFallingBeforeDash = GetCharacterMovement()->IsFalling();
@@ -763,6 +787,22 @@ void AChaosImpactCharacter::PerformDash(const FVector& Direction)
 	OnDashStarted(DashDirection);
 }
 
+void AChaosImpactCharacter::PreventClientMoveCombining()
+{
+	// A client folds similar moves into one before sending them, and rewinds to the first move's start to do it.
+	// That rewind erased every move made directly on the actor since then: a joiner in a black hole was never
+	// drawn in, and a joiner's dash came up short. The host's own character never takes that path.
+	if (HasAuthority() || !IsLocallyControlled())
+	{
+		return;
+	}
+	if (FNetworkPredictionData_Client_Character* ClientData = GetCharacterMovement()->GetPredictionData_Client_Character();
+		ClientData && ClientData->PendingMove.IsValid())
+	{
+		ClientData->PendingMove->bForceNoCombine = true;
+	}
+}
+
 void AChaosImpactCharacter::UpdateDash(const float DeltaSeconds)
 {
 	const float SafeDuration = FMath::Max(DashDuration, UE_SMALL_NUMBER);
@@ -777,6 +817,7 @@ void AChaosImpactCharacter::UpdateDash(const float DeltaSeconds)
 	if (!IsRemotePlayerOnServer() || !GetCharacterMovement()->bServerAcceptClientAuthoritativePosition)
 	{
 		AddActorWorldOffset(DashDirection * StepDistance, true, &DashHit);
+		PreventClientMoveCombining();
 	}
 	DashDistanceApplied = TargetDistance;
 
@@ -797,6 +838,15 @@ void AChaosImpactCharacter::FinishDash()
 
 	bIsDashing = false;
 	DashEndedAtSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+#if !UE_BUILD_SHIPPING
+	static const bool bDashLog = FParse::Param(FCommandLine::Get(), TEXT("CIDashLog"));
+	if (bDashLog && GetPlayerState())
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("DashLog who=%s local=%d authority=%d distance=%.0f"),
+			*GetPlayerState()->GetPlayerName(), IsLocallyControlled(), HasAuthority(),
+			FVector::Dist2D(DashStartLocation, GetActorLocation()));
+	}
+#endif
 	if (HasAuthority())
 	{
 		bReplicatedDashing = false;
@@ -1189,6 +1239,7 @@ void AChaosImpactCharacter::PlayThrowAnimation()
 		LocomotionAnimInstanceClass = GetMesh()->GetAnimClass();
 	}
 	GetWorldTimerManager().ClearTimer(ThrowAnimationResetTimer);
+	ThrowAnimationStartedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 	GetMesh()->PlayAnimation(ThrowAnimation, false);
 	if (UAnimSingleNodeInstance* SingleNode = GetMesh()->GetSingleNodeInstance())
 	{
@@ -1476,6 +1527,10 @@ void AChaosImpactCharacter::StopEliminationEffect()
 	// Do not recursively reveal the two hand-ball components. Their visibility is
 	// inventory-driven and must remain hidden after a zero-ball respawn.
 	GetMesh()->SetVisibility(true, false);
+	if (ToonCharacter)
+	{
+		ToonCharacter->SetPartsVisible(true);
+	}
 	UpdateBallPresentation();
 }
 
@@ -1484,6 +1539,10 @@ void AChaosImpactCharacter::StartRespawnEffect()
 	bRespawnEffectActive = true;
 	RespawnEffectTime = 0.0f;
 	GetMesh()->SetVisibility(true, false);
+	if (ToonCharacter)
+	{
+		ToonCharacter->SetPartsVisible(true);
+	}
 	GetMesh()->SetRelativeScale3D(InitialMeshRelativeScale * 0.08f);
 	UpdateBallPresentation();
 	if (EliminationFlash)
@@ -2722,6 +2781,37 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 
 void AChaosImpactCharacter::UpdateBlackHolePull(const float DeltaSeconds)
 {
+#if !UE_BUILD_SHIPPING
+	// Development (-CIZoneLog): says on every machine whether this character is being drawn in, and why not.
+	static const bool bZoneLog = FParse::Param(FCommandLine::Get(), TEXT("CIZoneLog"));
+	if (bZoneLog && GetWorld() && GetPlayerState())
+	{
+		const double LogNow = FPlatformTime::Seconds();
+		const FVector Probe = AChaosImpactHazardZone::GetBlackHolePullOffset(GetWorld(), this, DeltaSeconds);
+		float Nearest = -1.0f;
+		FString Source;
+		for (TActorIterator<AChaosImpactHazardZone> It(GetWorld()); It; ++It)
+		{
+			const float Distance = static_cast<float>(FVector::Dist2D(It->GetActorLocation(), GetActorLocation()));
+			if (It->GetZoneType() == EChaosImpactBallType::Black && (Nearest < 0.0f || Distance < Nearest))
+			{
+				Nearest = Distance;
+				Source = GetNameSafe(It->GetSourcePawn());
+			}
+		}
+		// One line per character per half second while a black hole is near.
+		static TMap<FString, double> NextLogByName;
+		double& NextAt = NextLogByName.FindOrAdd(GetPlayerState()->GetPlayerName());
+		if (Nearest >= 0.0f && Nearest < AChaosImpactHazardZone::BlackHoleRadius + 200.0f && LogNow >= NextAt)
+		{
+			NextAt = LogNow + 0.5;
+			UE_LOG(LogChaosImpact, Log,
+				TEXT("ZoneLog black who=%s local=%d authority=%d dist=%.0f source=%s pull=%.1f eliminated=%d"),
+				*GetPlayerState()->GetPlayerName(), IsLocallyControlled(), HasAuthority(), Nearest, *Source,
+				Probe.Size2D(), bEliminated);
+		}
+	}
+#endif
 	// Moved only where this character is moved (its owner, the host, a CPU); online the new position follows.
 	if (!IsLocallyControlled() || bEliminated || DeltaSeconds <= 0.0f || !GetWorld())
 	{
@@ -2737,6 +2827,7 @@ void AChaosImpactCharacter::UpdateBlackHolePull(const float DeltaSeconds)
 	{
 		AddActorWorldOffset(Pull, true);
 		bRumbleBlackHolePull = true;
+		PreventClientMoveCombining();
 	}
 }
 
@@ -2877,6 +2968,10 @@ void AChaosImpactCharacter::SetIceFreezePresentation(const bool bFrozen)
 			Body->SetOverlayMaterial(nullptr);
 			Body->bPauseAnims = false;
 		}
+		if (ToonCharacter)
+		{
+			ToonCharacter->SetPartsOverlayMaterial(nullptr);
+		}
 		// Shatter outward, unless the elimination burst is taking over.
 		IceFreezeVisualSeconds = 0.0f;
 		bIceThawing = IceBlockMesh && !bEliminated;
@@ -2941,6 +3036,10 @@ void AChaosImpactCharacter::SetIceFreezePresentation(const bool bFrozen)
 		// Tinted and stopped mid-pose inside the block.
 		Body->SetOverlayMaterial(IceOverlayMaterial);
 		Body->bPauseAnims = true;
+		if (ToonCharacter)
+		{
+			ToonCharacter->SetPartsOverlayMaterial(IceOverlayMaterial);
+		}
 	}
 	ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation(), 0.7f, 1.0f);
 	UpdateIceFreezePresentation(0.0f);
@@ -2996,6 +3095,97 @@ void AChaosImpactCharacter::UpdateLastHitPresentation()
 	{
 		LastHitSmoke->Deactivate();
 	}
+}
+
+void AChaosImpactCharacter::CreateToonCharacter()
+{
+	if (!bUseToonCharacter || ToonCharacter || GetNetMode() == NM_DedicatedServer || !GetMesh())
+	{
+		return;
+	}
+	const AChaosImpactPlayerState* PickState = GetPlayerState<AChaosImpactPlayerState>();
+	ToonCharacter = NewObject<UChaosImpactPuppetComponent>(this);
+	ToonCharacter->SetupAttachment(GetMesh());
+	ToonCharacter->SetRelativeScale3D(FVector(ToonCharacterScale));
+	ToonCharacter->RegisterComponent();
+	if (!ToonCharacter->Initialize(GetMesh(), ShownCharacterIndex(PickState)))
+	{
+		ToonCharacter->DestroyComponent();
+		ToonCharacter = nullptr;
+		return;
+	}
+	ToonCharacter->SetHeldBalls(HeldBallMesh, LeftHeldBallMesh);
+	// The mannequin is still what animates and what the balls attach to; it just is not drawn.
+	GetMesh()->SetHiddenInGame(true);
+	GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	UpdateToonCharacter();
+}
+
+void AChaosImpactCharacter::UpdateToonCharacter()
+{
+	if (!bUseToonCharacter || GetNetMode() == NM_DedicatedServer || !GetWorld())
+	{
+		return;
+	}
+	const AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>();
+	// The picked character can arrive after the pawn (a remote player's choice replicates in a moment later).
+	if (State && ToonCharacter && ToonCharacter->GetCharacterIndex() != ShownCharacterIndex(State))
+	{
+		ToonCharacter->DestroyComponent();
+		ToonCharacter = nullptr;
+		GetMesh()->SetHiddenInGame(false);
+		CreateToonCharacter();
+	}
+	if (!ToonCharacter)
+	{
+		return;
+	}
+	// A team battle shows the team's colour, so the sides read at a glance. Otherwise players wear the colour they
+	// picked; CPUs take the colours nobody picked, and a player with no pick yet falls back to their slot.
+	int32 Colour = 0;
+	const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+	if (State && Match && Match->IsTeamBattle() && State->TeamIndex >= 0)
+	{
+		Colour = State->TeamIndex;
+	}
+	else if (CPUNumber > 0)
+	{
+		TArray<int32, TInlineAllocator<4>> Free{0, 1, 2, 3};
+		if (Match)
+		{
+			for (const APlayerState* Member : Match->PlayerArray)
+			{
+				const AChaosImpactPlayerState* Human = Cast<AChaosImpactPlayerState>(Member);
+				if (Human && !Human->IsABot() && Human->ColourChoice >= 0)
+				{
+					Free.Remove(Human->ColourChoice);
+				}
+			}
+		}
+		Colour = Free.IsEmpty() ? CPUNumber % 4 : Free[(CPUNumber - 1) % Free.Num()];
+	}
+	else if (State && State->ColourChoice >= 0)
+	{
+		Colour = State->ColourChoice;
+	}
+	else if (State && Match && Match->bOnlineRoom)
+	{
+		Colour = FMath::Abs(State->JoinOrder) % 4;
+	}
+	else if (const APlayerController* OwningController = Cast<APlayerController>(GetController());
+		OwningController && OwningController->GetLocalPlayer() && GetGameInstance())
+	{
+		Colour = FMath::Max(GetGameInstance()->GetLocalPlayers().IndexOfByKey(OwningController->GetLocalPlayer()), 0) % 4;
+	}
+	ToonCharacter->SetColourIndex(Colour);
+	// From the throw until just after release the thrown ball is in the mannequin's hand, so the model's hand is
+	// put exactly there; the rest of the time the arm keeps its own proportions.
+	const float SinceThrow = static_cast<float>(GetWorld()->GetTimeSeconds() - ThrowAnimationStartedAt);
+	const float Release = ThrowReleaseDelaySeconds + 0.05f;
+	const float Weight = bThrowAnimationActive
+		? FMath::Clamp(SinceThrow / 0.08f, 0.0f, 1.0f) * (1.0f - FMath::Clamp((SinceThrow - Release) / 0.15f, 0.0f, 1.0f))
+		: 0.0f;
+	ToonCharacter->SetRightHandExactWeight(Weight);
 }
 
 bool AChaosImpactCharacter::IsShowingLastHitSmoke() const

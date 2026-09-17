@@ -21,6 +21,7 @@ class UMaterialInstanceDynamic;
 class UNiagaraComponent;
 class UProceduralMeshComponent;
 class AChaosImpactBall;
+class UChaosImpactPuppetComponent;
 enum class EChaosImpactBallFlightMode : uint8;
 struct FInputActionValue;
 
@@ -468,6 +469,11 @@ protected:
 	float NetTraceSeconds = 0.0f;
 	/** Black holes draw this character in; applied where it is moved, like the slide on ice. */
 	void UpdateBlackHolePull(float DeltaSeconds);
+	/**
+	 * Client: keeps this frame's direct move (a dash step, a black hole's pull) from being erased. A client folds
+	 * similar moves into one before sending them and rewinds to the first move's start to do it.
+	 */
+	void PreventClientMoveCombining();
 	void SetIceFreezePresentation(bool bFrozen);
 	void UpdateIceFreezePresentation(float DeltaSeconds);
 	bool bIceFreezeActive = false;
@@ -511,6 +517,25 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> LastHitSmoke;
+
+	/**
+	 * Draws the player with the character model in Content/ChaosImpact/Character, coloured by team, instead of the
+	 * template mannequin. The mannequin stays (hidden) and keeps animating; the model copies its pose.
+	 */
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Appearance")
+	bool bUseToonCharacter = true;
+
+	/** Size of that model against its source file; 1.45 makes it about as tall as the template mannequin. */
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Appearance", meta=(ClampMin="0.5", ClampMax="3.0"))
+	float ToonCharacterScale = 1.45f;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactPuppetComponent> ToonCharacter;
+
+	void CreateToonCharacter();
+	/** Team colour, and the throwing hand following the mannequin's while the thrown ball is still in it. */
+	void UpdateToonCharacter();
+	double ThrowAnimationStartedAt = -100.0;
 
 	/** Rumble for what just happened to the player on this machine: hits, knockouts, a full charge, pickups, pulls. */
 	void UpdateControllerRumble();
@@ -636,6 +661,8 @@ protected:
 	float DashElapsedSeconds = 0.0f;
 	/** World time the last dash ended; a black hole does not pull for a moment after. */
 	double DashEndedAtSeconds = -100.0;
+	/** Where the current dash began; development logging (-CIDashLog) reports how far it really went. */
+	FVector DashStartLocation = FVector::ZeroVector;
 	float DashDistanceApplied = 0.0f;
 	float NextDashAvailableAtSeconds = 0.0f;
 	bool bIsChargingThrow = false;

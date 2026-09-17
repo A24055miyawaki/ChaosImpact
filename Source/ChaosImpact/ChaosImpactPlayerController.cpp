@@ -22,6 +22,8 @@
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/ConfigCacheIni.h"
+#include "ChaosImpactCharacterRoster.h"
+#include "ChaosImpactLoadoutSubsystem.h"
 #include "GameFramework/PlayerInput.h"
 #include "GameFramework/InputSettings.h"
 #include "EnhancedInputSubsystems.h"
@@ -866,6 +868,61 @@ void AChaosImpactPlayerController::ConfirmControllerAssignments()
 	{
 		return;
 	}
+	// The players and their devices are known now, so each can pick a character with their own device.
+	OpenCharacterSelect();
+}
+
+void AChaosImpactPlayerController::OpenCharacterSelect()
+{
+	if (bTravelPending || !AreControllerAssignmentsComplete())
+	{
+		return;
+	}
+	ShowMenuScreen(EChaosImpactScreen::CharacterSelect);
+}
+
+void AChaosImpactPlayerController::CancelCharacterSelection()
+{
+	if (CurrentScreen == EChaosImpactScreen::CharacterSelect && !bTravelPending)
+	{
+		ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
+	}
+}
+
+int32 AChaosImpactPlayerController::GetLocalPlayerIndexForDevice(const bool bKeyboard, const int32 InputDeviceId) const
+{
+	const int32 Players = FMath::Clamp(RequestedLocalPlayerCount, 1, 4);
+	if (Players == 1)
+	{
+		// A player alone may use any device.
+		return 0;
+	}
+	if (bKeyboard)
+	{
+		return RequestedKeyboardPlayerIndex >= 0 && RequestedKeyboardPlayerIndex < Players
+			? RequestedKeyboardPlayerIndex : INDEX_NONE;
+	}
+	const int32 PadIndex = JoinedInputDeviceIds.IndexOfByKey(InputDeviceId);
+	if (PadIndex == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	for (int32 PlayerIndex = 0; PlayerIndex < Players; ++PlayerIndex)
+	{
+		if (PlayerIndex != RequestedKeyboardPlayerIndex && GetPadIndexForPlayer(PlayerIndex) == PadIndex)
+		{
+			return PlayerIndex;
+		}
+	}
+	return INDEX_NONE;
+}
+
+void AChaosImpactPlayerController::ConfirmCharacterSelection()
+{
+	if (CurrentScreen != EChaosImpactScreen::CharacterSelect || bTravelPending)
+	{
+		return;
+	}
 	// Decide by where the assignment was opened from, not by the current world: after leaving an online
 	// room or search, the title menu is shown inside a training world, and VS online must still lead to
 	// へやをつくる / へやをさがす there instead of restarting training.
@@ -880,7 +937,7 @@ void AChaosImpactPlayerController::ConfirmControllerAssignments()
 		&& ControllerAssignmentReturnScreen == EChaosImpactScreen::TrainingSetup)
 	{
 		// Players are set; the match rules come next, then the VS level opens.
-		OpenMatchRules(EChaosImpactScreen::ControllerAssignment);
+		OpenMatchRules(EChaosImpactScreen::CharacterSelect);
 		return;
 	}
 	OpenTrainingLevel(bControllerAssignmentKeepsFlightMode);
@@ -1799,7 +1856,8 @@ int32 AChaosImpactPlayerController::GetMatchHumanCount() const
 	}
 	// Rules reached from a new player entry are for the players just entered, even when chosen from inside a
 	// finished VS level where the extra players have already been removed for the menu.
-	if (IsVersusMatchWorld() && MatchRulesReturnScreen != EChaosImpactScreen::ControllerAssignment)
+	if (IsVersusMatchWorld() && MatchRulesReturnScreen != EChaosImpactScreen::ControllerAssignment
+		&& MatchRulesReturnScreen != EChaosImpactScreen::CharacterSelect)
 	{
 		const UGameInstance* GameInstance = GetGameInstance();
 		return GameInstance ? FMath::Max(1, GameInstance->GetLocalPlayers().Num()) : 1;
@@ -1861,7 +1919,8 @@ void AChaosImpactPlayerController::ConfirmMatchRules()
 	}
 	// A new player entry always opens a fresh VS level with those players; only a rematch or rule change
 	// from inside the match restarts it in place.
-	const bool bNewLocalEntry = MatchRulesReturnScreen == EChaosImpactScreen::ControllerAssignment;
+	const bool bNewLocalEntry = MatchRulesReturnScreen == EChaosImpactScreen::ControllerAssignment
+		|| MatchRulesReturnScreen == EChaosImpactScreen::CharacterSelect;
 	if (GameMode && (IsOnlineRoomHost() || (IsVersusMatchWorld() && !bNewLocalEntry)))
 	{
 		// Players are already here: the match (re)starts in place.
@@ -1953,9 +2012,42 @@ void AChaosImpactPlayerController::EnterPlayingScreen()
 	ApplyScreenInput();
 }
 
+void AChaosImpactPlayerController::SendLoadout()
+{
+	AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>();
+	const UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(this);
+	const UGameInstance* GameInstance = GetGameInstance();
+	if (bLoadoutSent || !IsLocalController() || !State || !Loadouts || !GameInstance || !GetLocalPlayer())
+	{
+		return;
+	}
+	const int32 LocalIndex = FMath::Max(0, GameInstance->GetLocalPlayers().IndexOfByKey(GetLocalPlayer()));
+	const FChaosImpactLoadout Loadout = Loadouts->GetLoadout(LocalIndex);
+	bLoadoutSent = true;
+	if (HasAuthority())
+	{
+		ServerSetLoadout_Implementation(Loadout.Character, Loadout.Colour);
+	}
+	else
+	{
+		ServerSetLoadout(Loadout.Character, Loadout.Colour);
+	}
+}
+
+void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 InCharacterIndex, const int32 InColour)
+{
+	if (AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>())
+	{
+		State->CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
+		State->ColourChoice = FMath::Clamp(InColour, 0, ChaosImpactRoster::ColourCount - 1);
+		State->ForceNetUpdate();
+	}
+}
+
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+	SendLoadout();
 	UpdateMatchScreens();
 	UpdateMatchIntroCamera();
 	UpdateRumble();

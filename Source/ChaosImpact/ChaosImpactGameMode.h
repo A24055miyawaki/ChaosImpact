@@ -129,6 +129,7 @@ private:
 	/** Development: -CIAutoLobby=<teams>:<cpus>:<delay> closes recruitment and decides rules once two machines are in. */
 	void RunDevAutoLobby();
 	FTimerHandle LobbyReadyTimer;
+	FTimerHandle DevBlackHoleTimer;
 	FTimerHandle StartingTimer;
 	FTimerHandle DevAutoLobbyTimer;
 	FChaosImpactMatchRules DevAutoLobbyRules;

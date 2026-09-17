@@ -66,6 +66,7 @@ namespace
 				PC->RegisterKeyboardMouseJoin();
 				PC->RegisterControllerJoin(101, 1);
 				PC->ConfirmControllerAssignments();
+				PC->ConfirmCharacterSelection();
 				Test->TestEqual(TEXT("The rules screen counts both local players"), PC->GetMatchHumanCount(), 2);
 				for (int32 Step = 0; Step < 10 && PC->GetPendingMatchRules().CPUCount != CPUCount; ++Step)
 				{

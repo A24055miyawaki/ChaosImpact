@@ -40,6 +40,31 @@ AChaosImpactGameMode::AChaosImpactGameMode()
 void AChaosImpactGameMode::BeginPlay()
 {
 	Super::BeginPlay();
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevBlackHole=<seconds> opens the host player's black hole beside every remote player,
+	// to check online that a black hole thrown by the host draws the other machines' players in.
+	float DevBlackHoleSeconds = 0.0f;
+	if (IsOnlineRoom() && FParse::Value(FCommandLine::Get(), TEXT("CIDevBlackHole="), DevBlackHoleSeconds)
+		&& DevBlackHoleSeconds > 0.5f)
+	{
+		GetWorldTimerManager().SetTimer(DevBlackHoleTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			const UGameInstance* GameInstance = GetGameInstance();
+			const APlayerController* HostController = GameInstance ? GameInstance->GetFirstLocalPlayerController(GetWorld()) : nullptr;
+			APawn* HostPawn = HostController ? HostController->GetPawn() : nullptr;
+			for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It && HostPawn; ++It)
+			{
+				if (It->IsRemotePlayerOnServer() && !It->IsEliminated())
+				{
+					const FVector Beside = It->GetActorLocation() + FVector(420.0f, 0.0f, 0.0f);
+					AChaosImpactHazardZone::Detonate(GetWorld(), EChaosImpactBallType::Black, Beside, HostPawn, nullptr);
+					UE_LOG(LogChaosImpact, Log, TEXT("DevBlackHole opened by %s beside %s"),
+						*HostPawn->GetName(), *GetNameSafe(It->GetPlayerState()));
+				}
+			}
+		}), DevBlackHoleSeconds, true, DevBlackHoleSeconds);
+	}
+#endif
 	if (AChaosImpactGameState* RoomState = GetGameState<AChaosImpactGameState>(); RoomState && IsOnlineRoom())
 	{
 		RoomState->bOnlineRoom = true;

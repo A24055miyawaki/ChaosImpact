@@ -4,6 +4,7 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactCharacterSelect.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "Blueprint/WidgetTree.h"
@@ -65,7 +66,13 @@ namespace
 		virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
 		{
 			UChaosImpactMenuWidget* Menu = Widget.Get();
-			return Menu && Menu->TryJoinControllerFromAnyUser(InKeyEvent);
+			return Menu && Menu->HandleAnyUserKeyDown(InKeyEvent);
+		}
+
+		virtual bool HandleAnalogInputEvent(FSlateApplication& SlateApp, const FAnalogInputEvent& InAnalogInputEvent) override
+		{
+			UChaosImpactMenuWidget* Menu = Widget.Get();
+			return Menu && Menu->HandleAnyUserAnalog(InAnalogInputEvent);
 		}
 
 		virtual const TCHAR* GetDebugName() const override { return TEXT("ChaosImpactControllerJoin"); }
@@ -512,6 +519,8 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 		Canvas->AddChildToCanvas(NameInput);
 	}
 
+	CharacterSelect = NewObject<UChaosImpactCharacterSelect>(this);
+
 	if (FSlateApplication::IsInitialized() && !JoinInputProcessor.IsValid())
 	{
 		JoinInputProcessor = MakeShared<FControllerJoinProcessor>(this);
@@ -530,12 +539,36 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 
 void UChaosImpactMenuWidget::NativeDestruct()
 {
+	if (CharacterSelect)
+	{
+		CharacterSelect->Close();
+	}
 	if (JoinInputProcessor.IsValid() && FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().UnregisterInputPreProcessor(JoinInputProcessor);
 	}
 	JoinInputProcessor.Reset();
 	Super::NativeDestruct();
+}
+
+bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
+{
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return CharacterSelect->HandleKeyDown(InKeyEvent);
+	}
+	return TryJoinControllerFromAnyUser(InKeyEvent);
+}
+
+bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent)
+{
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return CharacterSelect->HandleAnalog(InAnalogEvent);
+	}
+	return false;
 }
 
 bool UChaosImpactMenuWidget::TryJoinControllerFromAnyUser(const FKeyEvent& InKeyEvent)
@@ -557,7 +590,17 @@ bool UChaosImpactMenuWidget::TryJoinControllerFromAnyUser(const FKeyEvent& InKey
 
 void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 {
+	const EChaosImpactScreen PreviousScreen = Screen;
+	if (CharacterSelect && NewScreen != EChaosImpactScreen::CharacterSelect)
+	{
+		CharacterSelect->Close();
+	}
 	Screen = NewScreen;
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect
+		&& (PreviousScreen != EChaosImpactScreen::CharacterSelect || !CharacterSelect->IsOpen()))
+	{
+		CharacterSelect->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
+	}
 	SelectedIndex = 0;
 	PressedIndex = INDEX_NONE;
 	ArmedIndex = INDEX_NONE;
@@ -772,8 +815,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bOnlineSetup = Controller && Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusOnline
 			&& Controller->GetControllerAssignmentReturnScreen() == EChaosImpactScreen::OnlinePlayers;
-		FMenuEntry Start{FSlateRect(1030, 712, 1454, 800), bOnlineSetup ? TEXT("決定") : TEXT("ゲーム開始"),
-			TEXT(""), TEXT(""), Gold};
+		FMenuEntry Start{FSlateRect(1030, 712, 1454, 800), TEXT("キャラ選択へ"), TEXT(""), TEXT(""), Gold};
+		(void)bOnlineSetup;
 		Start.bDisabled = !(Controller && Controller->AreControllerAssignmentsComplete());
 		Entries.Add(Start);
 		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
@@ -999,6 +1042,10 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	// Slate continues to animate while the gameplay world is paused.
 	const double Now = FPlatformTime::Seconds();
 	AnimationSeconds = static_cast<float>(Now - ScreenStartedAt);
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
+	{
+		CharacterSelect->Tick(InDeltaTime);
+	}
 
 	SelectBlend.SetNumZeroed(Entries.Num());
 	for (int32 Index = 0; Index < SelectBlend.Num(); ++Index)
@@ -1116,6 +1163,13 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	{
 		Full.Box(0, 0, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, Ink);
 		PaintBackdrop(DesignGeometry, OutDrawElements, BaseLayer + 1, T);
+	}
+
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
+	{
+		const int32 SelectLayer = CharacterSelect->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
+		PaintEnterWipe(DesignGeometry, OutDrawElements, SelectLayer + 1, T);
+		return SelectLayer + 2;
 	}
 
 	if (Screen == EChaosImpactScreen::Title)
@@ -2127,6 +2181,13 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
+	{
+		const float Scale = DesignScale(InGeometry);
+		const FVector2D Offset = (InGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+		CharacterSelect->HandleClick((InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()) - Offset) / Scale);
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::ControllerAssignment)
 	{
 		if (AChaosImpactPlayerController* Controller =

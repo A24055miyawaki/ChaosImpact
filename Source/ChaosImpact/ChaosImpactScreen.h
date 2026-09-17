@@ -36,7 +36,9 @@ enum class EChaosImpactScreen : uint8
 	/** LAN multiplayer: the room's name, when creating a room or renaming it from the lobby. */
 	OnlineRoomName,
 	/** LAN multiplayer: the rooms found for the password; pick one to join. */
-	RoomList
+	RoomList,
+	/** Every local player picks a character and colour, after controller assignment. */
+	CharacterSelect
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

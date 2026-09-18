@@ -261,6 +261,7 @@ protected:
 	void ShowRespawnLocally(const FString& DefeatedBy, float Seconds, APawn* KillerPawn);
 	void ApplyEliminatedPresentation(bool bNowEliminated);
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual bool CanJumpInternal_Implementation() const override;
 	/** After an instant move: the camera jumps with the character instead of lagging across the stage. */

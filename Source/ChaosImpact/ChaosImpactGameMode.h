@@ -10,6 +10,7 @@
 class AChaosImpactBallSpawner;
 class AChaosImpactPlayerState;
 class AChaosImpactVersusStage;
+class AChaosImpactSpectatorPawn;
 enum class EChaosImpactOnlinePhase : uint8;
 
 /**
@@ -51,6 +52,11 @@ public:
 	 */
 	void DecideLobbyRules(const FChaosImpactMatchRules& InRules);
 	void SetMemberReady(AChaosImpactPlayerState* Member, bool bReady);
+	/**
+	 * Online lobby: a member switches between playing and watching (before the match starts). Watching needs a
+	 * free spectator place, a machine with a single player and another player left in the room.
+	 */
+	void SetMemberSpectating(APlayerController* MemberController, bool bSpectate);
 	/** Host: lets new members in again; the decided rules are dropped. */
 	void ReopenRecruitment();
 	void RenameRoom(const FString& NewName);
@@ -78,6 +84,8 @@ private:
 	/** Re-pairs every active local player after startup or an in-place player-count change. */
 	void ApplyTrainingControllerAssignments(int32 DesiredPlayers, int32 KeyboardPlayerIndex);
 	void SpawnTrainingCPU(const FVector& Anchor, const FRotator& Facing, int32 CPUIndex);
+	/** Local match: every local player watches through a spectator camera (true) or plays again (false). */
+	void SetLocalPlayersSpectating(bool bSpectate);
 	/** A roster character for a new CPU: the one fewest players are using, picked at random among equals. */
 	int32 PickCPUCharacter(const APlayerState* NewCPU) const;
 	void SyncTrainingCPUCount(int32 DesiredCPUCount, const FVector& Anchor, const FRotator& Facing);
@@ -92,6 +100,10 @@ private:
 	FTimerHandle PingMirrorTimer;
 	/** Development: -CIReserveSlots=N pretends N more members are inside (capacity testing). */
 	int32 DevReservedSlots = 0;
+	/** Development (-CIReserveSpectators=N): spectator places taken by nobody, to try a full room. */
+	int32 DevReservedSpectators = 0;
+	/** A spectator camera over the stage in a match, or over the room otherwise. */
+	APawn* SpawnSpectatorCamera(AController* Viewer);
 	FVector GetRoomAnchor() const;
 	FTimerHandle ControllerReassignTimer;
 	int32 NextJoinOrder = 1;

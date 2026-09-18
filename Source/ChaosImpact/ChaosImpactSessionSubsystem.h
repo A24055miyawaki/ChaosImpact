@@ -32,6 +32,8 @@ struct FChaosImpactRoomListing
 	FString RoomName;
 	FString HostName;
 	int32 Members = 1;
+	/** Watching members, up to AChaosImpactGameState::MaxSpectators. */
+	int32 Spectators = 0;
 	bool bOpen = true;
 	/** Round trip of the LAN search reply, for the connection bars. */
 	int32 PingMs = 0;
@@ -62,8 +64,15 @@ public:
 	/** Lists the rooms using the password, refreshing until StopSearch or a join. */
 	void StartSearch(const FString& InPassword);
 	void StopSearch();
-	/** Joins a listed room. False (with a notice) when it has filled up or closed meanwhile. */
+	/**
+	 * Joins a listed room: as a player while it is recruiting and has room, otherwise (mid-match, recruitment
+	 * closed or full) as a spectator. False (with a notice) when neither is possible.
+	 */
 	bool JoinRoomListing(int32 Index);
+	/** A listed room would be joined as a spectator (see JoinRoomListing). */
+	bool WouldJoinAsSpectator(const FChaosImpactRoomListing& Listing) const;
+	/** Why a listed room cannot be joined at all (a short label), or empty when it can. */
+	FString GetJoinBlocker(const FChaosImpactRoomListing& Listing) const;
 	const TArray<FChaosImpactRoomListing>& GetRoomListings() const { return Listings; }
 	/** Changes whenever the room list changes, so screens know when to rebuild. */
 	int32 GetRoomListingsVersion() const { return ListingsVersion; }
@@ -75,6 +84,7 @@ public:
 	/** Host only: advertise whether new members may still join, and how many are inside. */
 	void SetRecruitmentOpen(bool bOpen);
 	void SetMemberCount(int32 Count);
+	void SetSpectatorCount(int32 Count);
 	/** Host only: the room's name as listed to searchers. */
 	void SetRoomName(const FString& Name);
 	const FString& GetRoomName() const { return RoomName; }
@@ -131,6 +141,9 @@ private:
 	bool bSessionDelegatesBound = false;
 	bool bRecruitmentOpen = true;
 	int32 MemberCount = 1;
+	int32 SpectatorCount = 0;
+	/** The room being joined is joined as a spectator (the CISpectator login option). */
+	bool bJoinAsSpectator = false;
 	FString LocalSetupOptions = TEXT("CILocalPlayers=1?CIKeyboardPlayer=0");
 	int32 LocalPlayerCount = 1;
 	TSharedPtr<FOnlineSessionSearch> Search;

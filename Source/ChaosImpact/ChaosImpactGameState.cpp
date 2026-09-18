@@ -11,6 +11,7 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, CharacterIndex);
 	DOREPLIFETIME(AChaosImpactPlayerState, ColourChoice);
 	DOREPLIFETIME(AChaosImpactPlayerState, bRoomHost);
+	DOREPLIFETIME(AChaosImpactPlayerState, bSpectating);
 	DOREPLIFETIME(AChaosImpactPlayerState, Knockouts);
 	DOREPLIFETIME(AChaosImpactPlayerState, Points);
 	DOREPLIFETIME(AChaosImpactPlayerState, TeamIndex);
@@ -61,7 +62,7 @@ TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetMembersInJoinOrder() 
 	for (APlayerState* State : PlayerArray)
 	{
 		if (AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
-			Member && !Member->IsInactive() && !Member->IsABot())
+			Member && !Member->IsInactive() && !Member->IsABot() && !Member->bSpectating)
 		{
 			Members.Add(Member);
 		}
@@ -75,6 +76,20 @@ TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetMembersInJoinOrder() 
 		return A.JoinOrder < B.JoinOrder;
 	});
 	return Members;
+}
+
+TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetSpectators() const
+{
+	TArray<AChaosImpactPlayerState*> Spectators;
+	for (APlayerState* State : PlayerArray)
+	{
+		if (AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
+			Member && !Member->IsInactive() && !Member->IsABot() && Member->bSpectating)
+		{
+			Spectators.Add(Member);
+		}
+	}
+	return Spectators;
 }
 
 int32 AChaosImpactGameState::CountHumanMembers() const

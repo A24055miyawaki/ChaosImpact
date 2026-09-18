@@ -66,6 +66,10 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	bool bSecondOfMachine = false;
 
+	/** Watching through a spectator camera: not a competitor or a room member for the match. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	bool bSpectating = false;
+
 	/** Lobby: this member pressed 準備OK for the rules the host decided. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	bool bReadyForMatch = false;
@@ -94,6 +98,9 @@ public:
 	/** Human members sorted host first, then by join order. CPUs are not members. */
 	TArray<AChaosImpactPlayerState*> GetMembersInJoinOrder() const;
 	int32 CountHumanMembers() const;
+	/** Room members watching through a spectator camera instead of playing. */
+	TArray<AChaosImpactPlayerState*> GetSpectators() const;
+	int32 CountSpectators() const { return GetSpectators().Num(); }
 	/** Machines in the room: a split-screen pair counts once. */
 	int32 CountMachines() const;
 	int32 CountReadyMembers() const;
@@ -166,6 +173,8 @@ public:
 	double ReadyStartedAt = 0.0;
 
 	static constexpr int32 MaxMembers = 8;
+	/** Spectators a room takes on top of its players. */
+	static constexpr int32 MaxSpectators = 4;
 
 private:
 	/** This machine's own clock for the opening it is playing (see GetIntroElapsedSeconds). */

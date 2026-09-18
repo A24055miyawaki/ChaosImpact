@@ -608,12 +608,6 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter Title{Design, Elements, Layer + 1, In};
 		Title.Text(TEXT("CHARACTER SELECT"), 64.0f - (1.0f - In) * 60.0f, 24.0f, 44.0f, Paper, ETextAlign::Left,
 			TEXT("BlackItalic"), 3.0f, Ink);
-		Title.Text(TEXT("キャラクターをえらんでね"), 68.0f, 82.0f, 20.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-		if (Owner && Owner->GetPlayFlow() != EChaosImpactPlayFlow::Training)
-		{
-			Title.Text(TEXT("チーム戦ではチームのカラーになります"), 1544.0f, 92.0f, 16.0f, WithAlpha(Muted, 0.9f),
-				ETextAlign::Right, TEXT("Regular"));
-		}
 	}
 
 	// ---- Icon grid ----------------------------------------------------------------------------
@@ -661,9 +655,7 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		else
 		{
 			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 22.0f, FLinearColor(0.05f, 0.06f, 0.09f, 0.95f));
-			I.Text(TEXT("?"), IconSize * 0.5f, 26.0f, 76.0f, WithAlpha(Muted, 0.4f), ETextAlign::Center, TEXT("Black"));
-			I.Text(TEXT("COMING SOON"), IconSize * 0.5f, IconSize - 38.0f, 14.0f, WithAlpha(Muted, 0.6f),
-				ETextAlign::Center, TEXT("Bold"));
+			I.Text(TEXT("?"), IconSize * 0.5f, 44.0f, 76.0f, WithAlpha(Muted, 0.4f), ETextAlign::Center, TEXT("Black"));
 		}
 
 		// Cursors: a thick rounded frame per player, the later ones outside the earlier, and a name tag.
@@ -783,7 +775,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 
 	// Picture: the character under the cursor idling in this player's colour. Wide windows put it on the left.
 	const float AreaTop = 58.0f;
-	const float AreaHeight = H - AreaTop - (bWide ? 14.0f : 92.0f);
+	const bool bTall = !bWide && W > 400.0f;
+	// Tall windows keep the bottom for the name and the hint or colour row, so nothing lies on the picture.
+	const float AreaHeight = H - AreaTop - (bWide ? 14.0f : bTall ? 176.0f : 92.0f);
 	float PictureW = AreaHeight * 0.75f;
 	float PictureH = AreaHeight;
 	float VisibleTop = 0.0f;
@@ -814,20 +808,16 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	const FChaosImpactCharacterInfo& Info = ChaosImpactRoster::Get(Slot.Character);
 	const bool bBigWindow = W > 400.0f;
 	const float NameX = bWide ? PictureX + PictureW + 26.0f : bBigWindow ? W * 0.5f : W - 18.0f;
-	const float NameY = bWide ? 70.0f : bBigWindow ? H - 74.0f : 14.0f;
+	const float NameY = bWide ? 70.0f : bBigWindow ? H - 166.0f : 14.0f;
 	const ETextAlign NameAlign = bWide ? ETextAlign::Left : bBigWindow ? ETextAlign::Center : ETextAlign::Right;
 	C.Text(bOnLockedTile ? FString(TEXT("？？？")) : FString(Info.Name), NameX, NameY, bWide || bBigWindow ? 34.0f : 24.0f,
 		bOnLockedTile ? Muted : Paper, NameAlign, TEXT("Black"), 2.0f, Ink);
 	if (!bWide && Slot.Step == EStep::Character)
 	{
 		// Before a pick the bottom band says how to pick.
-		C.Text(bOnLockedTile ? FString(TEXT("COMING SOON")) : Slot.bKeyboard ? FString(TEXT("Enter でけってい"))
-			: FString(TEXT("A でけってい")), W * 0.5f, H - (bBigWindow ? 40.0f : 58.0f), 18.0f,
+		C.Text(bOnLockedTile ? FString() : Slot.bKeyboard ? FString(TEXT("Enter でけってい"))
+			: FString(TEXT("A でけってい")), W * 0.5f, H - (bBigWindow ? 70.0f : 58.0f), 18.0f,
 			WithAlpha(Paper, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Now) * 4.0f)), ETextAlign::Center, TEXT("Bold"));
-	}
-	if (bWide && bOnLockedTile)
-	{
-		C.Text(TEXT("COMING SOON"), NameX + 2.0f, NameY + 46.0f, 15.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 	}
 
 	// Colour row: opens when the character is chosen; the chosen colour is ringed, colours in use are crossed out.
@@ -839,22 +829,23 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		const float Spacing = FMath::Min(62.0f, (W - 120.0f) / Count);
 		const float RowWidth = Spacing * Count + 70.0f;
 		const float RowX = bWide ? NameX - 8.0f : (W - RowWidth) * 0.5f;
-		const float RowY = bWide ? H - 104.0f : bBigWindow ? H - 178.0f : H - 88.0f;
+		const float RowY = bWide ? H - 110.0f : bBigWindow ? H - 110.0f : H - 98.0f;
 		const FPainter Row{Space, Elements, Layer + 3, In * (bDone ? 1.0f : Open)};
-		RoundBox(Row, RowX, RowY, RowWidth, 84.0f, 22.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.72f));
-		Row.Text(ChaosImpactRoster::ColourNames[Slot.Colour], RowX + RowWidth * 0.5f, RowY - 2.0f, 18.0f, Swatch,
+		// The colour's name sits inside the row, above the colours.
+		RoundBox(Row, RowX, RowY, RowWidth, 94.0f, 22.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.72f));
+		Row.Text(ChaosImpactRoster::ColourNames[Slot.Colour], RowX + RowWidth * 0.5f, RowY + 4.0f, 18.0f, Swatch,
 			ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 		if (!bDone)
 		{
 			const float Nudge = Changed < 0.15f ? 5.0f * (1.0f - Changed / 0.15f) : 0.0f;
-			Row.Text(TEXT("<"), RowX + 16.0f - (Slot.LastDirection < 0 ? Nudge : 0.0f), RowY + 26.0f, 30.0f, Paper,
+			Row.Text(TEXT("<"), RowX + 16.0f - (Slot.LastDirection < 0 ? Nudge : 0.0f), RowY + 38.0f, 30.0f, Paper,
 				ETextAlign::Center, TEXT("Black"));
-			Row.Text(TEXT(">"), RowX + RowWidth - 16.0f + (Slot.LastDirection > 0 ? Nudge : 0.0f), RowY + 26.0f, 30.0f, Paper,
+			Row.Text(TEXT(">"), RowX + RowWidth - 16.0f + (Slot.LastDirection > 0 ? Nudge : 0.0f), RowY + 38.0f, 30.0f, Paper,
 				ETextAlign::Center, TEXT("Black"));
 		}
 		for (int32 Colour = 0; Colour < Count; ++Colour)
 		{
-			const FVector2D Centre(RowX + 35.0f + Spacing * (Colour + 0.5f), RowY + 50.0f);
+			const FVector2D Centre(RowX + 35.0f + Spacing * (Colour + 0.5f), RowY + 62.0f);
 			const bool bChosen = Colour == Slot.Colour;
 			const bool bTaken = !bChosen && IsColourTaken(Player, Slot.Character, Colour);
 			const float Pop = bChosen && Changed < 0.22f ? 1.0f + 0.35f * (1.0f - Changed / 0.22f) : 1.0f;

@@ -20,6 +20,10 @@ struct FChaosImpactMatchRules
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	int32 CPUCount = 1;
 
+	/** Local match: the players watch (spectator cameras) and only CPUs compete. */
+	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
+	bool bSpectate = false;
+
 	bool IsTeamBattle() const { return TeamCount >= 2; }
 };
 
@@ -62,9 +66,16 @@ namespace ChaosImpactMatch
 	inline constexpr int32 HitPoints = 1;
 	inline constexpr int32 KnockoutBonusPoints = 1;
 
-	/** A lone player always gets at least one CPU, and every team needs at least one member. */
+	/**
+	 * A lone player always gets at least one CPU, and every team needs at least one member. With no players
+	 * (everyone watching) at least two CPUs play.
+	 */
 	inline int32 GetMinCPUCount(const int32 Humans, const int32 TeamCount)
 	{
+		if (Humans <= 0)
+		{
+			return FMath::Clamp(FMath::Max(2, TeamCount >= 2 ? TeamCount : 0), 0, MaxCompetitors);
+		}
 		const int32 SafeHumans = FMath::Max(Humans, 1);
 		int32 Minimum = SafeHumans <= 1 ? 1 : 0;
 		if (TeamCount >= 2)
@@ -76,11 +87,18 @@ namespace ChaosImpactMatch
 
 	inline int32 GetMaxCPUCount(const int32 Humans)
 	{
-		return FMath::Max(0, MaxCompetitors - FMath::Max(Humans, 1));
+		return FMath::Max(0, MaxCompetitors - FMath::Max(Humans, 0));
 	}
 
-	inline FChaosImpactMatchRules Sanitize(FChaosImpactMatchRules Rules, const int32 Humans)
+	/** Players who actually compete under these rules (none when they watch). */
+	inline int32 GetCompetingHumans(const FChaosImpactMatchRules& Rules, const int32 Humans)
 	{
+		return Rules.bSpectate ? 0 : FMath::Max(Humans, 1);
+	}
+
+	inline FChaosImpactMatchRules Sanitize(FChaosImpactMatchRules Rules, int32 Humans)
+	{
+		Humans = GetCompetingHumans(Rules, Humans);
 		Rules.Minutes = SanitizeMinutes(Rules.Minutes);
 		Rules.TeamCount = Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0;
 		Rules.CPUCount = FMath::Clamp(Rules.CPUCount, GetMinCPUCount(Humans, Rules.TeamCount), GetMaxCPUCount(Humans));
@@ -121,8 +139,8 @@ namespace ChaosImpactMatch
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d"),
-			Rules.Minutes, Rules.TeamCount, Rules.CPUCount);
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d"),
+			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -134,6 +152,7 @@ namespace ChaosImpactMatch
 		OutRules.Minutes = FCString::Atoi(URL.GetOption(TEXT("CIMinutes="), TEXT("3")));
 		OutRules.TeamCount = FCString::Atoi(URL.GetOption(TEXT("CITeams="), TEXT("0")));
 		OutRules.CPUCount = FCString::Atoi(URL.GetOption(TEXT("CIMatchCPU="), TEXT("1")));
+		OutRules.bSpectate = FCString::Atoi(URL.GetOption(TEXT("CISpectate="), TEXT("0"))) != 0;
 		return true;
 	}
 }

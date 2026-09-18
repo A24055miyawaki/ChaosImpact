@@ -136,6 +136,8 @@ public:
 	/** Mode-select entries: they decide what the player-count and controller-assignment screens set up. */
 	void BeginTrainingSetup();
 	void BeginVersusLocal();
+	/** VS local: one player watches a CPU-only match (chosen before players and characters; no split screen). */
+	void BeginLocalSpectate();
 	void BeginVersusOnline();
 	EChaosImpactPlayFlow GetPlayFlow() const { return PlayFlow; }
 	void SubmitOnlineName(const FString& Name);
@@ -165,6 +167,9 @@ public:
 	/** Lobby: this player's 準備OK for the decided rules (R / D-pad up); pressing again cancels it. */
 	void ToggleReadyForMatch();
 	bool CanToggleReady() const;
+	/** Online lobby: switch between playing and watching the next match (V / D-pad down). */
+	void ToggleSpectating();
+	bool CanToggleSpectating() const;
 
 	// VS match
 	/** Rule screen: local VS before its level opens, or inside a room or match where the rules apply at once. */
@@ -173,6 +178,16 @@ public:
 	void AdjustMatchRule(int32 Row, int32 Direction);
 	const FChaosImpactMatchRules& GetPendingMatchRules() const { return PendingMatchRules; }
 	int32 GetMatchHumanCount() const;
+	/** Spectating: hides the whole-screen match UI (time, GO, results banner stay hidden until shown again). */
+	void SetGameplayUIHidden(bool bHide);
+	/** This player watches the match through a spectator camera. */
+	bool IsSpectating() const;
+	/**
+	 * Offline spectating: freezes the whole match (characters, balls, effects, the clock) while the spectator
+	 * camera still flies, for screenshots. Never online, where it would freeze everyone.
+	 */
+	void SetSpectateTimeStopped(bool bStop);
+	bool IsSpectateTimeStopped() const { return bSpectateTimeStopped; }
 	void ConfirmMatchRules();
 	void CancelMatchRules();
 	/** Team select: this player's own team. Other local players change theirs from their own devices. */
@@ -200,6 +215,9 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerSetReadyForMatch(bool bReady);
 
+	UFUNCTION(Server, Reliable)
+	void ServerSetSpectating(bool bSpectate);
+
 	/** The character and colour this player picked on their own machine. */
 	UFUNCTION(Server, Reliable)
 	void ServerSetLoadout(int32 InCharacterIndex, int32 InColour);
@@ -216,6 +234,7 @@ protected:
 	FSoftObjectPath TrainingLevel = FSoftObjectPath(TEXT("/Game/ThirdPerson/Lvl_ThirdPerson.Lvl_ThirdPerson"));
 
 	bool bTravelPending = false;
+	bool bSpectateTimeStopped = false;
 	bool bTrainingMode = false;
 	int32 RequestedLocalPlayerCount = 1;
 	bool bTrainingTargetsEnabled = true;

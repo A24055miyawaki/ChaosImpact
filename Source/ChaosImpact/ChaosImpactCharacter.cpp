@@ -241,6 +241,17 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
 }
 
+void AChaosImpactCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// A player who switches to watching leaves no HP or ball stock on their screen.
+	if (ChargeWidget)
+	{
+		ChargeWidget->RemoveFromParent();
+		ChargeWidget = nullptr;
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
 void AChaosImpactCharacter::BeginPlay()
 {
 	Super::BeginPlay();

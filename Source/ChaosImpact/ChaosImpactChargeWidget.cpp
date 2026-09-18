@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpact.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "ChaosImpactCharacter.h"
@@ -9,6 +10,7 @@
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactSpectatorPawn.h"
 #include "ChaosImpactWarpPad.h"
 #include "Engine/GameViewportClient.h"
 #include "GameFramework/PlayerState.h"
@@ -385,6 +387,107 @@ void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const flo
 				MemberSeenAt.Add(Member, Now);
 			}
 		}
+		UpdateRoomToasts(Room);
+	}
+}
+
+void UChaosImpactChargeWidget::AddRoomToast(APlayerState* Member, const FString& Name, const TCHAR* Message,
+	const FLinearColor& Accent)
+{
+	RoomToasts.Add({Member, Name, Message, Accent, FPlatformTime::Seconds()});
+	UE_LOG(LogChaosImpact, Log, TEXT("Room note: %s%s"), Member ? *Member->GetPlayerName() : *Name, Message);
+	// Only the newest few; a burst of arrivals should not fill the screen.
+	constexpr int32 MaxToasts = 4;
+	if (RoomToasts.Num() > MaxToasts)
+	{
+		RoomToasts.RemoveAt(0, RoomToasts.Num() - MaxToasts);
+	}
+}
+
+void UChaosImpactChargeWidget::UpdateRoomToasts(const AChaosImpactGameState* Room)
+{
+	using namespace ChaosImpactPaint;
+
+	const double Now = FPlatformTime::Seconds();
+	if (RoomWatchStartedAt <= 0.0)
+	{
+		RoomWatchStartedAt = Now;
+	}
+	// Everyone already here replicates in over the first moments; they did not just arrive.
+	const bool bAnnounce = Now - RoomWatchStartedAt > 2.0;
+	const APlayerState* OwnState = GetOwningPlayer() ? GetOwningPlayer()->PlayerState.Get() : nullptr;
+	TSet<const APlayerState*> Present;
+	for (APlayerState* State : Room->PlayerArray)
+	{
+		const AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
+		if (!Member || Member->IsABot() || Member->IsInactive())
+		{
+			continue;
+		}
+		Present.Add(Member);
+		FRoomMemberSeen* Seen = RoomMembersSeen.Find(State);
+		if (!Seen)
+		{
+			RoomMembersSeen.Add(State, {Member->GetPlayerName(), Member->bSpectating, Now, bAnnounce && State != OwnState});
+			continue;
+		}
+		if (Seen->bJoinPending)
+		{
+			// A newcomer's machine name shows until their own name arrives, so the note waits a moment.
+			if (Now - Seen->FirstSeenAt >= 1.0)
+			{
+				Seen->bJoinPending = false;
+				AddRoomToast(State, Member->GetPlayerName(), Member->bSpectating ? TEXT(" が観戦に来ました") : TEXT(" が参加しました"),
+					Member->bSpectating ? Gold : Ice);
+			}
+		}
+		else if (Seen->bSpectating != Member->bSpectating && bAnnounce)
+		{
+			AddRoomToast(State, Member->GetPlayerName(),
+				Member->bSpectating ? TEXT(" が観戦に切り替えました") : TEXT(" がプレイヤーに戻りました"),
+				Member->bSpectating ? Gold : Ice);
+		}
+		Seen->Name = Member->GetPlayerName();
+		Seen->bSpectating = Member->bSpectating;
+	}
+	for (auto It = RoomMembersSeen.CreateIterator(); It; ++It)
+	{
+		if (!It->Key.IsValid() || !Present.Contains(It->Key.Get()))
+		{
+			if (bAnnounce && !It->Value.bJoinPending)
+			{
+				AddRoomToast(nullptr, It->Value.Name, TEXT(" が退出しました"), Muted);
+			}
+			It.RemoveCurrent();
+		}
+	}
+	RoomToasts.RemoveAll([Now](const FRoomToast& Toast) { return Now - Toast.At > 4.5; });
+}
+
+void UChaosImpactChargeWidget::PaintRoomToasts(const FGeometry& AllottedGeometry,
+	FSlateWindowElementList& OutDrawElements, const int32 BaseLayer, const float Top) const
+{
+	using namespace ChaosImpactPaint;
+
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, 0.0f, GetHudScale(Size.X, Size.Y));
+	const double Clock = FPlatformTime::Seconds();
+	constexpr float Width = 340.0f;
+	constexpr float Height = 40.0f;
+	// Newest on top; each slides in from the right and fades before it goes.
+	for (int32 Index = RoomToasts.Num() - 1, Row = 0; Index >= 0; --Index, ++Row)
+	{
+		const FRoomToast& Toast = RoomToasts[Index];
+		const float Age = static_cast<float>(Clock - Toast.At);
+		const float In = EaseOut(Age / 0.25f);
+		const float Alpha = In * FMath::Clamp((4.5f - Age) / 0.5f, 0.0f, 1.0f);
+		const FString Name = Toast.Member.IsValid() ? Toast.Member->GetPlayerName() : Toast.Name;
+		const FPainter P{MakeSkewed(TopRight, -Width - 40.0f + (1.0f - In) * 120.0f, Top + Row * (Height + 8.0f), Width, Height, -0.25f),
+			OutDrawElements, BaseLayer, Alpha};
+		P.Box(6.0f, 6.0f, Width, Height, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f));
+		P.Box(0.0f, 0.0f, Width, Height, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
+		P.Box(0.0f, 0.0f, 8.0f, Height, Toast.Accent);
+		P.Text(Name + Toast.Message, 22.0f, 7.0f, 20.0f, Paper, ETextAlign::Left, TEXT("Bold"));
 	}
 }
 
@@ -792,8 +895,15 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		return BaseLayer;
 	}
 	PaintPlayerMarkers(AllottedGeometry, OutDrawElements, BaseLayer + 1);
-	PaintVitals(AllottedGeometry, OutDrawElements, BaseLayer + 1);
-	PaintBallInventory(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	if (bSpectatorView)
+	{
+		PaintSpectatorBar(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	}
+	else
+	{
+		PaintVitals(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+		PaintBallInventory(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	}
 	const double Clock = FPlatformTime::Seconds();
 	const UGameInstance* GameInstance = GetGameInstance();
 	const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
@@ -1315,6 +1425,63 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 		StaminaY - 1.0f, 16.0f, bCanDash ? WithAlpha(Paper, 0.8f) : Muted, ETextAlign::Right, TEXT("Bold"));
 }
 
+void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeometry,
+	FSlateWindowElementList& OutDrawElements, const int32 BaseLayer) const
+{
+	using namespace ChaosImpactPaint;
+
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const AChaosImpactSpectatorPawn* Camera = Cast<AChaosImpactSpectatorPawn>(GetOwningPlayerPawn());
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	// The results take the screen to themselves.
+	if (!Camera || Size.X < 1.0f || Size.Y < 1.0f
+		|| (Match && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Results))
+	{
+		return;
+	}
+	const float S = GetHudScale(Size.X, Size.Y);
+	const AChaosImpactCharacter* Watched = Camera->GetFollowedCharacter();
+	FString Showing = TEXT("フリーカメラ");
+	FLinearColor ShowingColor = Ice;
+	if (Watched)
+	{
+		const AChaosImpactPlayerState* Member = Watched->GetPlayerState<AChaosImpactPlayerState>();
+		Showing = FString::Printf(TEXT("%s の視点"), *Watched->GetOverheadDisplayName());
+		ShowingColor = Member && Member->TeamIndex != INDEX_NONE ? ChaosImpactMatch::GetTeamColor(Member->TeamIndex) : Gold;
+	}
+
+	// Bottom middle: 観戦中 and who is shown, then the camera keys under it.
+	const FGeometry Bottom = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y, S);
+	const FGeometry Plate = MakeSkewed(Bottom, -300.0f, -128.0f, 600.0f, 64.0f, -0.25f);
+	const FPainter P{Plate, OutDrawElements, BaseLayer, 1.0f};
+	P.Box(8.0f, 8.0f, 600.0f, 64.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+	P.Box(0.0f, 0.0f, 600.0f, 64.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.88f));
+	P.Box(0.0f, 0.0f, 150.0f, 64.0f, Ice);
+	P.Box(0.0f, 60.0f, 600.0f, 4.0f, ShowingColor);
+	P.Text(TEXT("観戦中"), 75.0f, 11.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+	P.Text(Showing, 375.0f, 12.0f, 30.0f, ShowingColor, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+	const AChaosImpactPlayerController* Viewer = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const bool bOnline = Viewer && Viewer->IsOnlineRoom();
+	const FPainter Keys{MakeAnchor(Bottom, 0.0f, -54.0f, 1.0f), OutDrawElements, BaseLayer, 1.0f};
+	FString KeyHelp = Watched
+		? TEXT("← →  /  LB RB  選手切替　　F / X  フリーカメラ　　H / Y  UI表示切替")
+		: TEXT("WASD  移動　E Q / RT LT  上下　右クリック / 右スティック  視点　Shift / L3  高速　← →  選手視点　H / Y  UI");
+	// Offline, time can be stopped for screenshots; online, the lobby is where to switch back to playing.
+	KeyHelp += !bOnline ? TEXT("　T / A  時間停止")
+		: Viewer->CanToggleSpectating() ? TEXT("　V / 十字↓  プレイヤーに戻る") : TEXT("");
+	Keys.Text(KeyHelp, 0.0f, 0.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center, TEXT("Regular"), 1.5f, Ink);
+
+	if (Viewer && Viewer->IsSpectateTimeStopped())
+	{
+		// Top middle, under the clock: the match is frozen.
+		const FGeometry Top = MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, S);
+		const FPainter Stop{MakeSkewed(Top, -150.0f, 92.0f, 300.0f, 52.0f, -0.25f), OutDrawElements, BaseLayer, 1.0f};
+		Stop.Box(0.0f, 0.0f, 300.0f, 52.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
+		Stop.Box(0.0f, 0.0f, 300.0f, 5.0f, Ice);
+		Stop.Text(TEXT("時間停止中"), 150.0f, 8.0f, 28.0f, Ice, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+	}
+}
+
 void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeometry,
 	FSlateWindowElementList& OutDrawElements, const int32 BaseLayer) const
 {
@@ -1475,6 +1642,13 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 	const FGeometry TopLeft = MakeAnchor(AllottedGeometry, 0.0f, 0.0f, S);
 	const AChaosImpactPlayerState* Own = GetOwningPlayer()
 		? GetOwningPlayer()->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	if (bSpectatorView)
+	{
+		// Seen from the player being watched; nobody's in free flight.
+		const AChaosImpactSpectatorPawn* Camera = Cast<AChaosImpactSpectatorPawn>(GetOwningPlayerPawn());
+		const AChaosImpactCharacter* Watched = Camera ? Camera->GetFollowedCharacter() : nullptr;
+		Own = Watched ? Watched->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	}
 	const bool bTeams = Match->IsTeamBattle();
 	const auto NameOf = [](const AChaosImpactPlayerState* Member) -> FString
 	{
@@ -1751,6 +1925,13 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 	{
 		return;
 	}
+	// Join / leave / play-or-watch notes in the top-right corner, under the lobby's rules panel when it is shown.
+	{
+		const bool bLobbyPanels = !Room->bVersusMatch
+			&& (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting);
+		const float ToastTop = !bLobbyPanels ? 36.0f : Room->bRulesDecided ? 304.0f : Room->bRecruitmentClosed ? 112.0f : 36.0f;
+		PaintRoomToasts(AllottedGeometry, OutDrawElements, BaseLayer + 1, ToastTop);
+	}
 	const TArray<AChaosImpactPlayerState*> Members = Room->GetMembersInJoinOrder();
 	// The single list outlines every player on this machine.
 	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
@@ -1849,6 +2030,29 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			}
 		}
 
+		// Spectators under the players, and the key that switches between playing and watching.
+		const TArray<AChaosImpactPlayerState*> Watchers = Room->GetSpectators();
+		const float WatchTop = 104.0f + Members.Num() * 52.0f + 6.0f;
+		const FPainter W{MakeSkewed(TopLeft, 40.0f, WatchTop, 380.0f, 36.0f, -0.25f), OutDrawElements, BaseLayer};
+		TArray<FString> WatcherNames;
+		for (const AChaosImpactPlayerState* Watcher : Watchers)
+		{
+			WatcherNames.Add(Watcher->GetPlayerName());
+		}
+		W.Box(0.0f, 0.0f, 380.0f, 36.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.8f));
+		W.Box(0.0f, 0.0f, 8.0f, 36.0f, Gold);
+		W.Text(FString::Printf(TEXT("観戦 %d/%d  %s"), Watchers.Num(), AChaosImpactGameState::MaxSpectators,
+			*FString::Join(WatcherNames, TEXT("・"))), 22.0f, 4.0f, 20.0f, Watchers.IsEmpty() ? Muted : Gold,
+			ETextAlign::Left, TEXT("Bold"));
+		if (const AChaosImpactPlayerController* SwitchController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			SwitchController && SwitchController->CanToggleSpectating())
+		{
+			const bool bGamepad = SwitchController->IsUsingGamepad();
+			W.Text(FString::Printf(TEXT("%s で%s"), bGamepad ? TEXT("十字↓") : TEXT("V"),
+				SwitchController->IsSpectating() ? TEXT("プレイヤーに戻る") : TEXT("観戦にする")),
+				24.0f, 42.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Regular"));
+		}
+
 		const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, 0.0f, S);
 		if (Room->bRulesDecided)
 		{
@@ -1892,7 +2096,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 
 			// How this machine presses 準備OK, and whether it already has.
 			const AChaosImpactPlayerState* OwnState = LocalStates.IsEmpty() ? nullptr : Cast<AChaosImpactPlayerState>(LocalStates[0]);
-			if (!bStartingNow && Room->Phase == EChaosImpactOnlinePhase::Lobby)
+			if (!bStartingNow && Room->Phase == EChaosImpactOnlinePhase::Lobby && !(OwnState && OwnState->bSpectating))
 			{
 				// Only the key for the device this player is using right now.
 				const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());

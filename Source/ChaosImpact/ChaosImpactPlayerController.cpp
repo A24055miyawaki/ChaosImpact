@@ -297,6 +297,9 @@ void AChaosImpactPlayerController::SetupInputComponent()
 	// Online lobby 準備OK: keys nothing else uses in play (Y throws, so the D-pad).
 	InputComponent->BindKey(EKeys::R, IE_Pressed, this, &AChaosImpactPlayerController::ToggleReadyForMatch);
 	InputComponent->BindKey(EKeys::Gamepad_DPad_Up, IE_Pressed, this, &AChaosImpactPlayerController::ToggleReadyForMatch);
+	// Online lobby: play or watch the next match.
+	InputComponent->BindKey(EKeys::V, IE_Pressed, this, &AChaosImpactPlayerController::ToggleSpectating);
+	InputComponent->BindKey(EKeys::Gamepad_DPad_Down, IE_Pressed, this, &AChaosImpactPlayerController::ToggleSpectating);
 
 	// only add IMCs for local player controllers
 	if (IsLocalPlayerController())
@@ -621,8 +624,9 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 	// The training panel deliberately leaves world time and ball physics alive.
 	// Pausing an online room would freeze every member, so menus there never pause the world.
 	// Team select lets the other local players keep choosing through their own controllers.
-	SetPause(!bPlaying && !bLiveTrainingOverlay && !IsOnlineRoom()
-		&& CurrentScreen != EChaosImpactScreen::TeamSelect && CurrentScreen != EChaosImpactScreen::MatchEnd);
+	// A spectator's time stop holds through menus too.
+	SetPause(bSpectateTimeStopped || (!bPlaying && !bLiveTrainingOverlay && !IsOnlineRoom()
+		&& CurrentScreen != EChaosImpactScreen::TeamSelect && CurrentScreen != EChaosImpactScreen::MatchEnd));
 	if (MobileControlsWidget)
 	{
 		MobileControlsWidget->SetVisibility(bPlaying ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
@@ -855,6 +859,8 @@ void AChaosImpactPlayerController::PrepareTrainingControllerAssignment(const int
 	}
 	const bool bOnline = PlayFlow == EChaosImpactPlayFlow::VersusOnline;
 	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, bOnline ? 2 : 4);
+	// Players who pick characters play; watching is chosen with 観戦 instead.
+	PendingMatchRules.bSpectate = false;
 	ResetControllerJoinSequence();
 	bControllerAssignmentKeepsFlightMode = false;
 	ControllerAssignmentReturnScreen = bOnline ? EChaosImpactScreen::OnlinePlayers : EChaosImpactScreen::TrainingSetup;
@@ -956,7 +962,27 @@ void AChaosImpactPlayerController::BeginVersusLocal()
 	PlayFlow = EChaosImpactPlayFlow::VersusLocal;
 	bTrainingTargetsEnabled = false;
 	TrainingCPUCount = 0;
+	PendingMatchRules.bSpectate = false;
 	ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
+}
+
+void AChaosImpactPlayerController::BeginLocalSpectate()
+{
+	if (bTravelPending || IsGameplayActive() || CurrentScreen == EChaosImpactScreen::Title)
+	{
+		return;
+	}
+	// One viewer on one screen, with any device: no controller assignment and no characters to pick.
+	PlayFlow = EChaosImpactPlayFlow::VersusLocal;
+	bTrainingTargetsEnabled = false;
+	TrainingCPUCount = 0;
+	RequestedLocalPlayerCount = 1;
+	RequestedKeyboardPlayerIndex = 0;
+	JoinedInputDeviceIds.Reset();
+	JoinedLegacyControllerIds.Reset();
+	PendingMatchRules.bSpectate = true;
+	PendingMatchRules.CPUCount = FMath::Max(PendingMatchRules.CPUCount, 4);
+	OpenMatchRules(EChaosImpactScreen::TrainingSetup);
 }
 
 void AChaosImpactPlayerController::BeginVersusOnline()
@@ -1272,7 +1298,30 @@ bool AChaosImpactPlayerController::CanToggleReady() const
 {
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	return IsOnlineRoom() && Room && Room->bRulesDecided && !Room->bVersusMatch
-		&& Room->Phase == EChaosImpactOnlinePhase::Lobby;
+		&& Room->Phase == EChaosImpactOnlinePhase::Lobby && !IsSpectating();
+}
+
+bool AChaosImpactPlayerController::CanToggleSpectating() const
+{
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	return IsOnlineRoom() && Room && !Room->bVersusMatch && Room->Phase == EChaosImpactOnlinePhase::Lobby;
+}
+
+void AChaosImpactPlayerController::ToggleSpectating()
+{
+	if (!IsLocalController() || !CanToggleSpectating() || !IsGameplayActive())
+	{
+		return;
+	}
+	ServerSetSpectating(!IsSpectating());
+}
+
+void AChaosImpactPlayerController::ServerSetSpectating_Implementation(const bool bSpectate)
+{
+	if (AChaosImpactGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		GameMode->SetMemberSpectating(this, bSpectate);
+	}
 }
 
 void AChaosImpactPlayerController::ToggleReadyForMatch()
@@ -1489,9 +1538,9 @@ bool AChaosImpactPlayerController::IsSearchingForRoom() const
 bool AChaosImpactPlayerController::CanCloseRecruitment() const
 {
 	const AChaosImpactGameState* RoomState = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	// A room of one machine has nobody to play with yet.
+	// A room of one machine has nobody to play with (or watch) yet.
 	return IsOnlineRoomHost() && RoomState && !RoomState->bRecruitmentClosed
-		&& RoomState->Phase == EChaosImpactOnlinePhase::Lobby && RoomState->CountMachines() >= 2;
+		&& RoomState->Phase == EChaosImpactOnlinePhase::Lobby && RoomState->CountMachines() + RoomState->CountSpectators() >= 2;
 }
 
 void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FString& Name)
@@ -1865,6 +1914,40 @@ int32 AChaosImpactPlayerController::GetMatchHumanCount() const
 	return FMath::Clamp(RequestedLocalPlayerCount, 1, 4);
 }
 
+void AChaosImpactPlayerController::SetSpectateTimeStopped(const bool bStop)
+{
+	if (bStop && (IsOnlineRoom() || !IsSpectating() || !IsLocalController()))
+	{
+		return;
+	}
+	if (bSpectateTimeStopped == bStop)
+	{
+		return;
+	}
+	bSpectateTimeStopped = bStop;
+	// The camera manager keeps updating while the world is paused, so the camera still flies.
+	bShouldPerformFullTickWhenPaused = bStop;
+	if (IsGameplayActive())
+	{
+		SetPause(bStop);
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Spectator time %s"), bStop ? TEXT("stopped") : TEXT("running again"));
+}
+
+void AChaosImpactPlayerController::SetGameplayUIHidden(const bool bHide)
+{
+	if (IsPrimaryLocalPlayerController() && MatchAnnouncer)
+	{
+		MatchAnnouncer->SetVisibility(bHide ? ESlateVisibility::Hidden : ESlateVisibility::HitTestInvisible);
+	}
+}
+
+bool AChaosImpactPlayerController::IsSpectating() const
+{
+	const AChaosImpactPlayerState* Member = GetPlayerState<AChaosImpactPlayerState>();
+	return Member && Member->bSpectating;
+}
+
 void AChaosImpactPlayerController::OpenMatchRules(const EChaosImpactScreen ReturnScreen)
 {
 	MatchRulesReturnScreen = ReturnScreen;
@@ -1898,10 +1981,12 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	}
 	else if (Row == 2)
 	{
-		const int32 Minimum = ChaosImpactMatch::GetMinCPUCount(Humans, Rules.TeamCount);
-		const int32 Span = ChaosImpactMatch::GetMaxCPUCount(Humans) - Minimum + 1;
+		const int32 Competing = ChaosImpactMatch::GetCompetingHumans(Rules, Humans);
+		const int32 Minimum = ChaosImpactMatch::GetMinCPUCount(Competing, Rules.TeamCount);
+		const int32 Span = ChaosImpactMatch::GetMaxCPUCount(Competing) - Minimum + 1;
 		Rules.CPUCount = Minimum + Wrap(Rules.CPUCount - Minimum + Direction, FMath::Max(Span, 1));
 	}
+
 	Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
 }
 
@@ -1920,7 +2005,8 @@ void AChaosImpactPlayerController::ConfirmMatchRules()
 	// A new player entry always opens a fresh VS level with those players; only a rematch or rule change
 	// from inside the match restarts it in place.
 	const bool bNewLocalEntry = MatchRulesReturnScreen == EChaosImpactScreen::ControllerAssignment
-		|| MatchRulesReturnScreen == EChaosImpactScreen::CharacterSelect;
+		|| MatchRulesReturnScreen == EChaosImpactScreen::CharacterSelect
+		|| MatchRulesReturnScreen == EChaosImpactScreen::TrainingSetup;
 	if (GameMode && (IsOnlineRoomHost() || (IsVersusMatchWorld() && !bNewLocalEntry)))
 	{
 		// Players are already here: the match (re)starts in place.
@@ -2076,6 +2162,20 @@ void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 	{
 		DevAutoReadyAt = 0.0;
 	}
+	// Development (-CIDevToggleSpectate=<seconds>): switch to watching that long into the room's lobby, once.
+	static const float DevWatchDelay = []()
+	{
+		float Value = -1.0f;
+		FParse::Value(FCommandLine::Get(), TEXT("CIDevToggleSpectate="), Value);
+		return Value;
+	}();
+	static bool bDevWatchDone = false;
+	if (DevWatchDelay >= 0.0f && !bDevWatchDone && IsLocalController() && IsPrimaryLocalPlayerController()
+		&& CanToggleSpectating() && GetWorld() && GetWorld()->GetTimeSeconds() >= DevWatchDelay)
+	{
+		bDevWatchDone = true;
+		ServerSetSpectating(true);
+	}
 #endif
 }
 
@@ -2090,7 +2190,8 @@ void AChaosImpactPlayerController::UpdateMatchScreens()
 	{
 		return;
 	}
-	const bool bTeamSelect = Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::TeamSelect;
+	// Spectators have no team to pick; they keep watching.
+	const bool bTeamSelect = Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::TeamSelect && !IsSpectating();
 	if (bTeamSelect && CurrentScreen == EChaosImpactScreen::Playing)
 	{
 		ShowMenuScreen(EChaosImpactScreen::TeamSelect);

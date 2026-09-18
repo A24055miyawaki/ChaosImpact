@@ -10,6 +10,7 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactSpectatorPawn.h"
 #include "ChaosImpactTornado.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactVersusStage.h"
@@ -150,6 +151,10 @@ void AChaosImpactGameMode::BeginPlay()
 		if (FParse::Value(FCommandLine::Get(), TEXT("CIReserveSlots="), DevReservedSlots))
 		{
 			DevReservedSlots = FMath::Clamp(DevReservedSlots, 0, AChaosImpactGameState::MaxMembers - 1);
+		}
+		if (FParse::Value(FCommandLine::Get(), TEXT("CIReserveSpectators="), DevReservedSpectators))
+		{
+			DevReservedSpectators = FMath::Clamp(DevReservedSpectators, 0, AChaosImpactGameState::MaxSpectators);
 		}
 		UpdateRoomMemberCount();
 		GetWorldTimerManager().SetTimer(PingMirrorTimer, this,
@@ -555,6 +560,18 @@ void AChaosImpactGameMode::PreLogin(const FString& Options, const FString& Addre
 	{
 		return;
 	}
+	if (UGameplayStatics::GetIntOption(Options, TEXT("CISpectator"), 0) != 0)
+	{
+		// Spectators may come in at any time, mid-match too, up to their own limit.
+		const int32 Watching = RoomState->CountSpectators() + DevReservedSpectators;
+		if (Watching >= AChaosImpactGameState::MaxSpectators)
+		{
+			ErrorMessage = TEXT("CISPECFULL");
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Room spectator login check: watching=%d result=%s"), Watching,
+			ErrorMessage.IsEmpty() ? TEXT("ok") : *ErrorMessage);
+		return;
+	}
 	// The engine adds SplitscreenCount=2 when a machine already inside sends its second player;
 	// that place was reserved when the machine joined, so only the hard limit applies.
 	const bool bSecondPlayerOfMachine = UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) >= 2;
@@ -586,6 +603,11 @@ FString AChaosImpactGameMode::InitNewPlayer(APlayerController* NewPlayerControll
 	const FString Error = Super::InitNewPlayer(NewPlayerController, UniqueId, Options, Portal);
 	AChaosImpactPlayerState* Member = NewPlayerController
 		? NewPlayerController->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	if (Member && IsOnlineRoom() && UGameplayStatics::GetIntOption(Options, TEXT("CISpectator"), 0) != 0)
+	{
+		// Gets a spectator camera instead of a character (SpawnDefaultPawnFor).
+		Member->bSpectating = true;
+	}
 	if (Member && UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) < 2)
 	{
 		Member->ExpectedMachinePlayers = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("CIPlayers"), 1), 1, 2);
@@ -724,8 +746,31 @@ void AChaosImpactGameMode::Logout(AController* Exiting)
 	}
 }
 
+APawn* AChaosImpactGameMode::SpawnSpectatorCamera(AController* Viewer)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!GetWorld())
+	{
+		return nullptr;
+	}
+	const bool bVersus = Match && Match->bVersusMatch;
+	const FVector Target = bVersus ? FVector(Match->StageCenter) : GetRoomAnchor();
+	const FVector Location = Target + (bVersus ? FVector(0.0f, -2600.0f, 2000.0f) : FVector(0.0f, -1100.0f, 900.0f));
+	FActorSpawnParameters Parameters;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	Parameters.Owner = Viewer;
+	Parameters.ObjectFlags |= RF_Transient;
+	return GetWorld()->SpawnActor<AChaosImpactSpectatorPawn>(AChaosImpactSpectatorPawn::StaticClass(), Location,
+		(Target - Location).Rotation(), Parameters);
+}
+
 APawn* AChaosImpactGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
 {
+	if (const AChaosImpactPlayerState* Watcher = NewPlayer ? NewPlayer->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+		Watcher && Watcher->bSpectating)
+	{
+		return SpawnSpectatorCamera(NewPlayer);
+	}
 	if (!IsOnlineRoom() || !StartSpot || !GetWorld())
 	{
 		return Super::SpawnDefaultPawnFor_Implementation(NewPlayer, StartSpot);
@@ -766,6 +811,7 @@ void AChaosImpactGameMode::UpdateRoomMemberCount()
 	{
 		// Advertise reserved places too, so a searching pair is turned away before it travels.
 		Sessions->SetMemberCount(RoomState->CountHumanMembers() + GetReservedRoomSlots() + DevReservedSlots);
+		Sessions->SetSpectatorCount(RoomState->CountSpectators() + DevReservedSpectators);
 	}
 }
 
@@ -827,7 +873,7 @@ void AChaosImpactGameMode::DecideLobbyRules(const FChaosImpactMatchRules& InRule
 void AChaosImpactGameMode::SetMemberReady(AChaosImpactPlayerState* Member, const bool bReady)
 {
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
-	if (!Match || !Member || Member->IsABot() || !Match->bRulesDecided || Match->bVersusMatch
+	if (!Match || !Member || Member->IsABot() || Member->bSpectating || !Match->bRulesDecided || Match->bVersusMatch
 		|| Match->Phase != EChaosImpactOnlinePhase::Lobby || Member->bReadyForMatch == bReady)
 	{
 		return;
@@ -836,6 +882,60 @@ void AChaosImpactGameMode::SetMemberReady(AChaosImpactPlayerState* Member, const
 	Member->ForceNetUpdate();
 	UE_LOG(LogChaosImpact, Log, TEXT("Lobby ready: %s %s (%d/%d)"), *Member->GetPlayerName(),
 		bReady ? TEXT("ready") : TEXT("cancelled"), Match->CountReadyMembers(), Match->CountHumanMembers());
+	UpdateLobbyReady();
+}
+
+void AChaosImpactGameMode::SetMemberSpectating(APlayerController* MemberController, const bool bSpectate)
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	AChaosImpactPlayerState* Member = MemberController ? MemberController->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	if (!IsOnlineRoom() || !Match || !Member || Member->IsABot() || Member->bSpectating == bSpectate
+		|| Match->bVersusMatch || Match->Phase != EChaosImpactOnlinePhase::Lobby)
+	{
+		return;
+	}
+	if (bSpectate)
+	{
+		// One screen per spectator, a free place, and someone left to play.
+		const UGameInstance* OwningGameInstance = GetGameInstance();
+		const bool bPair = Member->bSecondOfMachine || Member->MachinePlayersJoined > 1 || Member->ExpectedMachinePlayers > 1
+			|| (Member->bHostMachine && OwningGameInstance && OwningGameInstance->GetLocalPlayers().Num() > 1);
+		if (bPair || Match->CountSpectators() + DevReservedSpectators >= AChaosImpactGameState::MaxSpectators
+			|| Match->CountHumanMembers() <= 1)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Lobby: %s cannot watch (pair=%d spectators=%d players=%d)"),
+				*Member->GetPlayerName(), bPair, Match->CountSpectators(), Match->CountHumanMembers());
+			return;
+		}
+	}
+	else if (Match->CountHumanMembers() >= AChaosImpactGameState::MaxMembers)
+	{
+		return;
+	}
+	Member->bSpectating = bSpectate;
+	Member->bReadyForMatch = false;
+	Member->TeamIndex = INDEX_NONE;
+	Member->ForceNetUpdate();
+	if (APawn* Old = MemberController->GetPawn())
+	{
+		MemberController->UnPossess();
+		Old->Destroy();
+	}
+	// A character comes back in the room's ring (SpawnDefaultPawnFor), a camera over the room otherwise.
+	RestartPlayer(MemberController);
+	if (AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(MemberController->GetPawn()))
+	{
+		Character->SetTrainingStartTransform(Character->GetActorLocation(), Character->GetActorRotation());
+	}
+	// The decided rules follow the players who are left (a lone player still gets a CPU).
+	if (Match->bRulesDecided)
+	{
+		Match->Rules = ChaosImpactMatch::Sanitize(Match->Rules, Match->CountHumanMembers());
+	}
+	Match->ForceNetUpdate();
+	UE_LOG(LogChaosImpact, Log, TEXT("Lobby: %s now %s (players=%d spectators=%d)"), *Member->GetPlayerName(),
+		bSpectate ? TEXT("watches") : TEXT("plays"), Match->CountHumanMembers(), Match->CountSpectators());
+	UpdateRoomMemberCount();
 	UpdateLobbyReady();
 }
 
@@ -949,7 +1049,7 @@ void AChaosImpactGameMode::RunDevAutoLobby()
 	{
 		return;
 	}
-	if (Match->CountMachines() < 2)
+	if (Match->CountMachines() + Match->CountSpectators() < 2)
 	{
 		GetWorldTimerManager().SetTimer(DevAutoLobbyTimer, this, &AChaosImpactGameMode::RunDevAutoLobby, 1.0f, false);
 		return;
@@ -1012,12 +1112,24 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
-	const FChaosImpactMatchRules Rules = ChaosImpactMatch::Sanitize(InRules, Match->CountHumanMembers());
 	EnsureVersusStage();
 	if (!VersusStage)
 	{
 		return;
 	}
+	// Players who watch leave the competitors before the rules are fitted to the players who compete. Watching
+	// offline is for a lone player (no split screen); online, members choose it themselves in the lobby.
+	const UGameInstance* OwningGameInstance = GetGameInstance();
+	const bool bLocalWatch = InRules.bSpectate && !IsOnlineRoom()
+		&& OwningGameInstance && OwningGameInstance->GetLocalPlayers().Num() == 1;
+	if (!IsOnlineRoom())
+	{
+		Match->StageCenter = VersusStage->GetCenter();
+		SetLocalPlayersSpectating(bLocalWatch);
+	}
+	FChaosImpactMatchRules Wanted = InRules;
+	Wanted.bSpectate = bLocalWatch;
+	const FChaosImpactMatchRules Rules = ChaosImpactMatch::Sanitize(Wanted, Match->CountHumanMembers());
 	if (IsOnlineRoom())
 	{
 		Match->bRecruitmentClosed = true;
@@ -1068,10 +1180,53 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	}
 }
 
+void AChaosImpactGameMode::SetLocalPlayersSpectating(const bool bSpectate)
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!GameInstance || !Match || !GetWorld())
+	{
+		return;
+	}
+	for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+	{
+		APlayerController* Controller = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
+		AChaosImpactPlayerState* Member = Controller ? Controller->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+		if (!Member || Member->bSpectating == bSpectate)
+		{
+			continue;
+		}
+		Member->bSpectating = bSpectate;
+		Member->Points = 0;
+		Member->Knockouts = 0;
+		Member->TeamIndex = INDEX_NONE;
+		if (APawn* Old = Controller->GetPawn())
+		{
+			Controller->UnPossess();
+			Old->Destroy();
+		}
+		if (bSpectate)
+		{
+			if (AChaosImpactSpectatorPawn* Camera = Cast<AChaosImpactSpectatorPawn>(SpawnSpectatorCamera(Controller)))
+			{
+				Controller->Possess(Camera);
+				Camera->PlaceOverStage(Match->StageCenter);
+			}
+		}
+		else
+		{
+			// Back into the match with a character (placed at a start point when the match begins).
+			RestartPlayer(Controller);
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Local player %d %s"), GameInstance->GetLocalPlayers().IndexOfByKey(LocalPlayer),
+			bSpectate ? TEXT("now watches the match") : TEXT("plays again"));
+	}
+}
+
 void AChaosImpactGameMode::ChangeMemberTeam(AChaosImpactPlayerState* Member, const int32 Direction)
 {
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
-	if (!Match || !Member || Member->IsABot() || Direction == 0 || !Match->IsTeamBattle()
+	if (!Match || !Member || Member->IsABot() || Member->bSpectating || Direction == 0 || !Match->IsTeamBattle()
 		|| Match->Phase != EChaosImpactOnlinePhase::TeamSelect)
 	{
 		return;

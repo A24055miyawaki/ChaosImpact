@@ -782,6 +782,11 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(930, 708, 1450, 788),
 			bGamepad ? TEXT("1P  コントローラー") : TEXT("1P  キーボード＋マウス"),
 			TEXT(""), TEXT(""), bGamepad ? Fire : Ice});
+		if (Controller && Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusLocal)
+		{
+			// Watching a CPU match: one player on one screen, so it is picked here, before players and characters.
+			Entries.Add({FSlateRect(510, 712, 890, 784), TEXT("観戦（CPUどうし）"), TEXT("spectate"), TEXT(""), Ice});
+		}
 		Entries.Add({FSlateRect(150, 716, 470, 780),
 			Controller && Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusLocal ? TEXT("戻る") : TEXT("モード選択へ"),
 			TEXT(""), TEXT(""), Muted});
@@ -852,14 +857,15 @@ void UChaosImpactMenuWidget::BuildEntries()
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 		static const TArray<FChaosImpactRoomListing> NoListings;
 		const TArray<FChaosImpactRoomListing>& Listings = Sessions ? Sessions->GetRoomListings() : NoListings;
-		const int32 LocalPlayers = Sessions ? Sessions->GetLocalPlayerCount() : 1;
 		// Each room is a row: its name (Title), host (Detail) and members (Number).
 		for (int32 Index = 0; Index < FMath::Min(Listings.Num(), 5); ++Index)
 		{
 			const FChaosImpactRoomListing& Listing = Listings[Index];
+			const bool bWatch = Sessions->WouldJoinAsSpectator(Listing);
 			FMenuEntry Row{FSlateRect(250, 232 + Index * 92, 1350, 312 + Index * 92), Listing.RoomName, Listing.HostName,
-				FString::Printf(TEXT("%d/%d"), Listing.Members, AChaosImpactGameState::MaxMembers), Ice};
-			Row.bDisabled = !Listing.bOpen || Listing.Members + LocalPlayers > AChaosImpactGameState::MaxMembers;
+				bWatch ? FString::Printf(TEXT("観戦 %d/%d"), Listing.Spectators, AChaosImpactGameState::MaxSpectators)
+					: FString::Printf(TEXT("%d/%d"), Listing.Members, AChaosImpactGameState::MaxMembers), bWatch ? Gold : Ice};
+			Row.bDisabled = !Sessions->GetJoinBlocker(Listing).IsEmpty();
 			Entries.Add(Row);
 		}
 		Entries.Add({FSlateRect(1010, 724, 1450, 800), TEXT("さがしなおす"), TEXT("refresh"), TEXT(""), Gold});
@@ -1429,21 +1435,26 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		if (const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
 		{
 			const FChaosImpactMatchRules& Rules = Controller->GetPendingMatchRules();
-			const int32 Humans = Controller->GetMatchHumanCount();
+			const int32 Humans = ChaosImpactMatch::GetCompetingHumans(Rules, Controller->GetMatchHumanCount());
 			const int32 Total = Humans + Rules.CPUCount;
 			const float In = EaseOut((T - 0.2f) / 0.35f);
 			const FGeometry Panel = MakeSkewed(DesignGeometry, 430.0f + (1.0f - In) * 80.0f, 512.0f, 740.0f, 168.0f, -0.12f);
 			const FMenuPainter Info{Panel, OutDrawElements, BaseLayer + 2, In};
 			Info.Box(12.0f, 14.0f, 740.0f, 168.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
 			Info.Box(0.0f, 0.0f, 740.0f, 168.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
-			Info.Box(0.0f, 0.0f, 10.0f, 168.0f, Gold);
-			Info.Text(FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
+			Info.Box(0.0f, 0.0f, 10.0f, 168.0f, Rules.bSpectate ? Ice : Gold);
+			Info.Text(Rules.bSpectate
+				? FString::Printf(TEXT("観戦：CPU %d人の試合をカメラで見る"), Rules.CPUCount)
+				: FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
 				36.0f, 14.0f, 30.0f, Paper);
 			Info.Text(Rules.IsTeamBattle()
 				? FString::Printf(TEXT("1チーム最大 %d人・チームの合計ポイントで勝負"),
 					ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
 				: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Gold);
-			Info.Text(TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"), 38.0f, 110.0f, 24.0f, Muted);
+			if (!Rules.bSpectate)
+			{
+				Info.Text(TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"), 38.0f, 110.0f, 24.0f, Muted);
+			}
 		}
 	}
 	else if (Screen == EChaosImpactScreen::TeamSelect)
@@ -1575,7 +1586,13 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				if (Entry.bDisabled)
 				{
 					Row.Box(W - 104.0f, 22.0f, 92.0f, 36.0f, Fire);
-					Row.Text(Listing.bOpen ? TEXT("満員") : TEXT("締切"), W - 58.0f, 24.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
+					Row.Text(Sessions->GetJoinBlocker(Listing), W - 58.0f, 24.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
+				}
+				else if (Sessions->WouldJoinAsSpectator(Listing))
+				{
+					// Mid-match or closed: joins to watch.
+					Row.Box(W - 104.0f, 22.0f, 92.0f, 36.0f, Gold);
+					Row.Text(TEXT("観戦"), W - 58.0f, 24.0f, 24.0f, Ink, ETextAlign::Center, TEXT("Black"));
 				}
 			}
 			if (Blend > 0.01f)
@@ -1689,6 +1706,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			Controller->TogglePrimaryInputMode();
 			BuildEntries();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("spectate"))
+		{
+			Controller->BeginLocalSpectate();
 		}
 		else
 		{

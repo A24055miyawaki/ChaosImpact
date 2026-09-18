@@ -22,6 +22,7 @@ namespace
 	const FName CountKey(TEXT("CICOUNT"));
 	const FName RoomNameKey(TEXT("CINAME"));
 	const FName HostNameKey(TEXT("CIHOST"));
+	const FName SpectatorsKey(TEXT("CISPEC"));
 	const TCHAR* ConfigSection = TEXT("ChaosImpact.Online");
 	const TCHAR* NameConfigKey = TEXT("PlayerName");
 	/** How often the room list is refreshed while it is shown. */
@@ -291,6 +292,7 @@ void UChaosImpactSessionSubsystem::HandleFindComplete(const bool bWasSuccessful)
 			Result.Session.SessionSettings.Get(HostNameKey, Listing.HostName);
 			Result.Session.SessionSettings.Get(CountKey, Listing.Members);
 			Result.Session.SessionSettings.Get(OpenKey, Open);
+			Result.Session.SessionSettings.Get(SpectatorsKey, Listing.Spectators);
 			Listing.bOpen = Open != 0;
 			Listing.PingMs = FMath::Max(0, Result.PingInMs);
 			Listing.Result = Result;
@@ -311,7 +313,7 @@ void UChaosImpactSessionSubsystem::HandleFindComplete(const bool bWasSuccessful)
 	bSearchedOnce = true;
 	++ListingsVersion;
 
-	if (bDevAutoJoin && !Listings.IsEmpty() && Listings[0].bOpen && GetGameInstance())
+	if (bDevAutoJoin && !Listings.IsEmpty() && GetJoinBlocker(Listings[0]).IsEmpty() && GetGameInstance())
 	{
 		const double Now = FPlatformTime::Seconds();
 		// Development: stay on the list for a moment (for screenshots), then take the first open room.
@@ -337,17 +339,15 @@ bool UChaosImpactSessionSubsystem::JoinRoomListing(const int32 Index)
 		return false;
 	}
 	const FChaosImpactRoomListing Listing = Listings[Index];
-	if (!Listing.bOpen)
+	if (const FString Blocker = GetJoinBlocker(Listing); !Blocker.IsEmpty())
 	{
-		PostNotice(TEXT("メンバー募集が終了しています"));
+		PostNotice(LocalPlayerCount > 1 && WouldJoinAsSpectator(Listing)
+			? TEXT("観戦は1人で参加してください")
+			: Listing.Spectators >= AChaosImpactGameState::MaxSpectators ? TEXT("観戦の枠がいっぱいです")
+			: TEXT("へやが満員です"));
 		return false;
 	}
-	// Everyone playing on this machine needs a place (a room of 7 cannot take a pair).
-	if (Listing.Members + LocalPlayerCount > AChaosImpactGameState::MaxMembers)
-	{
-		PostNotice(TEXT("へやが満員です"));
-		return false;
-	}
+	bJoinAsSpectator = WouldJoinAsSpectator(Listing);
 	CancelRefresh();
 	if (Search.IsValid() && Search->SearchState == EOnlineAsyncTaskState::InProgress)
 	{
@@ -359,13 +359,34 @@ bool UChaosImpactSessionSubsystem::JoinRoomListing(const int32 Index)
 	}
 	State = EChaosImpactRoomState::Joining;
 	RoomName = Listing.RoomName;
-	UE_LOG(LogChaosImpact, Log, TEXT("Joining listed room \"%s\" hosted by %s"), *Listing.RoomName, *Listing.HostName);
+	UE_LOG(LogChaosImpact, Log, TEXT("Joining listed room \"%s\" hosted by %s%s"), *Listing.RoomName, *Listing.HostName,
+		bJoinAsSpectator ? TEXT(" as a spectator") : TEXT(""));
 	if (!Sessions->JoinSession(0, NAME_GameSession, Listing.Result))
 	{
 		HandleJoinComplete(NAME_GameSession, EOnJoinSessionCompleteResult::UnknownError);
 		return false;
 	}
 	return true;
+}
+
+bool UChaosImpactSessionSubsystem::WouldJoinAsSpectator(const FChaosImpactRoomListing& Listing) const
+{
+	// Everyone playing on this machine needs a place (a room of 7 cannot take a pair).
+	return !Listing.bOpen || Listing.Members + LocalPlayerCount > AChaosImpactGameState::MaxMembers;
+}
+
+FString UChaosImpactSessionSubsystem::GetJoinBlocker(const FChaosImpactRoomListing& Listing) const
+{
+	if (!WouldJoinAsSpectator(Listing))
+	{
+		return FString();
+	}
+	// Watching is for one player on one screen, and a room takes only so many spectators.
+	if (LocalPlayerCount > 1)
+	{
+		return Listing.bOpen ? TEXT("満員") : TEXT("締切");
+	}
+	return Listing.Spectators >= AChaosImpactGameState::MaxSpectators ? TEXT("満員") : FString();
 }
 
 void UChaosImpactSessionSubsystem::CreateSessionNow()
@@ -384,10 +405,11 @@ void UChaosImpactSessionSubsystem::CreateSessionNow()
 	Settings.bAllowJoinInProgress = true;
 	Settings.bAllowJoinViaPresence = false;
 	Settings.bUseLobbiesIfAvailable = false;
-	Settings.NumPublicConnections = AChaosImpactGameState::MaxMembers;
+	Settings.NumPublicConnections = AChaosImpactGameState::MaxMembers + AChaosImpactGameState::MaxSpectators;
 	Settings.Set(PasswordKey, Password, EOnlineDataAdvertisementType::ViaOnlineService);
 	Settings.Set(OpenKey, 1, EOnlineDataAdvertisementType::ViaOnlineService);
 	Settings.Set(CountKey, 1, EOnlineDataAdvertisementType::ViaOnlineService);
+	Settings.Set(SpectatorsKey, 0, EOnlineDataAdvertisementType::ViaOnlineService);
 	Settings.Set(RoomNameKey, RoomName, EOnlineDataAdvertisementType::ViaOnlineService);
 	Settings.Set(HostNameKey, GetPlayerName(), EOnlineDataAdvertisementType::ViaOnlineService);
 	if (!Sessions->CreateSession(0, NAME_GameSession, Settings))
@@ -412,6 +434,7 @@ void UChaosImpactSessionSubsystem::HandleCreateComplete(FName SessionName, const
 	}
 	State = EChaosImpactRoomState::Hosting;
 	MemberCount = 1;
+	SpectatorCount = 0;
 	bRecruitmentOpen = true;
 	FString Options = FString::Printf(TEXT("listen?CITraining=1?CIOnline=1?%s"), *LocalSetupOptions);
 	// Development: -CIRoomCPU=N adds CPUs to the room so network hits can be tested without a second person.
@@ -447,8 +470,10 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 	// CIPlayers lets the host reserve a place for this machine's second player, who joins right after.
 	// CIMachine lets the host replace this machine's old place if it is still there after a drop.
 	// The local setup options also let this client pair its controllers again in the host's world.
-	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?CIMachine=%s?%s"),
-		*ConnectString, LocalPlayerCount, *GetMachineToken(), *LocalSetupOptions), TRAVEL_Absolute);
+	// CISpectator: this machine watches (mid-match or in a closed room) and never plays until it switches in the lobby.
+	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?CIMachine=%s?%s%s"),
+		*ConnectString, bJoinAsSpectator ? 1 : LocalPlayerCount, *GetMachineToken(), *LocalSetupOptions,
+		bJoinAsSpectator ? TEXT("?CISpectator=1") : TEXT("")), TRAVEL_Absolute);
 }
 
 void UChaosImpactSessionSubsystem::LeaveRoom()
@@ -475,6 +500,15 @@ void UChaosImpactSessionSubsystem::SetMemberCount(const int32 Count)
 	PublishRoomSettings();
 }
 
+void UChaosImpactSessionSubsystem::SetSpectatorCount(const int32 Count)
+{
+	if (SpectatorCount != Count)
+	{
+		SpectatorCount = Count;
+		PublishRoomSettings();
+	}
+}
+
 void UChaosImpactSessionSubsystem::SetRoomName(const FString& Name)
 {
 	const FString Trimmed = Name.TrimStartAndEnd().Left(MaxRoomNameLength);
@@ -497,6 +531,7 @@ void UChaosImpactSessionSubsystem::PublishRoomSettings()
 	FOnlineSessionSettings Updated = *Current;
 	Updated.Set(OpenKey, bRecruitmentOpen ? 1 : 0, EOnlineDataAdvertisementType::ViaOnlineService);
 	Updated.Set(CountKey, MemberCount, EOnlineDataAdvertisementType::ViaOnlineService);
+	Updated.Set(SpectatorsKey, SpectatorCount, EOnlineDataAdvertisementType::ViaOnlineService);
 	Updated.Set(RoomNameKey, RoomName, EOnlineDataAdvertisementType::ViaOnlineService);
 	Sessions->UpdateSession(NAME_GameSession, Updated, true);
 }
@@ -534,7 +569,8 @@ void UChaosImpactSessionSubsystem::ReturnAfterDisconnect(const FString& ErrorStr
 		return;
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Left online room: %s"), *ErrorString);
-	PostNotice(ErrorString.Contains(TEXT("CIFULL")) ? TEXT("へやが満員です")
+	PostNotice(ErrorString.Contains(TEXT("CISPECFULL")) ? TEXT("観戦の枠がいっぱいです")
+		: ErrorString.Contains(TEXT("CIFULL")) ? TEXT("へやが満員です")
 		: ErrorString.Contains(TEXT("CICLOSED")) ? TEXT("メンバー募集が終了しています")
 		: TEXT("へやが解散しました"));
 	State = EChaosImpactRoomState::None;

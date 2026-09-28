@@ -32,6 +32,7 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, bVersusMatch);
 	DOREPLIFETIME(AChaosImpactGameState, Rules);
 	DOREPLIFETIME(AChaosImpactGameState, StageCenter);
+	DOREPLIFETIME(AChaosImpactGameState, StageHalfExtent);
 	DOREPLIFETIME(AChaosImpactGameState, ReadyStartedAt);
 	DOREPLIFETIME(AChaosImpactGameState, RoomName);
 	DOREPLIFETIME(AChaosImpactGameState, bRulesDecided);

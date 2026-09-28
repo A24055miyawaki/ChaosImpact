@@ -188,8 +188,14 @@ public:
 	 */
 	void SetSpectateTimeStopped(bool bStop);
 	bool IsSpectateTimeStopped() const { return bSpectateTimeStopped; }
+	/** Starts with the pending rules and stage: stage select calls this once a stage is picked. */
 	void ConfirmMatchRules();
 	void CancelMatchRules();
+	/** The rules screen's 決定: on to stage select (every VS flow: local, spectate, online room, rule changes). */
+	void OpenStageSelect();
+	/** Stage select: picks the stage and starts, the same as the rules used to. */
+	void ChooseStage(int32 StageIndex);
+	void CancelStageSelect();
 	/** Team select: this player's own team. Other local players change theirs from their own devices. */
 	void ChangeOwnTeam(int32 Direction);
 	/** The local game or the room host decides when a team battle starts. */

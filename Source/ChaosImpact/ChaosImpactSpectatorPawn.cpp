@@ -124,7 +124,7 @@ FVector AChaosImpactSpectatorPawn::ClampToStage(const FVector& Location) const
 		return Location;
 	}
 	const FVector Center = Match->StageCenter;
-	const float Reach = AChaosImpactVersusStage::HalfExtent + BoundsMargin;
+	const float Reach = Match->StageHalfExtent + BoundsMargin;
 	return FVector(FMath::Clamp(Location.X, Center.X - Reach, Center.X + Reach),
 		FMath::Clamp(Location.Y, Center.Y - Reach, Center.Y + Reach),
 		FMath::Clamp(Location.Z, Center.Z + MinHeight, Center.Z + MaxHeight));

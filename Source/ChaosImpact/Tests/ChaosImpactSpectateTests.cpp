@@ -129,7 +129,7 @@ namespace
 			case 20:
 			{
 				const FVector Held = Camera->GetActorLocation() - Match->StageCenter;
-				const float Reach = AChaosImpactVersusStage::HalfExtent + AChaosImpactSpectatorPawn::BoundsMargin + 1.0f;
+				const float Reach = Match->StageHalfExtent + AChaosImpactSpectatorPawn::BoundsMargin + 1.0f;
 				Test->TestTrue(FString::Printf(TEXT("Camera stays inside the stage (%s)"), *Held.ToString()),
 					FMath::Abs(Held.X) <= Reach && FMath::Abs(Held.Y) <= Reach && Held.Z <= AChaosImpactSpectatorPawn::MaxHeight + 1.0f);
 				Camera->CycleFollow(1);
@@ -203,7 +203,7 @@ namespace
 			case 54:
 				Test->TestTrue(TEXT("The camera keeps ticking while time is stopped"),
 					FMath::Abs(Camera->GetActorLocation().X - Match->StageCenter.X)
-						<= AChaosImpactVersusStage::HalfExtent + AChaosImpactSpectatorPawn::BoundsMargin + 1.0f);
+						<= Match->StageHalfExtent + AChaosImpactSpectatorPawn::BoundsMargin + 1.0f);
 				Camera->CycleFollow(1);
 				NextAt = Now + 0.5;
 				Stage = 55;

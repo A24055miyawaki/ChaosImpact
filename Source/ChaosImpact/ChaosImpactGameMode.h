@@ -9,7 +9,7 @@
 
 class AChaosImpactBallSpawner;
 class AChaosImpactPlayerState;
-class AChaosImpactVersusStage;
+class AChaosImpactStageBase;
 class AChaosImpactSpectatorPawn;
 enum class EChaosImpactOnlinePhase : uint8;
 
@@ -117,7 +117,8 @@ private:
 
 	// VS match flow: [TeamSelect] -> Intro -> Match -> Results -> (online) back to the lobby.
 	void SetMatchPhase(EChaosImpactOnlinePhase NewPhase, float Seconds);
-	void EnsureVersusStage();
+	/** Makes the stage for StageIndex (0 standard, 1 splash) the one in use, replacing a different one. */
+	void EnsureVersusStage(int32 StageIndex);
 	void StartMatchIntro();
 	/** Every opening has finished (or the wait timed out): Ready?, then GO. */
 	void StartReadyCountdown();
@@ -152,14 +153,24 @@ private:
 	float ReadyWaitSecondsOverride = 0.0f;
 
 	UPROPERTY(Transient)
-	TObjectPtr<AChaosImpactVersusStage> VersusStage;
+	TObjectPtr<AChaosImpactStageBase> VersusStage;
+
+	/** While set, new CPUs appear on these floor points instead of around the anchor (a VS stage's spawns). */
+	TArray<FVector> CPUSpawnPoints;
 
 	/**
 	 * Stage spawned for VS matches when none is placed in the level. Point this at a Blueprint of
 	 * Chaos Impact Versus Stage to use a layout edited in the editor.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
-	TSubclassOf<AChaosImpactVersusStage> VersusStageClass;
+	TSubclassOf<AChaosImpactStageBase> VersusStageClass;
+
+	/**
+	 * ステージ2 on the stage select screen. Point this at BP_SplashStage, a Blueprint of Chaos Impact
+	 * Splash Stage, to use the layout edited in the editor.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
+	TSubclassOf<AChaosImpactStageBase> SplashStageClass;
 
 	/** Where that stage is spawned. X/Y as set; Z follows the players' floor. Far from the training arena. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))

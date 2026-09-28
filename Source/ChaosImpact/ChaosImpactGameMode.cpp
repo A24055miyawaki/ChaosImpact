@@ -14,6 +14,7 @@
 #include "ChaosImpactTornado.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactVersusStage.h"
+#include "ChaosImpactSplashStage.h"
 #include "GameFramework/GameSession.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
@@ -38,6 +39,7 @@ AChaosImpactGameMode::AChaosImpactGameMode()
 	GameStateClass = AChaosImpactGameState::StaticClass();
 	PlayerStateClass = AChaosImpactPlayerState::StaticClass();
 	VersusStageClass = AChaosImpactVersusStage::StaticClass();
+	SplashStageClass = AChaosImpactSplashStage::StaticClass();
 }
 
 void AChaosImpactGameMode::BeginPlay()
@@ -1071,16 +1073,41 @@ void AChaosImpactGameMode::SetMatchPhase(const EChaosImpactOnlinePhase NewPhase,
 	Match->ForceNetUpdate();
 }
 
-void AChaosImpactGameMode::EnsureVersusStage()
+void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex)
 {
-	if (IsValid(VersusStage) || !GetWorld())
+	if (!GetWorld())
 	{
 		return;
 	}
-	for (TActorIterator<AChaosImpactVersusStage> It(GetWorld()); It; ++It)
+	const bool bSplash = ChaosImpactMatch::SanitizeStage(StageIndex) == 1;
+	UClass* Wanted = bSplash
+		? (SplashStageClass ? SplashStageClass.Get() : AChaosImpactSplashStage::StaticClass())
+		: (VersusStageClass ? VersusStageClass.Get() : AChaosImpactVersusStage::StaticClass());
+	// The standard stage and the splash stage are told apart by their C++ family, so a Blueprint of either
+	// (or one placed in the level) still counts as that stage.
+	UClass* Family = bSplash ? AChaosImpactSplashStage::StaticClass() : AChaosImpactVersusStage::StaticClass();
+	if (IsValid(VersusStage) && VersusStage->IsA(Family))
 	{
-		VersusStage = *It;
 		return;
+	}
+	TOptional<FVector> ReplacedAt;
+	if (IsValid(VersusStage))
+	{
+		// A rematch on the other stage: the old one (and the warp pads it carries) goes first, and the new one
+		// takes its exact place (the players may be standing on a raised deck right now).
+		UE_LOG(LogChaosImpact, Log, TEXT("VS stage %s removed for stage %d"), *VersusStage->GetName(), StageIndex);
+		ReplacedAt = VersusStage->GetActorLocation();
+		VersusStage->Destroy();
+		VersusStage = nullptr;
+		DestroyStageBallSpawners();
+	}
+	for (TActorIterator<AChaosImpactStageBase> It(GetWorld()); It; ++It)
+	{
+		if (It->IsA(Family))
+		{
+			VersusStage = *It;
+			return;
+		}
 	}
 	// Well away from the training arena that online rooms use as their lobby, at the same floor height.
 	FVector Origin = VersusStageLocation;
@@ -1095,12 +1122,14 @@ void AChaosImpactGameMode::EnsureVersusStage()
 			}
 		}
 	}
+	if (ReplacedAt.IsSet())
+	{
+		Origin = ReplacedAt.GetValue();
+	}
 	FActorSpawnParameters Parameters;
 	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	UE_LOG(LogChaosImpact, Log, TEXT("VS stage spawned from %s"),
-		*GetNameSafe(VersusStageClass ? VersusStageClass.Get() : AChaosImpactVersusStage::StaticClass()));
-	VersusStage = GetWorld()->SpawnActor<AChaosImpactVersusStage>(
-		VersusStageClass ? VersusStageClass.Get() : AChaosImpactVersusStage::StaticClass(),
+	UE_LOG(LogChaosImpact, Log, TEXT("VS stage spawned from %s"), *GetNameSafe(Wanted));
+	VersusStage = GetWorld()->SpawnActor<AChaosImpactStageBase>(Wanted,
 		Origin, FRotator::ZeroRotator, Parameters);
 }
 
@@ -1112,7 +1141,7 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
-	EnsureVersusStage();
+	EnsureVersusStage(InRules.StageIndex);
 	if (!VersusStage)
 	{
 		return;
@@ -1125,6 +1154,7 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	if (!IsOnlineRoom())
 	{
 		Match->StageCenter = VersusStage->GetCenter();
+		Match->StageHalfExtent = VersusStage->GetHalfExtent();
 		SetLocalPlayersSpectating(bLocalWatch);
 	}
 	FChaosImpactMatchRules Wanted = InRules;
@@ -1141,11 +1171,16 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	Match->bVersusMatch = true;
 	Match->Rules = Rules;
 	Match->StageCenter = VersusStage->GetCenter();
+	Match->StageHalfExtent = VersusStage->GetHalfExtent();
 	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
 	{
 		It->SetTrainingEnabled(false);
 	}
+	// New CPUs appear on the stage's own spawn points: the middle of a stage may be taken (the splash stage's
+	// tower), and the intro moves everyone to their start point anyway.
+	CPUSpawnPoints = VersusStage->GetSpawnPoints();
 	SyncTrainingCPUCount(Rules.CPUCount, VersusStage->GetCenter() + FVector(0.0f, 0.0f, 110.0f), FRotator::ZeroRotator);
+	CPUSpawnPoints.Reset();
 
 	// Humans start spread across the teams in join order; CPUs are placed once the teams are confirmed.
 	const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);
@@ -1640,8 +1675,10 @@ void AChaosImpactGameMode::SpawnTrainingCPU(
 		FVector(620.0f, -360.0f, 0.0f),
 		FVector(620.0f, 360.0f, 0.0f)
 	};
-	const FVector CPULocation = Anchor + CPUOffsets[FMath::Clamp(CPUIndex, 0, 3)];
-	const FRotator CPURotation = (Anchor - CPULocation).Rotation();
+	const FVector CPULocation = CPUSpawnPoints.IsEmpty() ? Anchor + CPUOffsets[FMath::Clamp(CPUIndex, 0, 3)]
+		: CPUSpawnPoints[(CPUIndex + 1) % CPUSpawnPoints.Num()] + FVector(0.0f, 0.0f, 110.0f);
+	const FRotator CPURotation = CPUSpawnPoints.IsEmpty() ? (Anchor - CPULocation).Rotation()
+		: (Anchor - CPULocation).GetSafeNormal2D().Rotation();
 	APawn* CPUPawn = SpawnDefaultPawnAtTransform(CPUController,
 		FTransform(FRotator(0.0f, CPURotation.Yaw, 0.0f), CPULocation));
 	if (!CPUPawn)

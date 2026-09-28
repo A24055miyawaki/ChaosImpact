@@ -322,6 +322,139 @@ namespace
 		}
 	}
 
+	/**
+	 * Stage select: a card like PaintCard's with an in-game picture of the stage across its top and the stage's
+	 * number below. The picture stays upright over the leaning card, lit up when the card is selected.
+	 */
+	void PaintStageShotCard(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const FSlateBrush& Shot, const FString& Big, const FString& Sub, const FLinearColor& Accent,
+		const float Blend, const bool bPressed, const float Alpha, const float Time)
+	{
+		// The card itself: background, streaks, accent bars and the selection outline, without its text.
+		PaintCard(Design, Elements, Layer, Rect, FString(), FString(), Accent, Blend, bPressed, Alpha, Time, 0.0f, 0);
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const float B = EaseOut(Blend);
+		const FGeometry Card = MakeSkewed(Design, Rect.Left, Rect.Top - 12.0f * B, W, H, -0.14f,
+			(1.0f + 0.025f * B) * (bPressed ? 0.97f : 1.0f));
+		const FMenuPainter Words{Card, Elements, Layer + 2, Alpha};
+		Words.Text(Big, 40.0f, H - 184.0f, 60.0f, WithAlpha(Paper, 0.7f + 0.3f * B), ETextAlign::Left, TEXT("Black"), 3.0f * B, Ink);
+		Words.Text(Sub, 46.0f, H - 96.0f, 30.0f, WithAlpha(Paper, 0.55f + 0.45f * B));
+
+		// 16:9 across the top, shifted with the card's lean at that height and its lift when selected.
+		const float ShotW = W - 80.0f;
+		const float ShotH = ShotW * 9.0f / 16.0f;
+		const float ShotY = Rect.Top + 26.0f - 12.0f * B;
+		const float Lean = 0.14f * (H * 0.5f - (26.0f + ShotH * 0.5f));
+		const float ShotX = Rect.Left + 40.0f + Lean;
+		const FMenuPainter Frame{Design, Elements, Layer + 1, Alpha};
+		Frame.Box(ShotX + 8.0f, ShotY + 10.0f, ShotW, ShotH, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		const float Light = 0.5f + 0.5f * B;
+		FSlateDrawElement::MakeBox(Elements, Layer + 1,
+			Design.ToPaintGeometry(FVector2f(ShotW, ShotH), FSlateLayoutTransform(FVector2f(ShotX, ShotY))),
+			&Shot, ESlateDrawEffect::None, FLinearColor(Light, Light, Light, Alpha));
+		const FMenuPainter Edge{Design, Elements, Layer + 2, Alpha};
+		Edge.Outline(ShotX, ShotY, ShotW, ShotH, WithAlpha(B > 0.01f ? Paper : Accent, 0.5f + 0.5f * B), 3.0f);
+	}
+
+	/**
+	 * Stage select: a small top-down sketch of the stage over the upper part of its card (see PaintCard).
+	 * Used while the stage has no picture in Content/UI/StageSelect.
+	 * 0 is the square arena (AChaosImpactVersusStage), 1 the terraced harbour (AChaosImpactSplashStage, layout units).
+	 */
+	void PaintStageMap(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const int32 StageIndex, const float Blend, const float Alpha)
+	{
+		const float B = EaseOut(Blend);
+		constexpr float Half = 112.0f;
+		// Follows the card's lean at this height and its lift when selected.
+		const FVector2D Center((Rect.Left + Rect.Right) * 0.5f + 12.0f, Rect.Top + 150.0f - 12.0f * B);
+		const FMenuPainter P{Design, Elements, Layer, Alpha};
+		const float S = Half / (StageIndex == 1 ? 3400.0f : 3000.0f);
+		// World X is up the map and world Y to the right.
+		const auto ToMap = [&Center, S](const float X, const float Y) { return Center + FVector2D(Y, -X) * S; };
+		const auto Block = [&P, &ToMap, S](const float X, const float Y, const float SizeX, const float SizeY, const FLinearColor& Color)
+		{
+			const FVector2D TopLeft = ToMap(X + SizeX * 0.5f, Y - SizeY * 0.5f);
+			P.Box(TopLeft.X, TopLeft.Y, SizeY * S, SizeX * S, Color);
+		};
+		const FLinearColor Ground(0.1f, 0.13f, 0.21f, 0.96f);
+		const FLinearColor Edge = WithAlpha(Paper, 0.55f + 0.4f * B);
+		P.Box(Center.X - Half - 16.0f, Center.Y - Half - 16.0f, Half * 2.0f + 32.0f, Half * 2.0f + 32.0f,
+			FLinearColor(0.0f, 0.0f, 0.0f, 0.35f));
+
+		if (StageIndex != 1)
+		{
+			// Square arena: a low centre deck, bank walls round it, pillars, L-shelters and low cover.
+			Block(0.0f, 0.0f, 6000.0f, 6000.0f, Ground);
+			P.Outline(Center.X - Half, Center.Y - Half, Half * 2.0f, Half * 2.0f, Edge, 3.0f);
+			Block(0.0f, 0.0f, 1000.0f, 1000.0f, WithAlpha(Gold, 0.85f));
+			for (const float Sign : {1.0f, -1.0f})
+			{
+				Block(Sign * 620.0f, 0.0f, 240.0f, 500.0f, WithAlpha(Gold, 0.5f));
+				Block(0.0f, Sign * 620.0f, 500.0f, 240.0f, WithAlpha(Gold, 0.5f));
+				Block(Sign * 1750.0f, 0.0f, 240.0f, 240.0f, Paper);
+				Block(0.0f, Sign * 1750.0f, 240.0f, 240.0f, Paper);
+			}
+			for (int32 Side = 0; Side < 4; ++Side)
+			{
+				const float SX = Side == 0 || Side == 3 ? 1.0f : -1.0f;
+				const float SY = Side < 2 ? 1.0f : -1.0f;
+				Block(SX * 1830.0f, SY * 1550.0f, 620.0f, 60.0f, Ice);
+				Block(SX * 1550.0f, SY * 1830.0f, 60.0f, 620.0f, Ice);
+				const FVector2D Along = FVector2D(-SY, SX).GetSafeNormal() * 310.0f;
+				P.Line(ToMap(SX * 1080.0f - Along.X, SY * 1080.0f - Along.Y), ToMap(SX * 1080.0f + Along.X, SY * 1080.0f + Along.Y),
+					Fire, 3.0f);
+			}
+			Block(2300.0f, -750.0f, 380.0f, 80.0f, Muted);
+			Block(-2300.0f, 750.0f, 380.0f, 80.0f, Muted);
+			Block(750.0f, 2300.0f, 80.0f, 380.0f, Muted);
+			Block(-750.0f, -2300.0f, 80.0f, 380.0f, Muted);
+			return;
+		}
+
+		// Terraced harbour: an octagon (|X|, |Y| <= 3400, |X| + |Y| <= 4900), filled in strips.
+		constexpr float Reach = 3400.0f;
+		constexpr float Bevel = 4900.0f;
+		for (int32 Strip = 0; Strip < 34; ++Strip)
+		{
+			const float X = -Reach + 100.0f + Strip * 200.0f;
+			Block(X, 0.0f, 200.0f, 2.0f * FMath::Min(Reach, Bevel - FMath::Abs(X)), Ground);
+		}
+		const FVector2D Corners[] = {{Reach, Bevel - Reach}, {Bevel - Reach, Reach}, {Reach - Bevel, Reach}, {-Reach, Bevel - Reach},
+			{-Reach, Reach - Bevel}, {Reach - Bevel, -Reach}, {Bevel - Reach, -Reach}, {Reach, Reach - Bevel}};
+		for (int32 Index = 0; Index < 8; ++Index)
+		{
+			const FVector2D& From = Corners[Index];
+			const FVector2D& To = Corners[(Index + 1) % 8];
+			P.Line(ToMap(From.X, From.Y), ToMap(To.X, To.Y), Edge, 3.0f);
+		}
+		// Each quarter: a balcony with a high terrace behind it, a container in front and a corner warehouse.
+		for (int32 Quarter = 0; Quarter < 4; ++Quarter)
+		{
+			const FLinearColor InkColor = PlayerAccents[Quarter];
+			FLinearColor Dark = InkColor * 0.45f;
+			Dark.A = 1.0f;
+			const auto QuarterBlock = [&Block, Quarter](const float X, const float Y, const float SizeX, const float SizeY,
+				const FLinearColor& Color)
+			{
+				FVector2D At(X, Y);
+				for (int32 Turn = 0; Turn < Quarter; ++Turn)
+				{
+					At = FVector2D(-At.Y, At.X);
+				}
+				const bool bSideways = Quarter % 2 == 1;
+				Block(At.X, At.Y, bSideways ? SizeY : SizeX, bSideways ? SizeX : SizeY, Color);
+			};
+			QuarterBlock(2250.0f, 0.0f, 700.0f, 1900.0f, Dark);
+			QuarterBlock(3000.0f, 0.0f, 800.0f, 1300.0f, InkColor);
+			QuarterBlock(1500.0f, 0.0f, 240.0f, 560.0f, Paper);
+			QuarterBlock(2270.0f, 2270.0f, 420.0f, 420.0f, Muted);
+		}
+		P.Ring(Center, 430.0f * S, Ice, 3.0f, 32);
+		P.Ring(Center, 200.0f * S, WithAlpha(Paper, 0.8f), 2.0f, 24);
+	}
+
 	void PaintPadGlyph(const FMenuPainter& P, const float CX, const float CY, const float S,
 		const FLinearColor& Accent)
 	{
@@ -535,6 +668,22 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 		LogoBrush.ImageSize = FVector2D(LogoTexture->GetSizeX(), LogoTexture->GetSizeY());
 		LogoBrush.DrawAs = ESlateBrushDrawType::Image;
 	}
+
+	// A stage without a picture yet keeps the drawn sketch (PaintStageMap).
+	StageShots.SetNum(ChaosImpactMatch::StageCount);
+	StageShotBrushes.SetNum(ChaosImpactMatch::StageCount);
+	for (int32 Index = 0; Index < ChaosImpactMatch::StageCount; ++Index)
+	{
+		const FString File = FPaths::Combine(FPaths::ProjectContentDir(),
+			FString::Printf(TEXT("UI/StageSelect/Stage%d.png"), Index + 1));
+		StageShots[Index] = FPaths::FileExists(File) ? FImageUtils::ImportFileAsTexture2D(File) : nullptr;
+		if (StageShots[Index])
+		{
+			StageShotBrushes[Index].SetResourceObject(StageShots[Index]);
+			StageShotBrushes[Index].ImageSize = FVector2D(StageShots[Index]->GetSizeX(), StageShots[Index]->GetSizeY());
+			StageShotBrushes[Index].DrawAs = ESlateBrushDrawType::Image;
+		}
+	}
 }
 
 void UChaosImpactMenuWidget::NativeDestruct()
@@ -609,9 +758,20 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	BuildEntries();
 	SelectBlend.Init(0.0f, Entries.Num());
 
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (Screen == EChaosImpactScreen::StageSelect && Controller)
+	{
+		// The stage chosen last time is picked again by just pressing 決定.
+		SelectedIndex = ChaosImpactMatch::SanitizeStage(Controller->GetPendingMatchRules().StageIndex);
+	}
+	else if (Screen == EChaosImpactScreen::MatchRules && PreviousScreen == EChaosImpactScreen::StageSelect)
+	{
+		// Back from stage select lands on 決定 again.
+		SelectedIndex = 3;
+	}
+
 	// Slots that are already filled when the page opens (the reserved keyboard, or a
 	// return visit) still play their join animation, staggered after the page wipe.
-	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 	for (int32 PlayerIndex = 0; PlayerIndex < 4; ++PlayerIndex)
 	{
 		bSlotJoined[PlayerIndex] = Controller && Screen == EChaosImpactScreen::ControllerAssignment
@@ -785,7 +945,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 		if (Controller && Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusLocal)
 		{
 			// Watching a CPU match: one player on one screen, so it is picked here, before players and characters.
-			Entries.Add({FSlateRect(510, 712, 890, 784), TEXT("観戦（CPUどうし）"), TEXT("spectate"), TEXT(""), Ice});
+			Entries.Add({FSlateRect(510, 712, 890, 784), TEXT("観戦"), TEXT("spectate"), TEXT(""), Ice});
 		}
 		Entries.Add({FSlateRect(150, 716, 470, 780),
 			Controller && Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusLocal ? TEXT("戻る") : TEXT("モード選択へ"),
@@ -1018,6 +1178,12 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
+	case EChaosImpactScreen::StageSelect:
+		// One card per stage (StageIndex order), side by side above a back button. Picking a card starts.
+		Entries.Add({FSlateRect(190, 198, 770, 702), ChaosImpactMatch::GetStageLabel(0), TEXT(""), TEXT("STAGE 1"), Gold});
+		Entries.Add({FSlateRect(830, 198, 1410, 702), ChaosImpactMatch::GetStageLabel(1), TEXT(""), TEXT("STAGE 2"), Ice});
+		Entries.Add({FSlateRect(146, 736, 470, 800), TEXT("ルールへ戻る"), TEXT(""), TEXT(""), Muted});
+		break;
 	case EChaosImpactScreen::TeamSelect:
 	{
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
@@ -1457,6 +1623,23 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			}
 		}
 	}
+	else if (Screen == EChaosImpactScreen::StageSelect)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("STAGE SELECT"), T);
+		if (const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			// The rules just chosen, as a reminder of what the stage is for.
+			const FChaosImpactMatchRules& Rules = Controller->GetPendingMatchRules();
+			const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
+			const FMenuPainter Chip{MakeSkewed(DesignGeometry, 1010.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 440.0f, 70.0f, -0.3f),
+				OutDrawElements, BaseLayer + 2, ChipIn};
+			Chip.Box(0.0f, 0.0f, 440.0f, 70.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
+			Chip.Box(0.0f, 0.0f, 10.0f, 70.0f, Rules.bSpectate ? Ice : Gold);
+			Chip.Text(FString::Printf(TEXT("%s%s ・ %d分 ・ CPU %d人"), Rules.bSpectate ? TEXT("観戦 ・ ") : TEXT(""),
+				*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, Rules.CPUCount),
+				226.0f, 16.0f, 26.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+		}
+	}
 	else if (Screen == EChaosImpactScreen::TeamSelect)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("TEAM SELECT"), T);
@@ -1549,6 +1732,20 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		{
 			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
 				Entry.Accent, Blend, bPressed, EntryIn, T, 118.0f, 0);
+		}
+		else if (Screen == EChaosImpactScreen::StageSelect && Index < ChaosImpactMatch::StageCount)
+		{
+			if (StageShots.IsValidIndex(Index) && StageShots[Index])
+			{
+				PaintStageShotCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, StageShotBrushes[Index],
+					Entry.Number, Entry.Title, Entry.Accent, Blend, bPressed, EntryIn, T);
+			}
+			else
+			{
+				PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
+					Entry.Accent, Blend, bPressed, EntryIn, T, 64.0f, 0);
+				PaintStageMap(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Index, Blend, EntryIn);
+			}
 		}
 		else if ((Screen == EChaosImpactScreen::TrainingSetup && Index < 4)
 			|| (Screen == EChaosImpactScreen::OnlinePlayers && Index < 2))
@@ -1654,9 +1851,9 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		const int32 Vertical[] = {3, 2, 1, 0};
 		SelectedIndex = bHorizontal ? Horizontal[SelectedIndex] : Vertical[SelectedIndex];
 	}
-	else if (Screen == EChaosImpactScreen::VSSelect && Key != EKeys::Tab)
+	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::StageSelect) && Key != EKeys::Tab)
 	{
-		// Local / Online side by side above a single back button.
+		// Local / Online (or the two stages) side by side above a single back button.
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
 			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
 		SelectedIndex = bHorizontal
@@ -1798,7 +1995,17 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else if (SelectedIndex == 3)
 		{
-			Controller->ConfirmMatchRules();
+			Controller->OpenStageSelect();
+		}
+		else
+		{
+			GoBack();
+		}
+		break;
+	case EChaosImpactScreen::StageSelect:
+		if (SelectedIndex < ChaosImpactMatch::StageCount)
+		{
+			Controller->ChooseStage(SelectedIndex);
 		}
 		else
 		{
@@ -2041,6 +2248,9 @@ void UChaosImpactMenuWidget::GoBack()
 			break;
 		case EChaosImpactScreen::MatchRules:
 			Controller->CancelMatchRules();
+			break;
+		case EChaosImpactScreen::StageSelect:
+			Controller->CancelStageSelect();
 			break;
 		default:
 			break;

@@ -22,6 +22,7 @@ public:
 	void GoBack();
 	void RefreshEntries();
 	int32 GetSelectedIndex() const { return SelectedIndex; }
+	int32 GetEntryCount() const { return Entries.Num(); }
 	bool HasLogo() const { return LogoTexture != nullptr; }
 	EChaosImpactScreen GetScreen() const { return Screen; }
 	/**
@@ -109,4 +110,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> LogoTexture;
 	FSlateBrush LogoBrush;
+
+	/** Stage select: an in-game picture of each stage (Content/UI/StageSelect/Stage<N>.png), in StageIndex order. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture2D>> StageShots;
+	TArray<FSlateBrush> StageShotBrushes;
 };

@@ -1,14 +1,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/Actor.h"
+#include "ChaosImpactStageBase.h"
 #include "ChaosImpactVersusStage.generated.h"
 
 class USceneComponent;
 class UStaticMeshComponent;
 
 /**
- * Provisional VS stage: a square arena with symmetric cover, a low centre deck and corner shelters.
+ * The standard VS stage (ステージ1): a square arena with symmetric cover, a low centre deck and corner shelters.
  * The server spawns it once and it replicates, so every online member stands on the same geometry.
  *
  * Editing: make a Blueprint of this class and set it as Versus Stage Class on the game mode, or place the
@@ -16,7 +16,7 @@ class UStaticMeshComponent;
  * extra meshes can be added in the Blueprint, and the spawn / ball points are draggable handles.
  */
 UCLASS(Blueprintable, meta=(DisplayName="Chaos Impact Versus Stage"))
-class AChaosImpactVersusStage : public AActor
+class AChaosImpactVersusStage : public AChaosImpactStageBase
 {
 	GENERATED_BODY()
 
@@ -24,14 +24,8 @@ public:
 	AChaosImpactVersusStage();
 	virtual void OnConstruction(const FTransform& Transform) override;
 
-	/** World positions on the floor surface where players may appear. */
-	TArray<FVector> GetSpawnPoints() const;
-	/** World positions on the floor surface for ball pads. */
-	TArray<FVector> GetBallPoints() const;
-	FVector GetCenter() const { return GetActorLocation(); }
-
-	/** Half the floor width; the intro camera flies around this. */
-	static constexpr float HalfExtent = 3000.0f;
+	virtual TArray<FVector> GetSpawnPoints() const override;
+	virtual TArray<FVector> GetBallPoints() const override;
 
 	/**
 	 * Where players appear, relative to the stage, on the floor surface. With the stage (or a Blueprint of it)

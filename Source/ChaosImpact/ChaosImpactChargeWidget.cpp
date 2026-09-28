@@ -2070,6 +2070,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			P.Box(0.0f, 0.0f, 420.0f, 50.0f, Gold);
 			P.Text(TEXT("ルール"), 24.0f, 6.0f, 30.0f, Ink, ETextAlign::Left, TEXT("Black"));
 			P.Text(FString::Printf(TEXT("%d分"), Rules.Minutes), 396.0f, 6.0f, 30.0f, Ink, ETextAlign::Right, TEXT("Black"));
+			P.Text(ChaosImpactMatch::GetStageLabel(Rules.StageIndex), 232.0f, 11.0f, 22.0f, Ink, ETextAlign::Center, TEXT("Bold"));
 			P.Text(ChaosImpactMatch::DescribeTeams(Rules.TeamCount), 26.0f, 62.0f, 28.0f,
 				Rules.IsTeamBattle() ? Gold : Paper, ETextAlign::Left, TEXT("Bold"));
 			P.Text(FString::Printf(TEXT("CPU %d人"), Rules.CPUCount), 396.0f, 62.0f, 28.0f,

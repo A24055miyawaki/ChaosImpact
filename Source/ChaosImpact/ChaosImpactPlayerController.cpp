@@ -1990,6 +1990,24 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
 }
 
+void AChaosImpactPlayerController::OpenStageSelect()
+{
+	PendingMatchRules = ChaosImpactMatch::Sanitize(PendingMatchRules, GetMatchHumanCount());
+	ShowMenuScreen(EChaosImpactScreen::StageSelect);
+}
+
+void AChaosImpactPlayerController::ChooseStage(const int32 StageIndex)
+{
+	PendingMatchRules.StageIndex = ChaosImpactMatch::SanitizeStage(StageIndex);
+	ConfirmMatchRules();
+}
+
+void AChaosImpactPlayerController::CancelStageSelect()
+{
+	// Back to the rules as they were left; where the rules return to is unchanged.
+	ShowMenuScreen(EChaosImpactScreen::MatchRules);
+}
+
 void AChaosImpactPlayerController::ConfirmMatchRules()
 {
 	PendingMatchRules = ChaosImpactMatch::Sanitize(PendingMatchRules, GetMatchHumanCount());

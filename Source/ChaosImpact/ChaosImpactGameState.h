@@ -168,6 +168,10 @@ public:
 	UPROPERTY(Replicated)
 	FVector_NetQuantize StageCenter = FVector::ZeroVector;
 
+	/** Half the floor width of the stage in use (stages differ in size). */
+	UPROPERTY(Replicated)
+	float StageHalfExtent = 3000.0f;
+
 	/** Server time Ready? began, once every machine finished its opening; 0 while still waiting. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
 	double ReadyStartedAt = 0.0;

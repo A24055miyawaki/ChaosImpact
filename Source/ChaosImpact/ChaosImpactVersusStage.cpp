@@ -218,20 +218,10 @@ void AChaosImpactVersusStage::ApplyStageColors()
 
 TArray<FVector> AChaosImpactVersusStage::GetSpawnPoints() const
 {
-	TArray<FVector> Points;
-	for (const FVector& Offset : SpawnPointOffsets)
-	{
-		Points.Add(GetActorTransform().TransformPosition(Offset));
-	}
-	return Points;
+	return ToWorld(SpawnPointOffsets);
 }
 
 TArray<FVector> AChaosImpactVersusStage::GetBallPoints() const
 {
-	TArray<FVector> Points;
-	for (const FVector& Offset : BallPointOffsets)
-	{
-		Points.Add(GetActorTransform().TransformPosition(Offset));
-	}
-	return Points;
+	return ToWorld(BallPointOffsets);
 }

@@ -24,6 +24,10 @@ struct FChaosImpactMatchRules
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	bool bSpectate = false;
 
+	/** Which stage: 0 = ステージ1 (the original square arena), 1 = ステージ2 (the terraced harbour). */
+	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 StageIndex = 0;
+
 	bool IsTeamBattle() const { return TeamCount >= 2; }
 };
 
@@ -31,6 +35,20 @@ namespace ChaosImpactMatch
 {
 	inline constexpr int32 MaxCompetitors = 8;
 	inline constexpr int32 MaxTeams = 4;
+
+	/** Stages offered on the stage select screen, in StageIndex order. */
+	inline constexpr int32 StageCount = 2;
+
+	inline int32 SanitizeStage(const int32 StageIndex)
+	{
+		return FMath::Clamp(StageIndex, 0, StageCount - 1);
+	}
+
+	/** Stages have no names yet: they are shown by number (ステージ1, ステージ2). */
+	inline FString GetStageLabel(const int32 StageIndex)
+	{
+		return FString::Printf(TEXT("ステージ%d"), SanitizeStage(StageIndex) + 1);
+	}
 
 	/** Match lengths offered on the rules screen, in minutes. */
 	inline constexpr int32 MinuteChoices[] = {3, 4, 5};
@@ -100,6 +118,7 @@ namespace ChaosImpactMatch
 	{
 		Humans = GetCompetingHumans(Rules, Humans);
 		Rules.Minutes = SanitizeMinutes(Rules.Minutes);
+		Rules.StageIndex = SanitizeStage(Rules.StageIndex);
 		Rules.TeamCount = Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0;
 		Rules.CPUCount = FMath::Clamp(Rules.CPUCount, GetMinCPUCount(Humans, Rules.TeamCount), GetMaxCPUCount(Humans));
 		return Rules;
@@ -139,8 +158,8 @@ namespace ChaosImpactMatch
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d"),
-			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0);
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d"),
+			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -153,6 +172,7 @@ namespace ChaosImpactMatch
 		OutRules.TeamCount = FCString::Atoi(URL.GetOption(TEXT("CITeams="), TEXT("0")));
 		OutRules.CPUCount = FCString::Atoi(URL.GetOption(TEXT("CIMatchCPU="), TEXT("1")));
 		OutRules.bSpectate = FCString::Atoi(URL.GetOption(TEXT("CISpectate="), TEXT("0"))) != 0;
+		OutRules.StageIndex = SanitizeStage(FCString::Atoi(URL.GetOption(TEXT("CIStage="), TEXT("0"))));
 		return true;
 	}
 }

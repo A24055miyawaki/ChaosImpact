@@ -38,7 +38,9 @@ enum class EChaosImpactScreen : uint8
 	/** LAN multiplayer: the rooms found for the password; pick one to join. */
 	RoomList,
 	/** Every local player picks a character and colour, after controller assignment. */
-	CharacterSelect
+	CharacterSelect,
+	/** VS: the stage, picked after the rules; picking one starts the match with those rules. */
+	StageSelect
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

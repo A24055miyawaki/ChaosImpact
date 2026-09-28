@@ -39,8 +39,10 @@ void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 	Super::OnPossess(InPawn);
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	NextDecisionAt = Now + 0.2f;
-	NextThrowAt = Now + 0.9f;
+	NextThrowAt = Now + 0.9f * ThrowDelayScale;
 	NextBankSearchAt = Now;
+	IdleUntil = 0.0f;
+	UnnoticedBalls.Reset();
 	NextStrafeChangeAt = Now + 1.0f;
 	NextJumpAt = Now + 0.5f;
 	StrafeSign = FMath::FRand() < 0.5f ? -1.0f : 1.0f;
@@ -108,18 +110,37 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 
 	if (Now >= NextDecisionAt)
 	{
-		NextDecisionAt = Now + FMath::Lerp(0.12f, 0.045f, Skill);
-		AChaosImpactCharacter* Target = SelectTarget(Self);
-		CurrentTarget = Target;
-		TryCollectNearbyBall(Self, Now);
-		const bool bEvading = UpdateTornadoEvasion(Self, Now) || UpdateEvasion(Self, Now);
-		UpdateOffense(Self, Target, Now);
-		if (!bEvading)
+		const float DecisionSeconds = FMath::Lerp(0.12f, 0.045f, Skill);
+		NextDecisionAt = Now + DecisionSeconds;
+		if (Now >= IdleUntil && IdleChancePerSecond > 0.0f && FMath::FRand() < IdleChancePerSecond * DecisionSeconds)
 		{
-			UpdatePositioning(Self, Target, Now);
+			// A weaker CPU stands around for a moment, as a beginner would: no plans, no dodging.
+			IdleUntil = Now + FMath::FRandRange(0.7f, 1.6f);
+			if (Self->IsChargingThrow())
+			{
+				Self->CancelChargingThrow();
+			}
+			DesiredMoveDirection = FVector::ZeroVector;
+			DesiredMoveScale = 0.0f;
+			EvadeUntil = 0.0f;
+		}
+		if (Now >= IdleUntil)
+		{
+			AChaosImpactCharacter* Target = SelectTarget(Self);
+			CurrentTarget = Target;
+			TryCollectNearbyBall(Self, Now);
+			const bool bEvading = UpdateTornadoEvasion(Self, Now) || UpdateEvasion(Self, Now);
+			UpdateOffense(Self, Target, Now);
+			if (!bEvading)
+			{
+				UpdatePositioning(Self, Target, Now);
+			}
 		}
 	}
-	UpdateStuckRecovery(Self, Now);
+	if (Now >= IdleUntil)
+	{
+		UpdateStuckRecovery(Self, Now);
+	}
 
 	// Decisions are throttled, but movement input must be supplied every frame.
 	// Otherwise CharacterMovement consumes it and the CPU visibly stutters.
@@ -128,8 +149,56 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 		: Now < EscapeUntil ? EscapeMoveDirection : DesiredMoveDirection;
 	if (!Self->IsDashing() && !ActiveMoveDirection.IsNearlyZero())
 	{
-		Self->AddMovementInput(ActiveMoveDirection, bEvading ? 1.0f : DesiredMoveScale);
+		Self->AddMovementInput(ActiveMoveDirection, (bEvading ? 1.0f : DesiredMoveScale) * MoveSpeedScale);
 	}
+}
+
+void AChaosImpactCPUController::SetDifficulty(const int32 Level)
+{
+	Difficulty = ChaosImpactMatch::SanitizeCPULevel(Level);
+	switch (Difficulty)
+	{
+	case ChaosImpactMatch::CPULevelWeak:
+		// For beginners: slow to react, misses a lot, rarely dodges, never dashes, walks slowly, throws rarely.
+		Skill = 0.0f;
+		DodgeChance = 0.2f;
+		ExtraReactionSeconds = 0.3f;
+		ReleaseShakeDegrees = 22.0f;
+		LeadScale = 0.25f;
+		MoveSpeedScale = 0.6f;
+		ThrowDelayScale = 3.2f;
+		IdleChancePerSecond = 0.22f;
+		break;
+	case ChaosImpactMatch::CPULevelNormal:
+		// A fair opponent: dodges most balls and aims decently, but can be outplayed.
+		Skill = 0.45f;
+		DodgeChance = 0.7f;
+		ExtraReactionSeconds = 0.08f;
+		ReleaseShakeDegrees = 5.0f;
+		LeadScale = 0.75f;
+		MoveSpeedScale = 0.9f;
+		ThrowDelayScale = 1.3f;
+		IdleChancePerSecond = 0.05f;
+		break;
+	default:
+		// The full CPU, unchanged.
+		Skill = 1.0f;
+		DodgeChance = 1.0f;
+		ExtraReactionSeconds = 0.0f;
+		ReleaseShakeDegrees = 0.0f;
+		LeadScale = 1.0f;
+		MoveSpeedScale = 1.0f;
+		ThrowDelayScale = 1.0f;
+		IdleChancePerSecond = 0.0f;
+		break;
+	}
+	IdleUntil = 0.0f;
+	UE_LOG(LogTemp, Log, TEXT("%s plays at CPU level %s"), *GetName(), ChaosImpactMatch::GetCPULevelName(Difficulty));
+}
+
+FVector AChaosImpactCPUController::ShakeAim(const FVector& Direction) const
+{
+	return ReleaseShakeThisThrow == 0.0f ? Direction : Direction.RotateAngleAxis(ReleaseShakeThisThrow, FVector::UpVector);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -174,6 +243,7 @@ void AChaosImpactCPUController::UpdatePerception(
 	{
 		if (!It.Key().IsValid() || It.Key()->IsPickup())
 		{
+			UnnoticedBalls.Remove(It.Key());
 			It.RemoveCurrent();
 		}
 	}
@@ -188,6 +258,11 @@ void AChaosImpactCPUController::UpdatePerception(
 			continue;
 		}
 		BallFirstSeenAt.Add(Ball, Now);
+		if (!Ball->WasThrownBy(Self) && DodgeChance < 1.0f && FMath::FRand() >= DodgeChance)
+		{
+			// A weaker CPU simply does not see this one coming.
+			UnnoticedBalls.Add(Ball);
+		}
 		if (Ball->WasThrownBy(Self))
 		{
 			// The release point comes from the throw animation, so learn it from our own balls.
@@ -217,7 +292,7 @@ FVector AChaosImpactCPUController::GetObservedAcceleration(const AChaosImpactCha
 
 float AChaosImpactCPUController::GetReactionSeconds() const
 {
-	return FMath::Lerp(0.34f, 0.07f, Skill);
+	return FMath::Lerp(0.34f, 0.07f, Skill) + ExtraReactionSeconds;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -309,7 +384,7 @@ void AChaosImpactCPUController::CollectThreats(
 			continue;
 		}
 		const double* SeenAt = BallFirstSeenAt.Find(Ball);
-		if (!SeenAt || Now - *SeenAt < Reaction)
+		if (!SeenAt || Now - *SeenAt < Reaction || UnnoticedBalls.Contains(Ball))
 		{
 			continue;
 		}
@@ -646,7 +721,8 @@ AChaosImpactCPUController::FShotPlan AChaosImpactCPUController::PlanShot(
 		* FMath::Min(GetObservedVelocity(Self).Size2D(), 600.0f) * Delay;
 	Origin.Z = SelfFeet + LearnedReleaseHeight;
 
-	FVector TargetVelocity = GetObservedVelocity(Target);
+	// Weaker CPUs lead a moving target only partly (LeadScale), so a runner often gets away.
+	FVector TargetVelocity = GetObservedVelocity(Target) * LeadScale;
 	TargetVelocity.Z = 0.0f;
 	TargetVelocity = TargetVelocity.GetClampedToMaxSize(1200.0f);
 	const FVector TargetLocation = Target->GetActorLocation();
@@ -656,7 +732,7 @@ AChaosImpactCPUController::FShotPlan AChaosImpactCPUController::PlanShot(
 	// Only a target that is already running gets the acceleration term: on a standing player the smoothed
 	// value is just noise, and leading by it throws the shot wide of someone who never moved.
 	const FVector TargetAcceleration = TargetVelocity.Size2D() > 150.0f
-		? GetObservedAcceleration(Target).GetClampedToMaxSize(2000.0f) : FVector::ZeroVector;
+		? (GetObservedAcceleration(Target) * LeadScale).GetClampedToMaxSize(2000.0f) : FVector::ZeroVector;
 	FVector Predicted = TargetLocation;
 	float Flight = FVector::Dist2D(Origin, Predicted) / Speed;
 	for (int32 Iteration = 0; Iteration < 5; ++Iteration)
@@ -818,6 +894,7 @@ void AChaosImpactCPUController::UpdateOffense(
 		}
 		DesiredChargeAlpha = ChooseDesiredCharge(Self, Target);
 		ShotAimErrorDegrees = FMath::FRandRange(-1.0f, 1.0f) * FMath::Lerp(7.0f, 0.15f, Skill);
+		ReleaseShakeThisThrow = FMath::FRandRange(-1.0f, 1.0f) * ReleaseShakeDegrees;
 		const FShotPlan Preview = PlanShot(Self, Target, DesiredChargeAlpha, bBankSearch);
 		if (bBankSearch)
 		{
@@ -833,7 +910,7 @@ void AChaosImpactCPUController::UpdateOffense(
 				LastValidShotAt = Now;
 				if (Preview.bValid)
 				{
-					Self->SetAIAimDirection(Preview.Direction);
+					Self->SetAIAimDirection(ShakeAim(Preview.Direction));
 				}
 			}
 		}
@@ -851,7 +928,7 @@ void AChaosImpactCPUController::UpdateOffense(
 	if (Plan.bValid)
 	{
 		LastValidShotAt = Now;
-		Self->SetAIAimDirection(Plan.Direction);
+		Self->SetAIAimDirection(ShakeAim(Plan.Direction));
 	}
 
 	const float Held = Now - ChargeStartedAt;
@@ -865,7 +942,7 @@ void AChaosImpactCPUController::UpdateOffense(
 	{
 		Self->EndThrowInput();
 		// With a second ball, follow up quickly to catch the dodge of the first.
-		NextThrowAt = Now + (Balls > 1 ? FMath::Lerp(0.6f, 0.26f, Skill) : FMath::Lerp(0.9f, 0.45f, Skill));
+		NextThrowAt = Now + (Balls > 1 ? FMath::Lerp(0.6f, 0.26f, Skill) : FMath::Lerp(0.9f, 0.45f, Skill)) * ThrowDelayScale;
 		return;
 	}
 	if (Alpha >= 0.999f && Now - LastValidShotAt > 1.1f)
@@ -933,7 +1010,7 @@ bool AChaosImpactCPUController::TryCollectNearbyBall(AChaosImpactCharacter* Self
 			&& Self->TryPickupBall(Ball))
 		{
 			Ball->Destroy();
-			NextThrowAt = FMath::Max(NextThrowAt, Now + FMath::Lerp(0.45f, 0.12f, Skill));
+			NextThrowAt = FMath::Max(NextThrowAt, Now + FMath::Lerp(0.45f, 0.12f, Skill) * ThrowDelayScale);
 			return true;
 		}
 	}

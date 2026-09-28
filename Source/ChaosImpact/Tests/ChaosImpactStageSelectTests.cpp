@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactPlayerController.h"
@@ -59,7 +60,7 @@ namespace
 			}
 			AChaosImpactPlayerController* PC = FindStageSelectController();
 			UChaosImpactMenuWidget* Menu = PC ? PC->GetMenuWidget() : nullptr;
-			if (Stage < 4 && (!PC || !Menu))
+			if ((Stage < 4 || Stage >= 10) && (!PC || !Menu))
 			{
 				return Waited(Now, TEXT("No menu."));
 			}
@@ -92,25 +93,45 @@ namespace
 					Test->AddError(TEXT("Character select did not lead to the rules."));
 					return true;
 				}
-				// Three rule rows (time, teams, CPUs), then 決定 and 戻る: no stage row any more.
-				Test->TestEqual(TEXT("The rules screen has no stage row"), Menu->GetEntryCount(), 5);
+				// Four rule rows (time, teams, CPUs, CPU strength), then 決定 and 戻る: no stage row any more.
+				Test->TestEqual(TEXT("The rules screen has no stage row"), Menu->GetEntryCount(), 6);
 				StageKey(EKeys::Right);
 				Minutes = PC->GetPendingMatchRules().Minutes;
 				StageKey(EKeys::Down);
 				StageKey(EKeys::Down);
 				StageKey(EKeys::Down);
-				Test->TestEqual(TEXT("Three rows down is 決定"), Menu->GetSelectedIndex(), 3);
+				Test->TestEqual(TEXT("The CPU strength row can be reached with a CPU in the match"), Menu->GetSelectedIndex(), 3);
+				{
+					const int32 Before = PC->GetPendingMatchRules().CPULevel;
+					StageKey(EKeys::Right);
+					CPULevel = PC->GetPendingMatchRules().CPULevel;
+					Test->TestEqual(TEXT("Right changes the CPU strength"), CPULevel, (Before + 1) % ChaosImpactMatch::CPULevelCount);
+				}
+				// The rules screen with the strength row, once it has settled.
+				Stage = 10;
+				NextAt = Now + 1.2;
+				return false;
+			case 10:
+				StageShot(TEXT("00-Rules.png"));
+				Stage = 11;
+				NextAt = Now + 0.3;
+				return false;
+			case 11:
+				StageKey(EKeys::Down);
+				Test->TestEqual(TEXT("Four rows down is 決定"), Menu->GetSelectedIndex(), 4);
 				StageKey(EKeys::Enter);
 				Test->TestTrue(TEXT("The rules' 決定 opens stage select"), Screen(EChaosImpactScreen::StageSelect));
 				Test->TestEqual(TEXT("Stage select starts on the stage chosen before"), Menu->GetSelectedIndex(), 0);
-				return Next(1.2);
+				Stage = 1;
+				NextAt = Now + 1.2;
+				return false;
 			case 1:
 				StageShot(TEXT("01-Stage1.png"));
 				return Next(0.3);
 			case 2:
 				StageKey(EKeys::Escape);
 				Test->TestTrue(TEXT("Back returns to the rules"), Screen(EChaosImpactScreen::MatchRules));
-				Test->TestEqual(TEXT("Back lands on 決定"), Menu->GetSelectedIndex(), 3);
+				Test->TestEqual(TEXT("Back lands on 決定"), Menu->GetSelectedIndex(), 4);
 				Test->TestEqual(TEXT("The rules are kept"), PC->GetPendingMatchRules().Minutes, Minutes);
 				StageKey(EKeys::Enter);
 				Test->TestTrue(TEXT("決定 again opens stage select"), Screen(EChaosImpactScreen::StageSelect));
@@ -150,6 +171,11 @@ namespace
 				}
 				Test->TestEqual(TEXT("The match is on ステージ2"), Match->Rules.StageIndex, 1);
 				Test->TestEqual(TEXT("The chosen minutes reached the match"), Match->Rules.Minutes, Minutes);
+				Test->TestEqual(TEXT("The chosen CPU strength reached the match"), Match->Rules.CPULevel, CPULevel);
+				for (TActorIterator<AChaosImpactCPUController> It(World); It; ++It)
+				{
+					Test->TestEqual(TEXT("Each CPU plays at the chosen strength"), It->GetDifficulty(), CPULevel);
+				}
 				Test->TestEqual(TEXT("One harbour stage"), Harbours, 1);
 				Test->TestEqual(TEXT("No square stage"), Squares, 0);
 				return Next(4.0);
@@ -178,6 +204,7 @@ namespace
 		double NextAt = 0.0;
 		int32 Stage = 0;
 		int32 Minutes = 0;
+		int32 CPULevel = 0;
 	};
 }
 

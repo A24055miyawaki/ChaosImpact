@@ -174,7 +174,7 @@ public:
 	// VS match
 	/** Rule screen: local VS before its level opens, or inside a room or match where the rules apply at once. */
 	void OpenMatchRules(EChaosImpactScreen ReturnScreen);
-	/** Row 0 = minutes, 1 = free-for-all / teams, 2 = CPUs. */
+	/** Row 0 = minutes, 1 = free-for-all / teams, 2 = CPUs, 3 = CPU strength (only with CPUs). */
 	void AdjustMatchRule(int32 Row, int32 Direction);
 	const FChaosImpactMatchRules& GetPendingMatchRules() const { return PendingMatchRules; }
 	int32 GetMatchHumanCount() const;

@@ -80,6 +80,14 @@ namespace
 			{
 				LastHumanHealth = -1.0f;
 			}
+			for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+			{
+				// A knocked-out CPU comes back at full health; that is not a hit.
+				if (It->IsEliminated())
+				{
+					LastCPUHealth.Remove(*It);
+				}
+			}
 
 			for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 			{
@@ -88,6 +96,11 @@ namespace
 				{
 					continue;
 				}
+				// How often the CPUs themselves get hit: their aim and their dodging together.
+				float& LastHealth = LastCPUHealth.FindOrAdd(Character, Character->GetHealth());
+				CPUHits += Character->GetHealth() < LastHealth ? FMath::RoundToInt(LastHealth - Character->GetHealth()) : 0;
+				LastHealth = Character->GetHealth();
+				Level = Cast<AChaosImpactCPUController>(Character->GetController())->GetDifficulty();
 				const FVector Location = Character->GetActorLocation();
 				FVector& Last = LastLocations.FindOrAdd(Character, Location);
 				const float Moved = FVector::Dist2D(Location, Last);
@@ -113,8 +126,8 @@ namespace
 			const float Seconds = SampleCount * 0.2f;
 			const float PerCPU = CPUSamples > 0 ? Travel / (CPUSamples * 0.2f) : 0.0f;
 			UE_LOG(LogTemp, Display,
-				TEXT("CPUSKILL seconds=%.1f travelPerSecond=%.0f stuckSeconds=%.1f stuckEpisodes=%d humanHits=%d"),
-				Seconds, PerCPU, StuckSeconds, StuckEpisodes, HumanHits);
+				TEXT("CPUSKILL level=%d seconds=%.1f travelPerSecond=%.0f stuckSeconds=%.1f stuckEpisodes=%d humanHits=%d cpuHits=%d"),
+				Level, Seconds, PerCPU, StuckSeconds, StuckEpisodes, HumanHits, CPUHits);
 			Test->TestTrue(TEXT("The CPUs kept moving"), PerCPU > 80.0f);
 		}
 
@@ -130,6 +143,9 @@ namespace
 		float LastHumanHealth = -1.0f;
 		TMap<TWeakObjectPtr<AChaosImpactCharacter>, FVector> LastLocations;
 		TMap<TWeakObjectPtr<AChaosImpactCharacter>, float> StillSeconds;
+		TMap<TWeakObjectPtr<AChaosImpactCharacter>, float> LastCPUHealth;
+		int32 CPUHits = 0;
+		int32 Level = -1;
 	};
 }
 

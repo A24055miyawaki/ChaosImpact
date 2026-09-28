@@ -2077,6 +2077,11 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				Rules.IsTeamBattle() ? Gold : Paper, ETextAlign::Left, TEXT("Bold"));
 			P.Text(FString::Printf(TEXT("CPU %d人"), Rules.CPUCount), 396.0f, 62.0f, 28.0f,
 				Rules.CPUCount > 0 ? Fire : Muted, ETextAlign::Right, TEXT("Bold"));
+			if (Rules.CPUCount > 0)
+			{
+				P.Text(FString::Printf(TEXT("強さ：%s"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel)), 396.0f, 93.0f, 17.0f,
+					Muted, ETextAlign::Right, TEXT("Bold"));
+			}
 
 			// One pip per member, lit when ready.
 			P.Text(TEXT("準備OK"), 26.0f, 112.0f, 24.0f, Paper, ETextAlign::Left, TEXT("Bold"));

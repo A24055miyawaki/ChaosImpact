@@ -767,7 +767,7 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	else if (Screen == EChaosImpactScreen::MatchRules && PreviousScreen == EChaosImpactScreen::StageSelect)
 	{
 		// Back from stage select lands on 決定 again.
-		SelectedIndex = 3;
+		SelectedIndex = 4;
 	}
 
 	// Slots that are already filled when the page opens (the reserved keyboard, or a
@@ -1167,13 +1167,21 @@ void UChaosImpactMenuWidget::BuildEntries()
 	{
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const FChaosImpactMatchRules Rules = Controller ? Controller->GetPendingMatchRules() : FChaosImpactMatchRules();
-		Entries.Add({FSlateRect(430, 226, 1170, 298), FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
+		Entries.Add({FSlateRect(430, 206, 1170, 270), FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
 			TEXT(""), TEXT(""), Ice});
-		Entries.Add({FSlateRect(430, 318, 1170, 390),
+		Entries.Add({FSlateRect(430, 282, 1170, 346),
 			FString::Printf(TEXT("ルール　＜  %s  ＞"), *ChaosImpactMatch::DescribeTeams(Rules.TeamCount)),
 			TEXT(""), TEXT(""), Rules.IsTeamBattle() ? Gold : Fire});
-		Entries.Add({FSlateRect(430, 410, 1170, 482), FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
+		Entries.Add({FSlateRect(430, 358, 1170, 422), FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
 			TEXT(""), TEXT(""), Rules.CPUCount > 0 ? Fire : Muted});
+		// Only with CPUs in the match; otherwise shown greyed out and skipped by the cursor.
+		FMenuEntry Strength{FSlateRect(430, 434, 1170, 498), Rules.CPUCount > 0
+				? FString::Printf(TEXT("CPUの強さ　＜  %s  ＞"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
+				: FString(TEXT("CPUの強さ　（CPUなし）")),
+			TEXT(""), TEXT(""), Rules.CPULevel == ChaosImpactMatch::CPULevelWeak ? Ice
+				: Rules.CPULevel == ChaosImpactMatch::CPULevelNormal ? Gold : Fire};
+		Strength.bDisabled = Rules.CPUCount <= 0;
+		Entries.Add(Strength);
 		Entries.Add({FSlateRect(1030, 712, 1454, 800), TEXT("決定"), TEXT(""), TEXT(""), Gold});
 		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		break;
@@ -1604,11 +1612,11 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const int32 Humans = ChaosImpactMatch::GetCompetingHumans(Rules, Controller->GetMatchHumanCount());
 			const int32 Total = Humans + Rules.CPUCount;
 			const float In = EaseOut((T - 0.2f) / 0.35f);
-			const FGeometry Panel = MakeSkewed(DesignGeometry, 430.0f + (1.0f - In) * 80.0f, 512.0f, 740.0f, 168.0f, -0.12f);
+			const FGeometry Panel = MakeSkewed(DesignGeometry, 430.0f + (1.0f - In) * 80.0f, 530.0f, 740.0f, 156.0f, -0.12f);
 			const FMenuPainter Info{Panel, OutDrawElements, BaseLayer + 2, In};
-			Info.Box(12.0f, 14.0f, 740.0f, 168.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
-			Info.Box(0.0f, 0.0f, 740.0f, 168.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
-			Info.Box(0.0f, 0.0f, 10.0f, 168.0f, Rules.bSpectate ? Ice : Gold);
+			Info.Box(12.0f, 14.0f, 740.0f, 156.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+			Info.Box(0.0f, 0.0f, 740.0f, 156.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
+			Info.Box(0.0f, 0.0f, 10.0f, 156.0f, Rules.bSpectate ? Ice : Gold);
 			Info.Text(Rules.bSpectate
 				? FString::Printf(TEXT("観戦：CPU %d人の試合をカメラで見る"), Rules.CPUCount)
 				: FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
@@ -1631,13 +1639,14 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			// The rules just chosen, as a reminder of what the stage is for.
 			const FChaosImpactMatchRules& Rules = Controller->GetPendingMatchRules();
 			const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
-			const FMenuPainter Chip{MakeSkewed(DesignGeometry, 1010.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 440.0f, 70.0f, -0.3f),
+			const FMenuPainter Chip{MakeSkewed(DesignGeometry, 770.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 680.0f, 70.0f, -0.3f),
 				OutDrawElements, BaseLayer + 2, ChipIn};
-			Chip.Box(0.0f, 0.0f, 440.0f, 70.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
+			Chip.Box(0.0f, 0.0f, 680.0f, 70.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
 			Chip.Box(0.0f, 0.0f, 10.0f, 70.0f, Rules.bSpectate ? Ice : Gold);
-			Chip.Text(FString::Printf(TEXT("%s%s ・ %d分 ・ CPU %d人"), Rules.bSpectate ? TEXT("観戦 ・ ") : TEXT(""),
-				*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, Rules.CPUCount),
-				226.0f, 16.0f, 26.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+			Chip.Text(FString::Printf(TEXT("%s%s ・ %d分 ・ CPU %d人%s"), Rules.bSpectate ? TEXT("観戦 ・ ") : TEXT(""),
+				*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, Rules.CPUCount,
+				Rules.CPUCount > 0 ? *FString::Printf(TEXT("（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel)) : TEXT("")),
+				346.0f, 18.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Bold"));
 		}
 	}
 	else if (Screen == EChaosImpactScreen::TeamSelect)
@@ -1827,8 +1836,12 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		Controller && (bLeft || bRight))
 	{
 		// Rule rows change their value sideways; team select moves P1 between teams.
-		if (Screen == EChaosImpactScreen::MatchRules && SelectedIndex <= 2)
+		if (Screen == EChaosImpactScreen::MatchRules && SelectedIndex <= 3)
 		{
+			if (Entries[SelectedIndex].bDisabled)
+			{
+				return;
+			}
 			Controller->AdjustMatchRule(SelectedIndex, bRight ? 1 : -1);
 			BuildEntries();
 			return;
@@ -1863,6 +1876,11 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	else
 	{
 		SelectedIndex = (SelectedIndex + Entries.Num() + (bBack ? -1 : 1)) % Entries.Num();
+		// The rules' greyed-out row (CPUの強さ with no CPUs) is passed over.
+		if (Screen == EChaosImpactScreen::MatchRules && Entries[SelectedIndex].bDisabled)
+		{
+			SelectedIndex = (SelectedIndex + Entries.Num() + (bBack ? -1 : 1)) % Entries.Num();
+		}
 	}
 	PressedIndex = INDEX_NONE;
 	DisarmSelection();
@@ -1988,12 +2006,15 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		Controller->CancelOnlineStatus();
 		break;
 	case EChaosImpactScreen::MatchRules:
-		if (SelectedIndex <= 2)
+		if (SelectedIndex <= 3)
 		{
-			Controller->AdjustMatchRule(SelectedIndex, 1);
-			BuildEntries();
+			if (!Entries[SelectedIndex].bDisabled)
+			{
+				Controller->AdjustMatchRule(SelectedIndex, 1);
+				BuildEntries();
+			}
 		}
-		else if (SelectedIndex == 3)
+		else if (SelectedIndex == 4)
 		{
 			Controller->OpenStageSelect();
 		}

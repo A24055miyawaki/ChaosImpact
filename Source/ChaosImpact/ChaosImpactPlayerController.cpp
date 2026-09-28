@@ -1986,6 +1986,11 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 		const int32 Span = ChaosImpactMatch::GetMaxCPUCount(Competing) - Minimum + 1;
 		Rules.CPUCount = Minimum + Wrap(Rules.CPUCount - Minimum + Direction, FMath::Max(Span, 1));
 	}
+	else if (Row == 3 && Rules.CPUCount > 0)
+	{
+		// よわい → ふつう → つよい.
+		Rules.CPULevel = Wrap(Rules.CPULevel + Direction, ChaosImpactMatch::CPULevelCount);
+	}
 
 	Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
 }

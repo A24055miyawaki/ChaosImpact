@@ -27,6 +27,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|CPU", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float Skill = 1.0f;
 
+	/**
+	 * The VS rules' CPU strength (ChaosImpactMatch::CPULevel*): よわい for beginners, ふつう, or つよい, the full CPU.
+	 * Sets Skill and the handicaps below; つよい has none.
+	 */
+	void SetDifficulty(int32 Level);
+	int32 GetDifficulty() const { return Difficulty; }
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 
@@ -136,4 +143,30 @@ private:
 	float TornadoEvadeUntil = 0.0f;
 	float StrafeSign = 1.0f;
 	bool bHoldingJump = false;
+
+	// Handicaps for the weaker CPUs (SetDifficulty); at つよい they change nothing.
+	int32 Difficulty = 2;
+	/** The share of incoming balls noticed at all; the rest are not dodged. */
+	float DodgeChance = 1.0f;
+	/** Balls this CPU did not notice. */
+	TSet<TWeakObjectPtr<AChaosImpactBall>> UnnoticedBalls;
+	/** Added to the reaction time from Skill. */
+	float ExtraReactionSeconds = 0.0f;
+	/**
+	 * A shaky hand: each throw leaves up to this many degrees off the planned line. The planner corrects its
+	 * own aim error, so this is added only to the direction actually thrown.
+	 */
+	float ReleaseShakeDegrees = 0.0f;
+	float ReleaseShakeThisThrow = 0.0f;
+	/** How much of a moving target's motion the shot leads (1 = all of it). */
+	float LeadScale = 1.0f;
+	/** Walking speed out of the full speed, dodges included. */
+	float MoveSpeedScale = 1.0f;
+	/** Longer waits between throws. */
+	float ThrowDelayScale = 1.0f;
+	/** Now and then stands around for a moment: the chance per second, and until when. */
+	float IdleChancePerSecond = 0.0f;
+	float IdleUntil = 0.0f;
+	/** The planned direction with this throw's shake. */
+	FVector ShakeAim(const FVector& Direction) const;
 };

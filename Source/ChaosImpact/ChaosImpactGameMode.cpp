@@ -1181,6 +1181,11 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	CPUSpawnPoints = VersusStage->GetSpawnPoints();
 	SyncTrainingCPUCount(Rules.CPUCount, VersusStage->GetCenter() + FVector(0.0f, 0.0f, 110.0f), FRotator::ZeroRotator);
 	CPUSpawnPoints.Reset();
+	// Every CPU in the match, new or kept from before, plays at the chosen strength.
+	for (TActorIterator<AChaosImpactCPUController> It(GetWorld()); It; ++It)
+	{
+		It->SetDifficulty(Rules.CPULevel);
+	}
 
 	// Humans start spread across the teams in join order; CPUs are placed once the teams are confirmed.
 	const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);

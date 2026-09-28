@@ -39,6 +39,8 @@ public:
 	virtual TArray<FVector> GetSpawnPoints() const override;
 	virtual TArray<FVector> GetBallPoints() const override;
 	virtual float GetHalfExtent() const override { return SplashHalfExtent; }
+	/** The square's cut corners count too: behind a corner wall is outside. */
+	virtual bool IsOutside(const FVector& Location) const override;
 
 	/**
 	 * The layout is written at LayoutHalfExtent and spread out by LayoutScale across the ground (heights stay):

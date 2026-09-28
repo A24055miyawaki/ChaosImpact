@@ -567,3 +567,14 @@ TArray<FVector> AChaosImpactSplashStage::GetBallPoints() const
 {
 	return ToWorld(BallPointOffsets);
 }
+
+bool AChaosImpactSplashStage::IsOutside(const FVector& Location) const
+{
+	if (Super::IsOutside(Location))
+	{
+		return true;
+	}
+	// Past a corner wall (X + Y = BevelLine, spread like the rest, the wall 60 thick) by the same margin.
+	const FVector Local = GetActorTransform().InverseTransformPositionNoScale(Location);
+	return FMath::Abs(Local.X) + FMath::Abs(Local.Y) > BevelLine * LayoutScale + (60.0f + OutsideMargin) * UE_SQRT_2;
+}

@@ -951,7 +951,9 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		const FGeometry Labels = MakeSkewed(Corner, 140.0f, 26.0f, 320.0f, 90.0f, -0.25f);
 		const FPainter LabelPainter{Labels, OutDrawElements, BaseLayer + 3, In};
 		LabelPainter.Text(TEXT("復活まで"), 0.0f, -2.0f, 30.0f, Paper);
-		LabelPainter.Text(FString::Printf(TEXT("%s にやられた！"), *DefeatedByName), 2.0f, 46.0f, 21.0f, Fire,
+		// No name: knocked out for leaving the stage (AChaosImpactCharacter::CheckLeftStage).
+		LabelPainter.Text(DefeatedByName.IsEmpty() ? FString(TEXT("ステージの外に出た！"))
+			: FString::Printf(TEXT("%s にやられた！"), *DefeatedByName), 2.0f, 46.0f, 21.0f, Fire,
 			ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
 
 		const float Remaining = FMath::Clamp(RespawnRemaining / RespawnTotal, 0.0f, 1.0f);

@@ -21,6 +21,7 @@
 #include "GameFramework/PlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "ChaosImpactTrainingTarget.h"
+#include "Engine/DamageEvents.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -329,6 +330,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	if (HasAuthority())
 	{
 		UpdateMovementAuthority();
+		CheckLeftStage();
 	}
 	UpdatePresentationLead(DeltaSeconds);
 	UpdateToonCharacter();
@@ -1402,7 +1404,8 @@ void AChaosImpactCharacter::BeginRespawnCountdown()
 		return;
 	}
 	RespawnAtWorldSeconds = GetWorld()->GetTimeSeconds() + EliminationResetDelay;
-	const FString DefeatedBy = GetEliminatorDisplayName(EliminationInstigator.Get());
+	// No name for leaving the stage: the respawn panel then says ステージの外に出た.
+	const FString DefeatedBy = bKnockedOutLeavingStage ? FString() : GetEliminatorDisplayName(EliminationInstigator.Get());
 	APawn* KillerPawn = EliminationInstigator.IsValid() ? EliminationInstigator->GetPawn() : nullptr;
 	if (IsLocallyControlled())
 	{
@@ -1457,6 +1460,7 @@ void AChaosImpactCharacter::ResetAfterElimination()
 	DashDistanceApplied = 0.0f;
 	NextDashAvailableAtSeconds = 0.0f;
 	bEliminated = false;
+	bKnockedOutLeavingStage = false;
 	EliminationInstigator.Reset();
 	SetActorEnableCollision(true);
 	GetCharacterMovement()->SetMovementMode(bTrainingMenuFrozen ? MOVE_None : MOVE_Walking);
@@ -1466,6 +1470,46 @@ void AChaosImpactCharacter::ResetAfterElimination()
 		ChargeWidget->HideRespawn();
 	}
 	StartRespawnEffect();
+}
+
+void AChaosImpactCharacter::CheckLeftStage()
+{
+	UWorld* World = GetWorld();
+	if (!World || bEliminated || World->GetTimeSeconds() < NextLeftStageCheckAt)
+	{
+		return;
+	}
+	NextLeftStageCheckAt = World->GetTimeSeconds() + 0.25;
+	const AChaosImpactGameState* Match = World->GetGameState<AChaosImpactGameState>();
+	const AChaosImpactGameMode* Mode = World->GetAuthGameMode<AChaosImpactGameMode>();
+	const FVector At = GetActorLocation();
+	bool bLeft = false;
+	if (Match && Match->bVersusMatch)
+	{
+		// Only after GO: until then the opening itself moves everyone onto the stage.
+		bLeft = Match->Phase == EChaosImpactOnlinePhase::Match && !Match->IsMatchInputLocked()
+			&& Mode && Mode->IsOutsideStage(At);
+	}
+	else
+	{
+		// Training and the online lobby have no stage bounds; only a long fall counts.
+		bLeft = At.Z < InitialSpawnLocation.Z - TrainingFallKnockoutDepth;
+	}
+	if (!bLeft)
+	{
+		return;
+	}
+	UE_LOG(LogChaosImpact, Warning, TEXT("%s left the stage at %s and is knocked out"), *GetName(), *At.ToString());
+	// The usual knockout (the effect, the respawn countdown, back on a free spot), with nobody credited.
+	bKnockedOutLeavingStage = true;
+	bIsDashing = false;
+	TakeDamage(FMath::Max(Health, 1.0f), FDamageEvent(), nullptr, this);
+	if (!bEliminated)
+	{
+		// Refused (nothing should refuse it, but a character must never stay stuck out there): straight back.
+		bKnockedOutLeavingStage = false;
+		ResetAfterElimination();
+	}
 }
 
 void AChaosImpactCharacter::StartEliminationEffect()

@@ -62,6 +62,8 @@ public:
 	void RenameRoom(const FString& NewName);
 	/** Server: where a knocked-out competitor comes back during a match, away from opponents. */
 	bool ChooseMatchRespawn(const AActor* Character, FVector& OutLocation, FRotator& OutRotation) const;
+	/** Server: Location is off the VS stage in use (past its walls or below its floor). False with no stage. */
+	bool IsOutsideStage(const FVector& Location) const;
 
 	/**
 	 * Pairs input devices with this machine's local players using the world URL

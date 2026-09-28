@@ -1546,6 +1546,11 @@ void AChaosImpactGameMode::AwardMatchPoints(APlayerState* Scorer, const int32 Po
 	Member->ForceNetUpdate();
 }
 
+bool AChaosImpactGameMode::IsOutsideStage(const FVector& Location) const
+{
+	return VersusStage && VersusStage->IsOutside(Location);
+}
+
 bool AChaosImpactGameMode::ChooseMatchRespawn(const AActor* Character, FVector& OutLocation, FRotator& OutRotation) const
 {
 	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();

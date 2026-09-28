@@ -27,7 +27,18 @@ public:
 	virtual TArray<FVector> GetBallPoints() const { return {}; }
 	FVector GetCenter() const { return GetActorLocation(); }
 
+	/**
+	 * A character at Location has left the stage: past the outer walls or below the floor, where it can do
+	 * nothing (a bug, a glitch through a wall). The match knocks it out so it respawns on the stage.
+	 */
+	virtual bool IsOutside(const FVector& Location) const;
+
 protected:
+	/** How far past the walls still counts as inside (the walls' own thickness and then some). */
+	static constexpr float OutsideMargin = 300.0f;
+	/** How far below the floor still counts as inside (a character's middle stands about 96 above it). */
+	static constexpr float OutsideDepth = 500.0f;
+
 	/** Stage-relative offsets to world positions. */
 	TArray<FVector> ToWorld(const TArray<FVector>& Offsets) const;
 };

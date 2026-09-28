@@ -300,6 +300,8 @@ protected:
 	void RestoreLocomotionAnimation();
 	void BeginRespawnCountdown();
 	void ResetAfterElimination();
+	/** Server, every few ticks: a character that has left the stage (a bug, a glitch through a wall) is knocked out. */
+	void CheckLeftStage();
 	void StartEliminationEffect();
 	void UpdateEliminationEffect(float DeltaSeconds);
 	void StopEliminationEffect();
@@ -435,6 +437,10 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Damage", meta=(ClampMin="0.0"))
 	float EliminationResetDelay = 3.0f;
+
+	/** Training and the online lobby (no VS stage): falling this far below the start point knocks the character out. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Damage", meta=(ClampMin="100.0"))
+	float TrainingFallKnockoutDepth = 2000.0f;
 
 	/** Briefly keeps the defeated player's original camera before spectating. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Damage", meta=(ClampMin="0.0", ClampMax="2.0"))
@@ -678,6 +684,9 @@ protected:
 	FVector InitialMeshRelativeScale = FVector::OneVector;
 	TWeakObjectPtr<AActor> EliminationViewTarget;
 	TWeakObjectPtr<AController> EliminationInstigator;
+	/** This knockout was for leaving the stage, not a hit: the respawn panel says so instead of naming someone. */
+	bool bKnockedOutLeavingStage = false;
+	double NextLeftStageCheckAt = 0.0;
 	TWeakObjectPtr<AChaosImpactBall> PendingThrowBall;
 	TSubclassOf<UAnimInstance> LocomotionAnimInstanceClass;
 	FVector PendingThrowDirection = FVector::ForwardVector;

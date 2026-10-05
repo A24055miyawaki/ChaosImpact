@@ -51,23 +51,39 @@ protected:
 
 	/** Chance (0-1) that a new ball is a fire ball. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float FireBallChance = 0.15f;
+	float FireBallChance = 0.11f;
 
 	/** Chance (0-1) that a new ball is an ice ball. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float IceBallChance = 0.15f;
+	float IceBallChance = 0.11f;
 
 	/** Chance (0-1) that a new ball is a thunder ball. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float ThunderBallChance = 0.1f;
+	float ThunderBallChance = 0.08f;
 
 	/** Chance (0-1) that a new ball is a black ball. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float BlackBallChance = 0.1f;
+	float BlackBallChance = 0.08f;
 
 	/** Chance (0-1) that a new ball is a wind ball. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float WindBallChance = 0.1f;
+	float WindBallChance = 0.08f;
+
+	/** Chance (0-1) that a new ball is a smoke ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float SmokeBallChance = 0.08f;
+
+	/** Chance (0-1) that a new ball is a beam ball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float BeamBallChance = 0.08f;
+
+	/** Chance (0-1) that a new ball is a snowball. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float SnowBallChance = 0.08f;
+
+	/** Chance (0-1) that a new ball is a nova. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float NovaBallChance = 0.025f;
 
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;

@@ -1179,7 +1179,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 				? FString::Printf(TEXT("CPUの強さ　＜  %s  ＞"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
 				: FString(TEXT("CPUの強さ　（CPUなし）")),
 			TEXT(""), TEXT(""), Rules.CPULevel == ChaosImpactMatch::CPULevelWeak ? Ice
-				: Rules.CPULevel == ChaosImpactMatch::CPULevelNormal ? Gold : Fire};
+				: Rules.CPULevel == ChaosImpactMatch::CPULevelNormal ? Gold
+				: Rules.CPULevel == ChaosImpactMatch::CPULevelStrong ? Fire : FLinearColor(0.78f, 0.36f, 1.0f, 1.0f)};
 		Strength.bDisabled = Rules.CPUCount <= 0;
 		Entries.Add(Strength);
 		Entries.Add({FSlateRect(1030, 712, 1454, 800), TEXT("決定"), TEXT(""), TEXT(""), Gold});

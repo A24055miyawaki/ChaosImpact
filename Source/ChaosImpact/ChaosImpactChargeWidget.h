@@ -43,6 +43,10 @@ public:
 	void PlayBallSwap();
 	/** A spectator's HUD: no HP or ball stock, a 観戦中 bar, and the standings seen from the followed player. */
 	void SetSpectatorView(bool bSpectator) { bSpectatorView = bSpectator; }
+	/** Smoke over this player's view, 0-1 (a smoke ball caught them). */
+	void SetBlindAmount(float Amount);
+	/** How far each carried snowball has grown (0-1), shown on its icon. */
+	void SetSnowGrowth(const float Right, const float Left) { SnowGrowth[0] = Right; SnowGrowth[1] = Left; }
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -139,6 +143,14 @@ private:
 	/** Hidden with the rest of the gameplay HUD outside a VS match's play phase. */
 	bool bVitalsHidden = false;
 	bool bSpectatorView = false;
+
+	float BlindAmount = 0.0f;
+	double BlindShownAt = -100.0;
+	float SnowGrowth[2] = {0.0f, 0.0f};
+	/** Thick, drifting smoke over the whole view, under this player's own HUD but over everyone else's markers. */
+	void PaintSmokeVeil(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 Layer) const;
+	/** 0-1: how thick the smoke over the view is right now (billowing in, thinning out as it ends). */
+	float GetSmokeCover() const;
 
 	int32 CarriedBalls = 0;
 	uint8 CarriedBallTypes = 0;

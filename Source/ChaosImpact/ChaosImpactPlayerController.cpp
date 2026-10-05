@@ -246,7 +246,7 @@ void AChaosImpactPlayerController::BeginPlay()
 		GetWorldTimerManager().SetTimer(WarmUpTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
 		{
 			FVector Below = GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
-			Below.Z -= 1500.0f;
+			Below.Z -= 6000.0f;
 			ChaosImpactBallTypes::WarmUpEffects(GetWorld(), Below);
 		}), 0.3f, false);
 	}

@@ -790,6 +790,22 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(0.8f, 1.0f, 0.78f), FLinearColor(0.0f, 0.16f, 0.04f, 0.97f),
 				FLinearColor(0.35f, 1.0f, 0.45f), FLinearColor(0.06f, 0.42f, 0.14f, 0.95f),
 				FLinearColor(0.84f, 1.0f, 0.8f), FLinearColor(0.78f, 1.0f, 0.74f)};
+		case EChaosImpactBallType::Smoke:
+			return {FLinearColor(0.82f, 0.8f, 0.9f), FLinearColor(0.07f, 0.065f, 0.1f, 0.97f),
+				FLinearColor(0.7f, 0.66f, 0.86f), FLinearColor(0.25f, 0.23f, 0.32f, 0.95f),
+				FLinearColor(0.88f, 0.86f, 0.96f), FLinearColor(0.84f, 0.82f, 0.94f)};
+		case EChaosImpactBallType::Beam:
+			return {FLinearColor(1.0f, 0.78f, 0.96f), FLinearColor(0.22f, 0.0f, 0.14f, 0.97f),
+				FLinearColor(1.0f, 0.3f, 0.8f), FLinearColor(0.5f, 0.05f, 0.34f, 0.95f),
+				FLinearColor(1.0f, 0.85f, 0.97f), FLinearColor(1.0f, 0.78f, 0.95f)};
+		case EChaosImpactBallType::Nova:
+			return {FLinearColor(0.85f, 0.97f, 1.0f), FLinearColor(0.0f, 0.07f, 0.2f, 0.97f),
+				FLinearColor(0.45f, 0.86f, 1.0f), FLinearColor(0.08f, 0.32f, 0.6f, 0.95f),
+				FLinearColor(0.9f, 0.98f, 1.0f), FLinearColor(0.82f, 0.95f, 1.0f)};
+		case EChaosImpactBallType::Snow:
+			return {FLinearColor(1.0f, 1.0f, 1.0f), FLinearColor(0.12f, 0.18f, 0.26f, 0.97f),
+				FLinearColor(0.88f, 0.95f, 1.0f), FLinearColor(0.45f, 0.58f, 0.72f, 0.95f),
+				FLinearColor(1.0f, 1.0f, 1.0f), FLinearColor(0.92f, 0.97f, 1.0f)};
 		default:
 			return {FLinearColor(0.78f, 0.96f, 1.0f), FLinearColor(0.0f, 0.1f, 0.22f, 0.96f),
 				FLinearColor(0.0f, 0.82f, 1.0f), FLinearColor(0.0f, 0.12f, 0.24f, 0.9f),
@@ -895,14 +911,21 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		return BaseLayer;
 	}
 	PaintPlayerMarkers(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	// Smoke hides the others' markers too; this player's own HP and balls stay readable on top.
+	const bool bSmoked = BlindAmount > 0.0f && !bSpectatorView;
+	if (bSmoked)
+	{
+		PaintSmokeVeil(AllottedGeometry, OutDrawElements, BaseLayer + 4);
+	}
+	const int32 HudLayer = bSmoked ? BaseLayer + 6 : BaseLayer + 1;
 	if (bSpectatorView)
 	{
-		PaintSpectatorBar(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+		PaintSpectatorBar(AllottedGeometry, OutDrawElements, HudLayer);
 	}
 	else
 	{
-		PaintVitals(AllottedGeometry, OutDrawElements, BaseLayer + 1);
-		PaintBallInventory(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+		PaintVitals(AllottedGeometry, OutDrawElements, HudLayer);
+		PaintBallInventory(AllottedGeometry, OutDrawElements, HudLayer);
 	}
 	const double Clock = FPlatformTime::Seconds();
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -1073,7 +1096,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 
 	// One ball, shaded like a sphere, marked by its type.
 	const auto PaintBall = [Time](const FPainter& Paint, const FVector2D& Center, const float Radius, const bool bFilled,
-		const EChaosImpactBallType Type)
+		const EChaosImpactBallType Type, const float Growth)
 	{
 		if (!bFilled)
 		{
@@ -1094,6 +1117,10 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		case EChaosImpactBallType::Thunder: Body = FLinearColor(1.0f, 0.8f, 0.1f, 1.0f); break;
 		case EChaosImpactBallType::Black: Body = FLinearColor(0.2f, 0.06f, 0.34f, 1.0f); break;
 		case EChaosImpactBallType::Wind: Body = FLinearColor(0.2f, 0.8f, 0.32f, 1.0f); break;
+		case EChaosImpactBallType::Smoke: Body = FLinearColor(0.3f, 0.28f, 0.36f, 1.0f); break;
+		case EChaosImpactBallType::Beam: Body = FLinearColor(1.0f, 0.24f, 0.74f, 1.0f); break;
+		case EChaosImpactBallType::Snow: Body = FLinearColor(0.9f, 0.95f, 1.0f, 1.0f); break;
+		case EChaosImpactBallType::Nova: Body = FLinearColor(0.3f, 0.66f, 1.0f, 1.0f); break;
 		default: break;
 		}
 		const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -1152,6 +1179,59 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 			}
 			break;
 		}
+		case EChaosImpactBallType::Smoke:
+		{
+			// Puffs of smoke rolling over each other.
+			for (int32 Puff = 0; Puff < 3; ++Puff)
+			{
+				const float Angle = Time * 1.6f + Puff * 2.1f;
+				const FVector2D Offset(FMath::Cos(Angle) * Radius * 0.28f, FMath::Sin(Angle) * Radius * 0.2f);
+				Paint.Disc(Center + Offset, Radius * (0.34f + 0.05f * Puff), FLinearColor(0.7f, 0.68f, 0.78f, 0.55f));
+			}
+			break;
+		}
+		case EChaosImpactBallType::Beam:
+		{
+			// A shaft of light straight through it, with a four-point glint that pulses.
+			const float Pulse = 0.75f + 0.25f * FMath::Sin(Time * 12.0f);
+			Paint.Line(Center - FVector2D(Radius * 0.9f, 0.0f), Center + FVector2D(Radius * 0.9f, 0.0f),
+				FLinearColor(1.0f, 0.5f, 0.88f, 0.7f), 7.0f);
+			Paint.Line(Center - FVector2D(Radius * 0.9f, 0.0f), Center + FVector2D(Radius * 0.9f, 0.0f),
+				FLinearColor(1.0f, 0.96f, 1.0f, Pulse), 2.5f);
+			Paint.Line(Center - FVector2D(0.0f, Radius * 0.42f * Pulse), Center + FVector2D(0.0f, Radius * 0.42f * Pulse),
+				FLinearColor(1.0f, 0.96f, 1.0f, Pulse), 2.0f);
+			break;
+		}
+		case EChaosImpactBallType::Snow:
+		{
+			// Clumps of snow, and a gauge round it of how big it has grown.
+			const FLinearColor Shadow(0.62f, 0.72f, 0.86f, 0.9f);
+			Paint.Disc(Center + FVector2D(Radius * 0.3f, Radius * 0.28f), Radius * 0.26f, Shadow);
+			Paint.Disc(Center + FVector2D(-Radius * 0.34f, Radius * 0.2f), Radius * 0.18f, Shadow);
+			Paint.Disc(Center + FVector2D(Radius * 0.1f, -Radius * 0.36f), Radius * 0.14f, Shadow);
+			if (Growth > 0.0f)
+			{
+				Paint.Arc(Center, Radius + 5.0f, -90.0f, -90.0f + 360.0f * FMath::Clamp(Growth, 0.0f, 1.0f),
+					FLinearColor(1.0f, 1.0f, 1.0f, 0.95f), 3.5f);
+			}
+			break;
+		}
+		case EChaosImpactBallType::Nova:
+		{
+			// A white-hot heart, with light streaming into it from all round.
+			const float Pulse = 0.85f + 0.15f * FMath::Sin(Time * 6.0f);
+			Paint.Disc(Center, Radius * 0.62f * Pulse, FLinearColor(0.72f, 0.92f, 1.0f, 0.65f));
+			Paint.Disc(Center, Radius * 0.36f * Pulse, FLinearColor(1.0f, 1.0f, 1.0f, 0.95f));
+			for (int32 Ray = 0; Ray < 6; ++Ray)
+			{
+				const float Angle = Ray * UE_TWO_PI / 6.0f + Time * 0.8f;
+				const float Phase = FMath::Frac(Time * 1.4f + Ray * 0.37f);
+				const FVector2D Way(FMath::Cos(Angle), FMath::Sin(Angle));
+				Paint.Line(Center + Way * Radius * (1.3f - 0.6f * Phase), Center + Way * Radius * (1.08f - 0.6f * Phase),
+					FLinearColor(0.8f, 0.95f, 1.0f, 1.0f - Phase), 2.0f);
+			}
+			break;
+		}
 		case EChaosImpactBallType::Black:
 		{
 			// A lightless core ringed in violet, with a sweep circling it.
@@ -1172,9 +1252,9 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		Paint.Disc(Center - FVector2D(Radius * 0.36f, Radius * 0.4f), Radius * 0.24f, FLinearColor(1.0f, 1.0f, 1.0f, 0.5f));
 		Paint.Disc(Center - FVector2D(Radius * 0.5f, Radius * 0.18f), Radius * 0.08f, FLinearColor(1.0f, 1.0f, 1.0f, 0.7f));
 		Paint.Ring(Center, Radius, WithAlpha(Glow, 0.95f), 2.0f);
-		if (bSpecial)
+		if (bSpecial && Type != EChaosImpactBallType::Snow)
 		{
-			// Special balls: two arcs orbiting just outside.
+			// Special balls: two arcs orbiting just outside (a snowball shows its growth there instead).
 			const float Spin = FMath::Fmod(Time * 160.0f, 360.0f);
 			Paint.Arc(Center, Radius + 5.0f, Spin, Spin + 70.0f, Glow, 2.5f);
 			Paint.Arc(Center, Radius + 5.0f, Spin + 180.0f, Spin + 250.0f, Glow, 2.5f);
@@ -1212,7 +1292,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		DrawnRadii[DrawSlot] = Radius;
 		const bool bFilled = DrawSlot < CarriedBalls;
 		PaintBall(Balls, Center, Radius, bFilled, bFilled ? ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, DrawSlot)
-			: EChaosImpactBallType::Normal);
+			: EChaosImpactBallType::Normal, SnowGrowth[DrawSlot]);
 	}
 
 	const FPainter Labels{Corner, OutDrawElements, BaseLayer + 2};
@@ -1508,6 +1588,8 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 	// "Near" is measured from the player's own character, or from the camera while spectating.
 	const FVector Reference = ViewerPawn ? ViewerPawn->GetActorLocation() : CameraLocation;
 	const UGameInstance* GameInstance = GetGameInstance();
+	// In smoke nobody else's name or arrow shows; they drift back in as it clears.
+	const float OthersShown = 1.0f - GetSmokeCover();
 
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
@@ -1540,6 +1622,11 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 			}
 		}
 		const FString Name = Character->GetOverheadDisplayName();
+		const float Shown = Character == ViewerPawn ? 1.0f : OthersShown;
+		if (Shown <= 0.01f)
+		{
+			continue;
+		}
 
 		const FVector Body = Character->GetPresentationLocation();
 		FVector2D BodyScreen;
@@ -1555,7 +1642,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 			if (!Name.IsEmpty() && UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(
 				PlayerController, Body + FVector(0.0f, 0.0f, HalfHeight + 40.0f), HeadScreen, true))
 			{
-				const FPainter Tag{AllottedGeometry, OutDrawElements, BaseLayer, 1.0f};
+				const FPainter Tag{AllottedGeometry, OutDrawElements, BaseLayer, Shown};
 				const float FontSize = 15.0f * S;
 				const FVector2D Tip(HeadScreen.X, HeadScreen.Y);
 				Tag.Text(Name, static_cast<float>(HeadScreen.X), static_cast<float>(HeadScreen.Y) - FontSize * 1.75f - 7.0f * S,
@@ -1567,7 +1654,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 				&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(
 					PlayerController, Body + FVector(0.0f, 0.0f, HalfHeight + 40.0f), HeadScreen, true))
 			{
-				const FPainter Gauge{AllottedGeometry, OutDrawElements, BaseLayer + 1, 1.0f};
+				const FPainter Gauge{AllottedGeometry, OutDrawElements, BaseLayer + 1, Shown};
 				const FVector2D GaugeCenter(HeadScreen.X, HeadScreen.Y - 58.0f * S);
 				const float Radius = 12.0f * S;
 				const float Pulse = WarpCharge > 0.8f
@@ -1611,7 +1698,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 			FMath::Abs(Direction.Y) > UE_KINDA_SMALL_NUMBER ? Half.Y / FMath::Abs(Direction.Y) : UE_BIG_NUMBER);
 		const FVector2D Tip = Center + Direction * Reach + Direction * 14.0f * K;
 
-		const FPainter Marker{AllottedGeometry, OutDrawElements, BaseLayer, FMath::Lerp(0.6f, 1.0f, Nearness)};
+		const FPainter Marker{AllottedGeometry, OutDrawElements, BaseLayer, FMath::Lerp(0.6f, 1.0f, Nearness) * Shown};
 		Marker.Disc(Tip - Direction * 16.0f * K, 18.0f * K, WithAlpha(Ink, 0.62f));
 		PaintMarkerArrow(Marker, Tip, Direction, K, Color);
 		const FVector2D Label = Tip - Direction * 48.0f * K;
@@ -2129,4 +2216,70 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		}
 	}
 
+}
+
+void UChaosImpactChargeWidget::SetBlindAmount(const float Amount)
+{
+	if (Amount > 0.0f && BlindAmount <= 0.0f)
+	{
+		BlindShownAt = FPlatformTime::Seconds();
+	}
+	BlindAmount = FMath::Clamp(Amount, 0.0f, 1.0f);
+}
+
+float UChaosImpactChargeWidget::GetSmokeCover() const
+{
+	if (BlindAmount <= 0.0f || bSpectatorView)
+	{
+		return 0.0f;
+	}
+	// Billows in over a quarter of a second, holds, and thins out over its last second.
+	const float Age = static_cast<float>(FPlatformTime::Seconds() - BlindShownAt);
+	const float In = 1.0f - FMath::Pow(1.0f - FMath::Clamp(Age / 0.25f, 0.0f, 1.0f), 3.0f);
+	return FMath::Clamp(In * BlindAmount, 0.0f, 1.0f);
+}
+
+void UChaosImpactChargeWidget::PaintSmokeVeil(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+	const int32 Layer) const
+{
+	using namespace ChaosImpactPaint;
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const double Clock = FPlatformTime::Seconds();
+	const float Age = static_cast<float>(Clock - BlindShownAt);
+	const float In = 1.0f - FMath::Pow(1.0f - FMath::Clamp(Age / 0.25f, 0.0f, 1.0f), 3.0f);
+	const float Thick = GetSmokeCover();
+	const float Time = static_cast<float>(FMath::Fmod(Clock, 1000.0));
+	const FPainter Veil{AllottedGeometry, OutDrawElements, Layer, Thick};
+	// A murky base over everything, then big soft clouds rolling across it.
+	Veil.Box(0.0f, 0.0f, Size.X, Size.Y, FLinearColor(0.3f, 0.29f, 0.34f, 0.8f));
+	const FPainter Clouds{AllottedGeometry, OutDrawElements, Layer + 1, Thick};
+	const float Span = FMath::Max(Size.X, Size.Y);
+	constexpr int32 CloudCount = 14;
+	for (int32 Index = 0; Index < CloudCount; ++Index)
+	{
+		// Scattered by a fixed pattern, each drifting on its own slow loop.
+		const float Seed = Index * 12.9898f;
+		const float BaseX = FMath::Frac(FMath::Sin(Seed) * 43758.55f);
+		const float BaseY = FMath::Frac(FMath::Sin(Seed + 3.1f) * 24634.63f);
+		const float DriftX = 0.06f * FMath::Sin(Time * (0.23f + 0.05f * (Index % 5)) + Index);
+		const float DriftY = 0.05f * FMath::Cos(Time * (0.19f + 0.04f * (Index % 4)) + Index * 1.7f);
+		const FVector2D Center((BaseX + DriftX) * Size.X, (BaseY + DriftY) * Size.Y);
+		const float Radius = Span * (0.16f + 0.11f * FMath::Frac(FMath::Sin(Seed + 7.7f) * 9123.1f)) * (0.7f + 0.3f * In);
+		const FLinearColor Tone = Index % 3 == 0 ? FLinearColor(0.2f, 0.19f, 0.23f) : FLinearColor(0.52f, 0.5f, 0.58f);
+		// Soft edges: a few faint layers, each a little off-centre, so no rim shows as a line. (Every layer is drawn
+		// over much of the screen, so they are kept few.)
+		constexpr int32 Layers = 4;
+		for (int32 Ring = 0; Ring < Layers; ++Ring)
+		{
+			const float Shrink = 1.0f - Ring * 0.2f;
+			const FVector2D Wobble(FMath::Sin(Seed + Ring * 1.9f + Time * 0.3f), FMath::Cos(Seed + Ring * 2.3f + Time * 0.25f));
+			Clouds.Disc(Center + Wobble * Radius * 0.06f, Radius * Shrink, FLinearColor(Tone.R, Tone.G, Tone.B, 0.15f));
+		}
+	}
+	// Thickest in the middle of the view, where the player looks.
+	const FVector2D Middle(Size.X * 0.5f, Size.Y * 0.5f);
+	for (int32 Ring = 0; Ring < 4; ++Ring)
+	{
+		Clouds.Disc(Middle, Span * (0.34f - Ring * 0.07f), FLinearColor(0.4f, 0.39f, 0.45f, 0.17f));
+	}
 }

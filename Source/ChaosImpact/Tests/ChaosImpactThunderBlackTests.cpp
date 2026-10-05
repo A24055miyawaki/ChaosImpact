@@ -201,14 +201,19 @@ namespace
 					FVector::Dist2D(CPU->GetActorLocation(), HoleCentre), FVector::Dist2D(Player->GetActorLocation(), PlayerSpot));
 				Test->TestTrue(TEXT("The opponent ends up at the centre"), FVector::Dist2D(CPU->GetActorLocation(), HoleCentre) < 130.0f);
 				Test->TestTrue(TEXT("The thrower is not pulled"), FVector::Dist2D(Player->GetActorLocation(), PlayerSpot) < 15.0f);
-				Test->TestEqual(TEXT("Being pulled does no damage"), CPU->GetHealth(), CPUHealth);
+				// The very centre burns like fire.
+				Test->TestTrue(TEXT("The centre of a black hole burns"), CPU->IsEliminated() || CPU->GetHealth() < CPUHealth);
+				UE_LOG(LogTemp, Display, TEXT("TBTEST cpu health %.0f -> %.0f at the centre"), CPUHealth, CPU->GetHealth());
 				CaptureThunderBlack(TEXT("TB-03-BlackHole-Centre.png"));
+				// Full health again for the thunder checks below; it stays in the hole until it closes.
+				CPU->ResetForOnlineMatch(CPU->GetActorLocation(), CPU->GetActorRotation());
 				Stage = 4;
 				NextAt = PhaseStartedAt + AChaosImpactHazardZone::BlackHoleSeconds + 0.25;
 				return false;
 			case 4:
 				CaptureThunderBlack(TEXT("TB-04-BlackHole-Collapse.png"));
-				PlaceAt(CPU, HoleCentre + FVector(450.0f, 0.0f, 0.0f));
+				// The centre kept burning until the hole closed: full health again.
+				CPU->ResetForOnlineMatch(HoleCentre + FVector(450.0f, 0.0f, 0.0f), CPU->GetActorRotation());
 				Stage = 40;
 				return false;
 			case 40:
@@ -244,7 +249,7 @@ namespace
 				{
 					const FVector Velocity = Ball->GetBallVelocity();
 					UE_LOG(LogTemp, Display, TEXT("TBTEST thunder velocity %s"), *Velocity.ToCompactString());
-					Test->TestTrue(TEXT("A thunder ball flies at full speed however it was thrown"),
+					Test->TestTrue(TEXT("A thunder ball flies at full speed however it was thrown (before any wall)"),
 						FMath::IsNearlyEqual(static_cast<float>(Velocity.Size()), ChaosImpactBallTypes::ThunderSpeed, 5.0f));
 					Test->TestTrue(TEXT("A thunder ball flies level"), FMath::Abs(Velocity.Z) < 1.0);
 				}
@@ -256,7 +261,18 @@ namespace
 				NextAt = PhaseStartedAt + 2.5;
 				return false;
 			case 7:
-				Test->TestEqual(TEXT("Before three seconds it is still flying"), Count(EChaosImpactBallType::Thunder), ZonesBefore);
+				Test->TestEqual(TEXT("Before its time is up it is still flying"), Count(EChaosImpactBallType::Thunder), ZonesBefore);
+				if (const AChaosImpactBall* Ball = ThunderBall.Get())
+				{
+					// Every wall it met made it faster.
+					UE_LOG(LogTemp, Display, TEXT("TBTEST thunder after %d walls: speed %.0f"), Ball->GetReflectionCount(),
+						Ball->GetBallVelocity().Size());
+					if (Ball->GetReflectionCount() > 0)
+					{
+						Test->TestTrue(TEXT("Rebounding off walls speeds a thunder ball up"),
+							Ball->GetBallVelocity().Size() > ChaosImpactBallTypes::ThunderSpeed * 1.2f);
+					}
+				}
 				Stage = 8;
 				NextAt = PhaseStartedAt + ChaosImpactBallTypes::ThunderFlightSeconds + 0.05;
 				return false;
@@ -266,7 +282,7 @@ namespace
 				NextAt = Now + 0.25;
 				return false;
 			case 9:
-				Test->TestTrue(TEXT("After three seconds the thunder ball bursts"), Count(EChaosImpactBallType::Thunder) > ZonesBefore);
+				Test->TestTrue(TEXT("When its time is up the thunder ball bursts"), Count(EChaosImpactBallType::Thunder) > ZonesBefore);
 				CPU->SetActorEnableCollision(true);
 				PlaceAt(CPU, Origin + Toward * 700.0f);
 				CPUHealth = CPU->GetHealth();

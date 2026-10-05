@@ -179,6 +179,11 @@ void AChaosImpactTornado::CatchBalls(const float DeltaSeconds)
 		}
 		if (Ball->IsFlyingOnServer())
 		{
+			if (Ball->GetBallType() == EChaosImpactBallType::Beam || Ball->GetBallType() == EChaosImpactBallType::Nova)
+			{
+				// Light is not blown about (and a nova is far too big to be).
+				continue;
+			}
 			// Flung round the funnel and back out, faster, in a new direction.
 			if (Deflected.Contains(Ball) || Flat.SizeSquared() > FMath::Square(CatchRadius + 30.0f))
 			{
@@ -192,7 +197,8 @@ void AChaosImpactTornado::CatchBalls(const float DeltaSeconds)
 			const float Speed = FMath::Max(static_cast<float>(OldVelocity.Size2D()), DeflectSpeed);
 			FVector NewVelocity = Direction * Speed;
 			NewVelocity.Z = FMath::Max(static_cast<float>(OldVelocity.Z), 0.0f) + 180.0f;
-			if (Ball->DeflectByWind(NewVelocity))
+			// It is the tornado owner's ball from here on, whoever threw it.
+			if (Ball->DeflectByWind(NewVelocity, SourcePawn))
 			{
 				UE_LOG(LogChaosImpact, Log, TEXT("Tornado turned a %s ball from %s to %s"),
 					ChaosImpactBallTypes::GetInternalName(Ball->GetBallType()), *OldVelocity.ToCompactString(), *NewVelocity.ToCompactString());
@@ -262,7 +268,8 @@ void AChaosImpactTornado::ReleaseCarriedBalls()
 		{
 			Ground = Floor.ImpactPoint;
 		}
-		Ball->ReleaseFromWind(Ground, (Outward + FVector::CrossProduct(FVector::UpVector, Outward) * 0.6f) * 900.0f);
+		// Flung out as the tornado owner's throw.
+		Ball->ReleaseFromWind(Ground, (Outward + FVector::CrossProduct(FVector::UpVector, Outward) * 0.6f) * 900.0f, SourcePawn);
 	}
 	CarriedBalls.Reset();
 	if (World && !IsActorBeingDestroyed())

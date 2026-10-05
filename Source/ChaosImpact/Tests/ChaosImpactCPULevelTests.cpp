@@ -99,6 +99,10 @@ namespace
 			{
 				Test->TestTrue(TEXT("よわい lands fewer hits than it takes from つよい"), ReferenceTaken < TestedTaken);
 			}
+			else if (Level == ChaosImpactMatch::CPULevelStrongest)
+			{
+				Test->TestTrue(TEXT("さいきょう lands more hits than it takes from つよい"), ReferenceTaken > TestedTaken);
+			}
 			return true;
 		}
 

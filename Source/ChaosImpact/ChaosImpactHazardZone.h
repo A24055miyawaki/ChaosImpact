@@ -40,9 +40,19 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	/** Server: detonates a special ball at Location. DirectVictim already took the ball's own hit. */
+	/**
+	 * Server: detonates a special ball at Location. DirectVictim already took the ball's own hit. Scale sizes the
+	 * burst's look (a snowball's size); gameplay reach does not change with it.
+	 */
 	static AChaosImpactHazardZone* Detonate(UWorld* World, EChaosImpactBallType Type, const FVector& Location,
-		APawn* SourcePawn, AActor* DirectVictim);
+		APawn* SourcePawn, AActor* DirectVictim, float Scale = 1.0f);
+	/**
+	 * Server: a small fire on the ground under a flying fire ball (its trail). No blast; it burns like the fire
+	 * zone. Leader is the first fire of the same trail, which keeps one burn clock for all of them so standing
+	 * where two touch does not burn twice. Returns nullptr over a drop with no ground near.
+	 */
+	static AChaosImpactHazardZone* SpawnFireTrail(UWorld* World, const FVector& BallLocation, APawn* SourcePawn,
+		AChaosImpactHazardZone* Leader);
 	/** Any machine: true on active frozen ground. Each machine applies the slide to the characters it moves. */
 	static bool IsSlipperyAt(const UWorld* World, const FVector& FeetLocation);
 	/**
@@ -54,14 +64,21 @@ public:
 	bool TryApplyLateHit(AChaosImpactCharacter* Victim);
 
 	EChaosImpactBallType GetZoneType() const { return ZoneType; }
+	/** One small fire of a fire ball's trail (SpawnFireTrail). */
+	bool IsFireTrail() const { return bFireTrail; }
 	APawn* GetSourcePawn() const { return SourcePawn; }
 	float GetRadius() const;
 	float GetActiveSeconds() const;
+	/** Seconds since it burst. */
+	float GetAge() const;
 
 	static constexpr float FireRadius = 240.0f;
 	static constexpr float FireBurnSeconds = 4.0f;
 	static constexpr float FireBurnInterval = 1.0f;
-	static constexpr float IceRadius = 260.0f;
+	/** One fire of a fire ball's trail. */
+	static constexpr float FireTrailRadius = 95.0f;
+	static constexpr float FireTrailSeconds = 3.0f;
+	static constexpr float IceRadius = 380.0f;
 	static constexpr float IceFloorSeconds = 5.0f;
 	static constexpr float IceFreezeSeconds = 2.0f;
 	static constexpr float ThunderRadius = 320.0f;
@@ -78,6 +95,13 @@ public:
 	static constexpr float BlackHoleCoreSpeed = 700.0f;
 	static constexpr float BlackHoleDashGraceSeconds = 0.3f;
 	static constexpr float BlackHoleCoreHeight = 120.0f;
+	/** The very centre of a black hole burns like fire (FireBurnInterval) whoever it has drawn in. */
+	static constexpr float BlackHoleBurnRadius = 140.0f;
+	/** A beam fading out at the end of its range, and a snowball bursting: only a moment to show. */
+	static constexpr float BeamFadeSeconds = 0.35f;
+	static constexpr float SnowBurstSeconds = 1.1f;
+	/** Nova: how long its dome of light stands before it thins away. */
+	static constexpr float NovaBlastSeconds = 1.6f;
 	static constexpr float FadeSeconds = 0.6f;
 	/** Flames and mist are allowed to die out after the zone stops. */
 	static constexpr float EffectTailSeconds = 2.0f;
@@ -87,8 +111,10 @@ protected:
 	virtual void BeginPlay() override;
 
 	void ApplyDetonationEffects();
-	void TickBurning();
-	bool IsInside(const AActor* Actor, float Padding, float MaxHeight) const;
+	/** Server: burns whoever stands within Radius, once every FireBurnInterval each. */
+	void TickBurning(float Radius);
+	/** Radius below zero means the zone's own (GetRadius). */
+	bool IsInside(const AActor* Actor, float Padding, float MaxHeight, float Radius = -1.0f) const;
 	AController* GetSourceController() const;
 
 	UFUNCTION(NetMulticast, Unreliable)
@@ -111,6 +137,51 @@ protected:
 
 	UPROPERTY(Replicated)
 	int32 VisualSeed = 0;
+
+	/** One small fire of a fire ball's trail rather than where a ball burst. */
+	UPROPERTY(Replicated)
+	bool bFireTrail = false;
+
+	/** How big the burst looks (Detonate's Scale). */
+	UPROPERTY(Replicated)
+	float BurstScale = 1.0f;
+
+	/** Server, smoke: blinds opponents inside the cloud while it hangs. */
+	void TickSmoke();
+
+	// Smoke: a thick cloud of plumes; beam: a flash of pink light; snow: chunks of snow flying apart.
+	void BuildSmokePresentation(FRandomStream& Stream);
+	void BuildBeamPresentation();
+	void BuildSnowPresentation(FRandomStream& Stream);
+	void UpdateSnowChunks(float Age);
+	/**
+	 * Nova: a blinding flash, a dome of light racing out to the blast's edge, a pillar of light, shock waves along the
+	 * ground and explosions going off all over inside; the camera shakes for players nearby.
+	 */
+	void BuildNovaPresentation(FRandomStream& Stream);
+	/** Server: blows someone caught in a nova outward, off their feet. */
+	void ApplyNovaKnockback(AChaosImpactCharacter* Victim) const;
+	void UpdateNovaPresentation(float Age);
+	struct FNovaBurst
+	{
+		FVector Location = FVector::ZeroVector;
+		float At = 0.0f;
+		float Scale = 1.0f;
+		bool bPlayed = false;
+	};
+	TArray<FNovaBurst> NovaBursts;
+	struct FSnowChunk
+	{
+		TWeakObjectPtr<UStaticMeshComponent> Mesh;
+		FVector Start = FVector::ZeroVector;
+		FVector Velocity = FVector::ZeroVector;
+		FRotator Spin = FRotator::ZeroRotator;
+		float Size = 1.0f;
+	};
+	TArray<FSnowChunk> SnowChunks;
+
+	/** Server: the trail's first fire, whose NextBurnAt the whole trail shares. */
+	TWeakObjectPtr<AChaosImpactHazardZone> TrailLeader;
 
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -143,6 +214,7 @@ protected:
 
 	void BuildPresentation();
 	void BuildFirePresentation(FRandomStream& Stream);
+	void BuildFireTrailPresentation(FRandomStream& Stream);
 	void BuildIcePresentation(FRandomStream& Stream);
 	UNiagaraComponent* AddLoopingEffect(const TCHAR* SystemPath, const FVector& RelativeLocation);
 	void UpdatePresentation(float Age);

@@ -551,6 +551,8 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 		{
 			Pole = FVector(0.0f, -1.0f, -0.4f);
 		}
+		RaiseArm(Shoulder, FVector(Shoulder.X - BodyCentre.X, Shoulder.Y - BodyCentre.Y, 0.0f).GetSafeNormal(),
+			Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		FVector Mid;
 		FVector End;
 		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);
@@ -697,12 +699,16 @@ void UChaosImpactPuppetComponent::UpdateSkinnedPose()
 		const FVector SourceElbow = SourceLocation(Chain.SourceJoints[1]);
 		const FVector SourceHand = SourceLocation(Chain.SourceJoints[2]);
 		const float Exact = bRight ? RightHandExactWeight : 0.0f;
-		const FVector Target = FMath::Lerp(Shoulder + (SourceHand - SourceShoulder) * Chain.LengthRatio, SourceHand, Exact);
+		FVector Target = FMath::Lerp(Shoulder + (SourceHand - SourceShoulder) * Chain.LengthRatio, SourceHand, Exact);
 		FVector Pole = SourceElbow - (SourceShoulder + SourceHand) * 0.5f;
 		if (Pole.SizeSquared() < 1.0f)
 		{
 			Pole = FVector(0.0f, -1.0f, -0.4f);
 		}
+		const FLimbChain& Other = bRight ? ChainArmL : ChainArmR;
+		const FVector OtherShoulder = Skin->GetBoneTransformByName(Other.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
+		RaiseArm(Shoulder, FVector(Shoulder.X - OtherShoulder.X, Shoulder.Y - OtherShoulder.Y, 0.0f).GetSafeNormal(),
+			Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		FVector Mid;
 		FVector End;
 		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);
@@ -710,6 +716,23 @@ void UChaosImpactPuppetComponent::UpdateSkinnedPose()
 	};
 	PoseArm(ChainArmL, false);
 	PoseArm(ChainArmR, true);
+}
+
+void UChaosImpactPuppetComponent::RaiseArm(const FVector& Shoulder, const FVector& Outward, const float Reach,
+	FVector& InOutTarget, FVector& InOutPole) const
+{
+	if (ArmsRaisedWeight <= 0.0f)
+	{
+		return;
+	}
+	// Nearly straight up, a little out to the side, elbows bowed outward.
+	const FVector Raised = Shoulder + (FVector::UpVector + Outward * 0.3f).GetSafeNormal() * Reach * 0.96f;
+	InOutTarget = FMath::Lerp(InOutTarget, Raised, ArmsRaisedWeight);
+	InOutPole = FMath::Lerp(InOutPole.GetSafeNormal(), (Outward - FVector::UpVector * 0.2f).GetSafeNormal(), ArmsRaisedWeight);
+	if (InOutPole.SizeSquared() < 0.01f)
+	{
+		InOutPole = Outward;
+	}
 }
 
 void UChaosImpactPuppetComponent::PlaceHeldBalls()

@@ -55,10 +55,12 @@ namespace ChaosImpactMatch
 	}
 
 	/** CPU strengths offered on the rules screen, in CPULevel order. */
-	inline constexpr int32 CPULevelCount = 3;
+	inline constexpr int32 CPULevelCount = 4;
 	inline constexpr int32 CPULevelWeak = 0;
 	inline constexpr int32 CPULevelNormal = 1;
 	inline constexpr int32 CPULevelStrong = 2;
+	/** Plays the game out exactly: reads every ball's real flight, dodges all it can, throws only what cannot be escaped. */
+	inline constexpr int32 CPULevelStrongest = 3;
 
 	inline int32 SanitizeCPULevel(const int32 Level)
 	{
@@ -67,7 +69,7 @@ namespace ChaosImpactMatch
 
 	inline const TCHAR* GetCPULevelName(const int32 Level)
 	{
-		static const TCHAR* Names[] = {TEXT("よわい"), TEXT("ふつう"), TEXT("つよい")};
+		static const TCHAR* Names[] = {TEXT("よわい"), TEXT("ふつう"), TEXT("つよい"), TEXT("さいきょう")};
 		return Names[SanitizeCPULevel(Level)];
 	}
 

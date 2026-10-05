@@ -85,6 +85,48 @@ public:
 	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
 	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
 	void RequestBallSwap();
+	/** Snow: how far (0-1) the snowball in Slot has grown as its carrier walked; 0 for any other ball. */
+	float GetSnowGrowth(int32 Slot) const;
+	/** Cancels a throw being charged (right mouse button, ZL / L2); the ball stays in hand. */
+	void RequestCancelThrow();
+	/** Server: smoke got in this player's eyes; they can barely see for Seconds (the longer smoke wins). */
+	void ApplyBlind(float Seconds);
+	bool IsBlinded() const;
+	/** 0-1: how thick the smoke over this player's view is now (1, clearing over its last second). */
+	float GetBlindAmount() const;
+	/** How long a full charge of this ball takes (a nova's is long). */
+	float GetChargeSecondsFor(EChaosImpactBallType Type) const;
+	/** A throw being charged as every machine sees it (the owner and server exactly, others from replication). */
+	bool GetPresentedCharge(float& OutSeconds) const;
+	/** Charging a nova: rooted to the spot, arms up, the nova swelling over the head. On every machine. */
+	bool IsChargingNova() const;
+	/**
+	 * Where the ball in hand would come down if thrown now with this charge (its first contact with the stage),
+	 * and how wide an area it covers there (a nova: its blast; a snowball: its size). False when it would fly off.
+	 */
+	bool PredictThrowLanding(float ChargeAlpha, FVector& OutGround, float& OutRadius) const;
+	/** How a throw leaves: its speeds and flight, and whether it goes from over the head instead of the hand. */
+	void GetThrowFlight(float ChargeAlpha, EChaosImpactBallType Type, float Scale, float& OutHorizontalSpeed,
+		float& OutUpSpeed, EChaosImpactBallFlightMode& OutMode, bool& bOutOverhead) const;
+	/** Where a ball held up over the head sits, from the capsule's centre. */
+	FVector GetOverheadHoldOffset(EChaosImpactBallType Type, float Scale) const;
+	/** Seconds until this character could start a dash (0: now): stamina, the cooldown and a dash in progress. */
+	float GetDashReadyInSeconds() const;
+	/** Seconds left of the dash in progress (0 when not dashing). */
+	float GetDashRemainingSeconds() const;
+	/** Server: what last took health off this character (a ball, a burst's zone...), and when. */
+	AActor* GetLastDamageCauser() const { return LastDamageCauser.Get(); }
+	/**
+	 * A throw already released and about to leave the hand (the moment between the release and the ball flying): the
+	 * ball, which way and how fast it will go, and in how many seconds. False when there is none.
+	 */
+	bool GetPendingThrow(AChaosImpactBall*& OutBall, FVector& OutDirection, float& OutSpeed, float& OutUpSpeed, bool& bOutArc,
+		float& OutSecondsLeft) const;
+	double GetLastDamagedAt() const { return LastDamagedAt; }
+	/** Blown off the feet by a blast (applied on whichever machine moves this character). */
+	void ApplyBlastKnockback(const FVector& Velocity);
+	/** A blast nearby shakes this player's camera (Strength 0-1, fading over Seconds). */
+	void AddCameraShake(float Strength, float Seconds);
 	/** Name drawn above this character: CPUs are "CPU1", "CPU2"..., players use their room or local name. */
 	FString GetOverheadDisplayName() const;
 	/** 1-based number shown above a CPU character; 0 for human players. */
@@ -245,6 +287,9 @@ protected:
 	void ClientBallCountReset(int32 ServerBallCount, uint8 ServerBallTypes);
 	UFUNCTION(Server, Reliable)
 	void ServerSwapBalls();
+	/** A throw charge this player cancelled on their own screen. */
+	UFUNCTION(Server, Reliable)
+	void ServerCancelCharge();
 	/** Answer to a swap made on this player's screen; resolves it in the same ordered queue as pickups and throws. */
 	UFUNCTION(Client, Reliable)
 	void ClientSwapResolved(int32 ServerBallCount, uint8 ServerBallTypes);
@@ -288,6 +333,16 @@ protected:
 	/** Updates aim from the mouse cursor or right stick. */
 	void UpdateAim(float DeltaSeconds);
 	FVector ApplyControllerAimAssist(const FVector& RawDirection) const;
+	/**
+	 * A player charging a throw (mouse or pad): the aim is drawn toward the nearest opponent near where it
+	 * points, strongest as the charge starts and easing to a lighter hold.
+	 */
+	FVector ApplyChargeAimMagnet(const FVector& Direction) const;
+	/**
+	 * The opponent (or training target) nearest Direction within AngleDegrees, anywhere within reach: which way to throw
+	 * to meet them (where a runner will be when the ball gets there), and how closely Direction already points at them.
+	 */
+	bool FindAimAssistTarget(const FVector& Direction, float AngleDegrees, FVector& OutToward, float& OutDot) const;
 	bool FindMouseAimPoint(FVector& OutAimPoint) const;
 	void TryCreateChargeWidget();
 	bool SpawnBall(float ChargeAlpha);
@@ -374,6 +429,37 @@ protected:
 	EChaosImpactBallType PopCarriedBall();
 	void ClearCarriedBalls();
 	void SwapCarriedBalls();
+	/** Server: a knocked-out player's balls tumble out where they fell, loose for anyone to pick up. */
+	void DropCarriedBalls();
+
+	/** Snow: growth per carried slot (0-255 for 0-1), kept in step with the slots; the server grows it as its carrier walks. */
+	UPROPERTY(Replicated)
+	uint8 SnowGrowthRight = 0;
+
+	UPROPERTY(Replicated)
+	uint8 SnowGrowthLeft = 0;
+
+	float SnowGrowthExact[2] = {0.0f, 0.0f};
+	void SetSlotSnowGrowth(int32 Slot, float Growth);
+	/** Server: grows carried snowballs by the distance walked; every machine: the weight slows its carrier. */
+	void UpdateSnowball();
+	FVector LastSnowWalkLocation = FVector::ZeroVector;
+	bool bSnowWalkTracked = false;
+	/** Walking speed with no snowball to carry (from the Blueprint, read at BeginPlay). */
+	float BaseMaxWalkSpeed = 0.0f;
+	/** The right-hand snowball is held up over the head (a spirit bomb), grown, slowly turning. */
+	void UpdateSnowRollPresentation();
+	float SnowRollBob = 0.0f;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> SnowRollMesh;
+
+	FQuat SnowRollSpin = FQuat::Identity;
+	FVector LastSnowRollLocation = FVector::ZeroVector;
+
+	/** Server time until which smoke fills this player's view (0 when clear). */
+	UPROPERTY(Replicated)
+	double BlindedUntilServerTime = 0.0;
 	void ApplyHeldBallAppearance(UStaticMeshComponent* HandBall, EChaosImpactBallType Type);
 
 	UPROPERTY(Transient)
@@ -390,6 +476,94 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldWindMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldSmokeMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldBeamMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldSnowMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldNovaMaterial;
+
+	TWeakObjectPtr<AActor> LastDamageCauser;
+	double LastDamagedAt = -100.0;
+
+	/** Server time a throw started charging (-1: not charging), so other machines can show it. */
+	UPROPERTY(Replicated)
+	float ChargeStartServerTime = -1.0f;
+
+	UFUNCTION(Client, Reliable)
+	void ClientBlastKnockback(FVector_NetQuantize Velocity);
+
+
+	/**
+	 * Nova charge: the nova over the head swelling with the charge, energy streaming into it from all around, an
+	 * aura rising at the feet, and this player's camera drawn back to take it all in.
+	 */
+	void UpdateNovaChargePresentation(float DeltaSeconds);
+	ChaosImpactBallTypes::FNovaLook HeldNovaLook;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> NovaAnchor;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNiagaraComponent> NovaAura;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> NovaMoteMaterial;
+
+	struct FNovaMote
+	{
+		TWeakObjectPtr<UStaticMeshComponent> Mesh;
+		FVector Start = FVector::ZeroVector;
+		double StartedAt = 0.0;
+		float Seconds = 1.0f;
+		bool bFlying = false;
+	};
+	TArray<FNovaMote> NovaMotes;
+	bool bNovaChargeShown = false;
+	/** This player's camera drawn back, and moved toward where the nova will land, until a while after the throw. */
+	float NovaCameraExtra = 0.0f;
+	FVector NovaCameraLead = FVector::ZeroVector;
+	double NovaCameraHoldUntil = 0.0;
+	/** Where the nova being charged was last shown to land (valid while LandingPreviewRadius > 0). */
+	FVector LandingPreviewGround = FVector::ZeroVector;
+
+	/**
+	 * Where a nova being charged will land, drawn on the ground for everyone to see: its whole blast, to run from.
+	 */
+	void UpdateLandingPreview(float DeltaSeconds);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> LandingRing;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> LandingFill;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> LandingRingMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> LandingFillMaterial;
+
+	EChaosImpactBallType LandingPreviewType = EChaosImpactBallType::Normal;
+	float LandingPreviewRadius = 0.0f;
+
+	/** Both arms raised over the head (charging a nova, lifting a big snowball), 0-1. */
+	float ArmsRaisedWeight = 0.0f;
+	/** A big snowball being lifted from the ground up over the head, 0-1. */
+	float SnowLift = 0.0f;
+
+	void UpdateCameraShake();
+	float CameraShakeStrength = 0.0f;
+	float CameraShakeSeconds = 1.0f;
+	double CameraShakeStartedAt = -100.0;
+	bool bCameraShaking = false;
+	FVector CameraRestLocation = FVector::ZeroVector;
 
 	/** Ball shown on the right hand while at least one ball is carried. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
@@ -418,15 +592,31 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Movement", meta=(ClampMin="0.0", ClampMax="0.95"))
 	float MovementStickDeadZone = 0.28f;
 
-	/** Gentle target attraction keeps stick aiming quick without turning it into auto-aim. */
+	/** Target attraction for stick aiming: the opponent nearest the aim, anywhere on the stage, draws it toward them. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0", ClampMax="45.0"))
-	float ControllerAimAssistAngleDegrees = 18.0f;
+	float ControllerAimAssistAngleDegrees = 25.0f;
 
+	/** How far off an opponent can be and still draw the aim (the whole stage). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0"))
-	float ControllerAimAssistDistance = 2600.0f;
+	float ControllerAimAssistDistance = 6000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float ControllerAimAssistStrength = 0.38f;
+	float ControllerAimAssistStrength = 0.55f;
+
+	/** While charging a throw: opponents within this angle of the aim draw it toward them. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0", ClampMax="60.0"))
+	float ChargeAimMagnetAngleDegrees = 35.0f;
+
+	/** How far toward that opponent the aim is drawn as the charge starts (1 = right onto them)... */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float ChargeAimMagnetStartStrength = 0.8f;
+
+	/** ...and after ChargeAimMagnetEaseSeconds of charging, for the rest of it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float ChargeAimMagnetHoldStrength = 0.55f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.01"))
+	float ChargeAimMagnetEaseSeconds = 0.6f;
 
 	/** Length of the temporary aiming arrow drawn while charging. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Aim", meta=(ClampMin="0.0"))

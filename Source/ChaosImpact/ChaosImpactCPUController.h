@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "AIController.h"
+#include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCPUController.generated.h"
 
 class AChaosImpactBall;
@@ -28,8 +29,9 @@ public:
 	float Skill = 1.0f;
 
 	/**
-	 * The VS rules' CPU strength (ChaosImpactMatch::CPULevel*): よわい for beginners, ふつう, or つよい, the full CPU.
-	 * Sets Skill and the handicaps below; つよい has none.
+	 * The VS rules' CPU strength (ChaosImpactMatch::CPULevel*): よわい for beginners, ふつう, つよい (the full CPU), or
+	 * さいきょう, which plays the game out exactly (see the "さいきょう" section of the .cpp).
+	 * Sets Skill and the handicaps below; つよい and さいきょう have none.
 	 */
 	void SetDifficulty(int32 Level);
 	int32 GetDifficulty() const { return Difficulty; }
@@ -52,6 +54,28 @@ private:
 	{
 		TArray<FVector> Path;
 		float StepSeconds = 0.0f;
+		/** The ball's own size (a grown snowball or a nova is far bigger than a ball). */
+		float HitRadius = 24.0f;
+		/** Height either side that still counts (a beam is a tall shaft of light); 0: the ball's own. */
+		float HitHeight = 0.0f;
+		/** It bursts where its path ends, hitting everyone within this far (0: no blast). */
+		float BurstRadius = 0.0f;
+		bool bBursts = false;
+		/** A fire ball: the ground under its whole path burns once it has passed. */
+		bool bTrail = false;
+	};
+
+	/** さいきょう: a throw worked out with the real flight of the ball in hand, and whether it can be escaped at all. */
+	struct FSureShot
+	{
+		bool bValid = false;
+		/** Neither walking nor a dash in time gets the target out of it. */
+		bool bSure = false;
+		/** Walking cannot get the target out of it: only a dash can. */
+		bool bWalkProof = false;
+		FVector Direction = FVector::ForwardVector;
+		/** Seconds from releasing the throw until it hits. */
+		float ArrivalSeconds = 0.0f;
 	};
 
 	// Perception
@@ -143,6 +167,74 @@ private:
 	float TornadoEvadeUntil = 0.0f;
 	float StrafeSign = 1.0f;
 	bool bHoldingJump = false;
+
+	// ---- さいきょう
+	bool bPerfect = false;
+	/** Burning ground right now (fire, fire trails, a black hole's centre): x, y, z and reach. A dodge never runs through it. */
+	TArray<FVector4> ActiveBurns;
+	void CollectActiveBurns(const AChaosImpactCharacter* Self);
+	/** A ball's whole flight as it really goes: its own size, gravity, homing, rebounds and speed-ups, and its blast. */
+	void SimulateTypedFlight(const FVector& Start, FVector Velocity, EChaosImpactBallType Type, float Radius, bool bArc,
+		float GravityScale, float HorizonSeconds, float StepSeconds, const AActor* IgnoredA, const AActor* IgnoredB,
+		const AChaosImpactCharacter* HomingTarget, FBallThreat& Out) const;
+	static float GetBurstRadius(EChaosImpactBallType Type, float Scale);
+	/** Every ball that could still reach this CPU, seen at once, flown exactly. */
+	void CollectExactThreats(const AChaosImpactCharacter* Self, TArray<FBallThreat>& OutThreats) const;
+	/** Where the target will be after Seconds: it keeps its way (not through walls), a dash stops at its end, a black hole draws it in. */
+	FVector PredictTargetAt(const AChaosImpactCharacter* Target, float Seconds) const;
+	FSureShot PlanSureShot(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target, float ChargeAlpha) const;
+	void UpdateOffensePerfect(AChaosImpactCharacter* Self, AChaosImpactCharacter* Target, float Now);
+	void UpdateNovaPerfect(AChaosImpactCharacter* Self, AChaosImpactCharacter* Target, float Now);
+	/** Nobody armed is near enough to punish standing still for a nova's charge. */
+	bool IsNovaSafe(const AChaosImpactCharacter* Self) const;
+	/** How bad it is to stand there: burning ground, a black hole, smoke, a tornado, a nova coming down, the stage's edge. */
+	float GetHazardAt(const AChaosImpactCharacter* Self, const FVector& Point) const;
+	/** How exposed a spot is: armed opponents with a clear line to it, the nearer the worse. */
+	float GetExposureAt(const AChaosImpactCharacter* Self, const FVector& Point) const;
+	/** Armed opponents near enough, with a clear line, to throw at this CPU now. */
+	int32 CountArmedThreats(const AChaosImpactCharacter* Self) const;
+	/** The way closest to Desired that keeps out of hazards and corners. */
+	FVector ChooseSafeDirection(const AChaosImpactCharacter* Self, const FVector& Desired) const;
+	static float GetPickupValue(EChaosImpactBallType Type);
+
+	/**
+	 * さいきょう keeps learning through the match. Each opponent's habits: how quickly they start to dodge a throw,
+	 * how far off a look-ahead at their movement turns out, and how often they answer a throw with a dash. And every
+	 * hit that gets through to it: dodges keep a wider berth, dashes come earlier, blasts are given more room.
+	 */
+	struct FOpponentModel
+	{
+		float ReactionSeconds = 0.15f;
+		float PredictionError = 0.0f;
+		float DashAnswerRate = 0.5f;
+		int32 ThrowsSeen = 0;
+		double WatchSince = -1.0;
+		FVector WatchVelocity = FVector::ZeroVector;
+		/** Across the throw watched: stepping this way is getting out of its way. */
+		FVector WatchSide = FVector::ZeroVector;
+		TArray<TPair<double, FVector>, TInlineAllocator<8>> Predictions;
+		double NextPredictionAt = 0.0;
+	};
+	TMap<TWeakObjectPtr<AChaosImpactCharacter>, FOpponentModel> Models;
+	void UpdateLearning(const AChaosImpactCharacter* Self, float Now);
+	/** A throw just went at Target along Direction: watch how it answers. */
+	void NoteThrowAt(const AChaosImpactCharacter* Target, const FVector& Direction, float Now);
+	const FOpponentModel* FindModel(const AChaosImpactCharacter* Target) const;
+	float LastSelfHealth = -1.0f;
+	double LastLearnedHitAt = -100.0;
+	int32 HitsTaken = 0;
+	float LearnedDodgeMargin = 0.0f;
+	float LearnedDashLead = 0.0f;
+	float LearnedBurstMargin = 0.0f;
+	float LearnedHorizonBonus = 0.0f;
+	/** How far a dodge must keep from a ball beyond touching (wider once hits have got through). */
+	float GetSafeMargin() const;
+
+	/** Somewhere near to walk straight to with a clear shot at the target, when a wall is in the way. */
+	bool FindVantagePoint(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target, float Ideal, FVector& OutPoint) const;
+	bool HasClearShotFrom(const FVector& Point, const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target) const;
+	FVector VantagePoint = FVector::ZeroVector;
+	float VantageUntil = 0.0f;
 
 	// Handicaps for the weaker CPUs (SetDifficulty); at つよい they change nothing.
 	int32 Difficulty = 2;

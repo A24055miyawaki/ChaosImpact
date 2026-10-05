@@ -64,7 +64,9 @@ EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
 	{
 		{EChaosImpactBallType::Fire, FireBallChance}, {EChaosImpactBallType::Ice, IceBallChance},
 		{EChaosImpactBallType::Thunder, ThunderBallChance}, {EChaosImpactBallType::Black, BlackBallChance},
-		{EChaosImpactBallType::Wind, WindBallChance}
+		{EChaosImpactBallType::Wind, WindBallChance}, {EChaosImpactBallType::Smoke, SmokeBallChance},
+		{EChaosImpactBallType::Beam, BeamBallChance}, {EChaosImpactBallType::Snow, SnowBallChance},
+		{EChaosImpactBallType::Nova, NovaBallChance}
 	};
 	const float Roll = FMath::FRand();
 	float Threshold = 0.0f;

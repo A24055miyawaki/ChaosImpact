@@ -48,6 +48,8 @@ public:
 	void SetColourIndex(int32 Index);
 	/** How strictly the right hand goes to the source skeleton's own hand (1 while a thrown ball is still held). */
 	void SetRightHandExactWeight(float Weight) { RightHandExactWeight = FMath::Clamp(Weight, 0.0f, 1.0f); }
+	/** 0-1: both arms raised straight up over the head (holding something big up there), over whatever the pose is. */
+	void SetArmsRaised(float Weight) { ArmsRaisedWeight = FMath::Clamp(Weight, 0.0f, 1.0f); }
 	/** Shows or hides the five parts only; balls attached elsewhere keep their own visibility. */
 	void SetPartsVisible(bool bShow);
 	void SetPartsOverlayMaterial(UMaterialInterface* Material);
@@ -145,6 +147,9 @@ private:
 	/** Distance from the body's centre line a hanging hand keeps, so arms do not sink into the round body. */
 	float BodyRadius = 24.0f;
 	float RightHandExactWeight = 0.0f;
+	float ArmsRaisedWeight = 0.0f;
+	/** Where a raised arm's hand goes, reaching up and a little out from its shoulder, and which way its elbow points. */
+	void RaiseArm(const FVector& Shoulder, const FVector& Outward, float Reach, FVector& InOutTarget, FVector& InOutPole) const;
 	int32 ColourIndex = INDEX_NONE;
 	int32 CharacterIndex = 0;
 	/** A single rigid mesh with no limbs (see EChaosImpactModelKind). */

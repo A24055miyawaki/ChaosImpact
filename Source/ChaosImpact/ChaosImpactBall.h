@@ -85,6 +85,14 @@ public:
 
 	bool WasThrownBy(const APawn* Pawn) const;
 	APawn* GetThrowingPawn() const { return ThrowingPawn.Get(); }
+	/** How it is flying now (for predicting it): falling in an arc, or straight. */
+	bool IsArcFlight() const { return ActiveFlightMode == EChaosImpactBallFlightMode::Arc; }
+	/** How much of normal gravity pulls it down in an arc. */
+	float GetFlightGravityScale() const { return GetArcGravityScale(); }
+	/** Its collision radius (a grown snowball or a nova is far bigger than a ball). */
+	float GetHitRadius() const;
+	/** Server, in flight: a dash is untouchable, so it flies on through anyone dashing instead of stopping on them. */
+	void UpdateDashPassThrough();
 	FVector GetBallVelocity() const;
 	/** Server: a remote player's client saw this ball hit them. Returns true if it was plausible and applied. */
 	bool AcceptReportedHit(AChaosImpactCharacter* Victim, const FVector& HitLocation);
@@ -99,22 +107,32 @@ public:
 	void SetBallType(EChaosImpactBallType Type);
 	EChaosImpactBallType GetBallType() const { return BallType; }
 	bool IsSpecialBall() const { return BallType != EChaosImpactBallType::Normal; }
+	/** Set before FinishSpawning on a thrown snowball: its size (to a normal ball's), hit area included. */
+	void SetSnowScale(float Scale);
+	float GetSnowScale() const { return SnowScale; }
 	bool HasDetonated() const { return bDetonated; }
 
 	/** Server: a real ball in flight (not held, landed, burst or a throw preview). */
 	bool IsFlyingOnServer() const;
-	/** Server: a tornado turned this flying ball; it keeps flying along NewVelocity. False when not flying. */
-	bool DeflectByWind(const FVector& NewVelocity);
+	/**
+	 * Server: a tornado turned this flying ball; it keeps flying along NewVelocity. With NewThrower (the tornado's
+	 * owner) it becomes their throw, whoever threw it: it can now hit its first thrower. False when not flying.
+	 */
+	bool DeflectByWind(const FVector& NewVelocity, APawn* NewThrower = nullptr);
 	/** Server: a lying ball is swept up by a tornado; it cannot be collected until released. False if not lying. */
 	bool CatchInWind();
 	bool IsCarriedByWind() const { return bCarriedByWind; }
 	/** Server: where a swept-up ball is carried to this frame. */
 	void CarryInWind(const FVector& Location);
 	/**
-	 * Server: drops a swept-up ball at Ground, rolling away along FlingVelocity like a thrown ball that landed (and
-	 * disappearing like one if nobody collects it).
+	 * Server: lets a swept-up ball go at Ground. With NewThrower (the tornado's owner) it is flung out along
+	 * FlingVelocity's direction as their throw, a short arc that hurts whoever it meets before it lands like any
+	 * throw. Without one, or for a wind ball (which would start a tornado of its own), it just rolls away.
 	 */
-	void ReleaseFromWind(const FVector& Ground, const FVector& FlingVelocity);
+	void ReleaseFromWind(const FVector& Ground, const FVector& FlingVelocity, APawn* NewThrower = nullptr);
+	/** How hard a ball swept up by a tornado is flung out when it lets go. */
+	static constexpr float WindFlingSpeed = 1150.0f;
+	static constexpr float WindFlingUpSpeed = 420.0f;
 	/** A ball placed by a spawner that has since been carried off (its spawner puts out another). */
 	bool HasLeftSpawnPoint() const { return bLeftSpawnPoint; }
 	/** Tuning and tests: how long a landed ball lies around, and how much of that time it spends blinking. */
@@ -175,6 +193,47 @@ protected:
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastContactBurst(FVector_NetQuantize Location, FRotator Rotation);
 
+	/** A beam striking someone on its way through: a burst of its light where it hit, on every machine. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastBeamStrike(FVector_NetQuantize Location);
+
+	/** Snowball size (1 = a normal ball); sizes its mesh and collision on every machine. */
+	UPROPERTY(ReplicatedUsing=OnRep_SnowScale)
+	float SnowScale = 1.0f;
+
+	UFUNCTION()
+	void OnRep_SnowScale();
+	void ApplySnowScale();
+
+	/**
+	 * Beam in flight: whoever its line passes this frame is struck, each once (the server's own copies of players
+	 * and CPUs; remote players judge their own screens). It never stops for them or for walls.
+	 */
+	void UpdateBeamHits();
+	/** A character (or target) of this height and reach touches the beam's path From-To. */
+	static bool BeamTouches(const FVector& From, const FVector& To, const FVector& Center, float Radius, float HalfHeight,
+		FVector& OutPoint);
+	FVector BeamLastLocation = FVector::ZeroVector;
+	TSet<TWeakObjectPtr<AActor>> BeamStruck;
+	/** Beam look: where the shaft of light starts, and the shaft itself (a bright core in a wider glow). */
+	FVector BeamShaftStart = FVector::ZeroVector;
+	FVector BeamShaftHead = FVector::ZeroVector;
+	bool bBeamShaftStarted = false;
+	float BeamShaftFade = 0.0f;
+	void UpdateBeamShaft(float DeltaSeconds, bool bFlying);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> BeamCore;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> BeamGlow;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BeamCoreMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BeamGlowMaterial;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
 	TObjectPtr<USphereComponent> CollisionSphere;
 
@@ -229,6 +288,19 @@ protected:
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	int32 ReflectionCount = 0;
+
+	/** The thrower's own ball never hits them or their teammates; remote players judge their own hits (server). */
+	void ApplyThrowerIgnores();
+	/** Server: this ball is NewThrower's throw from now on (a tornado took it over). */
+	void AdoptThrower(APawn* NewThrower);
+
+	/** Normal ball in flight: turns a little toward the nearest opponent ahead of it (ChaosImpactBallTypes::NormalHoming*). */
+	void UpdateHoming(float DeltaSeconds);
+	/** Server, fire ball in flight: drops a small fire on the ground every FireTrailSpacing of its path. */
+	void UpdateFireTrail();
+	FVector LastFireTrailLocation = FVector::ZeroVector;
+	int32 FireTrailCount = 0;
+	TWeakObjectPtr<class AChaosImpactHazardZone> FireTrailLeader;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Ball")
 	EChaosImpactBallFlightMode ActiveFlightMode = EChaosImpactBallFlightMode::Arc;
@@ -338,6 +410,14 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> TypeGlowMaterial;
+
+	/** Nova: its layers of light, sized with the ball. */
+	ChaosImpactBallTypes::FNovaLook NovaLook;
+	/** Nova: falls this much slower than other balls thrown in an arc. */
+	float GetArcGravityScale() const
+	{
+		return BallType == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaGravityScale : 1.0f;
+	}
 
 	/** Thunder: arcs of lightning jumping off the ball, rebuilt every few frames. */
 	UPROPERTY(Transient)

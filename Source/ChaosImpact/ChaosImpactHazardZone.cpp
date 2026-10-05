@@ -1334,17 +1334,17 @@ void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
 void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 {
 	const float Blast = GetRadius();
-	const float BallRadius = 24.0f * BurstScale;
+	const float NovaCoreRadius = 24.0f * BurstScale;
 	const FVector Base = GetActorLocation();
 	const FVector Center = Base + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 60.0f));
 	// A blinding flash the size of the nova, swelling and gone in half a second.
 	const float FlashT = Age / 0.5f;
-	const float FlashSize = FlashT < 1.0f ? 2.0f * (BallRadius * 1.1f + Blast * 0.45f * HazardEaseOut(FlashT)) : 0.0f;
+	const float FlashSize = FlashT < 1.0f ? 2.0f * (NovaCoreRadius * 1.1f + Blast * 0.45f * HazardEaseOut(FlashT)) : 0.0f;
 	PlaceZoneShape(FlashSphere, Center, FlashSize, FlashSize, FRotator::ZeroRotator,
 		1.6f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
 	// The white-hot heart shrinks away.
 	const float CoreT = FMath::Clamp(Age / 0.8f, 0.0f, 1.0f);
-	const float CoreSize = CoreT < 1.0f ? 2.0f * BallRadius * 0.7f * (1.0f - 0.7f * CoreT) : 0.0f;
+	const float CoreSize = CoreT < 1.0f ? 2.0f * NovaCoreRadius * 0.7f * (1.0f - 0.7f * CoreT) : 0.0f;
 	PlaceZoneShape(CoreSphere, Center, CoreSize, CoreSize, FRotator::ZeroRotator, 5.0f * (1.0f - CoreT));
 	// A dome of light races out to the edge of the blast, stands trembling, then thins away.
 	const float Grow = HazardEaseOut(Age / 0.45f);
@@ -1397,7 +1397,7 @@ void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 			}
 		}
 	}
-	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, BallRadius + 250.0f));
+	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, NovaCoreRadius + 250.0f));
 	ZoneLight->SetIntensity(400000.0f * FMath::Exp(-Age * 3.0f) + 30000.0f * DomeFade);
 }
 

@@ -38,6 +38,15 @@ AChaosImpactCPUController::AChaosImpactCPUController()
 void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+	if (AChaosImpactCharacter* Placed = Cast<AChaosImpactCharacter>(InPawn); Placed && !bMatchCPU)
+	{
+		// A character placed in a level: its own settings say how strong, and placed enemies stand together.
+		SetDifficulty(static_cast<int32>(Placed->CPULevel));
+		if (Placed->SoloTeam < 0)
+		{
+			Placed->SoloTeam = AChaosImpactCharacter::SoloEnemyTeam;
+		}
+	}
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	NextDecisionAt = Now + 0.2f;
 	NextThrowAt = Now + 0.9f * ThrowDelayScale;

@@ -36,6 +36,13 @@ public:
 	void SetDifficulty(int32 Level);
 	int32 GetDifficulty() const { return Difficulty; }
 
+	/**
+	 * Spawned by the game mode for a VS match or training (call before possessing). Otherwise it took over a character
+	 * placed in a level (a solo mode enemy) and plays as that character's own settings say (CPULevel, SoloTeam).
+	 */
+	void MarkAsMatchCPU() { bMatchCPU = true; }
+	bool IsMatchCPU() const { return bMatchCPU; }
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 
@@ -235,6 +242,8 @@ private:
 	bool HasClearShotFrom(const FVector& Point, const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target) const;
 	FVector VantagePoint = FVector::ZeroVector;
 	float VantageUntil = 0.0f;
+
+	bool bMatchCPU = false;
 
 	// Handicaps for the weaker CPUs (SetDifficulty); at つよい they change nothing.
 	int32 Difficulty = 2;

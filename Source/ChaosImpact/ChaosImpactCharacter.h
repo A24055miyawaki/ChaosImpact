@@ -7,6 +7,7 @@
 #include "Engine/NetSerialization.h"
 #include "Logging/LogMacros.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactCharacter.generated.h"
 
 class USpringArmComponent;
@@ -105,6 +106,10 @@ public:
 	 * and how wide an area it covers there (a nova: its blast; a snowball: its size). False when it would fly off.
 	 */
 	bool PredictThrowLanding(float ChargeAlpha, FVector& OutGround, float& OutRadius) const;
+	/** Selects a nova's ground target. The point is clamped and projected onto the playable stage. */
+	bool SetNovaTargetPoint(const FVector& WorldPoint);
+	bool HasNovaTargetPoint() const { return bNovaTargetValid; }
+	FVector GetNovaTargetPoint() const { return FVector(NovaTargetLocation); }
 	/** How a throw leaves: its speeds and flight, and whether it goes from over the head instead of the hand. */
 	void GetThrowFlight(float ChargeAlpha, EChaosImpactBallType Type, float Scale, float& OutHorizontalSpeed,
 		float& OutUpSpeed, EChaosImpactBallFlightMode& OutMode, bool& bOutOverhead) const;
@@ -132,6 +137,33 @@ public:
 	/** 1-based number shown above a CPU character; 0 for human players. */
 	int32 GetCPUNumber() const { return CPUNumber; }
 	void SetCPUNumber(const int32 Number) { CPUNumber = static_cast<uint8>(FMath::Clamp(Number, 0, 255)); }
+
+	// ---- Placed in a level (solo mode enemies). A character placed in a level plays as a CPU by itself
+	// (AIControllerClass is the VS mode's CPU); these set how. VS and training CPUs, spawned by the game mode, ignore them.
+
+	/** How strong it plays as a CPU. Changing it later (Set CPU Level) takes effect at once. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetCPULevel, Category="Chaos Impact|Solo Enemy",
+		meta=(ExposeOnSpawn="true", DisplayName="CPU Level (強さ)"))
+	EChaosImpactCPULevel CPULevel = EChaosImpactCPULevel::Strong;
+
+	/**
+	 * Outside VS matches, characters with the same number are on one side: they never target or hurt each other.
+	 * -1 (the default): placed CPUs all join side 1 (so enemies never fight each other) and players are on no side.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Enemy",
+		meta=(ExposeOnSpawn="true", ClampMin="-1", DisplayName="Solo Team (チーム番号)"))
+	int32 SoloTeam = -1;
+
+	/** Off: when knocked out this CPU is gone for good (once its knockout has played) instead of coming back. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Enemy",
+		meta=(ExposeOnSpawn="true", DisplayName="Respawn After Knockout (倒されたら復活)"))
+	bool bRespawnAfterElimination = true;
+
+	/** The side placed CPUs join when SoloTeam is left at -1. */
+	static constexpr int32 SoloEnemyTeam = 1;
+
+	UFUNCTION(BlueprintSetter, Category="Chaos Impact|Solo Enemy")
+	void SetCPULevel(EChaosImpactCPULevel Level);
 	/** Server: an ice ball landed next to this player; they cannot move, dash or throw for Seconds. */
 	void ApplyIceFreeze(float Seconds);
 	bool IsIceFrozen() const;
@@ -256,11 +288,15 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerStartCharge();
 	UFUNCTION(Server, Reliable)
-	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation);
+	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
+		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget);
 	UFUNCTION(Server, Reliable)
 	void ServerStartDash(FVector_NetQuantizeNormal Direction);
 	UFUNCTION(Server, Unreliable)
 	void ServerUpdateAim(FVector_NetQuantizeNormal Direction);
+	/** The owning screen's free nova cursor, shown to every machine as the warning area. */
+	UFUNCTION(Server, Unreliable)
+	void ServerUpdateNovaTarget(FVector_NetQuantize Target);
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayThrowAnimation();
 	UFUNCTION(Client, Reliable)
@@ -355,6 +391,8 @@ protected:
 	void RestoreLocomotionAnimation();
 	void BeginRespawnCountdown();
 	void ResetAfterElimination();
+	/** A knocked-out CPU with bRespawnAfterElimination off leaves the game, with its controller. */
+	void RemoveAfterElimination();
 	/** Server, every few ticks: a character that has left the stage (a bug, a glitch through a wall) is knocked out. */
 	void CheckLeftStage();
 	void StartEliminationEffect();
@@ -445,6 +483,9 @@ protected:
 	void UpdateSnowball();
 	FVector LastSnowWalkLocation = FVector::ZeroVector;
 	bool bSnowWalkTracked = false;
+	/** Last real travel direction used to detect quick left/right or forward/back lever-mashing. */
+	FVector LastSnowMashDirection = FVector::ZeroVector;
+	double NextSnowMashGrowthAt = 0.0;
 	/** Walking speed with no snowball to carry (from the Blueprint, read at BeginPlay). */
 	float BaseMaxWalkSpeed = 0.0f;
 	/** The right-hand snowball is held up over the head (a spirit bomb), grown, slowly turning. */
@@ -505,6 +546,12 @@ protected:
 	 * aura rising at the feet, and this player's camera drawn back to take it all in.
 	 */
 	void UpdateNovaChargePresentation(float DeltaSeconds);
+	/** Local-only free cursor and whole-stage camera target while a nova is charging. */
+	void UpdateNovaTargeting(float DeltaSeconds);
+	bool ResolveNovaTargetPoint(const FVector& Candidate, FVector& OutTarget) const;
+	void GetNovaStageView(FVector& OutCenter, FVector2D& OutHalfExtent) const;
+	bool CalculateNovaLaunchToTarget(const FVector& LaunchLocation, const FVector& GroundTarget, float BallRadius,
+		FVector& OutDirection, float& OutHorizontalSpeed, float& OutUpSpeed) const;
 	ChaosImpactBallTypes::FNovaLook HeldNovaLook;
 
 	UPROPERTY(Transient)
@@ -526,10 +573,32 @@ protected:
 	};
 	TArray<FNovaMote> NovaMotes;
 	bool bNovaChargeShown = false;
+	/** Exact ground point selected by a human nova thrower. Replicated so every screen sees the same warning. */
+	UPROPERTY(Replicated)
+	FVector_NetQuantize NovaTargetLocation = FVector::ZeroVector;
+
+	UPROPERTY(Replicated)
+	bool bNovaTargetValid = false;
+
+	double NextNovaTargetSendAt = 0.0;
 	/** This player's camera drawn back, and moved toward where the nova will land, until a while after the throw. */
 	float NovaCameraExtra = 0.0f;
 	FVector NovaCameraLead = FVector::ZeroVector;
 	double NovaCameraHoldUntil = 0.0;
+	FRotator SavedCameraBoomRotation = FRotator(-60.0f, 0.0f, 0.0f);
+
+	/** Whole-stage nova targeting camera and right-stick cursor tuning. */
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Nova Targeting", meta=(ClampMin="1.0"))
+	float NovaOverviewHeightScale = 1.75f;
+
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Nova Targeting", meta=(ClampMin="0.0"))
+	float NovaOverviewPadding = 350.0f;
+
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Nova Targeting", meta=(ClampMin="100.0"))
+	float NovaTargetCursorSpeed = 1500.0f;
+
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Nova Targeting", meta=(ClampMin="0.1"))
+	float NovaOverviewBlendSpeed = 5.0f;
 	/** Where the nova being charged was last shown to land (valid while LandingPreviewRadius > 0). */
 	FVector LandingPreviewGround = FVector::ZeroVector;
 
@@ -883,6 +952,8 @@ protected:
 	float PendingThrowSpeed = 0.0f;
 	float PendingThrowArcUpwardSpeed = 0.0f;
 	EChaosImpactBallFlightMode PendingThrowFlightMode;
+	FVector PendingNovaTarget = FVector::ZeroVector;
+	bool bPendingNovaTarget = false;
 	FTimerHandle ThrowReleaseTimer;
 	FTimerHandle ThrowAnimationResetTimer;
 	FTimerHandle EliminationCameraHoldTimer;

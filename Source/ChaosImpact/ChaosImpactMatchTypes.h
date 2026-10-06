@@ -4,6 +4,16 @@
 #include "Engine/EngineBaseTypes.h"
 #include "ChaosImpactMatchTypes.generated.h"
 
+/** CPU strength as Blueprints and the details panel show it (same order as ChaosImpactMatch::CPULevel*). */
+UENUM(BlueprintType)
+enum class EChaosImpactCPULevel : uint8
+{
+	Weak UMETA(DisplayName="よわい"),
+	Normal UMETA(DisplayName="ふつう"),
+	Strong UMETA(DisplayName="つよい"),
+	Strongest UMETA(DisplayName="さいきょう")
+};
+
 /** Rules chosen before a VS match. Replicated on the game state, so every machine runs the same match. */
 USTRUCT(BlueprintType)
 struct FChaosImpactMatchRules

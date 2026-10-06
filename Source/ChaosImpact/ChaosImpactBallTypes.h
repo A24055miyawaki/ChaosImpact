@@ -77,6 +77,11 @@ namespace ChaosImpactBallTypes
 	constexpr float SnowMinScale = 0.6f;
 	constexpr float SnowMaxScale = 6.0f;
 	constexpr float SnowGrowDistance = 3600.0f;
+	/** Rapid changes of travel direction grow carried snowballs faster, like waggling the movement control. */
+	constexpr float SnowMashGrowthPerTurn = 0.045f;
+	constexpr float SnowMashMinTravel = 3.0f;
+	constexpr float SnowMashTurnDot = -0.15f;
+	constexpr float SnowMashCooldownSeconds = 0.08f;
 	/**
 	 * Up to this size a snowball is carried in the hand and thrown like any ball; bigger, it is held up over the
 	 * head and hurled from there in a falling arc (this fast upward at release).
@@ -97,7 +102,7 @@ namespace ChaosImpactBallTypes
 	 */
 	constexpr float NovaChargeSeconds = 4.0f;
 	constexpr float NovaMinScale = 1.2f;
-	constexpr float NovaMaxScale = 22.0f;
+	constexpr float NovaMaxScale = 33.0f;
 	/** Hurled slowly from over the head, a little upward, falling gently (a fraction of normal gravity). */
 	constexpr float NovaThrowSpeed = 1250.0f;
 	constexpr float NovaThrowUpSpeed = 220.0f;
@@ -108,10 +113,10 @@ namespace ChaosImpactBallTypes
 	{
 		return FMath::Lerp(NovaMinScale, NovaMaxScale, FMath::Pow(FMath::Clamp(Charge, 0.0f, 1.0f), 1.6f));
 	}
-	/** How far the blast reaches for a ball this big (about 12 m at its biggest). */
+	/** How far the blast reaches for a ball this big (about 17 m at its biggest). */
 	inline float GetNovaBlastRadius(const float Scale) { return 180.0f + 46.0f * Scale; }
-	/** Nearly fully charged, its blast hits twice as hard. */
-	inline float GetNovaDamage(const float Scale) { return Scale >= NovaMaxScale * 0.9f ? 2.0f : 1.0f; }
+	/** Anyone caught by a nova is knocked out regardless of their remaining health. */
+	inline float GetNovaDamage(const float /*Scale*/) { return 1000000.0f; }
 
 	/** A fire ball's flight leaves a line of small fires on the ground, this far apart, at most this many. */
 	constexpr float FireTrailSpacing = 130.0f;

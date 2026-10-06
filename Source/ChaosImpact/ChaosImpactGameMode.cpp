@@ -1638,10 +1638,14 @@ void AChaosImpactGameMode::SetTrainingCPUCountLive(const int32 DesiredCPUCount)
 void AChaosImpactGameMode::SyncTrainingCPUCount(
 	const int32 DesiredCPUCount, const FVector& Anchor, const FRotator& Facing)
 {
+	// Only the CPUs this mode spawned: enemies placed in the level are not training CPUs.
 	TArray<AChaosImpactCPUController*> CPUControllers;
 	for (TActorIterator<AChaosImpactCPUController> It(GetWorld()); It; ++It)
 	{
-		CPUControllers.Add(*It);
+		if (It->IsMatchCPU())
+		{
+			CPUControllers.Add(*It);
+		}
 	}
 	while (CPUControllers.Num() > DesiredCPUCount)
 	{
@@ -1677,6 +1681,7 @@ void AChaosImpactGameMode::SpawnTrainingCPU(
 	{
 		return;
 	}
+	CPUController->MarkAsMatchCPU();
 
 	const FVector CPUOffsets[] =
 	{

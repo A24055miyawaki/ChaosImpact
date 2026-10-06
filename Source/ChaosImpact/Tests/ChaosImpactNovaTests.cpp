@@ -58,11 +58,12 @@ namespace
 			{
 				return Waited(Now, TEXT("No training player was created."));
 			}
-			// The mouse aims: keep it on a point ahead along the open way.
+			// Keep the ordinary aim facing the open way. During a nova charge, live play moves its cursor with WASD/left stick.
 			if (Stage > 0)
 			{
 				FVector2D Screen;
-				if (PC->ProjectWorldLocationToScreen(Player->GetActorLocation() + Toward * 450.0f, Screen))
+				const float AimDistance = Player->IsChargingNova() ? 1800.0f : 450.0f;
+				if (PC->ProjectWorldLocationToScreen(Player->GetActorLocation() + Toward * AimDistance, Screen))
 				{
 					PC->SetMouseLocation(FMath::RoundToInt(Screen.X), FMath::RoundToInt(Screen.Y));
 				}
@@ -189,6 +190,11 @@ namespace
 				if (Shots == 0)
 				{
 					Test->TestEqual(TEXT("Charging a nova roots its thrower"), Player->GetCharacterMovement()->MaxWalkSpeed, 0.0f);
+					Test->TestTrue(TEXT("Nova charge uses a freely selected stage point"), Player->HasNovaTargetPoint()
+						&& FVector::Dist2D(Player->GetNovaTargetPoint(), Player->GetActorLocation()) > 1200.0f);
+					Test->TestTrue(TEXT("Nova charge shows the whole-stage overview"),
+						Player->GetCameraBoom()->TargetArmLength > NormalArm + 1000.0f
+						&& Player->GetCameraBoom()->GetComponentRotation().Pitch < -80.0f);
 					UE_LOG(LogTemp, Display, TEXT("NOVA charge %.2f after %.1fs"), Player->GetThrowChargeAlpha(), Charged);
 					Test->TestTrue(TEXT("A nova's charge is long"), Player->GetThrowChargeAlpha() < 0.5f);
 					CaptureNova(TEXT("NV-01-Charging.png"));
@@ -269,7 +275,7 @@ namespace
 					FVector::Dist2D(Blast->GetActorLocation(), PredictedLanding), CPUHealth, CPU->GetHealth());
 				// Right where it was shown, even with the CPU under its way.
 				Test->TestTrue(TEXT("It lands where it was shown to"), FVector::Dist2D(Blast->GetActorLocation(), PredictedLanding) < 40.0f);
-				Test->TestTrue(TEXT("A full nova's blast hits hard"), CPU->IsEliminated() || CPU->GetHealth() <= CPUHealth - 2.0f);
+				Test->TestTrue(TEXT("A nova always knocks out a player it catches"), CPU->IsEliminated());
 				Stage = 5;
 				Shots = 0;
 				NextAt = Now + 0.12;

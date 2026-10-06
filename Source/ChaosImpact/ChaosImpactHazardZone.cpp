@@ -861,7 +861,7 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 		}
 		else if (ZoneType == EChaosImpactBallType::Nova)
 		{
-			// Everyone in reach alike (it has no direct hit of its own), and blown outward off their feet.
+			// Everyone in reach is knocked out regardless of HP; scoring still sees one hit plus one KO bonus.
 			UGameplayStatics::ApplyDamage(Victim, ChaosImpactBallTypes::GetNovaDamage(BurstScale), SourceController, this, nullptr);
 			ApplyNovaKnockback(Cast<AChaosImpactCharacter>(Victim));
 		}

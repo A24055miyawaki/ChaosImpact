@@ -120,7 +120,10 @@ public:
 	bool IsTeamBattle() const { return bVersusMatch && Rules.IsTeamBattle(); }
 	/** Team select, the opening until GO, and the results: characters must not act. */
 	bool IsMatchInputLocked() const;
-	/** True when both actors are pawns of the same team in a team battle. */
+	/**
+	 * True when both actors are pawns of the same team in a team battle, or, outside VS matches (solo mode), characters
+	 * with the same SoloTeam.
+	 */
 	static bool AreTeammates(const UWorld* World, const AActor* A, const AActor* B);
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")

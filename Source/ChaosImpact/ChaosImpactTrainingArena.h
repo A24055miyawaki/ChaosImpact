@@ -24,6 +24,10 @@ public:
 	AChaosImpactTrainingArena();
 	virtual void OnConstruction(const FTransform& Transform) override;
 
+	/** Playable floor around this actor. Used by the nova overview and target cursor. */
+	FVector2D GetPlayableHalfExtent() const { return FVector2D(3800.0f, 2600.0f); }
+	FVector GetCenter() const { return GetActorLocation(); }
+
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Training Arena")
 	int32 GetWallCount() const { return WallBlocks.Num(); }
 

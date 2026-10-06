@@ -1,4 +1,5 @@
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactCharacter.h"
 
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -197,8 +198,19 @@ bool AChaosImpactGameState::IsMatchInputLocked() const
 
 bool AChaosImpactGameState::AreTeammates(const UWorld* World, const AActor* A, const AActor* B)
 {
+	if (!A || !B || A == B)
+	{
+		return false;
+	}
 	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
-	if (!Match || !Match->IsTeamBattle() || !A || !B || A == B)
+	if (!Match || !Match->bVersusMatch)
+	{
+		// Solo mode and training: sides given on the characters themselves (placed enemies are all on one).
+		const AChaosImpactCharacter* CharacterA = Cast<AChaosImpactCharacter>(A);
+		const AChaosImpactCharacter* CharacterB = Cast<AChaosImpactCharacter>(B);
+		return CharacterA && CharacterB && CharacterA->SoloTeam >= 0 && CharacterA->SoloTeam == CharacterB->SoloTeam;
+	}
+	if (!Match->IsTeamBattle())
 	{
 		return false;
 	}

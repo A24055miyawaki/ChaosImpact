@@ -21,6 +21,7 @@
 #include "GameFramework/PlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpactTrainingArena.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
@@ -92,6 +93,9 @@ namespace
 AChaosImpactCharacter::AChaosImpactCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	// Placed in a level, a character plays as the VS mode's CPU by itself (AutoPossessAI stays PlacedInWorld: characters
+	// the game spawns, players and VS/training CPUs, are not taken over).
+	AIControllerClass = AChaosImpactCPUController::StaticClass();
 
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
@@ -261,6 +265,7 @@ void AChaosImpactCharacter::BeginPlay()
 		// Preserve Blueprint/editor camera tuning as the state restored after the menu.
 		SavedCameraArmLength = CameraBoom->TargetArmLength;
 		SavedCameraSocketOffset = CameraBoom->SocketOffset;
+		SavedCameraBoomRotation = CameraBoom->GetComponentRotation();
 	}
 
 	Health = MaxHealth;
@@ -370,15 +375,31 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	}
 	if (CameraBoom)
 	{
+		const bool bNovaOverview = IsLocallyControlled() && IsChargingNova() && !bTrainingMenuCameraActive;
+		FVector NovaStageCenter = GetActorLocation();
+		FVector2D NovaStageHalfExtent(3000.0f, 3000.0f);
+		if (bNovaOverview)
+		{
+			GetNovaStageView(NovaStageCenter, NovaStageHalfExtent);
+		}
+		const float NovaOverviewArm = FMath::Max(NovaStageHalfExtent.X, NovaStageHalfExtent.Y)
+			* NovaOverviewHeightScale + NovaOverviewPadding;
 		const float DesiredArmLength = bTrainingMenuCameraActive
-			? TrainingMenuCameraArmLength : SavedCameraArmLength + NovaCameraExtra;
+			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : SavedCameraArmLength + NovaCameraExtra;
 		const FVector DesiredSocketOffset = bTrainingMenuCameraActive
 			? TrainingMenuCameraSocketOffset : SavedCameraSocketOffset;
+		const FRotator DesiredBoomRotation = bNovaOverview
+			? FRotator(-90.0f, SavedCameraBoomRotation.Yaw, 0.0f) : SavedCameraBoomRotation;
+		const FVector DesiredTargetOffset = bTrainingMenuCameraActive
+			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : NovaCameraLead;
 		CameraBoom->TargetArmLength = FMath::FInterpTo(CameraBoom->TargetArmLength,
-			DesiredArmLength, DeltaSeconds, TrainingMenuCameraBlendSpeed);
+			DesiredArmLength, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed);
 		CameraBoom->SocketOffset = FMath::VInterpTo(CameraBoom->SocketOffset,
 			DesiredSocketOffset, DeltaSeconds, TrainingMenuCameraBlendSpeed);
-		CameraBoom->TargetOffset = bTrainingMenuCameraActive ? FVector::ZeroVector : NovaCameraLead;
+		CameraBoom->TargetOffset = FMath::VInterpTo(CameraBoom->TargetOffset,
+			DesiredTargetOffset, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed);
+		CameraBoom->SetWorldRotation(FMath::RInterpTo(CameraBoom->GetComponentRotation(),
+			DesiredBoomRotation, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed));
 	}
 	if (bEliminationEffectActive)
 	{
@@ -430,6 +451,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		if (!bTrainingMenuFrozen)
 		{
 			UpdateAim(DeltaSeconds);
+			UpdateNovaTargeting(DeltaSeconds);
 		}
 
 		if (bIsDashing && !bTrainingMenuFrozen)
@@ -722,6 +744,12 @@ void AChaosImpactCharacter::StartChargingThrow()
 	{
 		ServerStartCharge();
 	}
+	if (GetCarriedBallType(0) == EChaosImpactBallType::Nova && IsLocallyControlled())
+	{
+		bNovaTargetValid = false;
+		NextNovaTargetSendAt = 0.0;
+		UpdateNovaTargeting(0.0f);
+	}
 	OnThrowChargeChanged(0.0f);
 	if (ChargeWidget)
 	{
@@ -822,6 +850,7 @@ void AChaosImpactCharacter::PerformDash(const FVector& Direction)
 	if (bIsChargingThrow)
 	{
 		bIsChargingThrow = false;
+		bNovaTargetValid = false;
 		OnThrowChargeChanged(0.0f);
 		if (ChargeWidget)
 		{
@@ -987,7 +1016,9 @@ void AChaosImpactCharacter::ReleaseChargedThrow()
 
 void AChaosImpactCharacter::ReleaseThrowNow(const float ChargeAlpha)
 {
-	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation());
+	const bool bThrowingTargetedNova = CarriedBallCount > 0
+		&& GetCarriedBallType(0) == EChaosImpactBallType::Nova && bNovaTargetValid;
+	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation(), NovaTargetLocation, bThrowingTargetedNova);
 	PendingBallActions.Add(-1);
 	// Throw on this screen immediately with a cosmetic ball. The server trims its release delay
 	// by this player's ping, and its ball takes over from the cosmetic one when it arrives.
@@ -1003,7 +1034,7 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		return;
 	}
 	FVector DesiredDirection = AimDirection;
-	if (IsLocallyControlled() && !bDevAutoInput)
+	if (IsLocallyControlled() && !bDevAutoInput && !IsChargingNova())
 	{
 		// Read the right stick itself every frame. The look action's trigger state can report the stick as
 		// released in parts of its range, and one round dead zone here treats every direction the same.
@@ -1023,6 +1054,11 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	{
 		// Development auto-play sets AimDirection itself.
 	}
+	else if (IsChargingNova() && bNovaTargetValid)
+	{
+		// Nova targeting belongs to movement input; mouse/right-stick aim must not pull it away.
+		DesiredDirection = (FVector(NovaTargetLocation) - GetActorLocation()).GetSafeNormal2D();
+	}
 	else if (!StickAimInput.IsNearlyZero())
 	{
 		const FRotator CameraYaw(0.0f, CameraBoom->GetComponentRotation().Yaw, 0.0f);
@@ -1041,7 +1077,8 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 			DesiredDirection = (MouseAimPoint - GetActorLocation()).GetSafeNormal2D();
 		}
 	}
-	if (bIsChargingThrow && IsLocallyControlled() && !bDevAutoInput && Cast<APlayerController>(GetController()))
+	if (bIsChargingThrow && !IsChargingNova() && IsLocallyControlled() && !bDevAutoInput
+		&& Cast<APlayerController>(GetController()))
 	{
 		DesiredDirection = ApplyChargeAimMagnet(DesiredDirection);
 	}
@@ -1206,6 +1243,178 @@ bool AChaosImpactCharacter::FindMouseAimPoint(FVector& OutAimPoint) const
 	return true;
 }
 
+void AChaosImpactCharacter::GetNovaStageView(FVector& OutCenter, FVector2D& OutHalfExtent) const
+{
+	OutCenter = FVector(0.0f, 0.0f, GetActorLocation().Z);
+	OutHalfExtent = FVector2D(3800.0f, 2600.0f);
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+		Match && Match->bVersusMatch)
+	{
+		OutCenter = FVector(Match->StageCenter);
+		const float HalfExtent = FMath::Max(Match->StageHalfExtent, 500.0f);
+		OutHalfExtent = FVector2D(HalfExtent, HalfExtent);
+		return;
+	}
+
+	for (TActorIterator<AChaosImpactTrainingArena> It(GetWorld()); It; ++It)
+	{
+		if (!It->IsHidden())
+		{
+			OutCenter = It->GetCenter();
+			OutHalfExtent = It->GetPlayableHalfExtent();
+			return;
+		}
+	}
+}
+
+bool AChaosImpactCharacter::ResolveNovaTargetPoint(const FVector& Candidate, FVector& OutTarget) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	FVector StageCenter;
+	FVector2D HalfExtent;
+	GetNovaStageView(StageCenter, HalfExtent);
+	constexpr float EdgeInset = 90.0f;
+	const float LimitX = FMath::Max(HalfExtent.X - EdgeInset, 10.0f);
+	const float LimitY = FMath::Max(HalfExtent.Y - EdgeInset, 10.0f);
+	const FVector Clamped(
+		FMath::Clamp(Candidate.X, StageCenter.X - LimitX, StageCenter.X + LimitX),
+		FMath::Clamp(Candidate.Y, StageCenter.Y - LimitY, StageCenter.Y + LimitY), StageCenter.Z);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactNovaTarget), false, this);
+	FHitResult Ground;
+	if (!World->LineTraceSingleByObjectType(Ground, Clamped + FVector(0.0f, 0.0f, 6000.0f),
+		Clamped - FVector(0.0f, 0.0f, 6000.0f), FCollisionObjectQueryParams(ECC_WorldStatic), Params))
+	{
+		return false;
+	}
+	OutTarget = Ground.ImpactPoint;
+	return true;
+}
+
+bool AChaosImpactCharacter::SetNovaTargetPoint(const FVector& WorldPoint)
+{
+	FVector Resolved;
+	if (!ResolveNovaTargetPoint(WorldPoint, Resolved))
+	{
+		return false;
+	}
+	NovaTargetLocation = Resolved;
+	bNovaTargetValid = true;
+	const FVector Toward = (Resolved - GetActorLocation()).GetSafeNormal2D();
+	if (!Toward.IsNearlyZero())
+	{
+		AimDirection = Toward;
+	}
+	return true;
+}
+
+void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
+{
+	if (!IsLocallyControlled() || bDevAutoInput || !IsChargingNova() || !GetWorld())
+	{
+		return;
+	}
+
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(PlayerController);
+	const bool bUsingGamepad = InputController && InputController->IsUsingGamepad();
+	if (!bNovaTargetValid)
+	{
+		FVector StageCenter;
+		FVector2D HalfExtent;
+		GetNovaStageView(StageCenter, HalfExtent);
+		const float InitialDistance = FMath::Min(FMath::Max(HalfExtent.X, HalfExtent.Y) * 0.55f, 2400.0f);
+		SetNovaTargetPoint(GetActorLocation() + AimDirection.GetSafeNormal2D() * InitialDistance);
+	}
+
+	FVector2D CursorInput = FVector2D::ZeroVector;
+	if (PlayerController)
+	{
+		if (bUsingGamepad)
+		{
+			CursorInput = ApplyRadialStickDeadZone(FVector2D(
+				PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftX),
+				PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftY)), MovementStickDeadZone);
+		}
+		else
+		{
+			CursorInput = FVector2D(
+				(PlayerController->IsInputKeyDown(EKeys::D) || PlayerController->IsInputKeyDown(EKeys::Right) ? 1.0f : 0.0f)
+					- (PlayerController->IsInputKeyDown(EKeys::A) || PlayerController->IsInputKeyDown(EKeys::Left) ? 1.0f : 0.0f),
+				(PlayerController->IsInputKeyDown(EKeys::W) || PlayerController->IsInputKeyDown(EKeys::Up) ? 1.0f : 0.0f)
+					- (PlayerController->IsInputKeyDown(EKeys::S) || PlayerController->IsInputKeyDown(EKeys::Down) ? 1.0f : 0.0f));
+			CursorInput = CursorInput.GetClampedToMaxSize(1.0f);
+		}
+	}
+	if (bNovaTargetValid && !CursorInput.IsNearlyZero() && DeltaSeconds > 0.0f)
+	{
+		const FRotator CameraYaw(0.0f, SavedCameraBoomRotation.Yaw, 0.0f);
+		const FVector CameraForward = FRotationMatrix(CameraYaw).GetUnitAxis(EAxis::X);
+		const FVector CameraRight = FRotationMatrix(CameraYaw).GetUnitAxis(EAxis::Y);
+		const FVector CursorVelocity = CameraForward * CursorInput.Y + CameraRight * CursorInput.X;
+		SetNovaTargetPoint(FVector(NovaTargetLocation) + CursorVelocity * NovaTargetCursorSpeed * DeltaSeconds);
+	}
+
+	if (bNovaTargetValid)
+	{
+		const FVector Toward = (FVector(NovaTargetLocation) - GetActorLocation()).GetSafeNormal2D();
+		if (!Toward.IsNearlyZero())
+		{
+			AimDirection = Toward;
+			const FRotator Smooth = FMath::RInterpConstantTo(GetActorRotation(), Toward.Rotation(), DeltaSeconds, 720.0f);
+			SetActorRotation(FRotator(0.0f, Smooth.Yaw, 0.0f));
+		}
+	}
+
+	const double Now = FPlatformTime::Seconds();
+	if (bNovaTargetValid && Now >= NextNovaTargetSendAt)
+	{
+		if (HasAuthority())
+		{
+			ForceNetUpdate();
+		}
+		else
+		{
+			ServerUpdateNovaTarget(NovaTargetLocation);
+		}
+		// Keep a stationary cursor alive too: the first unreliable packet may race the reliable charge start.
+		NextNovaTargetSendAt = Now + 1.0 / 15.0;
+	}
+}
+
+bool AChaosImpactCharacter::CalculateNovaLaunchToTarget(const FVector& LaunchLocation, const FVector& GroundTarget,
+	const float BallRadius, FVector& OutDirection, float& OutHorizontalSpeed, float& OutUpSpeed) const
+{
+	if (!GetWorld())
+	{
+		return false;
+	}
+	const FVector TargetCenter = GroundTarget + FVector(0.0f, 0.0f, BallRadius + 3.0f);
+	const FVector HorizontalDelta(TargetCenter.X - LaunchLocation.X, TargetCenter.Y - LaunchLocation.Y, 0.0f);
+	const float HorizontalDistance = HorizontalDelta.Size();
+	OutDirection = HorizontalDistance > 1.0f ? HorizontalDelta / HorizontalDistance : AimDirection.GetSafeNormal2D();
+	if (OutDirection.IsNearlyZero())
+	{
+		OutDirection = GetActorForwardVector().GetSafeNormal2D();
+	}
+	// A long, high throw clears the arena's walls and still arrives exactly on the selected point.
+	const float FlightSeconds = FMath::Clamp(1.6f + HorizontalDistance / 3000.0f, 1.6f, 3.8f);
+	const float Gravity = GetWorld()->GetGravityZ() * ChaosImpactBallTypes::NovaGravityScale;
+	OutHorizontalSpeed = HorizontalDistance / FlightSeconds;
+	OutUpSpeed = (TargetCenter.Z - LaunchLocation.Z - 0.5f * Gravity * FlightSeconds * FlightSeconds) / FlightSeconds;
+	return FMath::IsFinite(OutHorizontalSpeed) && FMath::IsFinite(OutUpSpeed);
+}
+
 bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 {
 	if (!GetWorld() || !BallClass || AimDirection.IsNearlyZero() || CarriedBallCount <= 0
@@ -1253,6 +1462,8 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		PendingThrowSpeed = HorizontalThrowSpeed;
 		PendingThrowFlightMode = UsedFlightMode;
 		PendingThrowArcUpwardSpeed = ArcUpwardSpeed;
+		bPendingNovaTarget = Ball->GetBallType() == EChaosImpactBallType::Nova && bNovaTargetValid;
+		PendingNovaTarget = bPendingNovaTarget ? FVector(NovaTargetLocation) : FVector::ZeroVector;
 		PendingThrowBall = Ball;
 		bThrowReleasePending = true;
 		if (bOverhead)
@@ -1266,6 +1477,7 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 				HeldBallRelativeLocation, HeldBallRelativeRotation);
 		}
 		PopCarriedBall();
+		bNovaTargetValid = false;
 		UpdateBallPresentation();
 		// The spawned projectile itself replaces the cosmetic hand ball until the cue.
 		HeldBallMesh->SetVisibility(false, true);
@@ -1324,9 +1536,17 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 				ETeleportType::TeleportPhysics);
 		}
 		ThrowOriginOffset = FVector::ZeroVector;
+		if (bPendingNovaTarget && Ball->GetBallType() == EChaosImpactBallType::Nova)
+		{
+			CalculateNovaLaunchToTarget(Ball->GetActorLocation(), PendingNovaTarget,
+				24.0f * Ball->GetSnowScale(), PendingThrowDirection, PendingThrowSpeed, PendingThrowArcUpwardSpeed);
+			PendingThrowFlightMode = EChaosImpactBallFlightMode::Arc;
+		}
 		Ball->Launch(PendingThrowDirection, PendingThrowSpeed,
 			PendingThrowFlightMode, PendingThrowArcUpwardSpeed);
 	}
+	bPendingNovaTarget = false;
+	PendingNovaTarget = FVector::ZeroVector;
 	UpdateBallPresentation();
 }
 
@@ -1393,7 +1613,8 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	{
 		return 0.0f;
 	}
-	if (bIsDashing && !bApplyingReportedHit)
+	const bool bNovaHit = SourceZone && SourceZone->GetZoneType() == EChaosImpactBallType::Nova;
+	if (bIsDashing && !bApplyingReportedHit && !bNovaHit)
 	{
 		return 0.0f;
 	}
@@ -1423,6 +1644,8 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		RespawnAtWorldSeconds = 0.0f;
 		EliminationInstigator = EventInstigator;
 		bIsChargingThrow = false;
+		bNovaTargetValid = false;
+		bPendingNovaTarget = false;
 		bMouseChargeActive = false;
 		bWasMouseDownLastTick = false;
 		bIsDashing = false;
@@ -1497,6 +1720,13 @@ void AChaosImpactCharacter::BeginRespawnCountdown()
 	{
 		return;
 	}
+	if (!bRespawnAfterElimination && !IsPlayerControlled())
+	{
+		// Beaten for good: gone once its pieces have scattered.
+		GetWorldTimerManager().SetTimer(RespawnTimer, this, &AChaosImpactCharacter::RemoveAfterElimination,
+			FMath::Max(EliminationEffectDuration, 0.2f), false);
+		return;
+	}
 	RespawnAtWorldSeconds = GetWorld()->GetTimeSeconds() + EliminationResetDelay;
 	// No name for leaving the stage: the respawn panel then says ステージの外に出た.
 	const FString DefeatedBy = bKnockedOutLeavingStage ? FString() : GetEliminatorDisplayName(EliminationInstigator.Get());
@@ -1511,6 +1741,26 @@ void AChaosImpactCharacter::BeginRespawnCountdown()
 	}
 	GetWorldTimerManager().SetTimer(RespawnTimer, this,
 		&AChaosImpactCharacter::ResetAfterElimination, EliminationResetDelay, false);
+}
+
+void AChaosImpactCharacter::RemoveAfterElimination()
+{
+	StopEliminationEffect();
+	if (AController* OwnController = GetController(); OwnController && !OwnController->IsPlayerController())
+	{
+		OwnController->UnPossess();
+		OwnController->Destroy();
+	}
+	Destroy();
+}
+
+void AChaosImpactCharacter::SetCPULevel(const EChaosImpactCPULevel Level)
+{
+	CPULevel = Level;
+	if (AChaosImpactCPUController* CPU = Cast<AChaosImpactCPUController>(GetController()))
+	{
+		CPU->SetDifficulty(static_cast<int32>(Level));
+	}
 }
 
 void AChaosImpactCharacter::ResetAfterElimination()
@@ -1927,6 +2177,8 @@ void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactCharacter, SnowGrowthRight);
 	DOREPLIFETIME(AChaosImpactCharacter, SnowGrowthLeft);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, ChargeStartServerTime, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, NovaTargetLocation, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, bNovaTargetValid, COND_SkipOwner);
 	// The owner starts its own carry the moment its screen sees the catch.
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, WindCarrier, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, WindCarryStartServerTime, COND_SkipOwner);
@@ -1943,11 +2195,16 @@ void AChaosImpactCharacter::ServerStartCharge_Implementation()
 	{
 		bIsChargingThrow = true;
 		ThrowChargeStartedAt = GetWorld()->GetTimeSeconds();
+		if (GetCarriedBallType(0) == EChaosImpactBallType::Nova)
+		{
+			bNovaTargetValid = false;
+		}
 	}
 }
 
 void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float ChargeAlpha,
-	FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation)
+	FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
+	FVector_NetQuantize ClientNovaTarget, const bool bHasClientNovaTarget)
 {
 	bIsChargingThrow = false;
 	const bool bRemote = IsRemotePlayerOnServer();
@@ -1959,6 +2216,11 @@ void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float Charge
 		if (!Direction.IsNearlyZero())
 		{
 			AimDirection = Direction;
+		}
+		bNovaTargetValid = false;
+		if (CarriedBallCount > 0 && GetCarriedBallType(0) == EChaosImpactBallType::Nova && bHasClientNovaTarget)
+		{
+			SetNovaTargetPoint(FVector(ClientNovaTarget));
 		}
 		if (bRemote && bThrowReleasePending)
 		{
@@ -1983,6 +2245,7 @@ void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float Charge
 void AChaosImpactCharacter::ServerStartDash_Implementation(FVector_NetQuantizeNormal Direction)
 {
 	bIsChargingThrow = false;
+	bNovaTargetValid = false;
 	if (IsRemotePlayerOnServer() && GetWorld())
 	{
 		// The owner already dashed; a previous dash or cooldown may still be running here only because of latency.
@@ -2003,6 +2266,15 @@ void AChaosImpactCharacter::ServerUpdateAim_Implementation(FVector_NetQuantizeNo
 	if (!Horizontal.IsNearlyZero())
 	{
 		AimDirection = Horizontal;
+	}
+}
+
+void AChaosImpactCharacter::ServerUpdateNovaTarget_Implementation(FVector_NetQuantize Target)
+{
+	if (!bEliminated && bIsChargingThrow && CarriedBallCount > 0
+		&& GetCarriedBallType(0) == EChaosImpactBallType::Nova && SetNovaTargetPoint(FVector(Target)))
+	{
+		ForceNetUpdate();
 	}
 }
 
@@ -2655,6 +2927,8 @@ void AChaosImpactCharacter::ApplyEliminatedPresentation(const bool bNowEliminate
 	if (bNowEliminated)
 	{
 		bIsChargingThrow = false;
+		bNovaTargetValid = false;
+		bPendingNovaTarget = false;
 		bIsDashing = false;
 		if (!HasAuthority())
 		{
@@ -2788,6 +3062,7 @@ void AChaosImpactCharacter::SetTrainingMenuCameraActive(const bool bActive)
 void AChaosImpactCharacter::CancelChargingThrow()
 {
 	bIsChargingThrow = false;
+	bNovaTargetValid = false;
 	bMouseChargeActive = false;
 	OnThrowChargeChanged(0.0f);
 	if (ChargeWidget)
@@ -3661,22 +3936,62 @@ void AChaosImpactCharacter::SetSlotSnowGrowth(const int32 Slot, const float Grow
 void AChaosImpactCharacter::UpdateSnowball()
 {
 	const int32 Slots = FMath::Clamp(CarriedBallCount, 0, 2);
+	bool bCarriesSnow = false;
+	for (int32 Slot = 0; Slot < Slots; ++Slot)
+	{
+		bCarriesSnow |= GetCarriedBallType(Slot) == EChaosImpactBallType::Snow;
+	}
 	if (HasAuthority())
 	{
 		const FVector Here = GetActorLocation();
-		const float Moved = bSnowWalkTracked ? static_cast<float>(FVector::Dist2D(Here, LastSnowWalkLocation)) : 0.0f;
+		const FVector Travel = bSnowWalkTracked ? FVector(Here.X - LastSnowWalkLocation.X,
+			Here.Y - LastSnowWalkLocation.Y, 0.0f) : FVector::ZeroVector;
+		const float Moved = Travel.Size();
 		LastSnowWalkLocation = Here;
 		bSnowWalkTracked = true;
-		// Walking rolls it bigger; a respawn or a warp is no walk.
-		if (Moved > 0.0f && Moved < 400.0f && !bEliminated)
+		if (!bCarriesSnow)
 		{
-			for (int32 Slot = 0; Slot < Slots; ++Slot)
+			LastSnowMashDirection = FVector::ZeroVector;
+			NextSnowMashGrowthAt = 0.0;
+		}
+		// Walking rolls it bigger; reversing input quickly adds a lever-mash growth burst even before momentum turns.
+		// A respawn or warp is deliberately excluded.
+		else if (Moved < 400.0f && !bEliminated)
+		{
+			float AddedGrowth = Moved / ChaosImpactBallTypes::SnowGrowDistance;
+			FVector MashDirection = GetCharacterMovement()
+				? GetCharacterMovement()->GetCurrentAcceleration().GetSafeNormal2D() : FVector::ZeroVector;
+			// Tests, CPU teleports and very short network samples may have no acceleration; actual travel is a fallback.
+			if (MashDirection.IsNearlyZero() && Moved >= ChaosImpactBallTypes::SnowMashMinTravel)
 			{
-				if (GetCarriedBallType(Slot) == EChaosImpactBallType::Snow)
+				MashDirection = Travel / Moved;
+			}
+			if (!MashDirection.IsNearlyZero())
+			{
+				const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+				if (!LastSnowMashDirection.IsNearlyZero()
+					&& FVector::DotProduct(MashDirection, LastSnowMashDirection) <= ChaosImpactBallTypes::SnowMashTurnDot
+					&& Now >= NextSnowMashGrowthAt)
 				{
-					SetSlotSnowGrowth(Slot, GetSnowGrowth(Slot) + Moved / ChaosImpactBallTypes::SnowGrowDistance);
+					AddedGrowth += ChaosImpactBallTypes::SnowMashGrowthPerTurn;
+					NextSnowMashGrowthAt = Now + ChaosImpactBallTypes::SnowMashCooldownSeconds;
+				}
+				LastSnowMashDirection = MashDirection;
+			}
+			if (AddedGrowth > 0.0f)
+			{
+				for (int32 Slot = 0; Slot < Slots; ++Slot)
+				{
+					if (GetCarriedBallType(Slot) == EChaosImpactBallType::Snow)
+					{
+						SetSlotSnowGrowth(Slot, GetSnowGrowth(Slot) + AddedGrowth);
+					}
 				}
 			}
+		}
+		else if (Moved >= 400.0f)
+		{
+			LastSnowMashDirection = FVector::ZeroVector;
 		}
 	}
 	// A big snowball is heavy: its carrier walks a little slower (wherever this character is moved).
@@ -3992,6 +4307,16 @@ bool AChaosImpactCharacter::PredictThrowLanding(const float ChargeAlpha, FVector
 	const EChaosImpactBallType Type = GetCarriedBallType(0);
 	const float Scale = Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaScale(ChargeAlpha)
 		: Type == EChaosImpactBallType::Snow ? ChaosImpactBallTypes::GetSnowScale(GetSnowGrowth(0)) : 1.0f;
+	if (Type == EChaosImpactBallType::Nova && bNovaTargetValid)
+	{
+		FVector ResolvedTarget;
+		if (ResolveNovaTargetPoint(FVector(NovaTargetLocation), ResolvedTarget))
+		{
+			OutGround = ResolvedTarget;
+			OutRadius = ChaosImpactBallTypes::GetNovaBlastRadius(Scale);
+			return true;
+		}
+	}
 	float Horizontal = 0.0f;
 	float Upward = 0.0f;
 	EChaosImpactBallFlightMode Mode = EChaosImpactBallFlightMode::Arc;

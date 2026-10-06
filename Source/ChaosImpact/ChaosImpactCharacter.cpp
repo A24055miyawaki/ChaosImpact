@@ -25,6 +25,7 @@
 #include "Engine/DamageEvents.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
+#include "Engine/Texture.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Camera/CameraComponent.h"
@@ -3305,6 +3306,17 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		return;
 	}
 	using namespace ChaosImpactBallTypes;
+	TObjectPtr<UStaticMesh>& BaseMesh = HandBall == LeftHeldBallMesh ? LeftHandBaseMesh : RightHandBaseMesh;
+	if (!BaseMesh)
+	{
+		BaseMesh = HandBall->GetStaticMesh();
+	}
+	UStaticMesh* WantedMesh = Type == EChaosImpactBallType::Simae
+		? LoadObject<UStaticMesh>(nullptr, SimaeAssets::BallMesh) : BaseMesh.Get();
+	if (WantedMesh && HandBall->GetStaticMesh() != WantedMesh)
+	{
+		HandBall->SetStaticMesh(WantedMesh);
+	}
 	UMaterialInterface* Material = nullptr;
 	switch (Type)
 	{
@@ -3371,11 +3383,26 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		}
 		Material = HeldNovaMaterial;
 		break;
+	case EChaosImpactBallType::Simae:
+		if (!HeldSimaeMaterial)
+		{
+			UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, SimaeAssets::TexturedMaterial);
+			HeldSimaeMaterial = Base ? UMaterialInstanceDynamic::Create(Base, this) : nullptr;
+			if (HeldSimaeMaterial)
+			{
+				HeldSimaeMaterial->SetTextureParameterValue(TEXT("BodyTexture"),
+					LoadObject<UTexture>(nullptr, SimaeAssets::BallTexture));
+				HeldSimaeMaterial->SetVectorParameterValue(TEXT("BodyTint"), FLinearColor::White);
+			}
+		}
+		Material = HeldSimaeMaterial;
+		break;
 	default:
 		// No override for a normal ball: the mesh's own material.
 		break;
 	}
 	HandBall->SetMaterial(0, Material);
+	HandBall->SetMaterial(1, Type == EChaosImpactBallType::Simae ? Material : nullptr);
 
 	// A carried fire ball keeps burning in the hand, a thunder ball crackles, a black ball smoulders, a smoke ball
 	// leaks wisps of smoke and a beam ball throws off sparks.

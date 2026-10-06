@@ -268,6 +268,9 @@ private:
 	/** Now and then stands around for a moment: the chance per second, and until when. */
 	float IdleChancePerSecond = 0.0f;
 	float IdleUntil = 0.0f;
+	/** A perched shima-enaga flock is noticed once, then shaken off after a difficulty-dependent reaction. */
+	double SimaePerchedSince = -1.0;
+	double SimaeDashAt = -1.0;
 	/** The planned direction with this throw's shake. */
 	FVector ShakeAim(const FVector& Direction) const;
 };

@@ -10,8 +10,10 @@
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
+#include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactTornado.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture.h"
 #include "NiagaraComponent.h"
 #include "ProceduralMeshComponent.h"
 
@@ -1686,8 +1688,16 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SetActorTickEnabled(false);
 	SetActorHiddenInGame(true);
-	DetonationZone = AChaosImpactHazardZone::Detonate(GetWorld(), BallType, Location, ThrowingPawn.Get(), DirectVictim,
-		BallType == EChaosImpactBallType::Snow || BallType == EChaosImpactBallType::Nova ? SnowScale : 1.0f);
+	if (BallType == EChaosImpactBallType::Simae)
+	{
+		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim);
+		DetonationZone = nullptr;
+	}
+	else
+	{
+		DetonationZone = AChaosImpactHazardZone::Detonate(GetWorld(), BallType, Location, ThrowingPawn.Get(), DirectVictim,
+			BallType == EChaosImpactBallType::Snow || BallType == EChaosImpactBallType::Nova ? SnowScale : 1.0f);
+	}
 	UE_LOG(LogChaosImpact, Log, TEXT("%s ball detonated at %s (direct victim %s)"),
 		ChaosImpactBallTypes::GetInternalName(BallType), *Location.ToCompactString(), *GetNameSafe(DirectVictim));
 	// Kept hidden for a moment so a hit reported from a remote screen just before can still count.
@@ -1852,6 +1862,24 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		BallMesh->SetMaterial(0, MakeAdditive(this, FLinearColor(0.25f, 0.6f, 1.0f), 0.12f));
 		BuildNovaLook(this, BallMesh, NovaLook);
 		UpdateNovaLook(NovaLook, 24.0f * SnowScale, 0.0f);
+		LightIntensity = 0.0f;
+	}
+	else if (BallType == EChaosImpactBallType::Simae)
+	{
+		// Its imported round face replaces the engine sphere. Both material slots share the character material and texture.
+		if (UStaticMesh* SimaeMesh = LoadObject<UStaticMesh>(nullptr, SimaeAssets::BallMesh))
+		{
+			BallMesh->SetStaticMesh(SimaeMesh);
+		}
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, SimaeAssets::TexturedMaterial);
+		UTexture* Texture = LoadObject<UTexture>(nullptr, SimaeAssets::BallTexture);
+		if (UMaterialInstanceDynamic* Look = Base ? UMaterialInstanceDynamic::Create(Base, this) : nullptr)
+		{
+			Look->SetTextureParameterValue(TEXT("BodyTexture"), Texture);
+			Look->SetVectorParameterValue(TEXT("BodyTint"), FLinearColor::White);
+			BallMesh->SetMaterial(0, Look);
+			BallMesh->SetMaterial(1, Look);
+		}
 		LightIntensity = 0.0f;
 	}
 	else if (BallType == EChaosImpactBallType::Snow)

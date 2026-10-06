@@ -216,8 +216,8 @@ namespace
 					return true;
 				}
 				// Put the CPU in the middle of one of them.
-				const FVector Fire = Fires[Fires.Num() / 2]->GetActorLocation();
-				PlaceAt(CPU, Fire + FVector(0.0f, 0.0f, 100.0f));
+				const FVector FireLocation = Fires[Fires.Num() / 2]->GetActorLocation();
+				PlaceAt(CPU, FireLocation + FVector(0.0f, 0.0f, 100.0f));
 				CPUHealth = CPU->GetHealth();
 				++Stage;
 				NextAt = Now + 1.3;

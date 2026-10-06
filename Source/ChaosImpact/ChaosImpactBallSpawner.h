@@ -85,6 +85,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float NovaBallChance = 0.025f;
 
+	/** Chance (0-1) that a new ball releases a shima-enaga flock. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float SimaeBallChance = 0.05f;
+
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;
 	bool bAlwaysActive = false;

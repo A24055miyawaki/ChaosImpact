@@ -471,6 +471,19 @@ void ChaosImpactBallTypes::PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAli
 			OutKeepAlive.AddUnique(Shape);
 		}
 	}
+	const TCHAR* const SimaePaths[] =
+	{
+		SimaeAssets::BallMesh, SimaeAssets::BallTexture, SimaeAssets::BirdTexture, SimaeAssets::BirdBody, SimaeAssets::BirdTail,
+		SimaeAssets::BirdWing, SimaeAssets::BirdEye, SimaeAssets::BirdCrest,
+		SimaeAssets::Chirp01, SimaeAssets::Chirp02, SimaeAssets::Chirp03, SimaeAssets::TexturedMaterial
+	};
+	for (const TCHAR* Path : SimaePaths)
+	{
+		if (UObject* Asset = LoadObject<UObject>(nullptr, Path))
+		{
+			OutKeepAlive.AddUnique(Asset);
+		}
+	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Preloaded %d ball FX assets in %.0f ms"), OutKeepAlive.Num(),
 		(FPlatformTime::Seconds() - StartedAt) * 1000.0);
 }

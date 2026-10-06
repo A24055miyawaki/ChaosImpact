@@ -40,12 +40,25 @@ enum class EChaosImpactBallType : uint8
 	 * Charged held up over the head, rooted to the spot, while energy streams in from all around and it swells to an
 	 * enormous size (a long charge); hurled slowly, it bursts in a blast as wide as it was charged.
 	 */
-	Nova UMETA(DisplayName="Nova")
+	Nova UMETA(DisplayName="Nova"),
+	/** Bursts into a flock of shima-enaga that home in, perch, and peck unless shaken off with a dash. */
+	Simae UMETA(DisplayName="Simae")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 10;
+	constexpr int32 Count = 11;
+
+	/** Simae flock: twelve tightly turning birds; each enemy can be pecked twice and dash out between hits. */
+	constexpr int32 SimaeBirdCount = 12;
+	constexpr float SimaeMinSpeed = 1000.0f;
+	constexpr float SimaeMaxSpeed = 1300.0f;
+	constexpr float SimaeTurnDegreesPerSecond = 300.0f;
+	constexpr float SimaeAcquireReach = 3000.0f;
+	constexpr float SimaePerchSeconds = 1.2f;
+	constexpr float SimaePeckIntervalSeconds = 0.8f;
+	constexpr int32 SimaeMaxPecksPerTarget = 2;
+	constexpr float SimaeLifetimeSeconds = 8.0f;
 
 	/** A thrown thunder ball's speed, however long the throw was charged. */
 	constexpr float ThunderSpeed = 4000.0f;
@@ -140,6 +153,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Beam: return FLinearColor(1.0f, 0.24f, 0.78f, 1.0f);
 		case EChaosImpactBallType::Snow: return FLinearColor(0.9f, 0.96f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Nova: return FLinearColor(0.45f, 0.86f, 1.0f, 1.0f);
+		case EChaosImpactBallType::Simae: return FLinearColor(0.96f, 0.97f, 1.0f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -157,6 +171,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Beam: return TEXT("ビーム");
 		case EChaosImpactBallType::Snow: return TEXT("スノー");
 		case EChaosImpactBallType::Nova: return TEXT("ノヴァ");
+		case EChaosImpactBallType::Simae: return TEXT("シマエナガ");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -175,6 +190,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Beam: return TEXT("Beam");
 		case EChaosImpactBallType::Snow: return TEXT("Snow");
 		case EChaosImpactBallType::Nova: return TEXT("Nova");
+		case EChaosImpactBallType::Simae: return TEXT("Simae");
 		default: return TEXT("Normal");
 		}
 	}
@@ -285,6 +301,23 @@ namespace ChaosImpactBallTypes
 		inline const TCHAR* BigExplosion = TEXT("/Game/NiagaraExamples/FX_Explosions/NS_Explosion.NS_Explosion");
 		inline const TCHAR* MediumExplosion = TEXT("/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Medium.NS_Explosion_Medium");
 		inline const TCHAR* DirtBurstLarge = TEXT("/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion.NS_Dirt_Explosion");
+	}
+
+	/** Imported shima-enaga ball, flock parts and chirps. */
+	namespace SimaeAssets
+	{
+		inline const TCHAR* BallMesh = TEXT("/Game/ChaosImpact/SimaeBall/Normalized/SM_SimaeBall.SM_SimaeBall");
+		inline const TCHAR* BallTexture = TEXT("/Game/ChaosImpact/SimaeBall/T_SimaeBall.T_SimaeBall");
+		inline const TCHAR* BirdBody = TEXT("/Game/ChaosImpact/SimaeBall/Bird/SM_SimaeBird_body.SM_SimaeBird_body");
+		inline const TCHAR* BirdTexture = TEXT("/Game/ChaosImpact/SimaeBall/Bird/T_SimaeBird.T_SimaeBird");
+		inline const TCHAR* BirdTail = TEXT("/Game/ChaosImpact/SimaeBall/Bird/SM_SimaeBird_tale.SM_SimaeBird_tale");
+		inline const TCHAR* BirdWing = TEXT("/Game/ChaosImpact/SimaeBall/Bird/SM_SimaeBird_wing.SM_SimaeBird_wing");
+		inline const TCHAR* BirdEye = TEXT("/Game/ChaosImpact/SimaeBall/Bird/SM_SimaeBird_eye.SM_SimaeBird_eye");
+		inline const TCHAR* BirdCrest = TEXT("/Game/ChaosImpact/SimaeBall/Bird/SM_SimaeBird_pCube2.SM_SimaeBird_pCube2");
+		inline const TCHAR* Chirp01 = TEXT("/Game/ChaosImpact/SimaeBall/S_SimaeChirp_01.S_SimaeChirp_01");
+		inline const TCHAR* Chirp02 = TEXT("/Game/ChaosImpact/SimaeBall/S_SimaeChirp_02.S_SimaeChirp_02");
+		inline const TCHAR* Chirp03 = TEXT("/Game/ChaosImpact/SimaeBall/S_SimaeChirp_03.S_SimaeChirp_03");
+		inline const TCHAR* TexturedMaterial = TEXT("/Game/ChaosImpact/Character/M_CI_Player.M_CI_Player");
 	}
 	CHAOSIMPACT_API UNiagaraSystem* LoadEffect(const TCHAR* ObjectPath);
 	/** Loads every FX system and material up front (game start); the caller keeps the objects alive. */

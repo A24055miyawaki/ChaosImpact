@@ -12,6 +12,7 @@
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactSpectatorPawn.h"
 #include "ChaosImpactTornado.h"
+#include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactVersusStage.h"
 #include "ChaosImpactSplashStage.h"
@@ -1508,6 +1509,14 @@ void AChaosImpactGameMode::ReturnToLobbyAfterMatch()
 
 void AChaosImpactGameMode::ClearMatchBalls()
 {
+	for (TActorIterator<AChaosImpactSimaeBird> It(GetWorld()); It; ++It)
+	{
+		It->Destroy();
+	}
+	for (TActorIterator<AChaosImpactSimaeFeatherBurst> It(GetWorld()); It; ++It)
+	{
+		It->Destroy();
+	}
 	for (TActorIterator<AChaosImpactBall> It(GetWorld()); It; ++It)
 	{
 		It->Destroy();

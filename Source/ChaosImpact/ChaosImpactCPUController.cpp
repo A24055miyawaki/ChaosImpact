@@ -5,6 +5,7 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactTornado.h"
 #include "CollisionShape.h"
 #include "CollisionQueryParams.h"
@@ -65,6 +66,8 @@ void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 	ObservedVelocities.Reset();
 	BallFirstSeenAt.Reset();
 	CurrentTarget.Reset();
+	SimaePerchedSince = -1.0;
+	SimaeDashAt = -1.0;
 }
 
 void AChaosImpactCPUController::Tick(const float DeltaSeconds)
@@ -120,6 +123,31 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 		EvadeUntil = 0.0f;
 		TornadoEvadeUntil = 0.0f;
 		return;
+	}
+
+	if (AChaosImpactSimaeBird::HasPerchedBird(Self))
+	{
+		if (SimaePerchedSince < 0.0)
+		{
+			SimaePerchedSince = Now;
+			const float Reaction = bPerfect ? FMath::FRandRange(0.03f, 0.1f)
+				: Difficulty == ChaosImpactMatch::CPULevelWeak ? FMath::FRandRange(2.15f, 2.7f)
+				: Difficulty == ChaosImpactMatch::CPULevelNormal ? FMath::FRandRange(0.8f, 1.35f)
+				: FMath::FRandRange(0.35f, 0.7f);
+			SimaeDashAt = Now + Reaction;
+		}
+		if (Now >= SimaeDashAt && Self->CanDashNow())
+		{
+			const FVector ShakeDirection = DesiredMoveDirection.IsNearlyZero()
+				? Self->GetActorForwardVector() : DesiredMoveDirection;
+			Self->RequestAIDash(ShakeDirection);
+			SimaeDashAt = Now + 0.25;
+		}
+	}
+	else
+	{
+		SimaePerchedSince = -1.0;
+		SimaeDashAt = -1.0;
 	}
 
 	if (Now >= NextDecisionAt)
@@ -1557,6 +1585,7 @@ float AChaosImpactCPUController::GetBurstRadius(const EChaosImpactBallType Type,
 	// Its pull is faster than walking: anywhere well inside it ends at its burning centre.
 	case EChaosImpactBallType::Black: return AChaosImpactHazardZone::BlackHoleRadius * 0.8f;
 	case EChaosImpactBallType::Nova: return ChaosImpactBallTypes::GetNovaBlastRadius(Scale);
+	case EChaosImpactBallType::Simae: return 0.0f;
 	default: return 0.0f;
 	}
 }
@@ -1572,6 +1601,7 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Thunder: return 2.2f;
 	case EChaosImpactBallType::Black: return 2.0f;
 	case EChaosImpactBallType::Nova: return 1.8f;
+	case EChaosImpactBallType::Simae: return 1.7f;
 	case EChaosImpactBallType::Wind: return 1.6f;
 	case EChaosImpactBallType::Snow: return 1.5f;
 	default: return 1.0f;

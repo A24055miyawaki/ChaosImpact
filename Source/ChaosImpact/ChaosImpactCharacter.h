@@ -13,6 +13,7 @@
 class USpringArmComponent;
 class UCameraComponent;
 class UStaticMeshComponent;
+class UStaticMesh;
 class UPointLightComponent;
 class UInputAction;
 class UChaosImpactChargeWidget;
@@ -529,6 +530,15 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldNovaMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldSimaeMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMesh> RightHandBaseMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMesh> LeftHandBaseMesh;
 
 	TWeakObjectPtr<AActor> LastDamageCauser;
 	double LastDamagedAt = -100.0;

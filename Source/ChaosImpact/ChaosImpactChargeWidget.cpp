@@ -10,6 +10,7 @@
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactSpectatorPawn.h"
 #include "ChaosImpactWarpPad.h"
 #include "Engine/GameViewportClient.h"
@@ -806,6 +807,10 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(1.0f, 1.0f, 1.0f), FLinearColor(0.12f, 0.18f, 0.26f, 0.97f),
 				FLinearColor(0.88f, 0.95f, 1.0f), FLinearColor(0.45f, 0.58f, 0.72f, 0.95f),
 				FLinearColor(1.0f, 1.0f, 1.0f), FLinearColor(0.92f, 0.97f, 1.0f)};
+		case EChaosImpactBallType::Simae:
+			return {FLinearColor(0.98f, 0.99f, 1.0f), FLinearColor(0.12f, 0.14f, 0.18f, 0.97f),
+				FLinearColor(0.92f, 0.96f, 1.0f), FLinearColor(0.03f, 0.035f, 0.045f, 1.0f),
+				FLinearColor(1.0f, 0.72f, 0.18f), FLinearColor(0.98f, 0.99f, 1.0f)};
 		default:
 			return {FLinearColor(0.78f, 0.96f, 1.0f), FLinearColor(0.0f, 0.1f, 0.22f, 0.96f),
 				FLinearColor(0.0f, 0.82f, 1.0f), FLinearColor(0.0f, 0.12f, 0.24f, 0.9f),
@@ -835,6 +840,8 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 		}
 		if (UTextBlock* Seam = BallSeams.IsValidIndex(SlotIndex) ? BallSeams[SlotIndex] : nullptr)
 		{
+			Seam->SetText(FText::FromString(bFilled && Type == EChaosImpactBallType::Simae
+				? TEXT("••\n▲") : TEXT("╱")));
 			Seam->SetColorAndOpacity(FSlateColor(bFilled ? Look.Seam : FLinearColor(0.0f, 0.12f, 0.24f, 0.9f)));
 		}
 		if (UTextBlock* Label = BallTypeLabels.IsValidIndex(SlotIndex) ? BallTypeLabels[SlotIndex] : nullptr)
@@ -935,6 +942,29 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	const FLinearColor Accent = PlayerAccents[PlayerIndex % 4];
 
 	// Hit flash: red screen edges that fade quickly.
+	if (!bSpectatorView)
+	{
+		const AChaosImpactCharacter* Player = GetOwningPlayer()
+			? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr;
+		float PeckRemaining = 0.0f;
+		float CountdownSeconds = ChaosImpactBallTypes::SimaePerchSeconds;
+		int32 PecksRemaining = 0;
+		if (AChaosImpactSimaeBird::HasPerchedBird(Player, &PeckRemaining, &CountdownSeconds, &PecksRemaining))
+		{
+			const float S = GetHudScale(Size.X, Size.Y);
+			const FGeometry WarningSpace = MakeAnchor(AllottedGeometry, Size.X * 0.5f - 205.0f * S, 76.0f * S, S);
+			const FPainter Warning{WarningSpace, OutDrawElements, HudLayer + 8};
+			Warning.Box(0.0f, 0.0f, 410.0f, 68.0f, FLinearColor(0.015f, 0.02f, 0.03f, 0.9f));
+			Warning.Box(0.0f, 0.0f, 5.0f, 68.0f, Gold);
+			Warning.Text(PecksRemaining < ChaosImpactBallTypes::SimaeMaxPecksPerTarget
+				? TEXT("もう一度つつかれる！") : TEXT("ダッシュで振り落とせ！"), 205.0f, 5.0f, 25.0f, Paper,
+				ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+			const float Ratio = FMath::Clamp(PeckRemaining / FMath::Max(CountdownSeconds, UE_SMALL_NUMBER), 0.0f, 1.0f);
+			Warning.Box(22.0f, 50.0f, 366.0f, 6.0f, FLinearColor(0.12f, 0.14f, 0.18f, 1.0f));
+			Warning.Box(22.0f, 50.0f, 366.0f * Ratio, 6.0f, FMath::Lerp(Fire, Gold, Ratio));
+		}
+	}
+
 	const float HitAge = static_cast<float>(Clock - HitAt);
 	if (HitAge < 0.45f)
 	{
@@ -1121,6 +1151,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		case EChaosImpactBallType::Beam: Body = FLinearColor(1.0f, 0.24f, 0.74f, 1.0f); break;
 		case EChaosImpactBallType::Snow: Body = FLinearColor(0.9f, 0.95f, 1.0f, 1.0f); break;
 		case EChaosImpactBallType::Nova: Body = FLinearColor(0.3f, 0.66f, 1.0f, 1.0f); break;
+		case EChaosImpactBallType::Simae: Body = FLinearColor(0.95f, 0.97f, 1.0f, 1.0f); break;
 		default: break;
 		}
 		const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -1232,6 +1263,21 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 			}
 			break;
 		}
+		case EChaosImpactBallType::Simae:
+		{
+			// Two bead-black eyes and a tiny warm beak make the white ball readable even in split screen.
+			const float Blink = FMath::Frac(Time * 0.37f) > 0.94f ? 0.18f : 1.0f;
+			for (const float Side : {-1.0f, 1.0f})
+			{
+				Paint.Disc(Center + FVector2D(Side * Radius * 0.32f, -Radius * 0.12f),
+					Radius * FVector2D(0.11f, 0.15f * Blink).Size(), FLinearColor(0.015f, 0.02f, 0.028f, 1.0f));
+			}
+			Paint.Line(Center + FVector2D(-Radius * 0.12f, Radius * 0.17f), Center + FVector2D(0.0f, Radius * 0.31f),
+				FLinearColor(1.0f, 0.63f, 0.08f, 1.0f), 3.0f);
+			Paint.Line(Center + FVector2D(0.0f, Radius * 0.31f), Center + FVector2D(Radius * 0.12f, Radius * 0.17f),
+				FLinearColor(1.0f, 0.63f, 0.08f, 1.0f), 3.0f);
+			break;
+		}
 		case EChaosImpactBallType::Black:
 		{
 			// A lightless core ringed in violet, with a sweep circling it.
@@ -1252,7 +1298,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		Paint.Disc(Center - FVector2D(Radius * 0.36f, Radius * 0.4f), Radius * 0.24f, FLinearColor(1.0f, 1.0f, 1.0f, 0.5f));
 		Paint.Disc(Center - FVector2D(Radius * 0.5f, Radius * 0.18f), Radius * 0.08f, FLinearColor(1.0f, 1.0f, 1.0f, 0.7f));
 		Paint.Ring(Center, Radius, WithAlpha(Glow, 0.95f), 2.0f);
-		if (bSpecial && Type != EChaosImpactBallType::Snow)
+		if (bSpecial && Type != EChaosImpactBallType::Snow && Type != EChaosImpactBallType::Simae)
 		{
 			// Special balls: two arcs orbiting just outside (a snowball shows its growth there instead).
 			const float Spin = FMath::Fmod(Time * 160.0f, 360.0f);

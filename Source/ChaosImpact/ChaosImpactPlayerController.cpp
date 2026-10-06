@@ -45,6 +45,17 @@ void AChaosImpactPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 	bTrainingMode = ChaosImpact::IsTrainingWorld(GetWorld());
+
+	// ソロモードオプション (?CISolo=1) の読み込み処理を追加
+	if (GetWorld() && GetWorld()->URL.HasOption(TEXT("CISolo=1")))
+	{
+		bSoloMode = true;
+		CurrentSoloStage = FMath::Max(1, FCString::Atoi(
+			GetWorld()->URL.GetOption(TEXT("CIStage="), TEXT("1"))));
+		// ソロプレイ時はトレーニングモードの共通フラグをオフにする
+		bTrainingMode = false;
+	}
+
 	// A local VS level carries its rules, so a rematch or rule change keeps them.
 	if (GetWorld() && ChaosImpactMatch::ReadOptions(GetWorld()->URL, PendingMatchRules))
 	{
@@ -2336,4 +2347,45 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 	{
 		SetViewTarget(IntroCamera);
 	}
+}
+
+// --- 【2. ソロモード用レベル遷移関数の追加】 ---
+
+void AChaosImpactPlayerController::OpenSoloLevel(const int32 StageIndex)
+{
+	CurrentSoloStage = FMath::Max(1, StageIndex);
+
+	// ステージに応じたマップパッケージ指定（例: /Game/Solo/Lvl_Solo_Stage1）
+	const FString MapPackage = FString::Printf(TEXT("/Game/Solo/Lvl_Solo_Stage%d"), CurrentSoloStage);
+
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+
+	// オプションパラメータの作成: ?CISolo=1?CIStage=X を付与し、CPUやマトは出さない
+	FString Options = FString::Printf(TEXT("CISolo=1?CIStage=%d?CITargets=0?CICPUCount=0?%s"),
+		CurrentSoloStage, *BuildLocalSetupOptions());
+
+	if (BallFlightMode == EChaosImpactBallFlightMode::Straight)
+	{
+		Options += TEXT("?CIBallStraight=1");
+	}
+
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+
+	// マップを開く
+	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true, Options);
+}
+
+void AChaosImpactPlayerController::RetrySoloLevel()
+{
+	if (!bSoloMode || bTravelPending)
+	{
+		return;
+	}
+	OpenSoloLevel(CurrentSoloStage);
 }

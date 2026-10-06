@@ -919,6 +919,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 	Entries.Reset();
 	switch (Screen)
 	{
+
 	case EChaosImpactScreen::Title:
 		Entries.Add({FSlateRect(520, 700, 1080, 800), TEXT("PRESS START"), TEXT(""), TEXT(""), Gold});
 		break;
@@ -1040,6 +1041,14 @@ void UChaosImpactMenuWidget::BuildEntries()
 			TEXT(""), TEXT(""), bFailed ? Gold : Muted});
 		break;
 	}
+
+	case EChaosImpactScreen::SoloStageSelect:
+		// ステージ1、ステージ2の選択用カードと、戻るボタン
+		Entries.Add({ FSlateRect(190, 198, 770, 702), TEXT("ステージ 1"), TEXT(""), TEXT("STAGE 1"), Gold });
+		Entries.Add({ FSlateRect(830, 198, 1410, 702), TEXT("ステージ 2"), TEXT(""), TEXT("STAGE 2"), Ice });
+		Entries.Add({ FSlateRect(146, 736, 470, 800), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted });
+		break;
+
 	case EChaosImpactScreen::Pause:
 	{
 		const AChaosImpactPlayerController* Controller =
@@ -1086,6 +1095,24 @@ void UChaosImpactMenuWidget::BuildEntries()
 				TEXT("leave"), TEXT(""), Fire});
 			break;
 		}
+
+		// ★ソロモードプレイ中のポーズメニュー（新規追加分岐）
+		if (Controller && Controller->IsSoloMode())
+		{
+			const bool bArc = Controller->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
+			Entries.Add({ FSlateRect(490, 245, 1110, 307), TEXT("ゲームに戻る"), TEXT("resume"), TEXT(""), Ice });
+			Entries.Add({ FSlateRect(490, 325, 1110, 387),
+				bArc ? TEXT("投球軌道：放物線") : TEXT("投球軌道：直線"), TEXT(""), TEXT(""), bArc ? Fire : Ice });
+			Entries.Add({ FSlateRect(490, 405, 1110, 467), TEXT("ステージをやり直す"), TEXT("solo_retry"), TEXT(""), Gold });
+			Entries.Add({ FSlateRect(490, 485, 1110, 547), TEXT("ステージ選択へ"), TEXT("solo_stage_select"), TEXT(""), Ice });
+			Entries.Add({ FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire });
+			Entries.Add({ FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted });
+			Entries.Add({ FSlateRect(490, 725, 1110, 787),
+				AChaosImpactPlayerController::IsRumbleEnabled() ? TEXT("振動：ON") : TEXT("振動：OFF"),
+				TEXT("rumble"), TEXT(""), AChaosImpactPlayerController::IsRumbleEnabled() ? Ice : Muted });
+			break;
+		}
+
 		const bool bArc = Controller
 			&& Controller->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
 		Entries.Add({FSlateRect(490, 245, 1110, 307), TEXT("ゲームに戻る"), TEXT(""), TEXT(""), Ice});
@@ -1456,6 +1483,10 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const FMenuPainter Big{Title, OutDrawElements, BaseLayer + 3, E};
 		Big.Text(TEXT("SOLO"), 800, 0, 150, Paper, ETextAlign::Center, TEXT("Black"), 5.0f, Ice);
 		Big.Text(TEXT("COMING SOON"), 800, 226, 38, Ice, ETextAlign::Center, TEXT("BlackItalic"));
+	}
+	else if (Screen == EChaosImpactScreen::SoloStageSelect)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("SOLO STAGE SELECT"), T);
 	}
 	else if (Screen == EChaosImpactScreen::MultiReady)
 	{
@@ -1865,6 +1896,16 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		const int32 Vertical[] = {3, 2, 1, 0};
 		SelectedIndex = bHorizontal ? Horizontal[SelectedIndex] : Vertical[SelectedIndex];
 	}
+	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::StageSelect
+		|| Screen == EChaosImpactScreen::SoloStageSelect) && Key != EKeys::Tab)
+	{
+		// 左右でステージ1と2を行き来し、下入力で戻るボタンへ移動
+		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
+			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		SelectedIndex = bHorizontal
+			? (SelectedIndex == 0 ? 1 : SelectedIndex == 1 ? 0 : 2)
+			: (SelectedIndex == 2 ? 0 : 2);
+	}
 	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::StageSelect) && Key != EKeys::Tab)
 	{
 		// Local / Online (or the two stages) side by side above a single back button.
@@ -1909,6 +1950,31 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 		break;
 	case EChaosImpactScreen::ModeSelect:
+		if (SelectedIndex == 0)
+		{
+			// COMING SOON 画面 (SoloReady) ではなく「ソロ用ステージ選択画面」を開く
+			Controller->ShowMenuScreen(EChaosImpactScreen::SoloStageSelect);
+		}
+		else if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::VSSelect); }
+		else if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
+		else { Controller->ShowMenuScreen(EChaosImpactScreen::Title); }
+		break;
+
+	case EChaosImpactScreen::SoloStageSelect:
+		if (SelectedIndex == 0)
+		{
+			Controller->OpenSoloLevel(1); // ステージ 1 開始
+		}
+		else if (SelectedIndex == 1)
+		{
+			Controller->OpenSoloLevel(2); // ステージ 2 開始
+		}
+		else
+		{
+			GoBack();
+		}
+		break;
+
 		if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
 		else { Controller->ShowMenuScreen(SelectedIndex == 0 ? EChaosImpactScreen::SoloReady
 			: SelectedIndex == 1 ? EChaosImpactScreen::VSSelect : EChaosImpactScreen::Title); }
@@ -2073,6 +2139,14 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			BuildEntries();
 			break;
 		}
+		if (Entries[SelectedIndex].Detail == TEXT("solo_retry"))
+		{
+			Controller->RetrySoloLevel();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("solo_stage_select"))
+		{
+			Controller->ShowMenuScreen(EChaosImpactScreen::SoloStageSelect);
+		}
 		if (Entries[SelectedIndex].Detail == TEXT("rumble"))
 		{
 			Controller->ToggleRumbleEnabled();
@@ -2230,6 +2304,9 @@ void UChaosImpactMenuWidget::GoBack()
 			break;
 		case EChaosImpactScreen::ModeSelect:
 			Controller->ShowMenuScreen(EChaosImpactScreen::Title);
+			break;
+		case EChaosImpactScreen::SoloStageSelect:
+			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 			break;
 		case EChaosImpactScreen::SoloReady:
 		case EChaosImpactScreen::VSSelect:

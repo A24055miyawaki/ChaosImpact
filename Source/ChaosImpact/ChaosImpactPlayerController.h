@@ -228,6 +228,25 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerSetLoadout(int32 InCharacterIndex, int32 InColour);
 	
+	/** ソロモード中かどうか */
+	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
+	bool IsSoloMode() const { return bSoloMode; }
+
+	/** 指定されたソロステージを開く */
+	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
+	void OpenSoloLevel(int32 StageIndex);
+
+	/** 現在のソロステージをやり直す */
+	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
+	void RetrySoloLevel();
+
+	/** 現在のソロステージ番号を取得 */
+	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
+	int32 GetCurrentSoloStage() const { return CurrentSoloStage; }
+
+	// 既存の ShowsTrainingPauseEntries を変更（ソロモード中はトレーニングポーズ項目を出さない）
+	bool ShowsTrainingPauseEntries() const { return bTrainingMode && !bSoloMode && !IsVersusMatchWorld(); }
+
 protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactMenuWidget> MenuWidget;
@@ -387,5 +406,11 @@ protected:
 
 	/** Returns true if the player should use UMG touch controls */
 	bool ShouldUseTouchControls() const;
+
+	/** ソロモード実行中フラグ */
+	bool bSoloMode = false;
+
+	/** 現在プレイ中のソロステージ番号 */
+	int32 CurrentSoloStage = 1;
 
 };

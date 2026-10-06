@@ -40,7 +40,9 @@ enum class EChaosImpactScreen : uint8
 	/** Every local player picks a character and colour, after controller assignment. */
 	CharacterSelect,
 	/** VS: the stage, picked after the rules; picking one starts the match with those rules. */
-	StageSelect
+	StageSelect,
+	// --- ソロモード用（末尾に追加） ---
+	SoloStageSelect
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

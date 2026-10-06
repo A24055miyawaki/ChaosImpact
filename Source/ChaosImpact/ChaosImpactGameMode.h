@@ -31,6 +31,9 @@ public:
 
 	/** Online room: stop accepting new members. */
 	void CloseRecruitment();
+	/** The VS stage and where it goes (the title demo plays on one there; see AChaosImpactTitleDemo). */
+	TSubclassOf<AChaosImpactStageBase> GetVersusStageClass() const { return VersusStageClass; }
+	FVector GetVersusStageLocation() const { return VersusStageLocation; }
 	bool IsOnlineRoom() const { return GetNetMode() == NM_ListenServer; }
 
 	/**

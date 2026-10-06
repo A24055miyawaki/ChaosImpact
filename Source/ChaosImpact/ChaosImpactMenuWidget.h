@@ -110,6 +110,8 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> LogoTexture;
 	FSlateBrush LogoBrush;
+	/** The title demo's picture (see AChaosImpactTitleDemo). */
+	mutable FSlateBrush DemoBrush;
 
 	/** Stage select: an in-game picture of each stage (Content/UI/StageSelect/Stage<N>.png), in StageIndex order. */
 	UPROPERTY(Transient)

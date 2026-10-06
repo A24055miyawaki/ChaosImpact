@@ -17,6 +17,7 @@ class AChaosImpactTrainingTarget;
 class AChaosImpactTrainingArena;
 class ACameraActor;
 class AChaosImpactWarpPad;
+class AChaosImpactTitleDemo;
 
 /**
  *  Basic PlayerController class for a third person game
@@ -126,6 +127,8 @@ public:
 	}
 	EChaosImpactBallFlightMode GetBallFlightMode() const { return BallFlightMode; }
 	EChaosImpactScreen GetCurrentScreen() const { return CurrentScreen; }
+	/** The CPU match filmed behind the title (title world only; null elsewhere or before it starts). */
+	AChaosImpactTitleDemo* GetTitleDemo() const { return TitleDemo; }
 	UChaosImpactMenuWidget* GetMenuWidget() const { return MenuWidget; }
 	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
@@ -205,7 +208,6 @@ public:
 	bool IsVersusMatchWorld() const;
 	bool CanOpenMatchRulesFromPause() const;
 	/** Pause entries that only belong to the training arena. */
-	bool ShowsTrainingPauseEntries() const { return bTrainingMode && !IsVersusMatchWorld(); }
 
 	UFUNCTION(Server, Reliable)
 	void ServerChangeTeam(int32 Direction);
@@ -250,6 +252,13 @@ public:
 protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactMenuWidget> MenuWidget;
+
+	/** The title world (opened with no mode options): the title shows a CPU match and does not pause the world. */
+	bool bTitleDemoWorld = false;
+	UPROPERTY(Transient)
+	TObjectPtr<AChaosImpactTitleDemo> TitleDemo;
+	FTimerHandle TitleDemoTimer;
+	void StartTitleDemo();
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Menu")
 	EChaosImpactScreen CurrentScreen = EChaosImpactScreen::Title;
@@ -369,6 +378,8 @@ protected:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactWarpPad>> TrainingWarpPads;
 	void OpenTrainingLevel(bool bKeepFlightMode, bool bOnlineSearch = false);
+	/** Back to the title world (the level with no options), where the title plays its demo match. */
+	void OpenTitleLevel();
 	void ResetControllerJoinSequence();
 	void BuildFallbackControllerAssignments();
 	int32 GetPadIndexForPlayer(int32 PlayerIndex) const;

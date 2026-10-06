@@ -1,6 +1,8 @@
 #include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactTitleDemo.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
@@ -194,7 +196,7 @@ namespace
 
 	/** Deep navy field split by a blue slab on the left and a red slab on the right. */
 	void PaintBackdrop(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
-		const float Time)
+		const float Time, const FSlateBrush* Demo = nullptr, const float DemoAlpha = 0.0f)
 	{
 		const FMenuPainter Flat{Design, Elements, Layer};
 		for (int32 Band = 0; Band < 18; ++Band)
@@ -202,6 +204,17 @@ namespace
 			const float T = Band / 17.0f;
 			Flat.Box(-400.0f, Band * 50.0f, 2400.0f, 51.0f, FMath::Lerp(
 				FLinearColor(0.022f, 0.03f, 0.06f, 1.0f), FLinearColor(0.003f, 0.004f, 0.01f, 1.0f), T));
+		}
+		if (Demo && DemoAlpha > 0.0f)
+		{
+			// The title demo shows through the dark middle only: between the blue and red slabs, inside the top and
+			// bottom bars, colourless and dimmed into the backdrop's own navy.
+			const FGeometry Middle = MakeSkewed(Design, 291.0f, 54.0f, 1038.0f, 792.0f, -0.36f);
+			Elements.PushClip(FSlateClippingZone(Middle));
+			FSlateDrawElement::MakeBox(Elements, Layer,
+				Design.ToPaintGeometry(FVector2f(1324.0f, 792.0f), FSlateLayoutTransform(FVector2f(148.0f, 54.0f))),
+				Demo, ESlateDrawEffect::None, FLinearColor(0.36f, 0.47f, 0.88f, 0.34f * DemoAlpha));
+			Elements.PopClip();
 		}
 
 		const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.36f);
@@ -1370,7 +1383,16 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	else
 	{
 		Full.Box(0, 0, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, Ink);
-		PaintBackdrop(DesignGeometry, OutDrawElements, BaseLayer + 1, T);
+		const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const AChaosImpactTitleDemo* Demo = Screen == EChaosImpactScreen::Title && Owner ? Owner->GetTitleDemo() : nullptr;
+		const float DemoAlpha = Demo && Demo->GetPicture() ? Demo->GetFadeIn() : 0.0f;
+		if (DemoAlpha > 0.0f && DemoBrush.GetResourceObject() != Demo->GetPicture())
+		{
+			DemoBrush.SetResourceObject(Demo->GetPicture());
+			DemoBrush.ImageSize = FVector2D(AChaosImpactTitleDemo::PictureWidth, AChaosImpactTitleDemo::PictureHeight);
+			DemoBrush.DrawAs = ESlateBrushDrawType::Image;
+		}
+		PaintBackdrop(DesignGeometry, OutDrawElements, BaseLayer + 1, T, DemoAlpha > 0.0f ? &DemoBrush : nullptr, DemoAlpha);
 	}
 
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
@@ -1973,11 +1995,6 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			GoBack();
 		}
-		break;
-
-		if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
-		else { Controller->ShowMenuScreen(SelectedIndex == 0 ? EChaosImpactScreen::SoloReady
-			: SelectedIndex == 1 ? EChaosImpactScreen::VSSelect : EChaosImpactScreen::Title); }
 		break;
 	case EChaosImpactScreen::TrainingSetup:
 		if (SelectedIndex >= 0 && SelectedIndex < 4)

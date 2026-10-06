@@ -109,7 +109,9 @@ namespace
 				PC->ShowMenuScreen(EChaosImpactScreen::Title);
 				if (!Check(EChaosImpactScreen::Title, TEXT("Startup opens title"))) { return true; }
 				Test->TestTrue(TEXT("Supplied logo loaded"), Menu->HasLogo());
-				Test->TestTrue(TEXT("Title freezes gameplay"), PC->IsPaused());
+				// The title's demo match plays on behind it (the player still cannot act).
+				Test->TestFalse(TEXT("Title keeps the world running for its demo"), PC->IsPaused());
+				Test->TestFalse(TEXT("Title takes no gameplay input"), PC->IsGameplayActive());
 				break;
 			case 1:
 				Capture(TEXT("01-Title.png"));
@@ -140,7 +142,7 @@ namespace
 					Menu->GoBack();
 				if (!Check(EChaosImpactScreen::ModeSelect, TEXT("Gamepad B returns to modes"))) { return true; }
 				MenuKey(EKeys::Enter);
-				if (!Check(EChaosImpactScreen::SoloReady, TEXT("Solo has its own ready screen"))) { return true; }
+				if (!Check(EChaosImpactScreen::SoloStageSelect, TEXT("Solo opens its stage select"))) { return true; }
 				break;
 			case 6:
 				Capture(TEXT("04-Solo.png"));
@@ -584,12 +586,17 @@ namespace
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
-				if (!Check(EChaosImpactScreen::Title, TEXT("Pause title button returns to title"))) { return true; }
+				TravelStartedAt = Now;
 				break;
 			case 23:
-				// Regression: the title shown inside a training world (after leaving training, an online
-				// room or a room search) must still lead VS online to the room screen, not back to training.
-				Test->TestTrue(TEXT("Title is being shown inside the training world"), PC->IsTrainingMode());
+				// The pause menu's タイトルへ opens the title world again (the title plays its demo there).
+				if ((PC->IsTrainingMode() || PC->GetCurrentScreen() != EChaosImpactScreen::Title) && Now - TravelStartedAt < 45)
+				{
+					return false;
+				}
+				if (!Check(EChaosImpactScreen::Title, TEXT("Pause title button returns to title"))) { return true; }
+				Test->TestFalse(TEXT("...in the title world, not over the training"), PC->IsTrainingMode());
+				// From that title, VS online still leads to the room screen.
 				PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 				PC->BeginVersusOnline();
 				if (!Check(EChaosImpactScreen::OnlinePlayers, TEXT("VS online opens player count from training world"))) { return true; }

@@ -3,6 +3,7 @@
 
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactTitleDemo.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactTrainingArena.h"
@@ -118,6 +119,14 @@ void AChaosImpactPlayerController::BeginPlay()
 	BallFlightMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIBallStraight=1"))
 		? EChaosImpactBallFlightMode::Straight : EChaosImpactBallFlightMode::Arc;
 	CurrentScreen = bTrainingMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
+	// The title plays a CPU match behind it, started a moment after the title appears (-CINoTitleDemo: none).
+	bTitleDemoWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && GetNetMode() == NM_Standalone
+		&& GetWorld() && !GetWorld()->URL.HasOption(TEXT("CIVersus=1")) && !FParse::Param(FCommandLine::Get(), TEXT("CINoTitleDemo"));
+	if (bTitleDemoWorld && IsPrimaryLocalPlayerController())
+	{
+		// After the logo has landed, so setting the stage up never stutters its arrival.
+		GetWorldTimerManager().SetTimer(TitleDemoTimer, this, &AChaosImpactPlayerController::StartTitleDemo, 1.4f, false);
+	}
 	const bool bPrimaryLocalPlayer = IsPrimaryLocalPlayerController();
 
 	bShowMouseCursor = !IsUsingGamepad();
@@ -249,7 +258,8 @@ void AChaosImpactPlayerController::BeginPlay()
 	EnsureTrainingWarpPads();
 	EnsureTrainingTargets();
 
-	if (bTrainingMode && IsLocalController() && IsPrimaryLocalPlayerController())
+	// Every world balls fly in (training, VS, solo, and the title with its demo match).
+	if ((bTrainingMode || bSoloMode || bTitleDemoWorld) && IsLocalController() && IsPrimaryLocalPlayerController())
 	{
 		// Ball effects are loaded at game start; show each once now, out of sight below the arena, so the
 		// first real fire or ice ball does not stall while pipeline states and GPU resources are created.
@@ -610,6 +620,21 @@ void AChaosImpactPlayerController::OnPossess(APawn* InPawn)
 	EnsureTrainingTargets();
 }
 
+void AChaosImpactPlayerController::StartTitleDemo()
+{
+	if (TitleDemo || bTravelPending || !GetWorld())
+	{
+		return;
+	}
+	FActorSpawnParameters Parameters;
+	Parameters.Owner = this;
+	TitleDemo = GetWorld()->SpawnActor<AChaosImpactTitleDemo>(AChaosImpactTitleDemo::StaticClass(), FTransform::Identity, Parameters);
+	if (TitleDemo)
+	{
+		TitleDemo->SetFilming(CurrentScreen == EChaosImpactScreen::Title);
+	}
+}
+
 void AChaosImpactPlayerController::ApplyScreenInput()
 {
 	const bool bPlaying = IsGameplayActive();
@@ -636,8 +661,10 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 	// Pausing an online room would freeze every member, so menus there never pause the world.
 	// Team select lets the other local players keep choosing through their own controllers.
 	// A spectator's time stop holds through menus too.
+	// The title's demo match plays on behind it.
 	SetPause(bSpectateTimeStopped || (!bPlaying && !bLiveTrainingOverlay && !IsOnlineRoom()
-		&& CurrentScreen != EChaosImpactScreen::TeamSelect && CurrentScreen != EChaosImpactScreen::MatchEnd));
+		&& CurrentScreen != EChaosImpactScreen::TeamSelect && CurrentScreen != EChaosImpactScreen::MatchEnd
+		&& !(bTitleDemoWorld && CurrentScreen == EChaosImpactScreen::Title)));
 	if (MobileControlsWidget)
 	{
 		MobileControlsWidget->SetVisibility(bPlaying ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
@@ -701,9 +728,20 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 		RemoveSecondaryLocalPlayers();
 		StopRoomSearch();
 	}
+	// The title (with its demo match) lives in its own world: from a battle or solo stage, go back there.
+	if (NewScreen == EChaosImpactScreen::Title && !bTitleDemoWorld && GetNetMode() == NM_Standalone
+		&& IsPrimaryLocalPlayerController())
+	{
+		OpenTitleLevel();
+		return;
+	}
 	CurrentScreen = NewScreen;
 	MenuWidget->ShowScreen(NewScreen);
 	ApplyScreenInput();
+	if (TitleDemo)
+	{
+		TitleDemo->SetFilming(NewScreen == EChaosImpactScreen::Title);
+	}
 }
 
 void AChaosImpactPlayerController::TogglePauseMenu()
@@ -1574,6 +1612,25 @@ void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FStr
 		}
 		UE_LOG(LogChaosImpact, Log, TEXT("Player name set: %s"), *Trimmed);
 	}
+}
+
+void AChaosImpactPlayerController::OpenTitleLevel()
+{
+	const FString MapPackage = TrainingLevel.GetLongPackageName();
+	if (MapPackage.IsEmpty() || bTravelPending)
+	{
+		return;
+	}
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+	// No options: the same title world the game starts in.
+	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true);
 }
 
 void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode, const bool bOnlineSearch)

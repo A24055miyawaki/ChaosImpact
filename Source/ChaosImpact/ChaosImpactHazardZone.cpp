@@ -447,13 +447,28 @@ void ChaosImpactBallTypes::PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAli
 	{
 		GetAdditiveMaterial(), GetEmissiveMaterial(), GetIceMaterial(),
 		LoadMaterialWithFallback(TEXT("/Game/ChaosImpact/FX/M_CI_IceCrystal.M_CI_IceCrystal"), TEXT("/Game/ChaosImpact/FX/M_CI_Ice.M_CI_Ice")),
-		LoadMaterialWithFallback(TEXT("/Game/ChaosImpact/FX/M_CI_IceSurface.M_CI_IceSurface"), TEXT("/Game/ChaosImpact/FX/M_CI_Ice.M_CI_Ice"))
+		LoadMaterialWithFallback(TEXT("/Game/ChaosImpact/FX/M_CI_IceSurface.M_CI_IceSurface"), TEXT("/Game/ChaosImpact/FX/M_CI_Ice.M_CI_Ice")),
+		// Snowballs.
+		LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/LevelPrototyping/Materials/M_FlatCol.M_FlatCol"))
 	};
 	for (const UMaterialInterface* Material : Materials)
 	{
 		if (Material)
 		{
 			OutKeepAlive.AddUnique(const_cast<UMaterialInterface*>(Material));
+		}
+	}
+	// The shapes ball looks are built from (nova layers, beam shafts, snow lumps, tornado funnels, landing rings).
+	const TCHAR* const ShapePaths[] =
+	{
+		TEXT("/Engine/BasicShapes/Sphere.Sphere"), TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
+		TEXT("/Engine/BasicShapes/Cone.Cone"), TEXT("/Engine/BasicShapes/Cube.Cube")
+	};
+	for (const TCHAR* Path : ShapePaths)
+	{
+		if (UStaticMesh* Shape = LoadObject<UStaticMesh>(nullptr, Path))
+		{
+			OutKeepAlive.AddUnique(Shape);
 		}
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Preloaded %d ball FX assets in %.0f ms"), OutKeepAlive.Num(),
@@ -489,7 +504,7 @@ void ChaosImpactBallTypes::WarmUpEffects(UWorld* World, const FVector& Location)
 		UMaterialInterface* const Materials[] =
 		{
 			MakeAdditive(Outer, Neutral, 1.0f), MakeEmissive(Outer, Neutral, 1.0f), MakeIce(Outer, Neutral, 0.5f),
-			MakeIceCrystal(Outer, 0.5f), MakeIceSurface(Outer)
+			MakeIceCrystal(Outer, 0.5f), MakeIceSurface(Outer), MakeSnow(Outer)
 		};
 		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Materials); ++Index)
 		{

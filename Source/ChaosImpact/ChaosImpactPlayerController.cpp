@@ -4,6 +4,12 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactTitleDemo.h"
+#include "ChaosImpactVersusCard.h"
+#include "ChaosImpactCharacterPreview.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "ChaosImpactPaint.h"
+#include "MoviePlayer.h"
+#include "Containers/Ticker.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactTrainingArena.h"
@@ -122,6 +128,18 @@ void AChaosImpactPlayerController::BeginPlay()
 	// The title plays a CPU match behind it, started a moment after the title appears (-CINoTitleDemo: none).
 	bTitleDemoWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && GetNetMode() == NM_Standalone
 		&& GetWorld() && !GetWorld()->URL.HasOption(TEXT("CIVersus=1")) && !FParse::Param(FCommandLine::Get(), TEXT("CINoTitleDemo"));
+	// A local VS level opens dark, behind the VS emblem the card ended on (see UpdateVersusReveal).
+	if (GetNetMode() == NM_Standalone && IsPrimaryLocalPlayerController() && GetWorld()
+		&& GetWorld()->URL.HasOption(TEXT("CIMatch=1")))
+	{
+		if (UGameViewportClient* Viewport = GetWorld()->GetGameViewport())
+		{
+			VersusReveal = SNew(SChaosImpactVersusReveal);
+			Viewport->AddViewportWidgetContent(VersusReveal.ToSharedRef(), 10000);
+			VersusRevealDeadline = FPlatformTime::Seconds() + 8.0;
+			GetWorldTimerManager().SetTimer(VersusRevealTimer, this, &AChaosImpactPlayerController::UpdateVersusReveal, 0.02f, true);
+		}
+	}
 	if (bTitleDemoWorld && IsPrimaryLocalPlayerController())
 	{
 		// After the logo has landed, so setting the stage up never stutters its arrival.
@@ -2108,7 +2126,175 @@ void AChaosImpactPlayerController::ConfirmMatchRules()
 	if (PlayFlow == EChaosImpactPlayFlow::VersusLocal)
 	{
 		bLocalMatchRulesChosen = true;
+		PlayVersusCardThenOpen();
+	}
+}
+
+void AChaosImpactPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		if (VersusCard.IsValid())
+		{
+			Viewport->RemoveViewportWidgetContent(VersusCard.ToSharedRef());
+		}
+		if (VersusReveal.IsValid())
+		{
+			Viewport->RemoveViewportWidgetContent(VersusReveal.ToSharedRef());
+		}
+	}
+	VersusCard.Reset();
+	VersusReveal.Reset();
+	Super::EndPlay(EndPlayReason);
+}
+
+FChaosImpactVersusCardInfo AChaosImpactPlayerController::BuildVersusCardInfo() const
+{
+	FChaosImpactVersusCardInfo Info;
+	const FChaosImpactMatchRules& Rules = PendingMatchRules;
+	const UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(this);
+	if (!Rules.bSpectate)
+	{
+		for (int32 Human = 0; Human < GetMatchHumanCount(); ++Human)
+		{
+			const FChaosImpactLoadout Loadout = Loadouts ? Loadouts->GetLoadout(Human) : FChaosImpactLoadout();
+			FChaosImpactVersusEntrant Entrant;
+			Entrant.Label = FString::Printf(TEXT("P%d"), Human + 1);
+			Entrant.Name = ChaosImpactRoster::Get(Loadout.Character).Name;
+			const bool bColour = Loadout.Colour >= 0;
+			Entrant.Detail = bColour ? ChaosImpactRoster::ColourNames[FMath::Clamp(Loadout.Colour, 0, ChaosImpactRoster::ColourCount - 1)] : TEXT("");
+			Entrant.Color = bColour ? ChaosImpactRoster::GetColourSwatch(Loadout.Colour) : ChaosImpactPaint::PlayerAccents[Human % 4];
+			Info.Entrants.Add(Entrant);
+		}
+	}
+	for (int32 CPU = 0; CPU < Rules.CPUCount; ++CPU)
+	{
+		FChaosImpactVersusEntrant Entrant;
+		Entrant.Label = FString::Printf(TEXT("CPU%d"), CPU + 1);
+		Entrant.Name = ChaosImpactMatch::GetCPULevelName(Rules.CPULevel);
+		Entrant.Color = Rules.CPULevel == ChaosImpactMatch::CPULevelStrongest ? ChaosImpactPaint::Violet : FLinearColor(0.7f, 0.74f, 0.82f);
+		Entrant.bCPU = true;
+		Info.Entrants.Add(Entrant);
+	}
+	Info.Footer = FString::Printf(TEXT("%s ・ %s ・ %d分%s"), *ChaosImpactMatch::GetStageLabel(Rules.StageIndex),
+		*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, Rules.bSpectate ? TEXT(" ・ 観戦") : TEXT(""));
+	return Info;
+}
+
+void AChaosImpactPlayerController::PlayVersusCardThenOpen()
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (VersusCard.IsValid())
+	{
+		return;
+	}
+	if (!Viewport)
+	{
 		OpenTrainingLevel(false);
+		return;
+	}
+	FChaosImpactVersusCardInfo Info = BuildVersusCardInfo();
+	Info.StartedAt = FPlatformTime::Seconds();
+	// Each player's character in their colour, filmed far outside the level for their card (CPUs pick theirs in the
+	// VS level, so theirs shows a "?").
+	const UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(this);
+	FActorSpawnParameters Parameters;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	Parameters.ObjectFlags |= RF_Transient;
+	int32 Human = 0;
+	for (FChaosImpactVersusEntrant& Entrant : Info.Entrants)
+	{
+		if (Entrant.bCPU)
+		{
+			continue;
+		}
+		if (AChaosImpactCharacterPreview* Preview = GetWorld()->SpawnActor<AChaosImpactCharacterPreview>(
+			AChaosImpactCharacterPreview::StaticClass(), FVector(Human * 1600.0f, -84000.0f, 40000.0f), FRotator::ZeroRotator, Parameters))
+		{
+			const FChaosImpactLoadout Loadout = Loadouts ? Loadouts->GetLoadout(Human) : FChaosImpactLoadout();
+			Preview->ShowLoadout(Loadout.Character, FMath::Max(Loadout.Colour, 0), Entrant.Color);
+			Entrant.Picture = Preview->GetPicture();
+			VersusCardPreviews.Add(Preview);
+		}
+		++Human;
+	}
+	// The menus stop answering while the card plays.
+	bTravelPending = true;
+	VersusCard = SNew(SChaosImpactVersusCard).Info(Info);
+	Viewport->AddViewportWidgetContent(VersusCard.ToSharedRef(), 10000);
+	// Menus pause the world (and its timers), so the card runs on the core ticker, every frame.
+	const TSharedRef<bool> bStruckPose = MakeShared<bool>(false);
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this, Info, bStruckPose](const float DeltaTime)
+	{
+		const float Elapsed = static_cast<float>(FPlatformTime::Seconds() - Info.StartedAt);
+		for (AChaosImpactCharacterPreview* Preview : VersusCardPreviews)
+		{
+			if (IsValid(Preview))
+			{
+				// A paused world does not animate the models by itself.
+				Preview->Animate(DeltaTime);
+				if (!*bStruckPose && Elapsed >= SChaosImpactVersusCard::VersusLandsAt)
+				{
+					Preview->PlayReady();
+				}
+			}
+		}
+		*bStruckPose = *bStruckPose || Elapsed >= SChaosImpactVersusCard::VersusLandsAt;
+		if (Elapsed < SChaosImpactVersusCard::IntroSeconds)
+		{
+			return true;
+		}
+		// The pictures keep their last frame and leave with the card (the previews go with this level).
+		for (AChaosImpactCharacterPreview* Preview : VersusCardPreviews)
+		{
+			if (IsValid(Preview))
+			{
+				Preview->ReleasePicture();
+			}
+		}
+		VersusCardPreviews.Reset();
+		// The same card, carrying on from where it is, is the VS level's loading screen. (Playing in the editor
+		// has no loading screen: the card's last frame simply stays on screen while the level loads.)
+		FLoadingScreenAttributes Loading;
+		Loading.WidgetLoadingScreen = SNew(SChaosImpactVersusCard).Info(Info);
+		Loading.bAutoCompleteWhenLoadingCompletes = true;
+		Loading.MinimumLoadingScreenDisplayTime = 0.0f;
+		GetMoviePlayer()->SetupLoadingScreen(Loading);
+		// Off the viewport now (it would outlive the level); its last frame stays up while the level loads.
+		if (UGameViewportClient* CardViewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr; CardViewport && VersusCard.IsValid())
+		{
+			CardViewport->RemoveViewportWidgetContent(VersusCard.ToSharedRef());
+		}
+		VersusCard.Reset();
+		bTravelPending = false;
+		OpenTrainingLevel(false);
+		return false;
+	}));
+}
+
+void AChaosImpactPlayerController::UpdateVersusReveal()
+{
+	if (!VersusReveal.IsValid())
+	{
+		GetWorldTimerManager().ClearTimer(VersusRevealTimer);
+		return;
+	}
+	// Open as the match's opening (or team select) begins, so the training arena underneath never shows.
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	const bool bStarted = Match && Match->bVersusMatch && (Match->Phase == EChaosImpactOnlinePhase::Intro
+		|| Match->Phase == EChaosImpactOnlinePhase::TeamSelect || Match->Phase == EChaosImpactOnlinePhase::Match);
+	if (!VersusReveal->IsOpening() && (bStarted || FPlatformTime::Seconds() > VersusRevealDeadline))
+	{
+		VersusReveal->Open();
+	}
+	if (VersusReveal->IsFinished())
+	{
+		if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+		{
+			Viewport->RemoveViewportWidgetContent(VersusReveal.ToSharedRef());
+		}
+		VersusReveal.Reset();
+		GetWorldTimerManager().ClearTimer(VersusRevealTimer);
 	}
 }
 

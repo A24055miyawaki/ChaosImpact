@@ -128,6 +128,19 @@ void AChaosImpactCharacterPreview::BeginPlay()
 	ReturnToIdle();
 }
 
+UTextureRenderTarget2D* AChaosImpactCharacterPreview::ReleasePicture()
+{
+	UTextureRenderTarget2D* Released = Picture;
+	if (Released)
+	{
+		Camera->bCaptureEveryFrame = false;
+		Camera->TextureTarget = nullptr;
+		Released->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+		Picture = nullptr;
+	}
+	return Released;
+}
+
 void AChaosImpactCharacterPreview::RebuildModel(const int32 CharacterIndex)
 {
 	if (ModelCharacter == CharacterIndex)

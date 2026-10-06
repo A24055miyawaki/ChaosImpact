@@ -30,7 +30,8 @@ public class ChaosImpact : ModuleRules
 			"NetCore",
 			"ProceduralMeshComponent",
 			"OnlineSubsystem",
-			"OnlineSubsystemUtils"
+			"OnlineSubsystemUtils",
+			"MoviePlayer"
 		});
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.

@@ -18,6 +18,10 @@ class AChaosImpactTrainingArena;
 class ACameraActor;
 class AChaosImpactWarpPad;
 class AChaosImpactTitleDemo;
+class SChaosImpactVersusReveal;
+class AChaosImpactCharacterPreview;
+class SWidget;
+struct FChaosImpactVersusCardInfo;
 
 /**
  *  Basic PlayerController class for a third person game
@@ -260,6 +264,20 @@ protected:
 	FTimerHandle TitleDemoTimer;
 	void StartTitleDemo();
 
+	/** Local VS: the VS card plays over the menu, then the VS level opens with the card as its loading screen. */
+	void PlayVersusCardThenOpen();
+	/** The fighters and rules the VS card shows (PendingMatchRules and the local players' picks). */
+	FChaosImpactVersusCardInfo BuildVersusCardInfo() const;
+	TSharedPtr<SWidget> VersusCard;
+	/** Each player's character, filmed for their place on the VS card. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AChaosImpactCharacterPreview>> VersusCardPreviews;
+	/** A local VS level opens dark and opens from the middle as the match's opening starts. */
+	TSharedPtr<SChaosImpactVersusReveal> VersusReveal;
+	FTimerHandle VersusRevealTimer;
+	double VersusRevealDeadline = 0.0;
+	void UpdateVersusReveal();
+
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Menu")
 	EChaosImpactScreen CurrentScreen = EChaosImpactScreen::Title;
 
@@ -411,6 +429,8 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
+	/** Takes the VS card and reveal off the screen (raw Slate content outlives the level). */
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;

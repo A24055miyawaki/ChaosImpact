@@ -34,6 +34,11 @@ public:
 	/** A short burst of motion when the player locks in. */
 	void PlayReady();
 	UTextureRenderTarget2D* GetPicture() const { return Picture; }
+	/**
+	 * Stops filming and hands the picture over, moved out of this actor's level: it keeps its last frame and outlives
+	 * the level (the VS card shows it while the next level loads). The caller keeps it referenced.
+	 */
+	UTextureRenderTarget2D* ReleasePicture();
 
 	/**
 	 * Advances the idle (or ready) motion and the stage's sway. The select screen calls this every frame: menus pause

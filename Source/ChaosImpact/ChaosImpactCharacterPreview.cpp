@@ -128,6 +128,38 @@ void AChaosImpactCharacterPreview::BeginPlay()
 	ReturnToIdle();
 }
 
+void AChaosImpactCharacterPreview::UseAsFigure()
+{
+	Camera->bCaptureEveryFrame = false;
+	Camera->TextureTarget = nullptr;
+	Camera->Deactivate();
+	Picture = nullptr;
+	Floor->SetVisibility(false);
+	Backdrop->SetVisibility(false);
+	KeyLight->SetVisibility(false);
+	RimLight->SetVisibility(false);
+}
+
+void AChaosImpactCharacterPreview::PlayFigureAnimation(UAnimSequenceBase* Animation, const bool bLoop, const float HoldAt)
+{
+	if (!Animation)
+	{
+		return;
+	}
+	ReadyEndsAt = 0.0;
+	bHolding = false;
+	HoldAnimationAt = HoldAt;
+	AnimationStartedAge = Age;
+	Pose->PlayAnimation(Animation, bLoop);
+	Pose->SetPlayRate(1.0f);
+}
+
+void AChaosImpactCharacterPreview::SetFacing(const float Yaw, const float Sway)
+{
+	FacingYaw = Yaw;
+	SwayAmount = Sway;
+}
+
 UTextureRenderTarget2D* AChaosImpactCharacterPreview::ReleasePicture()
 {
 	UTextureRenderTarget2D* Released = Picture;
@@ -220,10 +252,17 @@ void AChaosImpactCharacterPreview::Animate(const float DeltaSeconds)
 	}
 	// A slow sway, plus a spin that settles after each change.
 	SpinKick = FMath::FInterpTo(SpinKick, 0.0f, DeltaSeconds, 7.0f);
-	const float Yaw = 14.0f * FMath::Sin(Age * 0.7f) + SpinKick;
-	Pose->SetRelativeRotation(FRotator(0.0f, -22.0f + Yaw, 0.0f));
+	const float Yaw = SwayAmount * FMath::Sin(Age * 0.7f) + SpinKick;
+	Pose->SetRelativeRotation(FRotator(0.0f, FacingYaw + Yaw, 0.0f));
+	// A held pose stops where it was asked to (and stays there).
+	if (HoldAnimationAt >= 0.0f && !bHolding && Age - AnimationStartedAge >= HoldAnimationAt)
+	{
+		bHolding = true;
+		Pose->SetPosition(HoldAnimationAt, false);
+		Pose->SetPlayRate(0.0f);
+	}
 	// Evaluated here on the game thread, then copied onto the model.
-	Pose->TickAnimation(DeltaSeconds, false);
+	Pose->TickAnimation(bHolding ? 0.0f : DeltaSeconds, false);
 	Pose->RefreshBoneTransforms();
 	if (Model)
 	{

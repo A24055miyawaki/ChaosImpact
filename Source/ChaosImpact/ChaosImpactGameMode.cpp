@@ -1003,6 +1003,15 @@ void AChaosImpactGameMode::UpdateLobbyReady()
 	{
 		return;
 	}
+	// Someone is still on the last match's results: nothing starts, and the wait starts again once they are back.
+	for (const APlayerState* Member : Match->PlayerArray)
+	{
+		if (const AChaosImpactPlayerState* Viewer = Cast<AChaosImpactPlayerState>(Member); Viewer && Viewer->bViewingResults)
+		{
+			Match->ReadyDeadline = Match->GetServerWorldTimeSeconds() + GetReadyWaitSeconds();
+			return;
+		}
+	}
 	const int32 Members = Match->CountHumanMembers();
 	const int32 Ready = Match->CountReadyMembers();
 	const bool bEveryoneReady = Members > 0 && Ready >= Members;
@@ -1202,8 +1211,7 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	}
 	for (AChaosImpactPlayerState* Member : Match->GetCompetitors(true))
 	{
-		Member->Points = 0;
-		Member->Knockouts = 0;
+		Member->ResetMatchStats();
 		if (Member->IsABot())
 		{
 			Member->TeamIndex = INDEX_NONE;
@@ -1238,8 +1246,7 @@ void AChaosImpactGameMode::SetLocalPlayersSpectating(const bool bSpectate)
 			continue;
 		}
 		Member->bSpectating = bSpectate;
-		Member->Points = 0;
-		Member->Knockouts = 0;
+		Member->ResetMatchStats();
 		Member->TeamIndex = INDEX_NONE;
 		if (APawn* Old = Controller->GetPawn())
 		{
@@ -1348,8 +1355,7 @@ void AChaosImpactGameMode::StartMatchIntro()
 		{
 			Member->TeamIndex = INDEX_NONE;
 		}
-		Member->Points = 0;
-		Member->Knockouts = 0;
+		Member->ResetMatchStats();
 		Member->ForceNetUpdate();
 	}
 
@@ -1391,7 +1397,8 @@ void AChaosImpactGameMode::StartMatchIntro()
 	IntroFinishedMembers.Reset();
 	SetMatchPhase(EChaosImpactOnlinePhase::Intro, 0.0f);
 	GetWorldTimerManager().SetTimer(MatchPhaseTimer, this, &AChaosImpactGameMode::StartReadyCountdown,
-		ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds + ChaosImpactMatch::IntroWaitTimeoutSeconds, false);
+		(Match->bOnlineRoom ? ChaosImpactMatch::OnlineCardSeconds : 0.0f)
+		+ ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds + ChaosImpactMatch::IntroWaitTimeoutSeconds, false);
 	UE_LOG(LogChaosImpact, Log, TEXT("VS match opening with %d competitors"), Competitors.Num());
 }
 
@@ -1441,12 +1448,41 @@ void AChaosImpactGameMode::BeginMatchPlay()
 	const float Seconds = MatchDurationOverride > 0.0f ? MatchDurationOverride : Match->Rules.Minutes * 60.0f;
 	SetMatchPhase(EChaosImpactOnlinePhase::Match, Seconds);
 	GetWorldTimerManager().SetTimer(MatchPhaseTimer, this, &AChaosImpactGameMode::EndMatch, Seconds, false);
+	// The graph starts at 0 for everyone at GO.
+	for (AChaosImpactPlayerState* Member : Match->GetCompetitors(true))
+	{
+		Member->PointsHistory.Reset();
+	}
+	SampleMatchHistory();
+	GetWorldTimerManager().SetTimer(HistoryTimer, this, &AChaosImpactGameMode::SampleMatchHistory,
+		ChaosImpactMatch::HistoryStepSeconds, true);
 	UE_LOG(LogChaosImpact, Log, TEXT("VS match GO (%.0f s)"), Seconds);
 }
 
 void AChaosImpactGameMode::EndMatch()
 {
+	// The last point of the graph is the final score; every number goes out now for the results.
+	GetWorldTimerManager().ClearTimer(HistoryTimer);
+	SampleMatchHistory();
+	if (const AChaosImpactGameState* Ended = GetGameState<AChaosImpactGameState>())
+	{
+		for (AChaosImpactPlayerState* Member : Ended->GetCompetitors(true))
+		{
+			Member->ForceNetUpdate();
+		}
+	}
 	SetMatchPhase(EChaosImpactOnlinePhase::Results, ChaosImpactMatch::ResultsSeconds);
+	// Online, everyone who played is on the results until they come back to the lobby (or the wait runs out).
+	if (AChaosImpactGameState* Room = GetGameState<AChaosImpactGameState>(); Room && IsOnlineRoom())
+	{
+		for (AChaosImpactPlayerState* Member : Room->GetCompetitors(false))
+		{
+			Member->bViewingResults = !Member->IsABot();
+			Member->ForceNetUpdate();
+		}
+		GetWorldTimerManager().SetTimer(ResultsViewTimer, this, &AChaosImpactGameMode::ClearResultsViewers,
+			ChaosImpactMatch::ResultsViewLimitSeconds, false);
+	}
 	DestroyStageBallSpawners();
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
@@ -1545,6 +1581,104 @@ void AChaosImpactGameMode::DestroyStageBallSpawners()
 		}
 	}
 	StageBallSpawners.Reset();
+}
+
+void AChaosImpactGameMode::SampleMatchHistory()
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->bVersusMatch)
+	{
+		return;
+	}
+	for (AChaosImpactPlayerState* Member : Match->GetCompetitors(true))
+	{
+		// A very long match keeps its first ten minutes or so in full; the final score is always the last point.
+		if (Member->PointsHistory.Num() < 400)
+		{
+			Member->PointsHistory.Add(static_cast<int16>(FMath::Clamp(Member->Points, -32000, 32000)));
+		}
+		else
+		{
+			Member->PointsHistory.Last() = static_cast<int16>(FMath::Clamp(Member->Points, -32000, 32000));
+		}
+	}
+}
+
+void AChaosImpactGameMode::RecordThrow(APawn* Thrower, const bool bSpecial)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	AChaosImpactPlayerState* Member = Thrower ? Thrower->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	if (!Match || !Member || !Match->bVersusMatch || Match->Phase != EChaosImpactOnlinePhase::Match)
+	{
+		return;
+	}
+	++Member->Throws;
+	Member->SpecialThrows += bSpecial ? 1 : 0;
+}
+
+void AChaosImpactGameMode::RecordHit(APawn* Source, APawn* Victim, const AActor* Causer)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->bVersusMatch || Match->Phase != EChaosImpactOnlinePhase::Match || !Source || !Victim)
+	{
+		return;
+	}
+	if (AChaosImpactPlayerState* Hitter = Source->GetPlayerState<AChaosImpactPlayerState>())
+	{
+		++Hitter->Hits;
+		Hitter->LongestHit = FMath::Max(Hitter->LongestHit,
+			FMath::RoundToInt(static_cast<float>(FVector::Dist2D(Source->GetActorLocation(), Victim->GetActorLocation()))));
+		const AChaosImpactBall* Ball = Cast<AChaosImpactBall>(Causer);
+		Hitter->DriveHits += Ball && Ball->GetBallType() == EChaosImpactBallType::Drive ? 1 : 0;
+	}
+	if (AChaosImpactPlayerState* Hurt = Victim->GetPlayerState<AChaosImpactPlayerState>())
+	{
+		++Hurt->TimesHit;
+	}
+}
+
+void AChaosImpactGameMode::RecordDodge(APawn* Dasher)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	AChaosImpactPlayerState* Member = Dasher ? Dasher->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	if (Match && Member && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Match)
+	{
+		++Member->Dodges;
+	}
+}
+
+void AChaosImpactGameMode::ReturnFromResults(APlayerState* Member)
+{
+	AChaosImpactPlayerState* Viewer = Cast<AChaosImpactPlayerState>(Member);
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Viewer || !Match || !Viewer->bViewingResults)
+	{
+		return;
+	}
+	Viewer->bViewingResults = false;
+	Viewer->ForceNetUpdate();
+	UE_LOG(LogChaosImpact, Log, TEXT("%s is back from the results"), *Viewer->GetPlayerName());
+	// The first one back opens the lobby for everyone (the others stay on their results meanwhile).
+	if (Match->Phase == EChaosImpactOnlinePhase::Results && Match->GetPhaseElapsedSeconds() >= ChaosImpactMatch::ResultsRevealSeconds)
+	{
+		GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+		ReturnToLobbyAfterMatch();
+	}
+}
+
+void AChaosImpactGameMode::ClearResultsViewers()
+{
+	if (const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>())
+	{
+		for (APlayerState* Member : Match->PlayerArray)
+		{
+			if (AChaosImpactPlayerState* Viewer = Cast<AChaosImpactPlayerState>(Member); Viewer && Viewer->bViewingResults)
+			{
+				Viewer->bViewingResults = false;
+				Viewer->ForceNetUpdate();
+			}
+		}
+	}
 }
 
 void AChaosImpactGameMode::AwardMatchPoints(APlayerState* Scorer, const int32 Points, const bool bKnockout)

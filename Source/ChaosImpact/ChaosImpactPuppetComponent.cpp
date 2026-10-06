@@ -496,6 +496,7 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 	{
 		return;
 	}
+	PrepareDrivePose();
 	if (bSkinned)
 	{
 		UpdateSkinnedPose();
@@ -551,8 +552,9 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 		{
 			Pole = FVector(0.0f, -1.0f, -0.4f);
 		}
-		RaiseArm(Shoulder, FVector(Shoulder.X - BodyCentre.X, Shoulder.Y - BodyCentre.Y, 0.0f).GetSafeNormal(),
-			Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		const FVector Outward = FVector(Shoulder.X - BodyCentre.X, Shoulder.Y - BodyCentre.Y, 0.0f).GetSafeNormal();
+		RaiseArm(Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		DriveArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		FVector Mid;
 		FVector End;
 		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);
@@ -707,8 +709,9 @@ void UChaosImpactPuppetComponent::UpdateSkinnedPose()
 		}
 		const FLimbChain& Other = bRight ? ChainArmL : ChainArmR;
 		const FVector OtherShoulder = Skin->GetBoneTransformByName(Other.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
-		RaiseArm(Shoulder, FVector(Shoulder.X - OtherShoulder.X, Shoulder.Y - OtherShoulder.Y, 0.0f).GetSafeNormal(),
-			Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		const FVector Outward = FVector(Shoulder.X - OtherShoulder.X, Shoulder.Y - OtherShoulder.Y, 0.0f).GetSafeNormal();
+		RaiseArm(Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		DriveArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		FVector Mid;
 		FVector End;
 		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);
@@ -735,6 +738,73 @@ void UChaosImpactPuppetComponent::RaiseArm(const FVector& Shoulder, const FVecto
 	}
 }
 
+void UChaosImpactPuppetComponent::SetDrivePose(const float HoldWeight, const FVector& HoldPoint, const float PointWeight,
+	const FVector& PointAt)
+{
+	DriveHoldWeight = FMath::Clamp(HoldWeight, 0.0f, 1.0f);
+	DrivePointWeight = FMath::Clamp(PointWeight, 0.0f, 1.0f);
+	DriveHoldPoint = HoldPoint;
+	DrivePointAt = PointAt;
+}
+
+void UChaosImpactPuppetComponent::PrepareDrivePose()
+{
+	const AActor* Owner = GetOwner();
+	if ((DriveHoldWeight <= 0.0f && DrivePointWeight <= 0.0f) || !Owner)
+	{
+		return;
+	}
+	const FTransform& ToWorld = GetComponentTransform();
+	DriveHoldLocal = ToWorld.InverseTransformPosition(DriveHoldPoint);
+	DrivePointLocal = ToWorld.InverseTransformPosition(DrivePointAt);
+	DriveForward = ToWorld.InverseTransformVectorNoScale(Owner->GetActorForwardVector()).GetSafeNormal();
+	DriveUp = ToWorld.InverseTransformVectorNoScale(FVector::UpVector).GetSafeNormal();
+	DriveBallRadius = 24.0f / FMath::Max(static_cast<float>(ToWorld.GetScale3D().X), 0.01f);
+}
+
+void UChaosImpactPuppetComponent::DriveArm(const bool bRight, const FVector& Shoulder, const FVector& Outward,
+	const float Reach, FVector& InOutTarget, FVector& InOutPole) const
+{
+	const FVector& Forward = DriveForward;
+	const FVector& Up = DriveUp;
+	if (DriveHoldWeight > 0.0f)
+	{
+		// Cupped round the ball from either side, a little under and behind it, elbows out and down.
+		const FVector Hold = DriveHoldLocal + Outward * DriveBallRadius * 1.05f - Up * DriveBallRadius * 0.45f
+			- Forward * DriveBallRadius * 0.25f;
+		InOutTarget = FMath::Lerp(InOutTarget, Hold, DriveHoldWeight);
+		InOutPole = FMath::Lerp(InOutPole.GetSafeNormal(), (Outward * 0.7f - Up * 0.7f).GetSafeNormal(), DriveHoldWeight);
+	}
+	if (DrivePointWeight > 0.0f)
+	{
+		FVector Target;
+		FVector Pole;
+		if (bRight)
+		{
+			// Reaching out after the ball, never down past the waist or straight up.
+			FVector Toward = DrivePointLocal - Shoulder;
+			const float Rise = FMath::Clamp(static_cast<float>(FVector::DotProduct(Toward.GetSafeNormal(), Up)), -0.2f, 0.6f);
+			FVector Flat = Toward - Up * FVector::DotProduct(Toward, Up);
+			Flat = Flat.IsNearlyZero(0.01f) ? Forward : Flat.GetSafeNormal();
+			Toward = Flat * FMath::Sqrt(1.0f - Rise * Rise) + Up * Rise;
+			Target = Shoulder + Toward * Reach * 0.98f;
+			Pole = (Outward * 0.5f - Up * 0.8f).GetSafeNormal();
+		}
+		else
+		{
+			// The other fist drawn back to the hip, bracing.
+			Target = Shoulder + (Outward * 0.35f - Up * 0.8f - Forward * 0.4f).GetSafeNormal() * Reach * 0.8f;
+			Pole = (Outward * 0.6f - Forward * 0.6f).GetSafeNormal();
+		}
+		InOutTarget = FMath::Lerp(InOutTarget, Target, DrivePointWeight);
+		InOutPole = FMath::Lerp(InOutPole.GetSafeNormal(), Pole, DrivePointWeight);
+	}
+	if (InOutPole.SizeSquared() < 0.01f)
+	{
+		InOutPole = Outward;
+	}
+}
+
 void UChaosImpactPuppetComponent::PlaceHeldBalls()
 {
 	// Held balls sit in these palms; they are attached to the source hands, so they are moved here every frame.
@@ -744,6 +814,12 @@ void UChaosImpactPuppetComponent::PlaceHeldBalls()
 		FVector Palm;
 		if (Ball && Ball->IsVisible() && GetPalmLocation(bRight, Palm))
 		{
+			if (bRight && DriveHoldWeight > 0.0f && GetWorld())
+			{
+				// A drive ball floats between the cupped hands, bobbing.
+				const float Bob = FMath::Sin(static_cast<float>(GetWorld()->GetTimeSeconds()) * 5.0f) * 2.5f;
+				Palm = FMath::Lerp(Palm, DriveHoldPoint + FVector::UpVector * Bob, DriveHoldWeight);
+			}
 			Ball->SetWorldLocation(Palm);
 		}
 	}

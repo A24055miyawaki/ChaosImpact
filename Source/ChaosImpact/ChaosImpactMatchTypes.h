@@ -107,11 +107,17 @@ namespace ChaosImpactMatch
 	inline constexpr float ReadySeconds = 1.3f;
 	/** Ready? starts anyway if a machine has not reported its opening finished this long after it should have. */
 	inline constexpr float IntroWaitTimeoutSeconds = 6.0f;
+	/** Online: the VS card plays on every screen first (the opening's own clock starts after it). */
+	inline constexpr float OnlineCardSeconds = 2.4f;
 	/** The shortest opening: flyover, dive and Ready? with no one to wait for. */
 	inline constexpr float IntroSeconds = FlyoverSeconds + DiveSeconds + ReadySeconds;
 	inline constexpr float ResultsSeconds = 12.0f;
 	/** Local matches offer the rematch menu once the results have been revealed. */
 	inline constexpr float ResultsRevealSeconds = 7.0f;
+	/** The results' graph: everyone's points this often from GO. */
+	inline constexpr float HistoryStepSeconds = 2.0f;
+	/** Online: the lobby waits at most this long for everyone to come back from the results. */
+	inline constexpr float ResultsViewLimitSeconds = 90.0f;
 
 	/** Each hit on an opponent scores; knocking them out scores this bonus on top. */
 	inline constexpr int32 HitPoints = 1;

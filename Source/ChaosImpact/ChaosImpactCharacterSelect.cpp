@@ -6,6 +6,9 @@
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSettings.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
@@ -16,6 +19,14 @@ namespace
 {
 	using namespace ChaosImpactPaint;
 	using EStep = UChaosImpactCharacterSelect::EStep;
+
+	/** Player N's own controller on this machine (null when there is none). */
+	const APlayerController* LocalPlayerController(const AChaosImpactPlayerController* Owner, const int32 Player)
+	{
+		const UGameInstance* GameInstance = Owner ? Owner->GetGameInstance() : nullptr;
+		const TArray<ULocalPlayer*>* Locals = GameInstance ? &GameInstance->GetLocalPlayers() : nullptr;
+		return Locals && Locals->IsValidIndex(Player) && (*Locals)[Player] ? (*Locals)[Player]->GetPlayerController(Owner->GetWorld()) : nullptr;
+	}
 
 	/** The same accents the controller assignment screen gives P1-P4. */
 	FLinearColor SlotAccent(const int32 Player)
@@ -187,6 +198,7 @@ void UChaosImpactCharacterSelect::Open(AChaosImpactPlayerController* InControlle
 		Slot.Colour = FindFreeColour(Player, Slot.Character,
 			Saved.Colour >= 0 ? Saved.Colour : Player % ChaosImpactRoster::ColourCount, 1);
 		Slot.bKeyboard = InController->IsKeyboardMouseAssignedToPlayer(Player);
+		Slot.Profile = FMath::Max(ChaosImpactSettings::FindProfile(Saved.Nickname), 0);
 		AChaosImpactCharacterPreview* Stage = SpawnStage(FVector(Player * 1600.0f, -90000.0f, 40000.0f));
 		Previews.Add(Stage);
 		PictureBrushes.Add(MakePictureBrush(Stage));
@@ -195,6 +207,8 @@ void UChaosImpactCharacterSelect::Open(AChaosImpactPlayerController* InControlle
 	OpenedAt = FPlatformTime::Seconds();
 	AllReadyAt = -100.0;
 	bStarting = false;
+	NamePickerOwner = INDEX_NONE;
+	NameEntry.Close();
 	bOpen = true;
 	UE_LOG(LogChaosImpact, Log, TEXT("Character select opened for %d player(s)"), PlayerCount);
 }
@@ -478,7 +492,48 @@ bool UChaosImpactCharacterSelect::HandleKeyDown(const FKeyEvent& Event)
 		return true;
 	}
 	const bool bRepeat = Event.IsRepeat();
-	if (IsAny(Key, {EKeys::Gamepad_DPad_Left, EKeys::Left, EKeys::A}))
+	// A Switch controller decides with A (its right button) when that option is on.
+	const FKey MenuKey = ChaosImpactSettings::ToMenuKey(Key, Event.GetInputDeviceId().GetId());
+	if (NameEntry.IsOpen())
+	{
+		if (Player == NameEntry.GetOwner())
+		{
+			NameEntry.HandleKey(MenuKey, bRepeat);
+			FinishNameEntry();
+		}
+		return true;
+	}
+	if (NamePickerOwner != INDEX_NONE)
+	{
+		if (Player != NamePickerOwner)
+		{
+			return true;
+		}
+		if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W}))
+		{
+			NamePickerChoice = (NamePickerChoice + NamePickerLines() - 1) % NamePickerLines();
+		}
+		else if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S}))
+		{
+			NamePickerChoice = (NamePickerChoice + 1) % NamePickerLines();
+		}
+		else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Bottom, EKeys::Enter, EKeys::SpaceBar}))
+		{
+			PickName(NamePickerChoice);
+		}
+		else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Right, EKeys::Escape, EKeys::BackSpace,
+			EKeys::Gamepad_FaceButton_Top, EKeys::N, EKeys::Tab}))
+		{
+			CloseNamePicker();
+		}
+		return true;
+	}
+	if (!bRepeat && !bStarting && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Top, EKeys::N, EKeys::Tab}))
+	{
+		OpenNamePicker(Player);
+		return true;
+	}
+	if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Left, EKeys::Left, EKeys::A}))
 	{
 		MoveCursor(Player, -1, 0);
 	}
@@ -502,12 +557,12 @@ bool UChaosImpactCharacterSelect::HandleKeyDown(const FKeyEvent& Event)
 	{
 		ChangeColour(Player, 1);
 	}
-	else if (!bRepeat && IsAny(Key, {EKeys::Gamepad_FaceButton_Bottom, EKeys::Gamepad_Special_Right, EKeys::Enter,
+	else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Bottom, EKeys::Gamepad_Special_Right, EKeys::Enter,
 		EKeys::SpaceBar}))
 	{
 		PressConfirm(Player);
 	}
-	else if (!bRepeat && IsAny(Key, {EKeys::Gamepad_FaceButton_Right, EKeys::Escape, EKeys::BackSpace}))
+	else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Right, EKeys::Escape, EKeys::BackSpace}))
 	{
 		PressBack(Player);
 	}
@@ -525,6 +580,25 @@ bool UChaosImpactCharacterSelect::HandleAnalog(const FAnalogInputEvent& Event)
 	const int32 Player = Owner->GetLocalPlayerIndexForDevice(false, Event.GetInputDeviceId().GetId());
 	if (!Slots.IsValidIndex(Player))
 	{
+		return true;
+	}
+	if (NameEntry.IsOpen())
+	{
+		if (Player == NameEntry.GetOwner())
+		{
+			NameEntry.HandleAnalog(Key, Event.GetAnalogValue());
+		}
+		return true;
+	}
+	if (NamePickerOwner != INDEX_NONE)
+	{
+		const double When = FPlatformTime::Seconds();
+		if (Player == NamePickerOwner && Key == EKeys::Gamepad_LeftY && FMath::Abs(Event.GetAnalogValue()) >= 0.65f
+			&& When >= NextPickerStickAt)
+		{
+			NextPickerStickAt = When + 0.2;
+			NamePickerChoice = (NamePickerChoice + NamePickerLines() + (Event.GetAnalogValue() > 0.0f ? -1 : 1)) % NamePickerLines();
+		}
 		return true;
 	}
 	FSlot& Slot = Slots[Player];
@@ -565,6 +639,36 @@ bool UChaosImpactCharacterSelect::HandleClick(const FVector2D& DesignPoint)
 	if (!Slots.IsValidIndex(Player))
 	{
 		return false;
+	}
+	if (NameEntry.IsOpen())
+	{
+		if (Player == NameEntry.GetOwner())
+		{
+			NameEntry.HandleClick(DesignPoint);
+			FinishNameEntry();
+		}
+		return true;
+	}
+	if (NamePickerOwner != INDEX_NONE)
+	{
+		if (Player == NamePickerOwner)
+		{
+			for (int32 Line = 0; Line < NamePickerLines(); ++Line)
+			{
+				if (PickerLineRect(Line).IsInside(DesignPoint))
+				{
+					PickName(Line);
+					return true;
+				}
+			}
+			CloseNamePicker();
+		}
+		return true;
+	}
+	if (!bStarting && NameTagRect(Player).IsInside(DesignPoint))
+	{
+		OpenNamePicker(Player);
+		return true;
 	}
 	if (AreAllReady() && DesignPoint.Y >= BarTop)
 	{
@@ -690,6 +794,11 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 	{
 		PaintWindow(Player, Design, Elements, Layer + 10, Now);
 	}
+	if (NamePickerOwner != INDEX_NONE || NameEntry.IsOpen())
+	{
+		PaintNamePicker(Design, Elements, Layer + 22, Now);
+		return NameEntry.Paint(Design, Elements, Layer + 26);
+	}
 
 	// ---- Guide bar / start --------------------------------------------------------------------
 	const float BarIn = EaseOut((T - 0.25f) / 0.3f);
@@ -767,6 +876,21 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	const bool bWide = W > H * 1.3f;
 	RoundBox(C, 14.0f, 12.0f, 70.0f, 38.0f, 12.0f, Accent);
 	C.Text(FString::Printf(TEXT("%dP"), Player + 1), 49.0f, 10.0f, 26.0f, Ink, ETextAlign::Center, TEXT("BlackItalic"));
+	{
+		const FBox2D Tag = NameTagRect(Player);
+		const float TagW = static_cast<float>(Tag.GetSize().X);
+		const bool bGuest = Slot.Profile <= 0;
+		const FPainter TagText{Space, Elements, Layer + 3, In};
+		RoundBox(C, 92.0f, 12.0f, TagW, 38.0f, 12.0f, bGuest ? FLinearColor(0.0f, 0.0f, 0.0f, 0.5f) : WithAlpha(Accent, 0.28f));
+		TagText.Text(ChaosImpactSettings::GetProfile(Slot.Profile).Name, 104.0f, 16.0f, 20.0f, bGuest ? Muted : Paper,
+			ETextAlign::Left, TEXT("Black"));
+		// Which button opens the list: N on a keyboard, the top face button (Y / △ / X) on a controller.
+		const FString Hint = Slot.bKeyboard ? FString(TEXT("N")) : ChaosImpactSettings::GetKeyName(EKeys::Gamepad_FaceButton_Top,
+			ChaosImpactSettings::DetectPadDevice(LocalPlayerController(Controller.Get(), Player)));
+		RoundBox(TagText, 92.0f + TagW - 34.0f, 18.0f, 26.0f, 26.0f, 8.0f, WithAlpha(Paper, 0.85f));
+		const FPainter HintText{Space, Elements, Layer + 4, In};
+		HintText.Text(Hint, 92.0f + TagW - 21.0f, 19.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
+	}
 	if (bWide || W > 400.0f)
 	{
 		C.Text(Slot.bKeyboard ? TEXT("キーボード") : TEXT("コントローラー"), W - 22.0f, 20.0f, 16.0f, Muted,
@@ -872,5 +996,163 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		const FPainter S{StampSpace, Elements, Layer + 4, In * FMath::Clamp(StepAge / 0.06f, 0.0f, 1.0f)};
 		RoundBox(S, 0.0f, 14.0f, 220.0f, 72.0f, 22.0f, Accent);
 		S.Text(TEXT("OK!"), 110.0f, 2.0f, 74.0f, Paper, ETextAlign::Center, TEXT("BlackItalic"), 5.0f, Ink);
+	}
+}
+
+FBox2D UChaosImpactCharacterSelect::NameTagRect(const int32 Player) const
+{
+	if (!Slots.IsValidIndex(Player))
+	{
+		return FBox2D(FVector2D::ZeroVector, FVector2D::ZeroVector);
+	}
+	const FBox2D Window = WindowRect(Player);
+	const FString& Name = ChaosImpactSettings::GetProfile(Slots[Player].Profile).Name;
+	// About a letter's width each, room for the button, and never over the window's right edge.
+	const float Width = FMath::Min(30.0f + Name.Len() * 21.0f + 42.0f, static_cast<float>(Window.GetSize().X) - 110.0f);
+	const FVector2D Origin = Window.Min + FVector2D(92.0f, 12.0f);
+	return FBox2D(Origin, Origin + FVector2D(Width, 38.0f));
+}
+
+int32 UChaosImpactCharacterSelect::NamePickerLines() const
+{
+	const int32 Count = ChaosImpactSettings::GetProfileCount();
+	return Count + (Count < ChaosImpactSettings::MaxProfiles ? 1 : 0);
+}
+
+FBox2D UChaosImpactCharacterSelect::PickerLineRect(const int32 Line) const
+{
+	const float Top = 450.0f - NamePickerLines() * 23.0f + 60.0f;
+	const FVector2D Origin(560.0f, Top + Line * 46.0f);
+	return FBox2D(Origin, Origin + FVector2D(480.0f, 40.0f));
+}
+
+void UChaosImpactCharacterSelect::OpenNamePicker(const int32 Player)
+{
+	if (!bOpen || !Slots.IsValidIndex(Player) || NameEntry.IsOpen())
+	{
+		return;
+	}
+	NamePickerOwner = Player;
+	NamePickerChoice = FMath::Clamp(Slots[Player].Profile, 0, NamePickerLines() - 1);
+	NamePickerAt = FPlatformTime::Seconds();
+}
+
+void UChaosImpactCharacterSelect::PickName(const int32 Choice)
+{
+	const int32 Player = NamePickerOwner;
+	if (!Slots.IsValidIndex(Player))
+	{
+		NamePickerOwner = INDEX_NONE;
+		return;
+	}
+	if (Choice >= ChaosImpactSettings::GetProfileCount())
+	{
+		NameEntry.Open(FString(), FString::Printf(TEXT("%dP のニックネーム"), Player + 1), Player);
+		NamePickerOwner = INDEX_NONE;
+		return;
+	}
+	SetProfile(Player, FMath::Max(Choice, 0));
+	NamePickerOwner = INDEX_NONE;
+}
+
+void UChaosImpactCharacterSelect::SetProfile(const int32 Player, const int32 Profile)
+{
+	if (!Slots.IsValidIndex(Player))
+	{
+		return;
+	}
+	Slots[Player].Profile = Profile;
+	if (UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(Controller.Get()))
+	{
+		Loadouts->SetNickname(Player, Profile > 0 ? ChaosImpactSettings::GetProfile(Profile).Name : FString());
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Character select: P%d plays as %s"), Player + 1, *ChaosImpactSettings::GetProfile(Profile).Name);
+}
+
+void UChaosImpactCharacterSelect::FinishNameEntry()
+{
+	FString Name;
+	const FChaosImpactNameEntry::EResult Result = NameEntry.ConsumeResult(Name);
+	if (Result == FChaosImpactNameEntry::EResult::Done)
+	{
+		// A name already made is simply picked.
+		const int32 Profile = ChaosImpactSettings::AddProfile(Name);
+		if (Profile != INDEX_NONE)
+		{
+			SetProfile(NameEntry.GetOwner(), Profile);
+		}
+	}
+	else if (Result == FChaosImpactNameEntry::EResult::Cancelled)
+	{
+		OpenNamePicker(NameEntry.GetOwner());
+	}
+}
+
+bool UChaosImpactCharacterSelect::HandleCharacter(const TCHAR Character)
+{
+	// Only the keyboard player's own name takes typed letters.
+	const AChaosImpactPlayerController* Owner = Controller.Get();
+	return bOpen && NameEntry.IsOpen() && Owner && Owner->GetLocalPlayerIndexForDevice(true, 0) == NameEntry.GetOwner()
+		&& NameEntry.HandleCharacter(Character);
+}
+
+void UChaosImpactCharacterSelect::HandleMouseMove(const FVector2D& DesignPoint)
+{
+	if (!bOpen)
+	{
+		return;
+	}
+	if (NameEntry.IsOpen())
+	{
+		NameEntry.HandleMouseMove(DesignPoint);
+		return;
+	}
+	for (int32 Line = 0; Line < NamePickerLines() && NamePickerOwner != INDEX_NONE; ++Line)
+	{
+		if (PickerLineRect(Line).IsInside(DesignPoint))
+		{
+			NamePickerChoice = Line;
+		}
+	}
+}
+
+void UChaosImpactCharacterSelect::PaintNamePicker(const FGeometry& Design, FSlateWindowElementList& Elements,
+	const int32 Layer, const double Now) const
+{
+	if (NamePickerOwner == INDEX_NONE)
+	{
+		return;
+	}
+	const float In = EaseOut(static_cast<float>(Now - NamePickerAt) / 0.2f);
+	const FPainter Shade{Design, Elements, Layer, In};
+	Shade.Box(-400.0f, -200.0f, 2400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+	const int32 Lines = NamePickerLines();
+	const FBox2D First = PickerLineRect(0);
+	const float Top = static_cast<float>(First.Min.Y) - 80.0f;
+	const float Height = Lines * 46.0f + 130.0f;
+	const FPainter Panel{Design, Elements, Layer + 1, In};
+	RoundBox(Panel, 520.0f, Top, 560.0f, Height, 30.0f, FLinearColor(0.02f, 0.03f, 0.07f, 0.98f));
+	RoundBox(Panel, 520.0f, Top, 560.0f, 8.0f, 4.0f, SlotAccent(NamePickerOwner));
+	const FPainter Words{Design, Elements, Layer + 3, In};
+	Words.Text(FString::Printf(TEXT("%dP のニックネーム"), NamePickerOwner + 1), 800.0f, Top + 20.0f, 28.0f, Paper,
+		ETextAlign::Center, TEXT("Black"));
+	Words.Text(TEXT("そのニックネームの操作設定で遊びます"), 800.0f, Top + Height - 40.0f, 17.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+	const FPainter Lights{Design, Elements, Layer + 2, In};
+	for (int32 Line = 0; Line < Lines; ++Line)
+	{
+		const FBox2D Rect = PickerLineRect(Line);
+		const bool bChosen = Line == NamePickerChoice;
+		const bool bNew = Line >= ChaosImpactSettings::GetProfileCount();
+		const bool bCurrent = !bNew && Slots.IsValidIndex(NamePickerOwner) && Slots[NamePickerOwner].Profile == Line;
+		RoundBox(Lights, static_cast<float>(Rect.Min.X), static_cast<float>(Rect.Min.Y), 480.0f, 40.0f, 12.0f,
+			bChosen ? FLinearColor(0.08f, 0.2f, 0.42f, 1.0f) : FLinearColor(0.035f, 0.05f, 0.09f, 1.0f));
+		Words.Text(bNew ? FString(TEXT("＋ 新しく作る")) : ChaosImpactSettings::GetProfile(Line).Name,
+			static_cast<float>(Rect.Min.X) + 24.0f, static_cast<float>(Rect.Min.Y) + 6.0f, 22.0f,
+			bNew ? Gold : Paper, ETextAlign::Left, TEXT("Black"));
+		if (bCurrent)
+		{
+			Words.Text(TEXT("いまの"), static_cast<float>(Rect.Max.X) - 20.0f, static_cast<float>(Rect.Min.Y) + 9.0f, 17.0f,
+				SlotAccent(NamePickerOwner), ETextAlign::Right, TEXT("Bold"));
+		}
 	}
 }

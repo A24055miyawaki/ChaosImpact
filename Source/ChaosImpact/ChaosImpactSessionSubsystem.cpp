@@ -2,6 +2,7 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactLoadingScreen.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "GameFramework/PlayerController.h"
@@ -443,6 +444,10 @@ void UChaosImpactSessionSubsystem::HandleCreateComplete(FName SessionName, const
 	{
 		Options += FString::Printf(TEXT("?CICPUCount=%d"), FMath::Clamp(DevRoomCPUs, 1, 4));
 	}
+	if (UChaosImpactLoadingSubsystem* Loading = GetGameInstance()->GetSubsystem<UChaosImpactLoadingSubsystem>())
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::RoomCreate);
+	}
 	UGameplayStatics::OpenLevel(GetGameInstance(), FName(*GetTrainingMapName()), true, Options);
 }
 
@@ -471,6 +476,10 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 	// CIMachine lets the host replace this machine's old place if it is still there after a drop.
 	// The local setup options also let this client pair its controllers again in the host's world.
 	// CISpectator: this machine watches (mid-match or in a closed room) and never plays until it switches in the lobby.
+	if (UChaosImpactLoadingSubsystem* Loading = GetGameInstance()->GetSubsystem<UChaosImpactLoadingSubsystem>())
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::RoomJoin);
+	}
 	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?CIMachine=%s?%s%s"),
 		*ConnectString, bJoinAsSpectator ? 1 : LocalPlayerCount, *GetMachineToken(), *LocalSetupOptions,
 		bJoinAsSpectator ? TEXT("?CISpectator=1") : TEXT("")), TRAVEL_Absolute);
@@ -483,6 +492,10 @@ void UChaosImpactSessionSubsystem::LeaveRoom()
 	if (IOnlineSessionPtr Sessions = GetSessions(); Sessions && Sessions->GetNamedSession(NAME_GameSession))
 	{
 		Sessions->DestroySession(NAME_GameSession);
+	}
+	if (UChaosImpactLoadingSubsystem* Loading = GetGameInstance()->GetSubsystem<UChaosImpactLoadingSubsystem>())
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::RoomLeave);
 	}
 	UGameplayStatics::OpenLevel(GetGameInstance(), FName(*GetTrainingMapName()), true,
 		GetOfflineTrainingOptions());

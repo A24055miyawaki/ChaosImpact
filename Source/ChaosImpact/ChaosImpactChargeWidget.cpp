@@ -2,6 +2,7 @@
 
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpact.h"
+#include "ChaosImpactSettings.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "ChaosImpactCharacter.h"
@@ -807,6 +808,10 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(1.0f, 1.0f, 1.0f), FLinearColor(0.12f, 0.18f, 0.26f, 0.97f),
 				FLinearColor(0.88f, 0.95f, 1.0f), FLinearColor(0.45f, 0.58f, 0.72f, 0.95f),
 				FLinearColor(1.0f, 1.0f, 1.0f), FLinearColor(0.92f, 0.97f, 1.0f)};
+		case EChaosImpactBallType::Drive:
+			return {FLinearColor(1.0f, 0.9f, 0.55f), FLinearColor(0.24f, 0.11f, 0.0f, 0.97f),
+				FLinearColor(1.0f, 0.62f, 0.12f), FLinearColor(0.55f, 0.27f, 0.0f, 0.95f),
+				FLinearColor(1.0f, 0.95f, 0.7f), FLinearColor(1.0f, 0.88f, 0.6f)};
 		case EChaosImpactBallType::Simae:
 			return {FLinearColor(0.98f, 0.99f, 1.0f), FLinearColor(0.12f, 0.14f, 0.18f, 0.97f),
 				FLinearColor(0.92f, 0.96f, 1.0f), FLinearColor(0.03f, 0.035f, 0.045f, 1.0f),
@@ -1152,6 +1157,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		case EChaosImpactBallType::Snow: Body = FLinearColor(0.9f, 0.95f, 1.0f, 1.0f); break;
 		case EChaosImpactBallType::Nova: Body = FLinearColor(0.3f, 0.66f, 1.0f, 1.0f); break;
 		case EChaosImpactBallType::Simae: Body = FLinearColor(0.95f, 0.97f, 1.0f, 1.0f); break;
+		case EChaosImpactBallType::Drive: Body = FLinearColor(1.0f, 0.56f, 0.1f, 1.0f); break;
 		default: break;
 		}
 		const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -1261,6 +1267,17 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 				Paint.Line(Center + Way * Radius * (1.3f - 0.6f * Phase), Center + Way * Radius * (1.08f - 0.6f * Phase),
 					FLinearColor(0.8f, 0.95f, 1.0f, 1.0f - Phase), 2.0f);
 			}
+			break;
+		}
+		case EChaosImpactBallType::Drive:
+		{
+			// A white-hot core with a ring of energy swinging round it, the steering in it.
+			Paint.Disc(Center, Radius * 0.3f, FLinearColor(1.0f, 0.97f, 0.85f, 1.0f));
+			const float Swing = FMath::Fmod(Time * 220.0f, 360.0f);
+			Paint.Arc(Center, Radius * 0.62f, Swing, Swing + 200.0f, FLinearColor(1.0f, 0.86f, 0.4f, 0.95f), 2.5f);
+			const float Angle = FMath::DegreesToRadians(Swing + 200.0f);
+			Paint.Disc(Center + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius * 0.62f, Radius * 0.12f,
+				FLinearColor(1.0f, 0.95f, 0.75f, 1.0f));
 			break;
 		}
 		case EChaosImpactBallType::Simae:
@@ -1403,14 +1420,20 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	if (CarriedBalls >= 2 && !bRespawnVisible)
 	{
 		const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		const bool bGamepad = InputController && InputController->IsUsingGamepad();
-		const float KeyWidth = bGamepad ? 34.0f : 24.0f;
+		// The keys this player has set for swapping (about one letter's width each).
+		const FString SwapKeys = ChaosImpactSettings::DescribeAction(InputController, EChaosImpactAction::SwapBall);
+		float KeyWidth = 10.0f;
+		for (const TCHAR Letter : SwapKeys)
+		{
+			KeyWidth += Letter > 0x2000 ? 13.0f : 8.0f;
+		}
+		KeyWidth = FMath::Max(KeyWidth, 24.0f);
 		const float KeyRight = PlateRight - 14.0f;
 		const float KeyTop = PlateTop - 30.0f;
 		const FPainter Hint{Corner, OutDrawElements, BaseLayer + 2};
 		Hint.Box(KeyRight - KeyWidth, KeyTop + 2.0f, KeyWidth, 22.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
 		Hint.Box(KeyRight - KeyWidth, KeyTop, KeyWidth, 20.0f, WithAlpha(Paper, 0.92f));
-		Hint.Text(bGamepad ? TEXT("LB") : TEXT("Q"), KeyRight - KeyWidth * 0.5f, KeyTop + 1.0f, 13.0f, Ink,
+		Hint.Text(SwapKeys, KeyRight - KeyWidth * 0.5f, KeyTop + 1.0f, 13.0f, Ink,
 			ETextAlign::Center, TEXT("Black"));
 		Hint.Text(TEXT("持ち替え"), KeyRight - KeyWidth - 8.0f, KeyTop + 1.0f, 13.0f, Paper, ETextAlign::Right,
 			TEXT("Bold"), 2.0f, Ink);
@@ -1596,7 +1619,8 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 		: TEXT("WASD  移動　E Q / RT LT  上下　右クリック / 右スティック  視点　Shift / L3  高速　← →  選手視点　H / Y  UI");
 	// Offline, time can be stopped for screenshots; online, the lobby is where to switch back to playing.
 	KeyHelp += !bOnline ? TEXT("　T / A  時間停止")
-		: Viewer->CanToggleSpectating() ? TEXT("　V / 十字↓  プレイヤーに戻る") : TEXT("");
+		: Viewer->CanToggleSpectating() ? FString::Printf(TEXT("　%s  プレイヤーに戻る"),
+			*ChaosImpactSettings::DescribeAction(Viewer, EChaosImpactAction::LobbySpectate)) : FString();
 	Keys.Text(KeyHelp, 0.0f, 0.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center, TEXT("Regular"), 1.5f, Ink);
 
 	if (Viewer && Viewer->IsSpectateTimeStopped())
@@ -2182,8 +2206,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		if (const AChaosImpactPlayerController* SwitchController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 			SwitchController && SwitchController->CanToggleSpectating())
 		{
-			const bool bGamepad = SwitchController->IsUsingGamepad();
-			W.Text(FString::Printf(TEXT("%s で%s"), bGamepad ? TEXT("十字↓") : TEXT("V"),
+			W.Text(FString::Printf(TEXT("%s で%s"), *ChaosImpactSettings::DescribeAction(SwitchController, EChaosImpactAction::LobbySpectate),
 				SwitchController->IsSpectating() ? TEXT("プレイヤーに戻る") : TEXT("観戦にする")),
 				24.0f, 42.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Regular"));
 		}
@@ -2232,8 +2255,17 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			const float WaitAlpha = FMath::Clamp(WaitLeft / AChaosImpactGameState::ReadyWaitSeconds, 0.0f, 1.0f);
 			P.Box(26.0f, 162.0f, 370.0f, 10.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.12f));
 			P.Box(26.0f, 162.0f, 370.0f * (bStartingNow ? 0.0f : WaitAlpha), 10.0f, WaitLeft <= 10.0f ? Fire : Ice);
-			P.Text(bStartingNow ? FString(TEXT("まもなく開始")) : FString::Printf(TEXT("自動スタートまで %d秒"),
-				FMath::CeilToInt(WaitLeft)), 26.0f, 178.0f, 20.0f, bStartingNow || WaitLeft <= 10.0f ? Fire : Muted);
+			// Someone still on the last match's results holds the next one back.
+			int32 Viewing = 0;
+			for (const APlayerState* Member : Room->PlayerArray)
+			{
+				const AChaosImpactPlayerState* Viewer = Cast<AChaosImpactPlayerState>(Member);
+				Viewing += Viewer && Viewer->bViewingResults ? 1 : 0;
+			}
+			P.Text(bStartingNow ? FString(TEXT("まもなく開始"))
+				: Viewing > 0 ? FString::Printf(TEXT("成績を見ている人を待っています（%d人）"), Viewing)
+				: FString::Printf(TEXT("自動スタートまで %d秒"), FMath::CeilToInt(WaitLeft)),
+				26.0f, 178.0f, 20.0f, Viewing > 0 ? Gold : bStartingNow || WaitLeft <= 10.0f ? Fire : Muted);
 
 			// How this machine presses 準備OK, and whether it already has.
 			const AChaosImpactPlayerState* OwnState = LocalStates.IsEmpty() ? nullptr : Cast<AChaosImpactPlayerState>(LocalStates[0]);
@@ -2241,13 +2273,18 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			{
 				// Only the key for the device this player is using right now.
 				const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-				const bool bGamepad = InputController && InputController->IsUsingGamepad();
 				const bool bOwnReady = OwnState && OwnState->bReadyForMatch;
 				const float Pulse = bOwnReady ? 1.0f : 0.7f + 0.3f * FMath::Sin(static_cast<float>(Clock) * 5.0f);
-				const float KeyWidth = bGamepad ? 70.0f : 36.0f;
+				// The keys this player has set for 準備OK (about one letter's width each).
+				const FString ReadyKeys = ChaosImpactSettings::DescribeAction(InputController, EChaosImpactAction::LobbyReady);
+				float KeyWidth = 16.0f;
+				for (const TCHAR Letter : ReadyKeys)
+				{
+					KeyWidth += Letter > 0x2000 ? 20.0f : 11.0f;
+				}
+				KeyWidth = FMath::Max(KeyWidth, 36.0f);
 				P.Box(26.0f, 208.0f, KeyWidth, 32.0f, WithAlpha(Paper, Pulse));
-				P.Text(bGamepad ? TEXT("十字↑") : TEXT("R"), 26.0f + KeyWidth * 0.5f, 209.0f, 20.0f, Ink,
-					ETextAlign::Center, TEXT("Black"));
+				P.Text(ReadyKeys, 26.0f + KeyWidth * 0.5f, 209.0f, 20.0f, Ink, ETextAlign::Center, TEXT("Black"));
 				P.Text(bOwnReady ? TEXT("もう一度でキャンセル") : TEXT("で準備OK"), 38.0f + KeyWidth, 210.0f, 22.0f,
 					bOwnReady ? Muted : Paper, ETextAlign::Left, TEXT("Bold"));
 			}

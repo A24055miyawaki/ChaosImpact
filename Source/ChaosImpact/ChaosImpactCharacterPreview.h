@@ -46,6 +46,18 @@ public:
 	 */
 	void Animate(float DeltaSeconds);
 
+	/**
+	 * Results podium: the model only, posed in someone else's scene (their camera and lights). Its own camera, stage
+	 * and lights are switched off.
+	 */
+	void UseAsFigure();
+	/** Plays an animation on the model; HoldAt >= 0 stops it on that moment (a pose held). */
+	void PlayFigureAnimation(UAnimSequenceBase* Animation, bool bLoop, float HoldAt = -1.0f);
+	/** Which way the model faces (0: toward +Y) and how far it sways about that. */
+	void SetFacing(float Yaw, float Sway);
+	/** The model as it is now (to hide or tint). */
+	class UChaosImpactPuppetComponent* GetModel() const { return Model; }
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -95,6 +107,12 @@ private:
 
 	int32 ModelCharacter = INDEX_NONE;
 	double ReadyEndsAt = 0.0;
+	float FacingYaw = -22.0f;
+	float SwayAmount = 14.0f;
+	/** A held pose: stop the animation when this much of it has played (negative: none). */
+	float HoldAnimationAt = -1.0f;
+	float AnimationStartedAge = 0.0f;
+	bool bHolding = false;
 	float Age = 0.0f;
 	float Spin = 0.0f;
 	float SpinKick = 0.0f;

@@ -43,7 +43,9 @@ namespace
 {
 	constexpr float PopOutSeconds = 0.32f;
 	constexpr float PerchReach = 45.0f;
-	constexpr float BirdScale = 0.62f;
+	constexpr float BirdScale = 0.8f;
+	/** A burst this big (the flock's release) gets a second ring. */
+	constexpr float BigBurstScale = 1.5f;
 	constexpr float HeadExtraHeight = 14.0f;
 	int32 NextFlockId = 1;
 
@@ -210,7 +212,7 @@ void AChaosImpactSimaeBird::BuildAppearance()
 	}
 	// A short bespoke ribbon avoids inheriting another ball's orange emitter colors.
 	FlightTrail = ChaosImpactLightning::CreateComponent(this, SceneRoot,
-		MakeAdditive(this, FLinearColor(0.64f, 0.94f, 1.0f), 1.8f));
+		MakeAdditive(this, FLinearColor(0.8f, 0.97f, 1.0f), 2.6f));
 }
 
 void AChaosImpactSimaeBird::Tick(const float DeltaSeconds)
@@ -577,14 +579,14 @@ void AChaosImpactSimaeBird::UpdateAppearance(const float DeltaSeconds)
 			{
 				TrailPoints.Add({Here, VisualTime});
 			}
-			TrailPoints.RemoveAll([this](const FTrailPoint& Point) { return VisualTime - Point.Time > 0.22f; });
+			TrailPoints.RemoveAll([this](const FTrailPoint& Point) { return VisualTime - Point.Time > 0.32f; });
 			ChaosImpactIceMeshes::FMeshBuffers Ribbon;
 			const FTransform Transform = GetActorTransform();
 			for (int32 Index = 0; Index + 1 < TrailPoints.Num(); ++Index)
 			{
 				const FVector Start = TrailPoints[Index].Position;
 				const FVector End = TrailPoints[Index + 1].Position;
-				const float Width = 7.0f * FMath::Clamp(1.0f - (VisualTime - TrailPoints[Index].Time) / 0.22f, 0.0f, 1.0f);
+				const float Width = 11.0f * FMath::Clamp(1.0f - (VisualTime - TrailPoints[Index].Time) / 0.32f, 0.0f, 1.0f);
 				// Crossed planes remain visible from every split-screen camera, not just the first player's view.
 				for (const FVector Facing : {FVector::UpVector, FVector::RightVector})
 				{
@@ -634,7 +636,7 @@ void AChaosImpactSimaeBird::MulticastChirp_Implementation(const uint8 Moment)
 	if (Moment != 3) { PlayChirp(Moment); }
 	if (Moment == 0 || Moment == 2 || Moment == 3)
 	{
-		AChaosImpactSimaeFeatherBurst::Play(GetWorld(), GetActorLocation(), Moment == 0 ? 1.6f : Moment == 2 ? 0.8f : 0.65f);
+		AChaosImpactSimaeFeatherBurst::Play(GetWorld(), GetActorLocation(), Moment == 0 ? 1.6f : Moment == 2 ? 0.85f : 0.65f);
 	}
 }
 
@@ -786,8 +788,299 @@ void AChaosImpactSimaeFeatherBurst::Tick(const float DeltaSeconds)
 		const float Fade = FMath::Clamp(1.0f - Age / 0.5f, 0.0f, 1.0f);
 		ChaosImpactLightning::AppendRing(Rings, FVector::UpVector * 5.0f,
 			(35.0f + 540.0f * Age) * BurstScale, 12.0f * Fade, 64);
+		if (BurstScale >= BigBurstScale && Age > 0.08f)
+		{
+			// A second, faster ring right behind the first.
+			const float Second = Age - 0.08f;
+			ChaosImpactLightning::AppendRing(Rings, FVector::UpVector * 9.0f, (20.0f + 420.0f * Second) * BurstScale,
+				7.0f * FMath::Clamp(1.0f - Second / 0.5f, 0.0f, 1.0f), 64);
+		}
 		ChaosImpactLightning::SetMesh(ShockRing, Rings);
-		RingMaterial->SetScalarParameterValue(TEXT("Intensity"), 3.5f * Fade);
+		RingMaterial->SetScalarParameterValue(TEXT("Intensity"), 3.5f * FMath::Clamp(1.0f - Age / 0.7f, 0.0f, 1.0f));
 	}
 	BurstLight->SetIntensity(9000.0f * BurstScale * FMath::Exp(-Age * 15.0f));
 }
+
+namespace
+{
+	/** One little bird (the flock's own model and look) under Parent at Scale; returns its wings, for flapping. */
+	UStaticMeshComponent* BuildBirdModel(AActor* Owner, USceneComponent* Parent, const float Scale)
+	{
+		using namespace ChaosImpactBallTypes;
+		UMaterialInterface* TexturedBase = LoadObject<UMaterialInterface>(nullptr, SimaeAssets::TexturedMaterial);
+		UTexture* Texture = LoadObject<UTexture>(nullptr, SimaeAssets::BirdTexture);
+		UMaterialInstanceDynamic* Look = TexturedBase && Texture ? UMaterialInstanceDynamic::Create(TexturedBase, Owner) : nullptr;
+		if (Look)
+		{
+			Look->SetTextureParameterValue(TEXT("BodyTexture"), Texture);
+		}
+		UMaterialInstanceDynamic* White = Look ? nullptr : MakeBirdMaterial(Owner, FLinearColor(0.95f, 0.96f, 0.98f), 0.82f);
+		UMaterialInstanceDynamic* Dark = Look ? nullptr : MakeBirdMaterial(Owner, FLinearColor(0.055f, 0.043f, 0.036f), 0.72f);
+		const TCHAR* const Parts[] = {SimaeAssets::BirdBody, SimaeAssets::BirdTail, SimaeAssets::BirdWing, SimaeAssets::BirdEye,
+			SimaeAssets::BirdCrest};
+		UStaticMeshComponent* Wings = nullptr;
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Parts); ++Index)
+		{
+			UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(Owner);
+			Part->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, Parts[Index]));
+			for (int32 Slot = 0; Slot < FMath::Max(Part->GetNumMaterials(), 1); ++Slot)
+			{
+				Part->SetMaterial(Slot, Look ? Look : (Index == 0 ? White : Dark));
+			}
+			Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Part->SetCastShadow(false);
+			Part->SetupAttachment(Parent);
+			Part->SetRelativeScale3D(FVector(Scale));
+			Part->RegisterComponent();
+			Wings = Index == 2 ? Part : Wings;
+		}
+		return Wings;
+	}
+
+	void PlayChirpAt(UWorld* World, const FVector& Location, const int32 Choice, const float Volume)
+	{
+		if (!World || World->GetNetMode() == NM_DedicatedServer)
+		{
+			return;
+		}
+		using namespace ChaosImpactBallTypes;
+		const TCHAR* Paths[] = {SimaeAssets::Chirp01, SimaeAssets::Chirp02, SimaeAssets::Chirp03};
+		if (USoundBase* Sound = LoadObject<USoundBase>(nullptr, Paths[FMath::Abs(Choice) % UE_ARRAY_COUNT(Paths)]))
+		{
+			USoundAttenuation* Attenuation = NewObject<USoundAttenuation>(GetTransientPackage());
+			Attenuation->Attenuation.bAttenuate = true;
+			Attenuation->Attenuation.bSpatialize = true;
+			Attenuation->Attenuation.AttenuationShapeExtents = FVector(400.0f, 0.0f, 0.0f);
+			Attenuation->Attenuation.FalloffDistance = 2600.0f;
+			UGameplayStatics::PlaySoundAtLocation(World, Sound, Location, Volume, FMath::FRandRange(0.97f, 1.06f), 0.0f, Attenuation);
+		}
+	}
+
+	constexpr int32 SparkleCount = 8;
+	constexpr int32 FeatherCount = 18;
+	constexpr float FeatherSeconds = 0.9f;
+	const FVector FeatherShape(0.13f, 0.04f, 0.012f);
+}
+
+void ChaosImpactBallTypes::BuildSimaeBallLook(AActor* Owner, USceneComponent* Parent, FSimaeBallLook& Out)
+{
+	if (!Owner || !Parent || Out.IsBuilt())
+	{
+		return;
+	}
+	const auto Register = [](USceneComponent* Component, USceneComponent* AttachTo)
+	{
+		Component->SetupAttachment(AttachTo);
+		Component->RegisterComponent();
+	};
+	// Follows the ball, but neither its spin nor its scale.
+	USceneComponent* Root = NewObject<USceneComponent>(Owner);
+	Root->SetUsingAbsoluteRotation(true);
+	Root->SetUsingAbsoluteScale(true);
+	Register(Root, Parent);
+	Out.Root = Root;
+
+	UPointLightComponent* Light = NewObject<UPointLightComponent>(Owner);
+	Light->SetLightColor(FLinearColor(0.72f, 0.92f, 1.0f));
+	Light->SetAttenuationRadius(360.0f);
+	Light->SetCastShadows(false);
+	Light->SetIntensity(0.0f);
+	Register(Light, Root);
+	Out.Light = Light;
+
+	const auto MakeShape = [Owner, Register, Root](const TCHAR* Path, UMaterialInterface* Material) -> UStaticMeshComponent*
+	{
+		UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(Owner);
+		Mesh->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, Path));
+		Mesh->SetMaterial(0, Material);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetCastShadow(false);
+		Register(Mesh, Root);
+		return Mesh;
+	};
+	Out.Ripples = ChaosImpactLightning::CreateComponent(Owner, Root, MakeAdditive(Owner, FLinearColor(0.75f, 0.95f, 1.0f), 1.6f));
+
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		USceneComponent* Pivot = NewObject<USceneComponent>(Owner);
+		Register(Pivot, Root);
+		Out.Escorts.Add(Pivot);
+		Out.EscortWings.Add(BuildBirdModel(Owner, Pivot, 0.27f));
+	}
+	UMaterialInstanceDynamic* Glint = MakeEmissive(Owner, FLinearColor(0.9f, 0.98f, 1.0f), 2.0f);
+	UMaterialInstanceDynamic* BlueGlint = MakeEmissive(Owner, FLinearColor(0.35f, 0.85f, 1.0f), 2.0f);
+	for (int32 Index = 0; Index < SparkleCount; ++Index)
+	{
+		Out.Sparkles.Add(MakeShape(TEXT("/Engine/BasicShapes/Sphere.Sphere"), Index % 3 == 0 ? BlueGlint : Glint));
+	}
+	UMaterialInstanceDynamic* Down = MakeEmissive(Owner, FLinearColor(0.93f, 0.96f, 1.0f), 0.7f);
+	for (int32 Index = 0; Index < FeatherCount; ++Index)
+	{
+		UStaticMeshComponent* Feather = MakeShape(TEXT("/Engine/BasicShapes/Sphere.Sphere"), Down);
+		// Shed feathers stay where they fell, whatever the ball does next.
+		Feather->SetUsingAbsoluteLocation(true);
+		Feather->SetUsingAbsoluteRotation(true);
+		Feather->SetUsingAbsoluteScale(true);
+		Feather->SetVisibility(false);
+		FSimaeBallLook::FDrift& Drift = Out.Feathers.AddDefaulted_GetRef();
+		Drift.Mesh = Feather;
+	}
+}
+
+void ChaosImpactBallTypes::UpdateSimaeBallLook(AActor* Owner, FSimaeBallLook& Look, const float Time, const float DeltaSeconds,
+	const bool bPickup, const bool bFlying, const bool bVisible)
+{
+	USceneComponent* Root = Look.Root.Get();
+	UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	if (!Root || !World)
+	{
+		return;
+	}
+	const bool bShow = bVisible && (bPickup || bFlying);
+	if (bShow != Look.bShown)
+	{
+		Root->SetVisibility(bShow, true);
+		Look.bShown = bShow;
+	}
+	if (!bShow)
+	{
+		return;
+	}
+	const FVector Center = Root->GetComponentLocation();
+
+	// A freshly spawned one announces itself: a puff of feathers and a chirp.
+	if (!Look.bArrivalChecked)
+	{
+		Look.bArrivalChecked = true;
+		if (bPickup && Owner->GetGameTimeSinceCreation() < 1.0f)
+		{
+			Look.ArrivedAt = Time;
+			AChaosImpactSimaeFeatherBurst::Play(World, Center, 0.7f);
+			PlayChirpAt(World, Center, FMath::RandRange(0, 2), 0.3f);
+		}
+	}
+	const float SinceArrival = Time - Look.ArrivedAt;
+	const float ArrivalGlow = FMath::Exp(-FMath::Max(SinceArrival, 0.0f) * 2.2f);
+
+	float Ground = -36.0f;
+	if (bPickup)
+	{
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactSimaeLookGround), false, Owner);
+		if (World->LineTraceSingleByObjectType(Hit, Center, Center - FVector::UpVector * 300.0f,
+			FCollisionObjectQueryParams(ECC_WorldStatic), Params))
+		{
+			Ground = static_cast<float>(Hit.ImpactPoint.Z - Center.Z) + 1.5f;
+		}
+	}
+
+	if (UPointLightComponent* Light = Look.Light.Get())
+	{
+		Light->SetIntensity(bFlying ? 2200.0f : 1500.0f + 400.0f * FMath::Sin(Time * 3.0f) + 3000.0f * ArrivalGlow);
+	}
+
+	// Ripples spreading over the ground round it, and one ring that stays.
+	if (UProceduralMeshComponent* Ripples = Look.Ripples.Get())
+	{
+		if (bPickup)
+		{
+			ChaosImpactIceMeshes::FMeshBuffers Rings;
+			for (int32 Wave = 0; Wave < 2; ++Wave)
+			{
+				const float Phase = FMath::Frac(Time / 1.1f + Wave * 0.5f);
+				ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, Ground), 34.0f + 90.0f * Phase, 4.5f * (1.0f - Phase), 56);
+			}
+			ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, Ground), 52.0f, 2.0f + 0.8f * FMath::Sin(Time * 4.0f), 56);
+			ChaosImpactLightning::SetMesh(Ripples, Rings);
+		}
+		else
+		{
+			Ripples->ClearAllMeshSections();
+		}
+	}
+
+	// Three little birds: circling over it while it waits, closing in to escort it once thrown.
+	Look.EscortBlend = FMath::FInterpTo(Look.EscortBlend, bFlying ? 1.0f : 0.0f, DeltaSeconds, 6.0f);
+	const float Blend = Look.EscortBlend;
+	for (int32 Index = 0; Index < Look.Escorts.Num(); ++Index)
+	{
+		USceneComponent* Pivot = Look.Escorts[Index].Get();
+		if (!Pivot)
+		{
+			continue;
+		}
+		const float Angle = Time * FMath::Lerp(1.7f, 7.5f, Blend) + Index * UE_TWO_PI / 3.0f;
+		const float Radius = FMath::Lerp(64.0f, 42.0f, Blend);
+		const float Height = FMath::Lerp(56.0f + 7.0f * FMath::Sin(Time * 3.1f + Index * 2.0f),
+			12.0f * FMath::Sin(Time * 9.0f + Index), Blend);
+		Pivot->SetRelativeLocation(FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, Height));
+		Pivot->SetRelativeRotation(FRotator(0.0f, FMath::RadiansToDegrees(Angle) + 90.0f, 0.0f));
+		if (UStaticMeshComponent* Wings = Look.EscortWings.IsValidIndex(Index) ? Look.EscortWings[Index].Get() : nullptr)
+		{
+			const float Flap = 0.55f + 0.45f * FMath::Abs(FMath::Sin(Time * FMath::Lerp(11.0f, 16.0f, Blend) * UE_PI + Index));
+			Wings->SetRelativeScale3D(FVector(0.27f, 0.27f, 0.27f * Flap));
+		}
+	}
+
+	// Sparkles spiralling up round the waiting ball.
+	for (int32 Index = 0; Index < Look.Sparkles.Num(); ++Index)
+	{
+		UStaticMeshComponent* Sparkle = Look.Sparkles[Index].Get();
+		if (!Sparkle)
+		{
+			continue;
+		}
+		Sparkle->SetVisibility(bPickup);
+		if (!bPickup)
+		{
+			continue;
+		}
+		const float Angle = Time * 1.4f + Index * UE_TWO_PI / SparkleCount;
+		const float Rise = FMath::Fmod(Time * 38.0f + Index * 17.0f, 130.0f);
+		const float Radius = 46.0f + 12.0f * FMath::Sin(Time * 2.0f + Index);
+		Sparkle->SetRelativeLocation(FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, Ground + 10.0f + Rise));
+		const float Twinkle = 0.5f + 0.5f * FMath::Sin(Time * 9.0f + Index * 1.7f);
+		Sparkle->SetRelativeScale3D(FVector((0.022f + 0.03f * Twinkle) * (1.0f - Rise / 130.0f)));
+	}
+
+	// In flight it sheds a trail of down.
+	if (bFlying && Look.Feathers.Num() > 0)
+	{
+		Look.FeatherClock -= DeltaSeconds;
+		while (Look.FeatherClock <= 0.0f)
+		{
+			Look.FeatherClock += 0.045f;
+			FSimaeBallLook::FDrift& Drift = Look.Feathers[Look.NextFeather++ % Look.Feathers.Num()];
+			if (UStaticMeshComponent* Mesh = Drift.Mesh.Get())
+			{
+				Mesh->SetWorldLocation(Center + FMath::VRand() * 12.0f);
+				Mesh->SetWorldRotation(FMath::VRand().Rotation());
+				Drift.Velocity = FMath::VRand() * 70.0f - FVector::UpVector * 25.0f;
+				Drift.Spin = FRotator(FMath::FRandRange(-400.0f, 400.0f), FMath::FRandRange(-300.0f, 300.0f),
+					FMath::FRandRange(-500.0f, 500.0f));
+				Drift.Age = 0.0f;
+			}
+		}
+	}
+	for (FSimaeBallLook::FDrift& Drift : Look.Feathers)
+	{
+		UStaticMeshComponent* Mesh = Drift.Mesh.Get();
+		if (!Mesh)
+		{
+			continue;
+		}
+		Drift.Age += DeltaSeconds;
+		const bool bAlive = Drift.Age < FeatherSeconds;
+		Mesh->SetVisibility(bAlive);
+		if (!bAlive)
+		{
+			continue;
+		}
+		Drift.Velocity *= FMath::Exp(-2.5f * DeltaSeconds);
+		Drift.Velocity.Z -= 40.0f * DeltaSeconds;
+		Mesh->AddWorldOffset(Drift.Velocity * DeltaSeconds);
+		Mesh->AddWorldRotation(Drift.Spin * DeltaSeconds);
+		Mesh->SetWorldScale3D(FeatherShape * (1.0f - Drift.Age / FeatherSeconds));
+	}
+}
+

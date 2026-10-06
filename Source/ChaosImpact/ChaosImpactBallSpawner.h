@@ -89,6 +89,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float SimaeBallChance = 0.05f;
 
+	/** Chance (0-1) that a new ball is a drive ball (steered after the throw). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Training", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float DriveBallChance = 0.04f;
+
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
 	FTimerHandle SpawnTimer;
 	bool bAlwaysActive = false;

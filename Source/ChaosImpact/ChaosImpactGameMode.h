@@ -49,6 +49,12 @@ public:
 	void ReportIntroFinished(APlayerState* Member, double IntroStartedAt);
 	/** Server: points for hitting or knocking out an opponent. Ignored outside the match phase. */
 	void AwardMatchPoints(APlayerState* Scorer, int32 Points, bool bKnockout);
+	/** The results' numbers (during a VS match only). */
+	void RecordThrow(APawn* Thrower, bool bSpecial);
+	void RecordHit(APawn* Source, APawn* Victim, const AActor* Causer);
+	void RecordDodge(APawn* Dasher);
+	/** Online: this member left the results for the lobby. */
+	void ReturnFromResults(APlayerState* Member);
 	/**
 	 * Online lobby, host: the next match's rules. Recruitment closes; every member then presses 準備OK, and the
 	 * match starts when all of them have (or when the wait runs out), after a short "starting" countdown.
@@ -149,6 +155,12 @@ private:
 	/** Development: -CIAutoLobby=<teams>:<cpus>:<delay> closes recruitment and decides rules once two machines are in. */
 	void RunDevAutoLobby();
 	FTimerHandle LobbyReadyTimer;
+	FTimerHandle HistoryTimer;
+	FTimerHandle ResultsViewTimer;
+	/** Adds everyone's points to their graph. */
+	void SampleMatchHistory();
+	/** Online: nobody holds the lobby on the results any longer. */
+	void ClearResultsViewers();
 	FTimerHandle DevBlackHoleTimer;
 	FTimerHandle DevWindTimer;
 	FTimerHandle StartingTimer;

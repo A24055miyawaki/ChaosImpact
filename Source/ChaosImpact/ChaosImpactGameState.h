@@ -74,6 +74,34 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	bool bReadyForMatch = false;
 
+	// ---- The VS match's numbers, counted by the server for the results ----
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 Throws = 0;
+	/** Hits on opponents (each burn of a fire zone too). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 Hits = 0;
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 TimesHit = 0;
+	/** Opponents' balls passed through by dashing. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 Dodges = 0;
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 SpecialThrows = 0;
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 DriveHits = 0;
+	/** The furthest an opponent was from this player when hit by them, in centimetres. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 LongestHit = 0;
+	/** Points every ChaosImpactMatch::HistoryStepSeconds from GO, and at the whistle (the results' graph). */
+	UPROPERTY(Replicated)
+	TArray<int16> PointsHistory;
+	/** Online: still on the results (the lobby waits for everyone to come back before the next match). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	bool bViewingResults = false;
+
+	/** Points, knockouts and every number above back to nothing (a new match). */
+	void ResetMatchStats();
+
 	/** Server only: identifies the member's machine across reconnects (the CIMachine login option). */
 	FString MachineToken;
 

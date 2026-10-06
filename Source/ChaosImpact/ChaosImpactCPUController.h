@@ -20,6 +20,10 @@ class AChaosImpactCPUController : public AAIController
 	GENERATED_BODY()
 
 public:
+	/** Development: seconds spent thinking by every CPU so far (to measure how heavy they are). */
+	static double DevThinkSeconds;
+	/** Development: the same split up (perception, learning, target, dodging, offence, positioning). */
+	static double DevSectionSeconds[6];
 	AChaosImpactCPUController();
 	virtual void Tick(float DeltaSeconds) override;
 	bool UsesArcFlightMode() const;
@@ -177,6 +181,44 @@ private:
 
 	// ---- さいきょう
 	bool bPerfect = false;
+	/**
+	 * Hunting: behind on points, the match nearly over without a lead, or the target simply running. Then it cuts the
+	 * runner off from open floor (herding them to the walls), closes in with dashes (always keeping one for a dodge)
+	 * and keeps throwing to wear their dashes down, instead of waiting for a certain shot that never comes.
+	 */
+	bool UpdateHunting(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target, float Now);
+	bool bHunting = false;
+	/**
+	 * Around walls: the stage as a grid of metre squares (built once per stage), and from the goal how many squares
+	 * away every square is. When a wall stands between it and where it is going, さいきょう walks the shortest way
+	 * round instead of pressing into the wall.
+	 */
+	FVector RouteToward(const AChaosImpactCharacter* Self, const FVector& Goal, float Now);
+	TArray<int32> RouteDistances;
+	FIntPoint RouteGoalCell = FIntPoint(-1, -1);
+	float RouteBuiltAt = -100.0f;
+	FVector RouteDirection = FVector::ZeroVector;
+	float RouteDirectionAt = -100.0f;
+	FVector RouteDirectionGoal = FVector::ZeroVector;
+	float DevTraceAt = 0.0f;
+	static constexpr float PerfectDecisionSeconds = 0.025f;
+	static constexpr float PerfectShotPlanSeconds = 0.05f;
+	/** Stamina a hunting dash needs: one dash's worth always stays back for getting out of a ball's way. */
+	static constexpr float HuntDashStaminaReserve = 2.2f;
+	/** Hunting throws (not certain ones) only from this near: from further a dodger always gets out of the way. */
+	static constexpr float HuntThrowRange = 1500.0f;
+	float HuntUntil = 0.0f;
+	float NextHuntDashAt = 0.0f;
+	static int32 GetPoints(const AChaosImpactCharacter* Character);
+	/** Holding a snowball: waggling the movement in place rolls it up far faster than walking (and keeps it here). */
+	bool bSnowMashing = false;
+	FVector SnowMashAxis = FVector::ZeroVector;
+	float SnowMashSign = 1.0f;
+	float NextSnowMashFlipAt = 0.0f;
+	/** The shot planned last: planned a few times a second while charging, not every frame (it is costly). */
+	FSureShot CachedShot;
+	float CachedShotAt = -1.0f;
+	TWeakObjectPtr<const AChaosImpactCharacter> CachedShotTarget;
 	/** Burning ground right now (fire, fire trails, a black hole's centre): x, y, z and reach. A dodge never runs through it. */
 	TArray<FVector4> ActiveBurns;
 	void CollectActiveBurns(const AChaosImpactCharacter* Self);
@@ -203,6 +245,8 @@ private:
 	/** The way closest to Desired that keeps out of hazards and corners. */
 	FVector ChooseSafeDirection(const AChaosImpactCharacter* Self, const FVector& Desired) const;
 	static float GetPickupValue(EChaosImpactBallType Type);
+	/** The same while hunting a runner (fast balls and wide ones first). */
+	static float GetHuntPickupValue(EChaosImpactBallType Type);
 
 	/**
 	 * さいきょう keeps learning through the match. Each opponent's habits: how quickly they start to dodge a throw,

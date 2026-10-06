@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactDriveBall.h"
 #include "ChaosImpactBall.generated.h"
 
 class AChaosImpactHazardZone;
@@ -112,6 +113,20 @@ public:
 	float GetSnowScale() const { return SnowScale; }
 	bool HasDetonated() const { return bDetonated; }
 
+	/** Drive: steered until this shared server time (its thrower's control time). */
+	void BeginDrive(double DeadlineServerTime);
+	/** Drive: which way the thrower is steering it (flat; zero: straight on). */
+	void SetDriveSteer(const FVector& Direction);
+	/** Drive: the share (0-1) of its steering time left, or negative when nobody steers it. */
+	float GetDriveControlLeft() const;
+	/**
+	 * Drive: let go of early (its thrower stopped it, dashed or was hit): it ends where it is without hurting anyone,
+	 * just as it does against a wall.
+	 */
+	void FizzleDrive();
+	/** Server: met by a drive ball in flight: knocked away (a special ball bursts as on any contact). */
+	void KnockAwayByDrive(const AChaosImpactBall* Drive);
+
 	/** Server: a real ball in flight (not held, landed, burst or a throw preview). */
 	bool IsFlyingOnServer() const;
 	/**
@@ -196,6 +211,10 @@ protected:
 	/** A beam striking someone on its way through: a burst of its light where it hit, on every machine. */
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastBeamStrike(FVector_NetQuantize Location);
+
+	/** A drive ball's end on every machine: an explosion where it hit someone, or a fizzle of sparks. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastDriveBurst(FVector_NetQuantize Location, bool bHit);
 
 	/** Snowball size (1 = a normal ball); sizes its mesh and collision on every machine. */
 	UPROPERTY(ReplicatedUsing=OnRep_SnowScale)
@@ -319,7 +338,10 @@ protected:
 	/** Server: publishes the current motion for clients (no-op offline). */
 	void UpdateNetState();
 	/** Client: where the ball should be now, extrapolated from the last server state. */
-	FVector PredictNetLocation(double ServerNow) const;
+	/** bOutBurst: the flight has reached where this (special) ball bursts on the stage. */
+	FVector PredictNetLocation(double ServerNow, bool* bOutBurst = nullptr) const;
+	/** Client: a special ball shown bursting where its flight meets the stage, before the server's news arrives. */
+	bool bPredictedBurstShown = false;
 	void TickClientPresentation(float DeltaSeconds);
 	double GetServerNow() const;
 	/**
@@ -351,6 +373,8 @@ protected:
 	bool bAwaitingLaunchAdoption = true;
 	/** Client: the server time the displayed position was last computed for. */
 	double ClientLastPresentationTime = 0.0;
+	/** Development trace: the previous frame was drawn in flight too (the first frame of a flight is not compared). */
+	bool bAdoptionTraced = false;
 	int32 AdoptionWaitFrames = 0;
 	/** Client: correction speed; slower while continuing from this screen's own throw preview. */
 	float ActiveErrorDecayRate = 14.0f;
@@ -359,7 +383,8 @@ protected:
 	 * the throw preview so the ball does not appear to slow down when the server's copy takes over.
 	 */
 	float ClientTimeLead = 0.0f;
-	static constexpr float MaxOwnThrowTimeLeadSeconds = 0.18f;
+	/** Enough for a ~600 ms round trip: the thrower's own ball never visibly slows down when the server's copy arrives. */
+	static constexpr float MaxOwnThrowTimeLeadSeconds = 0.7f;
 	/** Server: when this ball last stopped flying, so hits reported a moment later still count. */
 	double FlightEndedAt = 0.0;
 
@@ -413,6 +438,21 @@ protected:
 
 	/** Nova: its layers of light, sized with the ball. */
 	ChaosImpactBallTypes::FNovaLook NovaLook;
+	ChaosImpactBallTypes::FSimaeBallLook SimaeLook;
+	FChaosImpactDriveLook DriveLook;
+	/** Drive: steered until then (shared server time; 0: not steered). Replicated for its look on every screen. */
+	UPROPERTY(Replicated)
+	double DriveDeadline = 0.0;
+	FVector DriveSteer = FVector::ZeroVector;
+	/** Who dashed through this ball (each counted once as a dodge). */
+	TSet<TWeakObjectPtr<AActor>> DodgedBy;
+	/**
+	 * Where this machine's own drive ball is going and how fast: only its steering changes them, so nothing it brushes
+	 * against (another ball) turns or slows it. 0 speed: not yet taken from its flight.
+	 */
+	FVector DriveHeading = FVector::ZeroVector;
+	float DriveSpeed = 0.0f;
+	void UpdateDriveFlight(float DeltaSeconds);
 	/** Nova: falls this much slower than other balls thrown in an arc. */
 	float GetArcGravityScale() const
 	{
@@ -439,6 +479,8 @@ protected:
 	FVector PickupBaseLocation = FVector::ZeroVector;
 	float PickupAnimationTime = 0.0f;
 	float FlightSeconds = 0.0f;
+	/** Server time from which this ball may be picked up (replicated, so no screen claims it earlier). */
+	UPROPERTY(Replicated)
 	float PickupAvailableAtSeconds = 0.0f;
 	bool bPickupConsumed = false;
 	/** Server: swept up by a tornado (see CatchInWind). */

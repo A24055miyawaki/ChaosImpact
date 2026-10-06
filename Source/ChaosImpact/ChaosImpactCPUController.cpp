@@ -13,6 +13,7 @@
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Misc/ScopeExit.h"
 
 namespace
 {
@@ -70,9 +71,93 @@ void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 	SimaeDashAt = -1.0;
 }
 
+double AChaosImpactCPUController::DevThinkSeconds = 0.0;
+double AChaosImpactCPUController::DevSectionSeconds[6] = {};
+
+namespace
+{
+	/** The stage's floor as metre squares a body can stand in (no wall there at body height). */
+	struct FChaosImpactCPUNavGrid
+	{
+		FVector Origin = FVector::ZeroVector;
+		float Cell = 100.0f;
+		int32 NX = 0;
+		int32 NY = 0;
+		TArray<uint8> Blocked;
+		FVector BuiltCenter = FVector::ZeroVector;
+		float BuiltHalf = 0.0f;
+
+		bool IsInside(const FIntPoint& C) const { return C.X >= 0 && C.Y >= 0 && C.X < NX && C.Y < NY; }
+		int32 Index(const FIntPoint& C) const { return C.Y * NX + C.X; }
+		FIntPoint CellOf(const FVector& P) const
+		{
+			return FIntPoint(FMath::FloorToInt((P.X - Origin.X) / Cell), FMath::FloorToInt((P.Y - Origin.Y) / Cell));
+		}
+		FVector CenterOf(const FIntPoint& C) const
+		{
+			return FVector(Origin.X + (C.X + 0.5f) * Cell, Origin.Y + (C.Y + 0.5f) * Cell, Origin.Z);
+		}
+		bool IsFree(const FIntPoint& C) const { return IsInside(C) && Blocked[Index(C)] == 0; }
+	};
+
+	TMap<TWeakObjectPtr<UWorld>, TSharedPtr<FChaosImpactCPUNavGrid>>& GetCPUNavGrids()
+	{
+		static TMap<TWeakObjectPtr<UWorld>, TSharedPtr<FChaosImpactCPUNavGrid>> Grids;
+		return Grids;
+	}
+
+	/** The VS stage's grid, built the first time any CPU needs it (a few thousand overlap tests, once). */
+	const FChaosImpactCPUNavGrid* FindCPUNavGrid(UWorld* World, const FVector& BodyLocation, const AActor* Ignored)
+	{
+		const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+		if (!Match || !Match->bVersusMatch)
+		{
+			return nullptr;
+		}
+		const FVector Center = Match->StageCenter;
+		const float Half = Match->StageHalfExtent + 100.0f;
+		TSharedPtr<FChaosImpactCPUNavGrid>& Grid = GetCPUNavGrids().FindOrAdd(World);
+		if (Grid.IsValid() && Grid->BuiltCenter.Equals(Center, 1.0f) && FMath::IsNearlyEqual(Grid->BuiltHalf, Half, 1.0f))
+		{
+			return Grid.Get();
+		}
+		// Forget grids of worlds that are gone.
+		for (auto It = GetCPUNavGrids().CreateIterator(); It; ++It)
+		{
+			if (!It->Key.IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
+		TSharedPtr<FChaosImpactCPUNavGrid>& Fresh = GetCPUNavGrids().FindOrAdd(World);
+		Fresh = MakeShared<FChaosImpactCPUNavGrid>();
+		Fresh->BuiltCenter = Center;
+		Fresh->BuiltHalf = Half;
+		Fresh->Origin = FVector(Center.X - Half, Center.Y - Half, BodyLocation.Z);
+		Fresh->NX = Fresh->NY = FMath::CeilToInt(Half * 2.0f / Fresh->Cell);
+		Fresh->Blocked.SetNumZeroed(Fresh->NX * Fresh->NY);
+		FCollisionObjectQueryParams WallObjects;
+		WallObjects.AddObjectTypesToQuery(ECC_WorldStatic);
+		FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUNavGrid), false, Ignored);
+		// The same body as the CPU's own wall checks (SweepWalls), a little wider so a route keeps off the corners.
+		const FCollisionShape Body = FCollisionShape::MakeCapsule(44.0f, 62.0f);
+		for (int32 Y = 0; Y < Fresh->NY; ++Y)
+		{
+			for (int32 X = 0; X < Fresh->NX; ++X)
+			{
+				const FVector At = Fresh->CenterOf(FIntPoint(X, Y)) + FVector::UpVector * 68.0f;
+				Fresh->Blocked[Y * Fresh->NX + X] = World->OverlapAnyTestByObjectType(At, FQuat::Identity, WallObjects, Body, Parameters) ? 1 : 0;
+			}
+		}
+		return Fresh.Get();
+	}
+}
+
 void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	const double ThinkStartedAt = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT { DevThinkSeconds += FPlatformTime::Seconds() - ThinkStartedAt; };
 	AChaosImpactCharacter* Self = Cast<AChaosImpactCharacter>(GetPawn());
 	if (!Self || !GetWorld())
 	{
@@ -80,11 +165,20 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
+	double SectionAt = FPlatformTime::Seconds();
+	const auto Section = [&SectionAt](const int32 Index)
+	{
+		const double Now2 = FPlatformTime::Seconds();
+		DevSectionSeconds[Index] += Now2 - SectionAt;
+		SectionAt = Now2;
+	};
 	UpdatePerception(Self, DeltaSeconds, Now);
+	Section(0);
 	if (bPerfect)
 	{
 		UpdateLearning(Self, Now);
 	}
+	Section(1);
 	if (Self->IsEliminated())
 	{
 		EvadeUntil = 0.0f;
@@ -112,6 +206,27 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	{
 		Self->StopJumping();
 		bHoldingJump = false;
+	}
+	if (Self->IsDriving())
+	{
+		// Steering its drive ball: at whoever it is after, where they will be when the ball gets there. The thrower
+		// stands rooted meanwhile.
+		if (AChaosImpactBall* Driven = Self->GetDrivenBall())
+		{
+			AChaosImpactCharacter* Target = CurrentTarget.IsValid() && !CurrentTarget->IsEliminated()
+				? CurrentTarget.Get() : SelectTarget(Self);
+			if (Target)
+			{
+				const FVector BallAt = Driven->GetActorLocation();
+				const float Speed = FMath::Max(static_cast<float>(Driven->GetVelocity().Size2D()), 1.0f);
+				const float Arrival = FMath::Min(static_cast<float>(FVector::Dist2D(BallAt, Target->GetActorLocation())) / Speed, 1.0f);
+				const FVector Aim = Target->GetActorLocation() + GetObservedVelocity(Target) * Arrival * LeadScale;
+				Self->SetAIDriveSteer((Aim - BallAt).GetSafeNormal2D());
+			}
+		}
+		DesiredMoveDirection = FVector::ZeroVector;
+		DesiredMoveScale = 0.0f;
+		return;
 	}
 	if (Self->IsCarriedByWind())
 	{
@@ -152,7 +267,8 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 
 	if (Now >= NextDecisionAt)
 	{
-		const float DecisionSeconds = bPerfect ? 0.0f : FMath::Lerp(0.12f, 0.045f, Skill);
+		// さいきょう decides 40 times a second (a reaction well inside a frame or two; every frame was needlessly heavy).
+		const float DecisionSeconds = bPerfect ? PerfectDecisionSeconds : FMath::Lerp(0.12f, 0.045f, Skill);
 		NextDecisionAt = Now + DecisionSeconds;
 		if (Now >= IdleUntil && IdleChancePerSecond > 0.0f && FMath::FRand() < IdleChancePerSecond * DecisionSeconds)
 		{
@@ -168,25 +284,57 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 		}
 		if (Now >= IdleUntil)
 		{
+			SectionAt = FPlatformTime::Seconds();
 			AChaosImpactCharacter* Target = SelectTarget(Self);
 			CurrentTarget = Target;
 			TryCollectNearbyBall(Self, Now);
+			Section(2);
 			const bool bEvading = UpdateTornadoEvasion(Self, Now) || UpdateEvasion(Self, Now);
+			Section(3);
 			UpdateOffense(Self, Target, Now);
+			Section(4);
 			if (!bEvading)
 			{
 				UpdatePositioning(Self, Target, Now);
 			}
+			Section(5);
 		}
 	}
 	if (Now >= IdleUntil)
 	{
 		UpdateStuckRecovery(Self, Now);
 	}
+#if !UE_BUILD_SHIPPING
+	static const bool bDevTrace = FParse::Param(FCommandLine::Get(), TEXT("CICPUTrace"));
+	if (bDevTrace && bPerfect && Now >= DevTraceAt)
+	{
+		DevTraceAt = Now + 1.0f;
+		const AChaosImpactCharacter* Target = CurrentTarget.Get();
+		UE_LOG(LogTemp, Log, TEXT("CPUTRACE balls=%d charging=%d hunting=%d evading=%d mash=%d dist=%.0f stamina=%.1f pickupsOnFloor=%d move=%s"),
+			Self->GetCarriedBallCount(), Self->IsChargingThrow(), bHunting, Now < EvadeUntil, bSnowMashing,
+			Target ? FVector::Dist2D(Target->GetActorLocation(), Self->GetActorLocation()) : -1.0f, Self->GetStamina(),
+			[this]() { int32 N = 0; for (TActorIterator<AChaosImpactBall> It(GetWorld()); It; ++It) { N += It->IsPickupAvailable() ? 1 : 0; } return N; }(),
+			*DesiredMoveDirection.ToCompactString());
+		UE_LOG(LogTemp, Log, TEXT("CPUTRACE at %s target %s vantage %s pickup %s"), *Self->GetActorLocation().ToCompactString(),
+			Target ? *Target->GetActorLocation().ToCompactString() : TEXT("-"), *VantagePoint.ToCompactString(),
+			[this, Self]() { const AChaosImpactBall* P = SelectPickup(Self); return P ? P->GetActorLocation().ToCompactString() : FString(TEXT("-")); }().GetCharArray().GetData());
+	}
+#endif
 
 	// Decisions are throttled, but movement input must be supplied every frame.
 	// Otherwise CharacterMovement consumes it and the CPU visibly stutters.
 	const bool bEvading = Now < EvadeUntil && !EvadeDirection.IsNearlyZero();
+	if (bSnowMashing && !bEvading && Now >= EscapeUntil && !Self->IsDashing() && !SnowMashAxis.IsNearlyZero())
+	{
+		// Waggling: the way flips faster than the snowball's own limit on how often a flip counts.
+		if (Now >= NextSnowMashFlipAt)
+		{
+			SnowMashSign = -SnowMashSign;
+			NextSnowMashFlipAt = Now + 0.085f;
+		}
+		Self->AddMovementInput(SnowMashAxis * SnowMashSign, 1.0f);
+		return;
+	}
 	const FVector ActiveMoveDirection = bEvading ? EvadeDirection
 		: Now < EscapeUntil ? EscapeMoveDirection : DesiredMoveDirection;
 	if (!Self->IsDashing() && !ActiveMoveDirection.IsNearlyZero())
@@ -780,6 +928,8 @@ AChaosImpactCharacter* AChaosImpactCPUController::SelectTarget(const AChaosImpac
 			// Whoever cannot dash away right now (or cannot move at all) is the one to hit.
 			Score += Candidate->GetDashReadyInSeconds() > 0.5f ? 0.9f : 0.0f;
 			Score += Candidate->IsIceFrozen() || Candidate->IsChargingNova() ? 1.5f : 0.0f;
+			// Whoever is ahead on points is the one to bring down (a lead is what lets a player hide).
+			Score += FMath::Clamp(GetPoints(Candidate) - GetPoints(Self), 0, 4) * 0.9f;
 		}
 		if (Score > BestScore)
 		{
@@ -1109,9 +1259,15 @@ AChaosImpactBall* AChaosImpactCPUController::SelectPickup(const AChaosImpactChar
 		float Score = MyDistance + (Ball->IsPickupAvailable() ? 0.0f : 150.0f);
 		if (bPerfect)
 		{
-			// The better the ball, the further it is worth going; never into burning ground or a black hole.
-			Score -= GetPickupValue(Ball->GetBallType()) * 320.0f;
+			// The better the ball, the further it is worth going; never into burning ground or a black hole. Hunting,
+			// any ball near at hand and on the way to the runner beats a better one across the stage.
+			Score -= (bHunting ? GetHuntPickupValue(Ball->GetBallType()) * 220.0f : GetPickupValue(Ball->GetBallType()) * 320.0f);
 			Score += GetHazardAt(Self, BallLocation) * 900.0f;
+			if (bHunting && CurrentTarget.IsValid())
+			{
+				const FVector ToTarget = (CurrentTarget->GetActorLocation() - Location).GetSafeNormal2D();
+				Score -= static_cast<float>(FVector::DotProduct((BallLocation - Location).GetSafeNormal2D(), ToTarget)) * 350.0f;
+			}
 		}
 		for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 		{
@@ -1173,13 +1329,32 @@ void AChaosImpactCPUController::UpdatePositioning(
 	const float TargetDistance = Target ? FVector::Dist2D(Target->GetActorLocation(), Location) : 0.0f;
 	// Always hold a ball; take a second one when it is close and nobody is pressing.
 	const bool bGoForPickup = Pickup && (Balls == 0
-		|| (PickupDistance < 420.0f && (!Target || TargetDistance > 700.0f) && !Self->IsChargingThrow()));
+		|| (PickupDistance < 420.0f && (!Target || TargetDistance > 700.0f) && !Self->IsChargingThrow())
+		// Hunting: a second ball near at hand is fetched first (the first throw takes their dash, the second lands).
+		|| (bPerfect && bHunting && Balls == 1 && PickupDistance < 900.0f && (!Target || TargetDistance > 800.0f)));
 
+	if (bPerfect)
+	{
+		// A snowball in hand and nobody close enough to punish standing still: roll it up on the spot.
+		const bool bSnowToGrow = Balls > 0 && Self->GetCarriedBallType(0) == EChaosImpactBallType::Snow && Self->GetSnowGrowth(0) < 0.95f;
+		bSnowMashing = bSnowToGrow && (!Target || TargetDistance > 650.0f || Target->GetCarriedBallCount() == 0)
+			&& CountArmedThreats(Self) <= 1 && GetHazardAt(Self, Location) < 1.0f;
+		if (bSnowMashing)
+		{
+			// Across the line to the target, so the waggle never walks it nearer or further.
+			const FVector Toward = Target ? (Target->GetActorLocation() - Location).GetSafeNormal2D() : Self->GetActorForwardVector();
+			SnowMashAxis = FVector::CrossProduct(FVector::UpVector, Toward).GetSafeNormal2D();
+			if (!IsPathClear(Location, SnowMashAxis, 120.0f) || !IsPathClear(Location, -SnowMashAxis, 120.0f))
+			{
+				SnowMashAxis = Toward;
+			}
+		}
+	}
 	if (bGoForPickup)
 	{
 		const float LeadSeconds = FMath::Clamp(PickupDistance / 1800.0f, 0.05f, 0.28f);
 		const FVector PredictedPickup = Pickup->GetActorLocation() + Pickup->GetBallVelocity() * LeadSeconds;
-		Desired = (PredictedPickup - Location).GetSafeNormal2D();
+		Desired = bPerfect ? RouteToward(Self, PredictedPickup, Now) : (PredictedPickup - Location).GetSafeNormal2D();
 		Scale = FMath::Clamp(PickupDistance / 260.0f, 0.38f, 1.0f);
 	}
 	else if (Target)
@@ -1236,6 +1411,34 @@ void AChaosImpactCPUController::UpdatePositioning(
 			NextStrafeChangeAt = Now + 0.8f;
 		}
 		Desired = (TowardTarget * Radial + Strafe * (bHasSight ? 0.9f : 1.2f)).GetSafeNormal2D();
+		if (bPerfect && UpdateHunting(Self, Target, Now))
+		{
+			// Hunting: to where they would run, on the open side of them, so every way out leads to a wall. Close
+			// in at full speed (no strafing), and with a dash when far (one dash always kept back for dodging).
+			const FVector TargetAt = Target->GetActorLocation();
+			FVector TargetVelocity = GetObservedVelocity(Target);
+			TargetVelocity.Z = 0.0f;
+			const FVector Escape = TargetVelocity.Size2D() > 150.0f ? TargetVelocity.GetSafeNormal2D() : (TargetAt - Location).GetSafeNormal2D();
+			const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+			const FVector Center = Match && Match->bVersusMatch ? FVector(Match->StageCenter) : HomeLocation;
+			const FVector ToCenter = (Center - TargetAt).GetSafeNormal2D();
+			const float Lead = FMath::Clamp(TargetDistance * 0.5f, 150.0f, 700.0f);
+			const FVector CutOff = TargetAt + Escape * Lead
+				+ ToCenter * FMath::Min(350.0f, static_cast<float>(FVector::Dist2D(Center, TargetAt)));
+			if (TargetDistance > 550.0f)
+			{
+				Desired = RouteToward(Self, CutOff, Now);
+				Scale = 1.0f;
+				if (TargetDistance > 1200.0f && Now >= NextHuntDashAt && Self->CanDashNow() && !Self->IsChargingNova()
+					&& Self->GetStamina() >= HuntDashStaminaReserve && CountArmedThreats(Self) == 0
+					&& GetFreeTravel(Location, Desired, 700.0f) > Self->GetDashDistance() * 0.9f
+					&& GetHazardAt(Self, Location + Desired * Self->GetDashDistance()) < 1.0f)
+				{
+					Self->RequestAIDash(Desired);
+					NextHuntDashAt = Now + 1.4f;
+				}
+			}
+		}
 		if (bPerfect && Balls > 0)
 		{
 			// A wall between: not shuffling in front of it, but straight to somewhere with a clear shot.
@@ -1250,7 +1453,7 @@ void AChaosImpactCPUController::UpdatePositioning(
 				}
 				if (!VantagePoint.IsZero())
 				{
-					Desired = (VantagePoint - Location).GetSafeNormal2D();
+					Desired = RouteToward(Self, VantagePoint, Now);
 					Scale = 1.0f;
 				}
 			}
@@ -1590,6 +1793,24 @@ float AChaosImpactCPUController::GetBurstRadius(const EChaosImpactBallType Type,
 	}
 }
 
+float AChaosImpactCPUController::GetHuntPickupValue(const EChaosImpactBallType Type)
+{
+	// Against a runner: what arrives before they can step aside (a beam, a thunder ball), what covers the ground they
+	// would step to (a big snowball, a nova, a black hole, ice), and a drive ball that follows them.
+	switch (Type)
+	{
+	case EChaosImpactBallType::Beam: return 3.5f;
+	case EChaosImpactBallType::Thunder: return 3.0f;
+	case EChaosImpactBallType::Drive: return 2.8f;
+	case EChaosImpactBallType::Ice: return 2.4f;
+	case EChaosImpactBallType::Snow: return 2.3f;
+	case EChaosImpactBallType::Black: return 2.2f;
+	case EChaosImpactBallType::Nova: return 2.0f;
+	case EChaosImpactBallType::Fire: return 1.8f;
+	default: return 1.0f;
+	}
+}
+
 float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 {
 	switch (Type)
@@ -1602,6 +1823,7 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Black: return 2.0f;
 	case EChaosImpactBallType::Nova: return 1.8f;
 	case EChaosImpactBallType::Simae: return 1.7f;
+	case EChaosImpactBallType::Drive: return 1.9f;
 	case EChaosImpactBallType::Wind: return 1.6f;
 	case EChaosImpactBallType::Snow: return 1.5f;
 	default: return 1.0f;
@@ -2067,7 +2289,21 @@ void AChaosImpactCPUController::UpdateOffensePerfect(AChaosImpactCharacter* Self
 		}
 		return;
 	}
-	const FSureShot Shot = PlanSureShot(Self, Target, Self->GetThrowChargeAlpha());
+	// Planned 20 times a second (it flies dozens of trial throws): a moment's old plan is as good as a new one.
+	if (CachedShotTarget.Get() != Target || Now - CachedShotAt >= PerfectShotPlanSeconds || CachedShotAt < 0.0f)
+	{
+		CachedShot = PlanSureShot(Self, Target, Self->GetThrowChargeAlpha());
+		CachedShotAt = Now;
+		CachedShotTarget = Target;
+	}
+	const FSureShot Shot = CachedShot;
+	if (Held == EChaosImpactBallType::Snow && Self->GetSnowGrowth(0) < 0.85f && HeldSeconds < 5.0f
+		&& !(Shot.bSure && Self->GetSnowGrowth(0) >= 0.45f) && CountArmedThreats(Self) < 2)
+	{
+		// Still rolling the snowball up (see bSnowMashing): a big one bursts over a whole stretch of floor.
+		Self->SetAIAimDirection(Shot.bValid ? Shot.Direction : (Target->GetActorLocation() - Self->GetActorLocation()).GetSafeNormal2D());
+		return;
+	}
 	if (!Shot.bValid)
 	{
 		Self->SetAIAimDirection((Target->GetActorLocation() - Self->GetActorLocation()).GetSafeNormal2D());
@@ -2098,6 +2334,21 @@ void AChaosImpactCPUController::UpdateOffensePerfect(AChaosImpactCharacter* Self
 	{
 		bRelease = true;
 	}
+	// Hunting a runner: every ball costs them a dash or turns them, so keep them coming; at once when they are up
+	// against a wall with nowhere to step to.
+	if (!bRelease && bHunting && HeldSeconds > 0.35f
+		&& FVector::Dist2D(Target->GetActorLocation(), Self->GetActorLocation()) < HuntThrowRange)
+	{
+		FVector TargetVelocity = GetObservedVelocity(Target);
+		TargetVelocity.Z = 0.0f;
+		const FVector Escape = TargetVelocity.Size2D() > 150.0f ? TargetVelocity.GetSafeNormal2D()
+			: (Target->GetActorLocation() - Self->GetActorLocation()).GetSafeNormal2D();
+		const bool bCornered = GetFreeTravel(Target->GetActorLocation(), Escape, 500.0f) < 350.0f;
+		// Only a throw they cannot walk out of: it lands or costs them a dash, and dashes barely come back (one every
+		// twelve seconds or so). Out of dashes, the next one of these lands. A throw they can walk out of only feeds them
+		// a ball. With two in hand, now and then one anyway to keep them turning.
+		bRelease = bCornered || Shot.bWalkProof || (Balls >= 2 && HeldSeconds > 1.6f);
+	}
 	if (bRelease)
 	{
 		NoteThrowAt(Target, Shot.Direction, Now);
@@ -2107,6 +2358,199 @@ void AChaosImpactCPUController::UpdateOffensePerfect(AChaosImpactCharacter* Self
 		Self->EndThrowInput();
 		NextThrowAt = Now + 0.02f;
 	}
+}
+
+FVector AChaosImpactCPUController::RouteToward(const AChaosImpactCharacter* Self, const FVector& Goal, const float Now)
+{
+	const FVector Location = Self->GetActorLocation();
+	const FVector Straight = (Goal - Location).GetSafeNormal2D();
+	const float Distance = static_cast<float>(FVector::Dist2D(Goal, Location));
+	if (Distance < 60.0f || IsPathClear(Location, Straight, Distance))
+	{
+		return Straight;
+	}
+	// Recently worked out: it holds for a few moments.
+	if (Now - RouteDirectionAt < 0.2f && !RouteDirection.IsNearlyZero() && FVector::Dist2D(Goal, RouteDirectionGoal) < 200.0f)
+	{
+		return RouteDirection;
+	}
+	const FChaosImpactCPUNavGrid* Grid = FindCPUNavGrid(GetWorld(), Location, Self);
+	if (!Grid)
+	{
+		return Straight;
+	}
+	FIntPoint GoalCell = Grid->CellOf(Goal);
+	GoalCell.X = FMath::Clamp(GoalCell.X, 0, Grid->NX - 1);
+	GoalCell.Y = FMath::Clamp(GoalCell.Y, 0, Grid->NY - 1);
+	static const FIntPoint Steps[] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+	const auto CanStep = [Grid](const FIntPoint& From, const FIntPoint& Step)
+	{
+		const FIntPoint To = From + Step;
+		// Diagonally only past two open sides (never through a wall's corner).
+		return Grid->IsFree(To) && (Step.X == 0 || Step.Y == 0
+			|| (Grid->IsFree(FIntPoint(From.X + Step.X, From.Y)) && Grid->IsFree(FIntPoint(From.X, From.Y + Step.Y))));
+	};
+	// How far every square is from the goal, worked out again when the goal moves or now and then.
+	// (A runner's square changes all the time: worked out again once it has moved a few squares, or a moment later.)
+	const bool bGoalMoved = FMath::Abs(GoalCell.X - RouteGoalCell.X) + FMath::Abs(GoalCell.Y - RouteGoalCell.Y) > 3;
+	if ((bGoalMoved && Now - RouteBuiltAt > 0.1f) || Now - RouteBuiltAt > 0.4f || RouteDistances.Num() != Grid->NX * Grid->NY)
+	{
+		RouteGoalCell = GoalCell;
+		RouteBuiltAt = Now;
+		RouteDistances.Init(MAX_int32, Grid->NX * Grid->NY);
+		TArray<FIntPoint> Queue;
+		Queue.Reserve(Grid->NX * Grid->NY);
+		// A goal inside a wall (a ball against it): from the open squares around it.
+		for (int32 Ring = 0; Ring <= 2 && Queue.IsEmpty(); ++Ring)
+		{
+			for (int32 DY = -Ring; DY <= Ring; ++DY)
+			{
+				for (int32 DX = -Ring; DX <= Ring; ++DX)
+				{
+					const FIntPoint Cell(GoalCell.X + DX, GoalCell.Y + DY);
+					if (Grid->IsFree(Cell) && RouteDistances[Grid->Index(Cell)] == MAX_int32)
+					{
+						RouteDistances[Grid->Index(Cell)] = 0;
+						Queue.Add(Cell);
+					}
+				}
+			}
+		}
+		for (int32 Head = 0; Head < Queue.Num(); ++Head)
+		{
+			const FIntPoint Cell = Queue[Head];
+			const int32 Next = RouteDistances[Grid->Index(Cell)] + 1;
+			for (const FIntPoint& Step : Steps)
+			{
+				const FIntPoint To = Cell + Step;
+				if (CanStep(Cell, Step) && RouteDistances[Grid->Index(To)] > Next)
+				{
+					RouteDistances[Grid->Index(To)] = Next;
+					Queue.Add(To);
+				}
+			}
+		}
+	}
+	// Downhill from here, square by square; then straight at the furthest of them that can be walked to directly.
+	FIntPoint Cell = Grid->CellOf(Location);
+	if (!Grid->IsInside(Cell))
+	{
+		return Straight;
+	}
+	if (!Grid->IsFree(Cell) || RouteDistances[Grid->Index(Cell)] == MAX_int32)
+	{
+		// Pressed against a wall: start from the best open square beside it.
+		int32 Best = MAX_int32;
+		FIntPoint BestCell = Cell;
+		for (const FIntPoint& Step : Steps)
+		{
+			const FIntPoint To = Cell + Step;
+			if (Grid->IsFree(To) && RouteDistances[Grid->Index(To)] < Best)
+			{
+				Best = RouteDistances[Grid->Index(To)];
+				BestCell = To;
+			}
+		}
+		if (Best == MAX_int32)
+		{
+			return Straight;
+		}
+		Cell = BestCell;
+	}
+	TArray<FIntPoint, TInlineAllocator<32>> Path;
+	Path.Add(Cell);
+	for (int32 Walk = 0; Walk < 30; ++Walk)
+	{
+		const int32 Here = RouteDistances[Grid->Index(Cell)];
+		if (Here <= 0)
+		{
+			break;
+		}
+		FIntPoint Down = Cell;
+		for (const FIntPoint& Step : Steps)
+		{
+			const FIntPoint To = Cell + Step;
+			if (CanStep(Cell, Step) && RouteDistances[Grid->Index(To)] < RouteDistances[Grid->Index(Down)])
+			{
+				Down = To;
+			}
+		}
+		if (Down == Cell)
+		{
+			break;
+		}
+		Cell = Down;
+		Path.Add(Cell);
+	}
+	FVector Direction = (Grid->CenterOf(Path.Num() > 1 ? Path[1] : Path[0]) - Location).GetSafeNormal2D();
+	static const int32 Tries[] = {29, 22, 16, 11, 7, 4, 2};
+	for (const int32 Try : Tries)
+	{
+		if (Try >= Path.Num())
+		{
+			continue;
+		}
+		const FVector Waypoint = Grid->CenterOf(Path[Try]);
+		const FVector Toward = (Waypoint - Location).GetSafeNormal2D();
+		if (IsPathClear(Location, Toward, static_cast<float>(FVector::Dist2D(Waypoint, Location))))
+		{
+			Direction = Toward;
+			break;
+		}
+	}
+	RouteDirection = Direction.IsNearlyZero() ? Straight : Direction;
+	RouteDirectionAt = Now;
+	RouteDirectionGoal = Goal;
+	return RouteDirection;
+}
+
+int32 AChaosImpactCPUController::GetPoints(const AChaosImpactCharacter* Character)
+{
+	const AChaosImpactPlayerState* State = Character ? Character->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	return State ? State->Points : 0;
+}
+
+bool AChaosImpactCPUController::UpdateHunting(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target, const float Now)
+{
+	if (!bPerfect || !Self || !Target || !GetWorld())
+	{
+		bHunting = false;
+		return false;
+	}
+	// Behind: someone (not on its side) has more points.
+	const int32 Mine = GetPoints(Self);
+	bool bBehind = false;
+	bool bLeading = true;
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		if (*It == Self || AChaosImpactGameState::AreTeammates(GetWorld(), *It, Self))
+		{
+			continue;
+		}
+		bBehind |= GetPoints(*It) > Mine;
+		bLeading &= GetPoints(*It) < Mine;
+	}
+	// The match nearly over and not ahead.
+	bool bClosing = false;
+	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+		Match && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Match && Match->PhaseEndsAt > 0.0)
+	{
+		bClosing = !bLeading && Match->PhaseEndsAt - Match->GetServerWorldTimeSeconds() < 45.0;
+	}
+	// Running from it: moving away briskly, out of close range.
+	const FVector Away = (Target->GetActorLocation() - Self->GetActorLocation()).GetSafeNormal2D();
+	const float Fleeing = static_cast<float>(FVector::DotProduct(GetObservedVelocity(Target), Away));
+	const float Apart = static_cast<float>(FVector::Dist2D(Target->GetActorLocation(), Self->GetActorLocation()));
+	const bool bRunning = Fleeing > Target->GetCharacterMovement()->MaxWalkSpeed * 0.45f && Apart > 700.0f;
+	// Never lets anyone keep their distance, ahead or not.
+	const bool bFar = Apart > 1300.0f;
+	if (bBehind || bClosing || bRunning || bFar)
+	{
+		// Kept up a little while once started, so a runner pausing for a moment is not let off.
+		HuntUntil = Now + 2.5f;
+	}
+	bHunting = Now < HuntUntil;
+	return bHunting;
 }
 
 bool AChaosImpactCPUController::IsNovaSafe(const AChaosImpactCharacter* Self) const

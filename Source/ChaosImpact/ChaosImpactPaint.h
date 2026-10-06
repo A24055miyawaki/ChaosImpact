@@ -155,4 +155,29 @@ namespace ChaosImpactPaint
 				Value, Font, ESlateDrawEffect::None, WithAlpha(Color, Alpha));
 		}
 	};
+	/** A rounded brush of about this radius, kept for the whole run (draw elements refer to it until drawn). */
+	inline const FSlateBrush& RoundedBrush(const float Radius)
+	{
+		static TMap<int32, TSharedPtr<FSlateRoundedBoxBrush>> Brushes;
+		const int32 Key = FMath::Clamp(FMath::RoundToInt(Radius), 1, 64);
+		TSharedPtr<FSlateRoundedBoxBrush>& Brush = Brushes.FindOrAdd(Key);
+		if (!Brush.IsValid())
+		{
+			Brush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor::White, static_cast<float>(Key));
+		}
+		return *Brush;
+	}
+
+	/** A filled box with rounded corners. */
+	inline void RoundedBox(const FPainter& P, const float X, const float Y, const float W, const float H, const float Radius,
+		const FLinearColor& Color)
+	{
+		if (W <= 0.0f || H <= 0.0f || P.Alpha * Color.A <= 0.001f)
+		{
+			return;
+		}
+		FSlateDrawElement::MakeBox(P.Elements, P.Layer,
+			P.Geometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
+			&RoundedBrush(FMath::Min(Radius, FMath::Min(W, H) * 0.5f)), ESlateDrawEffect::None, WithAlpha(Color, P.Alpha));
+	}
 }

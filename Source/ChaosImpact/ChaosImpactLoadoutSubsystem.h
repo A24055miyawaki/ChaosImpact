@@ -10,6 +10,8 @@ struct FChaosImpactLoadout
 	int32 Character = 0;
 	/** INDEX_NONE until the player has picked one. */
 	int32 Colour = INDEX_NONE;
+	/** The nickname whose controls this player uses (empty: the guest's). Changed only through SetNickname. */
+	FString Nickname;
 };
 
 /**
@@ -29,7 +31,9 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 
 	FChaosImpactLoadout GetLoadout(int32 LocalPlayerIndex) const;
+	/** The character and colour; the nickname is kept. */
 	void SetLoadout(int32 LocalPlayerIndex, const FChaosImpactLoadout& Loadout);
+	void SetNickname(int32 LocalPlayerIndex, const FString& Nickname);
 
 private:
 	FChaosImpactLoadout Loadouts[MaxLocalPlayers];

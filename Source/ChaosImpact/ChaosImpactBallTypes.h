@@ -11,6 +11,7 @@ class USceneComponent;
 class UStaticMeshComponent;
 class UNiagaraComponent;
 class UNiagaraSystem;
+class UProceduralMeshComponent;
 class UObject;
 class UWorld;
 
@@ -42,12 +43,17 @@ enum class EChaosImpactBallType : uint8
 	 */
 	Nova UMETA(DisplayName="Nova"),
 	/** Bursts into a flock of shima-enaga that home in, perch, and peck unless shaken off with a dash. */
-	Simae UMETA(DisplayName="Simae")
+	Simae UMETA(DisplayName="Simae"),
+	/**
+	 * Steered after the throw: its thrower stands rooted, the camera follows it, and the movement controls turn it for
+	 * a few seconds. A charged throw flies faster but turns wider. It bursts on the first opponent it meets.
+	 */
+	Drive UMETA(DisplayName="Drive")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 11;
+	constexpr int32 Count = 12;
 
 	/** Simae flock: twelve tightly turning birds; each enemy can be pecked twice and dash out between hits. */
 	constexpr int32 SimaeBirdCount = 12;
@@ -59,6 +65,17 @@ namespace ChaosImpactBallTypes
 	constexpr float SimaePeckIntervalSeconds = 0.8f;
 	constexpr int32 SimaeMaxPecksPerTarget = 2;
 	constexpr float SimaeLifetimeSeconds = 8.0f;
+
+	/** Drive: how long it can be steered, its speed from an uncharged to a full throw, and how fast it turns at each. */
+	constexpr float DriveControlSeconds = 6.0f;
+	constexpr float DriveMinSpeed = 800.0f;
+	constexpr float DriveMaxSpeed = 1900.0f;
+	constexpr float DriveTurnSlowBallDegrees = 600.0f;
+	constexpr float DriveTurnFastBallDegrees = 380.0f;
+	/** Steered further round than this (back the way it came, say), it snaps straight round at once. */
+	constexpr float DriveSnapDegrees = 100.0f;
+	/** How much further out the thrower's camera sits while following it. */
+	constexpr float DriveCameraExtra = 260.0f;
 
 	/** A thrown thunder ball's speed, however long the throw was charged. */
 	constexpr float ThunderSpeed = 4000.0f;
@@ -154,6 +171,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Snow: return FLinearColor(0.9f, 0.96f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Nova: return FLinearColor(0.45f, 0.86f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Simae: return FLinearColor(0.96f, 0.97f, 1.0f, 1.0f);
+		case EChaosImpactBallType::Drive: return FLinearColor(1.0f, 0.62f, 0.12f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -172,6 +190,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Snow: return TEXT("スノー");
 		case EChaosImpactBallType::Nova: return TEXT("ノヴァ");
 		case EChaosImpactBallType::Simae: return TEXT("シマエナガ");
+		case EChaosImpactBallType::Drive: return TEXT("ドライブ");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -191,6 +210,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Snow: return TEXT("Snow");
 		case EChaosImpactBallType::Nova: return TEXT("Nova");
 		case EChaosImpactBallType::Simae: return TEXT("Simae");
+		case EChaosImpactBallType::Drive: return TEXT("Drive");
 		default: return TEXT("Normal");
 		}
 	}
@@ -271,6 +291,40 @@ namespace ChaosImpactBallTypes
 	CHAOSIMPACT_API void UpdateNovaLook(const FNovaLook& Look, float Radius, float Time, float Glow = 1.0f);
 	CHAOSIMPACT_API void SetNovaLookVisible(const FNovaLook& Look, bool bVisible);
 
+	/**
+	 * A shima-enaga ball's show (ChaosImpactSimaeBird.cpp). Waiting on the ground: three little birds circle over it,
+	 * ripples spread from it and sparkles rise round it; it arrives in a puff of feathers. Thrown, the three birds close
+	 * in and escort it, and it sheds feathers.
+	 */
+	struct FSimaeBallLook
+	{
+		struct FDrift
+		{
+			TWeakObjectPtr<UStaticMeshComponent> Mesh;
+			FVector Velocity = FVector::ZeroVector;
+			FRotator Spin = FRotator::ZeroRotator;
+			float Age = 10.0f;
+		};
+		TWeakObjectPtr<USceneComponent> Root;
+		TWeakObjectPtr<UPointLightComponent> Light;
+		TWeakObjectPtr<UProceduralMeshComponent> Ripples;
+		TArray<TWeakObjectPtr<USceneComponent>, TInlineAllocator<3>> Escorts;
+		TArray<TWeakObjectPtr<UStaticMeshComponent>, TInlineAllocator<3>> EscortWings;
+		TArray<TWeakObjectPtr<UStaticMeshComponent>, TInlineAllocator<10>> Sparkles;
+		TArray<FDrift, TInlineAllocator<18>> Feathers;
+		int32 NextFeather = 0;
+		float FeatherClock = 0.0f;
+		/** 0: circling wide over the waiting ball; 1: tight round it in flight. */
+		float EscortBlend = 0.0f;
+		float ArrivedAt = -10.0f;
+		bool bArrivalChecked = false;
+		bool bShown = true;
+		bool IsBuilt() const { return Root.IsValid(); }
+	};
+	CHAOSIMPACT_API void BuildSimaeBallLook(AActor* Owner, USceneComponent* Parent, FSimaeBallLook& Out);
+	CHAOSIMPACT_API void UpdateSimaeBallLook(AActor* Owner, FSimaeBallLook& Look, float Time, float DeltaSeconds, bool bPickup,
+		bool bFlying, bool bVisible);
+
 	/** Systems from the Niagara Examples Pack (Content/NiagaraExamples). */
 	namespace Effects
 	{
@@ -322,6 +376,8 @@ namespace ChaosImpactBallTypes
 	CHAOSIMPACT_API UNiagaraSystem* LoadEffect(const TCHAR* ObjectPath);
 	/** Loads every FX system and material up front (game start); the caller keeps the objects alive. */
 	CHAOSIMPACT_API void PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAlive);
+	/** Everything PreloadAssets loads, as paths (to load it in the background instead). */
+	CHAOSIMPACT_API void GetPreloadPaths(TArray<FSoftObjectPath>& OutPaths);
 	/**
 	 * Shows each FX system and material once, out of sight, when a play world starts, so the first-use
 	 * costs (component and PSO creation, GPU buffers) do not land on the first throw.

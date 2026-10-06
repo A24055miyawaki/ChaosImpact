@@ -1,6 +1,7 @@
 #include "ChaosImpactLoadoutSubsystem.h"
 
 #include "ChaosImpactCharacterRoster.h"
+#include "ChaosImpactSettings.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Misc/ConfigCacheIni.h"
@@ -28,6 +29,7 @@ void UChaosImpactLoadoutSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 		{
 			GConfig->GetInt(LoadoutSection, *FString::Printf(TEXT("Character%d"), Index), Loadouts[Index].Character, GGameUserSettingsIni);
 			GConfig->GetInt(LoadoutSection, *FString::Printf(TEXT("Colour%d"), Index), Loadouts[Index].Colour, GGameUserSettingsIni);
+			GConfig->GetString(LoadoutSection, *FString::Printf(TEXT("Nickname%d"), Index), Loadouts[Index].Nickname, GGameUserSettingsIni);
 		}
 		Loadouts[Index].Character = ChaosImpactRoster::ClampIndex(Loadouts[Index].Character);
 		Loadouts[Index].Colour = FMath::Clamp(Loadouts[Index].Colour, 0, ChaosImpactRoster::ColourCount - 1);
@@ -52,6 +54,21 @@ void UChaosImpactLoadoutSubsystem::SetLoadout(const int32 LocalPlayerIndex, cons
 	{
 		GConfig->SetInt(LoadoutSection, *FString::Printf(TEXT("Character%d"), LocalPlayerIndex), Stored.Character, GGameUserSettingsIni);
 		GConfig->SetInt(LoadoutSection, *FString::Printf(TEXT("Colour%d"), LocalPlayerIndex), Stored.Colour, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+}
+
+void UChaosImpactLoadoutSubsystem::SetNickname(const int32 LocalPlayerIndex, const FString& Nickname)
+{
+	if (LocalPlayerIndex < 0 || LocalPlayerIndex >= MaxLocalPlayers)
+	{
+		return;
+	}
+	Loadouts[LocalPlayerIndex].Nickname = Nickname;
+	ChaosImpactSettings::MarkPlayersChanged();
+	if (GConfig)
+	{
+		GConfig->SetString(LoadoutSection, *FString::Printf(TEXT("Nickname%d"), LocalPlayerIndex), *Nickname, GGameUserSettingsIni);
 		GConfig->Flush(false, GGameUserSettingsIni);
 	}
 }

@@ -46,10 +46,17 @@ public:
 
 	/** 0 red, 1 blue, 2 yellow, 3 green: the team colours used everywhere else. */
 	void SetColourIndex(int32 Index);
+	int32 GetColourIndex() const { return ColourIndex; }
 	/** How strictly the right hand goes to the source skeleton's own hand (1 while a thrown ball is still held). */
 	void SetRightHandExactWeight(float Weight) { RightHandExactWeight = FMath::Clamp(Weight, 0.0f, 1.0f); }
 	/** 0-1: both arms raised straight up over the head (holding something big up there), over whatever the pose is. */
 	void SetArmsRaised(float Weight) { ArmsRaisedWeight = FMath::Clamp(Weight, 0.0f, 1.0f); }
+	/**
+	 * Drive ball poses (weights 0-1, over whatever the pose is; points in world space). Hold: both hands cupped round
+	 * HoldPoint in front of the chest, the ball in the right hand floating there between them. Point: the right arm
+	 * reaches out toward PointAt, guiding the ball, and the left fist is pulled back to the hip.
+	 */
+	void SetDrivePose(float HoldWeight, const FVector& HoldPoint, float PointWeight, const FVector& PointAt);
 	/** Shows or hides the five parts only; balls attached elsewhere keep their own visibility. */
 	void SetPartsVisible(bool bShow);
 	void SetPartsOverlayMaterial(UMaterialInterface* Material);
@@ -150,6 +157,21 @@ private:
 	float ArmsRaisedWeight = 0.0f;
 	/** Where a raised arm's hand goes, reaching up and a little out from its shoulder, and which way its elbow points. */
 	void RaiseArm(const FVector& Shoulder, const FVector& Outward, float Reach, FVector& InOutTarget, FVector& InOutPole) const;
+	float DriveHoldWeight = 0.0f;
+	float DrivePointWeight = 0.0f;
+	FVector DriveHoldPoint = FVector::ZeroVector;
+	FVector DrivePointAt = FVector::ZeroVector;
+	/** The drive pose's points and the owner's facing, in this component's space, worked out once per pose. */
+	FVector DriveHoldLocal = FVector::ZeroVector;
+	FVector DrivePointLocal = FVector::ZeroVector;
+	FVector DriveForward = FVector::ForwardVector;
+	FVector DriveUp = FVector::UpVector;
+	/** A held ball's radius in this component's units (to cup the hands round it). */
+	float DriveBallRadius = 18.0f;
+	void PrepareDrivePose();
+	/** Where an arm goes in the drive poses (bRight: the guiding arm). */
+	void DriveArm(bool bRight, const FVector& Shoulder, const FVector& Outward, float Reach, FVector& InOutTarget,
+		FVector& InOutPole) const;
 	int32 ColourIndex = INDEX_NONE;
 	int32 CharacterIndex = 0;
 	/** A single rigid mesh with no limbs (see EChaosImpactModelKind). */

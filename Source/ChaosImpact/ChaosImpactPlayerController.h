@@ -81,6 +81,8 @@ public:
 	void SummonTrainingBall();
 	EChaosImpactBallType GetTrainingSummonBallType() const { return TrainingSummonBallType; }
 	void TogglePauseMenu();
+	/** Every key press: pause, the training menu and the lobby's 準備OK / 観戦, by the player's own controls. */
+	void HandleBoundKeyPressed(FKey Key);
 	bool IsGameplayActive() const { return CurrentScreen == EChaosImpactScreen::Playing && !bTravelPending; }
 	bool IsTrainingMode() const { return bTrainingMode; }
 	bool IsTrainingOverlayOpen() const { return CurrentScreen == EChaosImpactScreen::TrainingOverlay; }
@@ -131,6 +133,16 @@ public:
 	}
 	EChaosImpactBallFlightMode GetBallFlightMode() const { return BallFlightMode; }
 	EChaosImpactScreen GetCurrentScreen() const { return CurrentScreen; }
+	/** The settings screen, from the mode select menu or pause; leaving it comes back to where it was opened. */
+	void OpenSettings();
+	void CloseSettings();
+	/** The VS results this machine shows (null before the first match's). */
+	class UChaosImpactResultsView* GetResultsView() const;
+	/** Online: this machine leaves its results for the lobby (the next match waits for everyone). */
+	void ReturnToLobbyFromResults();
+	UFUNCTION(Server, Reliable)
+	void ServerReturnFromResults();
+	EChaosImpactScreen GetSettingsReturnScreen() const { return SettingsReturnScreen; }
 	/** The CPU match filmed behind the title (title world only; null elsewhere or before it starts). */
 	AChaosImpactTitleDemo* GetTitleDemo() const { return TitleDemo; }
 	UChaosImpactMenuWidget* GetMenuWidget() const { return MenuWidget; }
@@ -163,6 +175,12 @@ public:
 	void SubmitRoomName(const FString& Name);
 	void BeginRoomRename();
 	void CancelRoomRename();
+	/** In an online room's lobby: pick another character (and colour, nickname), or another name, from the pause menu. */
+	bool CanChangeLoadoutInRoom() const;
+	void BeginRoomCharacterChange();
+	void BeginRoomPlayerRename();
+	void CancelRoomPlayerRename();
+	bool IsRenamingPlayer() const { return bRenamingPlayer; }
 	bool IsRenamingRoom() const { return bRenamingRoom; }
 	bool CanRenameRoom() const;
 	bool CanReopenRecruitment() const;
@@ -263,6 +281,11 @@ protected:
 	TObjectPtr<AChaosImpactTitleDemo> TitleDemo;
 	FTimerHandle TitleDemoTimer;
 	void StartTitleDemo();
+	/** Effects shown once out of sight (when they are in), then any loading screen told this world is ready. */
+	FTimerHandle WarmUpTimer;
+	void WarmUpWhenLoaded();
+	/** The title waits behind the start-up loading screen for the game's effects to load. */
+	bool bAwaitingStartupLoad = false;
 
 	/** Local VS: the VS card plays over the menu, then the VS level opens with the card as its loading screen. */
 	void PlayVersusCardThenOpen();
@@ -277,9 +300,17 @@ protected:
 	FTimerHandle VersusRevealTimer;
 	double VersusRevealDeadline = 0.0;
 	void UpdateVersusReveal();
+	/** Online: the VS card on this screen as the match's opening begins (the fighters from the room), then the reveal. */
+	void UpdateOnlineVersusCard(float DeltaSeconds);
+	FChaosImpactVersusCardInfo BuildOnlineVersusCardInfo() const;
+	/** The opening (its start time) the online card was shown for. */
+	double OnlineCardShownFor = -1.0;
+	bool bOnlineCardUp = false;
+	bool bOnlineCardPosed = false;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Menu")
 	EChaosImpactScreen CurrentScreen = EChaosImpactScreen::Title;
+	EChaosImpactScreen SettingsReturnScreen = EChaosImpactScreen::ModeSelect;
 
 	/** The existing prototype map is the training level. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Menu", meta=(AllowedClasses="/Script/Engine.World"))
@@ -305,10 +336,16 @@ protected:
 	bool bPendingCreateRoom = true;
 	bool bOnlineNameOnly = false;
 	bool bRenamingRoom = false;
+	/** The character select / name entry was opened from the room's pause menu (it goes back to the room). */
+	bool bRoomCharacterChange = false;
+	bool bRenamingPlayer = false;
 	/** へやをつくる: the password waits here while the room name is entered. */
 	FString PendingRoomPassword;
 	/** Development (-CIAutoReady=<seconds>): when this player presses 準備OK by itself. */
 	double DevAutoReadyAt = 0.0;
+	/** Development (-CIDevRoomChange=<seconds>): the in-room name and character change, done by itself (tests). */
+	int32 DevRoomChangeStep = 0;
+	double DevRoomChangeAt = 0.0;
 	/** Online rooms and room search accept keyboard and pad alike, following the last one used. */
 	bool bOnlineAnyInput = false;
 	bool bLastInputGamepad = false;
@@ -395,7 +432,8 @@ protected:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactWarpPad>> TrainingWarpPads;
-	void OpenTrainingLevel(bool bKeepFlightMode, bool bOnlineSearch = false);
+	/** bLoadingScreen: from the title, a loading screen covers the load (the VS card has its own). */
+	void OpenTrainingLevel(bool bKeepFlightMode, bool bOnlineSearch = false, bool bLoadingScreen = true);
 	/** Back to the title world (the level with no options), where the title plays its demo match. */
 	void OpenTitleLevel();
 	void ResetControllerJoinSequence();

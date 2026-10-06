@@ -87,6 +87,8 @@ public:
 	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
 	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
 	void RequestBallSwap();
+	/** Drops the ball in hand (the one thrown next) on the floor in front, where anyone can pick it up (F, D-pad left). */
+	void RequestDropBall();
 	/** Snow: how far (0-1) the snowball in Slot has grown as its carrier walked; 0 for any other ball. */
 	float GetSnowGrowth(int32 Slot) const;
 	/** Cancels a throw being charged (right mouse button, ZL / L2); the ball stays in hand. */
@@ -102,6 +104,15 @@ public:
 	bool GetPresentedCharge(float& OutSeconds) const;
 	/** Charging a nova: rooted to the spot, arms up, the nova swelling over the head. On every machine. */
 	bool IsChargingNova() const;
+	/** Steering a thrown drive ball: rooted to the spot, the camera on the ball, movement turning it. */
+	bool IsDriving() const;
+	AChaosImpactBall* GetDrivenBall() const { return DrivenBall.Get(); }
+	/** CPUs: which way to steer the drive ball (flat). */
+	void SetAIDriveSteer(const FVector& Direction);
+	/** Ends the drive ball where it is, as a wall would (the throw button again while steering). */
+	void StopDrivenBall();
+	/** This screen's throw preview of a drive ball was replaced by the server's ball: steer that one now. */
+	void OnDriveBallAdopted(AChaosImpactBall* Predicted, AChaosImpactBall* Adopted);
 	/**
 	 * Where the ball in hand would come down if thrown now with this charge (its first contact with the stage),
 	 * and how wide an area it covers there (a nova: its blast; a snowball: its size). False when it would fly off.
@@ -135,6 +146,9 @@ public:
 	void AddCameraShake(float Strength, float Seconds);
 	/** Name drawn above this character: CPUs are "CPU1", "CPU2"..., players use their room or local name. */
 	FString GetOverheadDisplayName() const;
+	/** The character and colour this player is shown as (the results podium shows the same). */
+	int32 GetShownCharacter() const;
+	int32 GetShownColour() const;
 	/** 1-based number shown above a CPU character; 0 for human players. */
 	int32 GetCPUNumber() const { return CPUNumber; }
 	void SetCPUNumber(const int32 Number) { CPUNumber = static_cast<uint8>(FMath::Clamp(Number, 0, 255)); }
@@ -207,7 +221,8 @@ public:
 	virtual bool IsMoveInputIgnored() const override;
 	static constexpr float WindCarrySeconds = 1.1f;
 	/** Client: this player's own screen touched a pickup; predicted now, confirmed by the server. */
-	void ClaimPickupFromClient(AChaosImpactBall* Ball);
+	/** bContested: someone else was right by the ball on this screen (the server may give it to them). */
+	void ClaimPickupFromClient(AChaosImpactBall* Ball, bool bContested = false);
 	/** Client: hands over the locally predicted throw so the server's ball can continue from it. */
 	AChaosImpactBall* TakePredictedThrowBall();
 	/** Where this character is drawn this frame (network smoothing and latency lead included). */
@@ -298,6 +313,12 @@ protected:
 	/** The owning screen's free nova cursor, shown to every machine as the warning area. */
 	UFUNCTION(Server, Unreliable)
 	void ServerUpdateNovaTarget(FVector_NetQuantize Target);
+	/** The owner's steering of its drive ball (flat; zero: straight on). */
+	UFUNCTION(Server, Unreliable)
+	void ServerDriveSteer(FVector_NetQuantizeNormal Direction);
+	/** The owner let go of its drive ball (it dashed). */
+	UFUNCTION(Server, Reliable)
+	void ServerCancelDrive();
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayThrowAnimation();
 	UFUNCTION(Client, Reliable)
@@ -324,6 +345,8 @@ protected:
 	void ClientBallCountReset(int32 ServerBallCount, uint8 ServerBallTypes);
 	UFUNCTION(Server, Reliable)
 	void ServerSwapBalls();
+	UFUNCTION(Server, Reliable)
+	void ServerDropBall();
 	/** A throw charge this player cancelled on their own screen. */
 	UFUNCTION(Server, Reliable)
 	void ServerCancelCharge();
@@ -355,9 +378,6 @@ protected:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 protected:
-
-	/** Called for movement input */
-	void Move(const FInputActionValue& Value);
 
 	/** Called for right-stick aiming input. Mouse aiming is read from the cursor. */
 	void AimWithStick(const FInputActionValue& Value);
@@ -470,6 +490,10 @@ protected:
 	void SwapCarriedBalls();
 	/** Server: a knocked-out player's balls tumble out where they fell, loose for anyone to pick up. */
 	void DropCarriedBalls();
+	/** Server: the ball in hand rolls out onto the floor in front. */
+	void DropFrontBall();
+	/** Whether the ball in hand can be dropped now (not while it is being thrown). */
+	bool CanDropBall() const;
 
 	/** Snow: growth per carried slot (0-255 for 0-1), kept in step with the slots; the server grows it as its carrier walks. */
 	UPROPERTY(Replicated)
@@ -530,6 +554,9 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldNovaMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldDriveMaterial;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldSimaeMaterial;
@@ -634,6 +661,20 @@ protected:
 
 	/** Both arms raised over the head (charging a nova, lifting a big snowball), 0-1. */
 	float ArmsRaisedWeight = 0.0f;
+	/** Drive ball poses: cupped in both hands while charged, then the arm reaching after it (see the puppet). */
+	float DriveHoldWeight = 0.0f;
+	float DrivePointWeight = 0.0f;
+	/** Where the guiding arm reaches, trailing the ball a little. */
+	FVector DrivePointShown = FVector::ZeroVector;
+	/** The ball type last charged, so another screen's throw motion knows a drive ball was thrown. */
+	EChaosImpactBallType LastChargedType = EChaosImpactBallType::Normal;
+	bool bDriveThrowAnimation = false;
+	/** Another screen's drive ball this character steers (found by looking, as only its thrower knows it). */
+	TWeakObjectPtr<AChaosImpactBall> ShownDriveBall;
+	double NextDriveBallSearchAt = 0.0;
+	const AChaosImpactBall* FindShownDriveBall();
+	/** Where a drive ball is held, cupped in both hands, and pushed out from: in front of the chest (actor space). */
+	FVector DriveHoldOffset = FVector(58.0f, 0.0f, 22.0f);
 	/** A big snowball being lifted from the ground up over the head, 0-1. */
 	float SnowLift = 0.0f;
 
@@ -759,6 +800,23 @@ protected:
 	double IceFrozenUntilServerTime = 0.0;
 
 	double GetSharedServerTime() const;
+
+	/** The drive ball being steered (this machine's: a throw preview until the server's ball takes over). */
+	TWeakObjectPtr<AChaosImpactBall> DrivenBall;
+	/** Steering ends then (shared server time; negative: not steering). */
+	double DriveEndsAt = -1.0;
+	/** The same, for other screens (their pose). */
+	UPROPERTY(Replicated)
+	float DriveEndsAtServerTime = -1.0f;
+	FVector DriveSteer = FVector::ZeroVector;
+	double DriveSteerAt = 0.0;
+	FVector LastSentDriveSteer = FVector::ZeroVector;
+	double NextDriveSendAt = 0.0;
+	void BeginDriving(AChaosImpactBall* Ball);
+	void UpdateDriving(float DeltaSeconds);
+	/** bLetGo: the ball fizzles out (dashed away, hit); otherwise it already burst or its time ran out. */
+	void EndDriving(bool bLetGo);
+
 	/** Freeze transitions and the slide on frozen ground; movement changes only where this player is moved. */
 	void UpdateIceStatus(float DeltaSeconds);
 	/** Development (-CINetTrace): logs where this machine draws the character, for measuring online lag. */
@@ -881,22 +939,39 @@ protected:
 	/** Development: -CIAutoInput lets an online client play by itself for latency testing. */
 	void TickDevAutoInput();
 	bool bDevAutoInput = false;
+	/** Development (-CIAutoInputHost): the host's own player plays by itself too (for online tests). */
+	bool bDevAutoInputHost = false;
 	double DevNextThrowAt = 0.0;
 	double DevReleaseAt = 0.0;
 	double DevNextDashAt = 0.0;
+	/** Development auto input: walking into a wall, it goes round for a moment. */
+	double DevSlowSince = -1.0;
+	double DevDetourUntil = 0.0;
+	FVector DevDetourDirection = FVector::ZeroVector;
 
 	/**
 	 * Online: another player's copy trails their own screen by their round trip plus smoothing.
 	 * The mesh is drawn that far ahead along their velocity; the capsule and gameplay are untouched.
 	 */
 	void UpdatePresentationLead(float DeltaSeconds);
-	static constexpr float MaxPresentationLeadSeconds = 0.3f;
+	static constexpr float MaxPresentationLeadSeconds = 0.4f;
 	/** How much of a remote player's round trip their drawn body is led ahead by. */
-	static constexpr float PresentationLeadShareOfPing = 0.55f;
-	static constexpr float MaxPresentationLeadDistance = 180.0f;
-	static constexpr float PresentationLeadBlendSpeed = 18.0f;
+	static constexpr float PresentationLeadShareOfPing = 0.3f;
+	static constexpr float MaxPresentationLeadDistance = 260.0f;
+	static constexpr float PresentationLeadBlendSpeed = 9.0f;
+	/** The fastest the lead may swing round (cm per second). */
+	static constexpr float MaxPresentationLeadChangeSpeed = 500.0f;
+	/** How fast an uneven step is let out (per second). */
+	static constexpr float PresentationGlideRate = 10.0f;
 	FVector CachedBaseTranslationOffset = FVector::ZeroVector;
 	FVector PresentationLeadWorld = FVector::ZeroVector;
+	/**
+	 * A remote copy's position arrives in uneven steps (bunched and spaced out updates at a high ping). The drawn
+	 * body keeps going at the copy's own speed and only glides onto where the steps put it (world space).
+	 */
+	FVector PresentationGlideWorld = FVector::ZeroVector;
+	FVector PresentationLastActorLocation = FVector::ZeroVector;
+	bool bPresentationHasLast = false;
 
 	/** Client: health expected after this screen's own hit reports, valid until PredictedHealthUntil. */
 	float PredictedHealth = 0.0f;
@@ -913,6 +988,8 @@ protected:
 	void RefreshPredictedBallCount();
 	void ResolveOldestBallAction(int32 ServerBallCount, uint8 ServerBallTypes);
 	int32 GetPendingPickupCount() const;
+	/** Client: for each pickup still waiting for its answer (oldest first), whether it was contested. */
+	TArray<bool> PendingPickupContested;
 	/** Client: a release waiting for the pickup it depends on to be confirmed. */
 	bool bThrowAwaitingPickup = false;
 	float AwaitingThrowChargeAlpha = 0.0f;
@@ -987,8 +1064,13 @@ protected:
 	bool bThrowAnimationActive = false;
 	bool bIsDashing = false;
 	bool bWasFallingBeforeDash = false;
+	/** A charge started by the throw control (and still held) / the throw control was down last frame. */
 	bool bMouseChargeActive = false;
 	bool bWasMouseDownLastTick = false;
+	/** Each bound control's state last frame, to act once per press. */
+	bool BoundActionHeld[16] = {};
+	/** Reads the player's own controls (the settings screen's) and acts on them; every frame for a local player. */
+	void UpdateBoundControls();
 	bool bTrainingMenuFrozen = false;
 	bool bTrainingMenuCameraActive = false;
 	uint8 SavedTrainingMenuMovementMode = 1;

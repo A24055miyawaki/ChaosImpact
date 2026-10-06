@@ -47,6 +47,7 @@
 #include "InputActionValue.h"
 #include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
+#include "ChaosImpactSettings.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInterface.h"
@@ -328,6 +329,7 @@ void AChaosImpactCharacter::BeginPlay()
 	CachedBaseTranslationOffset = BaseTranslationOffset;
 #if !UE_BUILD_SHIPPING
 	bDevAutoInput = FParse::Param(FCommandLine::Get(), TEXT("CIAutoInput"));
+	bDevAutoInputHost = FParse::Param(FCommandLine::Get(), TEXT("CIAutoInputHost"));
 #endif
 }
 
@@ -350,6 +352,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		}
 	}
 	UpdateSnowball();
+	UpdateDriving(DeltaSeconds);
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		UpdateSnowRollPresentation();
@@ -391,14 +394,20 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 			? TrainingMenuCameraSocketOffset : SavedCameraSocketOffset;
 		const FRotator DesiredBoomRotation = bNovaOverview
 			? FRotator(-90.0f, SavedCameraBoomRotation.Yaw, 0.0f) : SavedCameraBoomRotation;
+		// Steering a drive ball, the camera follows the ball (and sits a little further out to see round it).
+		const AChaosImpactBall* Driven = IsLocallyControlled() && !bTrainingMenuCameraActive && IsDriving() ? DrivenBall.Get() : nullptr;
+		FVector DriveOffset = Driven ? Driven->GetActorLocation() - GetActorLocation() : FVector::ZeroVector;
+		DriveOffset.Z = 0.0f;
 		const FVector DesiredTargetOffset = bTrainingMenuCameraActive
-			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : NovaCameraLead;
+			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : NovaCameraLead;
+		const float DriveBlendSpeed = 6.0f;
 		CameraBoom->TargetArmLength = FMath::FInterpTo(CameraBoom->TargetArmLength,
-			DesiredArmLength, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed);
+			DesiredArmLength + (Driven ? ChaosImpactBallTypes::DriveCameraExtra : 0.0f), DeltaSeconds,
+			bNovaOverview ? NovaOverviewBlendSpeed : Driven ? DriveBlendSpeed : TrainingMenuCameraBlendSpeed);
 		CameraBoom->SocketOffset = FMath::VInterpTo(CameraBoom->SocketOffset,
 			DesiredSocketOffset, DeltaSeconds, TrainingMenuCameraBlendSpeed);
-		CameraBoom->TargetOffset = FMath::VInterpTo(CameraBoom->TargetOffset,
-			DesiredTargetOffset, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed);
+		CameraBoom->TargetOffset = FMath::VInterpTo(CameraBoom->TargetOffset, DesiredTargetOffset, DeltaSeconds,
+			bNovaOverview ? NovaOverviewBlendSpeed : Driven ? DriveBlendSpeed : TrainingMenuCameraBlendSpeed);
 		CameraBoom->SetWorldRotation(FMath::RInterpTo(CameraBoom->GetComponentRotation(),
 			DesiredBoomRotation, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed));
 	}
@@ -411,38 +420,8 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		UpdateRespawnEffect(DeltaSeconds);
 	}
 	TryCreateChargeWidget();
-	if (const APlayerController* PlayerController = Cast<APlayerController>(GetController());
-		PlayerController && PlayerController->IsLocalController())
-	{
-		const bool bMouseDown = PlayerController->IsInputKeyDown(EKeys::LeftMouseButton)
-			|| (FSlateApplication::IsInitialized()
-				&& FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton));
-		const AChaosImpactPlayerController* MenuController =
-			Cast<AChaosImpactPlayerController>(PlayerController);
-		const bool bCanUseMouse = !MenuController || !MenuController->IsUsingGamepad();
-		const bool bCanReadThrow = bCanUseMouse
-			&& (!MenuController || MenuController->IsGameplayActive());
-		const bool bMousePressedThisTick = bMouseDown && !bWasMouseDownLastTick;
-		const bool bMouseReleasedThisTick = !bMouseDown && bWasMouseDownLastTick;
-		if (bCanReadThrow && bMousePressedThisTick)
-		{
-			if (!bIsChargingThrow)
-			{
-				StartChargingThrow();
-			}
-			bMouseChargeActive = bIsChargingThrow;
-		}
-		else if ((bMouseReleasedThisTick || !bCanReadThrow) && bMouseChargeActive)
-		{
-			if (bIsChargingThrow)
-			{
-				ReleaseChargedThrow();
-			}
-			bMouseChargeActive = false;
-		}
-		bWasMouseDownLastTick = bMouseDown;
-	}
-	if (bDevAutoInput && IsLocallyControlled() && !HasAuthority())
+	UpdateBoundControls();
+	if (bDevAutoInput && IsLocallyControlled() && (!HasAuthority() || bDevAutoInputHost))
 	{
 		TickDevAutoInput();
 	}
@@ -528,40 +507,105 @@ void AChaosImpactCharacter::TryCreateChargeWidget()
 	}
 }
 
+void AChaosImpactCharacter::UpdateBoundControls()
+{
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (!PlayerController || !PlayerController->IsLocalController() || bDevAutoInput)
+	{
+		return;
+	}
+	using namespace ChaosImpactSettings;
+	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(PlayerController);
+	const bool bGameplay = !MenuController || MenuController->IsGameplayActive();
+
+	// Throw: held to charge, let go to throw (a tap within one frame still throws). A charge this started ends
+	// when the button is let go or the controls are taken away (a menu).
+	const bool bThrowDown = bGameplay && IsActionDown(PlayerController, EChaosImpactAction::Throw);
+	const bool bThrowTapped = bGameplay && !bThrowDown && !bWasMouseDownLastTick
+		&& WasActionJustPressed(PlayerController, EChaosImpactAction::Throw);
+	if ((bThrowDown && !bWasMouseDownLastTick) || bThrowTapped)
+	{
+		StartChargingThrow();
+		bMouseChargeActive = bIsChargingThrow;
+	}
+	if (!bThrowDown && bMouseChargeActive)
+	{
+		if (bIsChargingThrow)
+		{
+			ReleaseChargedThrow();
+		}
+		bMouseChargeActive = false;
+	}
+	bWasMouseDownLastTick = bThrowDown;
+
+	// The other buttons act when pressed (a jump also when let go).
+	const auto Pressed = [this, PlayerController, bGameplay](const EChaosImpactAction Action, bool* bOutReleased = nullptr)
+	{
+		bool& bHeld = BoundActionHeld[static_cast<int32>(Action)];
+		const bool bDown = bGameplay && IsActionDown(PlayerController, Action);
+		const bool bEdge = !bHeld && (bDown || (bGameplay && WasActionJustPressed(PlayerController, Action)));
+		if (bOutReleased)
+		{
+			*bOutReleased = (bHeld || bEdge) && !bDown;
+		}
+		bHeld = bDown;
+		return bEdge;
+	};
+	if (Pressed(EChaosImpactAction::Dash))
+	{
+		StartDash();
+	}
+	bool bJumpReleased = false;
+	if (Pressed(EChaosImpactAction::Jump, &bJumpReleased))
+	{
+		Jump();
+	}
+	if (bJumpReleased)
+	{
+		StopJumping();
+	}
+	if (Pressed(EChaosImpactAction::SwapBall))
+	{
+		RequestBallSwap();
+	}
+	if (Pressed(EChaosImpactAction::CancelThrow))
+	{
+		RequestCancelThrow();
+	}
+	if (Pressed(EChaosImpactAction::DropBall))
+	{
+		RequestDropBall();
+	}
+
+	// Moving: the set keys, or the movement stick (with its dead zone) and any buttons set for moving.
+	if (bGameplay)
+	{
+		bool bStick = false;
+		FVector2D Movement = GetMoveInput(PlayerController, bStick);
+		if (bStick)
+		{
+			Movement = ApplyRadialStickDeadZone(Movement, MovementStickDeadZone);
+		}
+		if (!Movement.IsNearlyZero())
+		{
+			DoMove(static_cast<float>(Movement.X), static_cast<float>(Movement.Y));
+		}
+	}
+}
+
 void AChaosImpactCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	// Set up action bindings
 	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent)) {
 		// Blueprint assignments can be cleared by reparenting or recompiling. Resolve
 		// the template assets here as runtime fallbacks so controls always remain usable.
-		UInputAction* ResolvedJumpAction = JumpAction;
-		UInputAction* ResolvedMoveAction = MoveAction;
+		// Moving and jumping are the player's own controls now (UpdateBoundControls); only the aiming stick is here.
 		UInputAction* ResolvedLookAction = LookAction;
-		if (!ResolvedJumpAction)
-		{
-			ResolvedJumpAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_Jump.IA_Jump"));
-		}
-		if (!ResolvedMoveAction)
-		{
-			ResolvedMoveAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_Move.IA_Move"));
-		}
 		if (!ResolvedLookAction)
 		{
 			ResolvedLookAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_Look.IA_Look"));
 		}
 		
-		// Jumping
-		if (ResolvedJumpAction)
-		{
-			EnhancedInputComponent->BindAction(ResolvedJumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
-			EnhancedInputComponent->BindAction(ResolvedJumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
-		}
-
-		// Moving
-		if (ResolvedMoveAction)
-		{
-			EnhancedInputComponent->BindAction(ResolvedMoveAction, ETriggerEvent::Triggered, this, &AChaosImpactCharacter::Move);
-		}
 		// Mouse aim is calculated from the cursor against the world.
 
 		// Right-stick aiming
@@ -576,64 +620,8 @@ void AChaosImpactCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		UE_LOG(LogChaosImpact, Error, TEXT("'%s' Failed to find an Enhanced Input component! This template is built to use the Enhanced Input system. If you intend to use the legacy system, then you will need to update this C++ file."), *GetNameSafe(this));
 	}
 
-	PlayerInputComponent->BindKey(EKeys::Gamepad_RightTrigger, IE_Pressed, this, &AChaosImpactCharacter::StartChargingThrow);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_RightTrigger, IE_Released, this, &AChaosImpactCharacter::ReleaseChargedThrow);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Left, IE_Pressed, this, &AChaosImpactCharacter::StartChargingThrow);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Left, IE_Released, this, &AChaosImpactCharacter::ReleaseChargedThrow);
-	PlayerInputComponent->BindKey(EKeys::G, IE_Pressed, this, &AChaosImpactCharacter::StartChargingThrow);
-	PlayerInputComponent->BindKey(EKeys::G, IE_Released, this, &AChaosImpactCharacter::ReleaseChargedThrow);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Top, IE_Pressed, this, &AChaosImpactCharacter::StartChargingThrow);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Top, IE_Released, this, &AChaosImpactCharacter::ReleaseChargedThrow);
-	PlayerInputComponent->BindKey(EKeys::LeftShift, IE_Pressed, this, &AChaosImpactCharacter::StartDash);
-	PlayerInputComponent->BindKey(EKeys::RightShift, IE_Pressed, this, &AChaosImpactCharacter::StartDash);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Right, IE_Pressed, this, &AChaosImpactCharacter::StartDash);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_RightShoulder, IE_Pressed, this, &AChaosImpactCharacter::StartDash);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Bottom, IE_Pressed, this, &ACharacter::Jump);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Bottom, IE_Released, this, &ACharacter::StopJumping);
-	// Ball swap. L on Switch pads and L1 on DualSense arrive as LeftShoulder too.
-	PlayerInputComponent->BindKey(EKeys::Q, IE_Pressed, this, &AChaosImpactCharacter::RequestBallSwap);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftShoulder, IE_Pressed, this, &AChaosImpactCharacter::RequestBallSwap);
-	// Throw cancel: the right mouse button, ZL / L2.
-	PlayerInputComponent->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &AChaosImpactCharacter::RequestCancelThrow);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftTrigger, IE_Pressed, this, &AChaosImpactCharacter::RequestCancelThrow);
-}
-
-void AChaosImpactCharacter::Move(const FInputActionValue& Value)
-{
-	FVector2D RawMovement = Value.Get<FVector2D>();
-	bool bApplyGamepadDeadZone = true;
-	if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
-	{
-		const AChaosImpactPlayerController* InputController =
-			Cast<AChaosImpactPlayerController>(PlayerController);
-		const bool bGamepadPlayer = !InputController || InputController->IsUsingGamepad();
-		if (bGamepadPlayer)
-		{
-			// IMC_Default's old dead-zone modifier can normalize tiny hardware drift to
-			// a full-length vector. Read this player's physical axes before that modifier.
-			RawMovement = FVector2D(
-				PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftX),
-				PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftY));
-		}
-		else
-		{
-			bApplyGamepadDeadZone = false;
-			// IA_Move contains keyboard and gamepad mappings. Enhanced Input evaluates the
-			// whole action before PlayerController::InputKey can reject the other device,
-			// so using Value here lets an attached pad leak into keyboard-only P1. Rebuild
-			// the digital vector from the keys that this input mode actually owns.
-			RawMovement = FVector2D(
-				(PlayerController->IsInputKeyDown(EKeys::D) || PlayerController->IsInputKeyDown(EKeys::Right) ? 1.0f : 0.0f)
-					- (PlayerController->IsInputKeyDown(EKeys::A) || PlayerController->IsInputKeyDown(EKeys::Left) ? 1.0f : 0.0f),
-				(PlayerController->IsInputKeyDown(EKeys::W) || PlayerController->IsInputKeyDown(EKeys::Up) ? 1.0f : 0.0f)
-					- (PlayerController->IsInputKeyDown(EKeys::S) || PlayerController->IsInputKeyDown(EKeys::Down) ? 1.0f : 0.0f));
-		}
-	}
-	const FVector2D MovementVector = ApplyRadialStickDeadZone(RawMovement,
-		bApplyGamepadDeadZone ? MovementStickDeadZone : 0.0f);
-
-	// route the input
-	DoMove(MovementVector.X, MovementVector.Y);
+	// Throwing, dashing, jumping, swapping, cancelling and dropping are the player's own controls (see the settings
+	// screen), read every frame in UpdateBoundControls.
 }
 
 void AChaosImpactCharacter::AimWithStick(const FInputActionValue& Value)
@@ -648,9 +636,7 @@ void AChaosImpactCharacter::AimWithStick(const FInputActionValue& Value)
 			StickAimInput = FVector2D::ZeroVector;
 			return;
 		}
-		RawAim = FVector2D(
-			PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_RightX),
-			PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_RightY));
+		RawAim = ChaosImpactSettings::GetAimStick(PlayerController);
 	}
 	StickAimInput = ApplyRadialStickDeadZone(
 		ConvertRawControllerAimAxes(RawAim), StickAimDeadZone);
@@ -686,6 +672,13 @@ void AChaosImpactCharacter::DoMove(float Right, float Forward)
 
 		const FVector DesiredMoveDirection =
 			(ForwardDirection * Forward + RightDirection * Right).GetClampedToMaxSize(1.0f);
+		if (IsDriving())
+		{
+			// Steering a drive ball: the controls turn the ball, not the (rooted) thrower.
+			DriveSteer = DesiredMoveDirection.Size2D() > 0.2f ? DesiredMoveDirection.GetSafeNormal2D() : FVector::ZeroVector;
+			DriveSteerAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+			return;
+		}
 		if (!DesiredMoveDirection.IsNearlyZero())
 		{
 			LastMoveDirection = DesiredMoveDirection.GetSafeNormal2D();
@@ -733,8 +726,14 @@ void AChaosImpactCharacter::StartChargingThrow()
 	{
 		return;
 	}
+	// Steering a drive ball, the throw button ends it where it is (as a wall would).
+	if (IsDriving())
+	{
+		StopDrivenBall();
+		return;
+	}
 	if (bEliminated || bTrainingMenuFrozen || bIsDashing || bIsChargingThrow || bThrowReleasePending
-		|| CarriedBallCount <= 0 || !GetWorld() || IsEliminationPredicted() || IsIceFrozen() || IsMatchInputLocked())
+		|| CarriedBallCount <= 0 || !GetWorld() || IsEliminationPredicted() || IsIceFrozen() || IsMatchInputLocked() || IsDriving())
 	{
 		return;
 	}
@@ -766,6 +765,11 @@ void AChaosImpactCharacter::StartDash()
 	{
 		return;
 	}
+	// A dash lets go of a drive ball (it fizzles out): the way out of standing rooted.
+	if (IsDriving())
+	{
+		EndDriving(true);
+	}
 	if (!GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
 		|| GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds || IsIceFrozen() || IsMatchInputLocked()
 		|| IsChargingNova())
@@ -776,27 +780,14 @@ void AChaosImpactCharacter::StartDash()
 	DashDirection = LastMoveDirection.GetSafeNormal2D();
 	if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
 	{
-		const AChaosImpactPlayerController* InputController =
-			Cast<AChaosImpactPlayerController>(PlayerController);
-		const bool bUseKeyboard = !InputController || !InputController->IsUsingGamepad();
-		const bool bUseGamepad = !InputController || InputController->IsUsingGamepad();
-		const float KeyboardForward = bUseKeyboard ?
-			(PlayerController->IsInputKeyDown(EKeys::W) ? 1.0f : 0.0f)
-			- (PlayerController->IsInputKeyDown(EKeys::S) ? 1.0f : 0.0f) : 0.0f;
-		const float KeyboardRight = bUseKeyboard ?
-			(PlayerController->IsInputKeyDown(EKeys::D) ? 1.0f : 0.0f)
-			- (PlayerController->IsInputKeyDown(EKeys::A) ? 1.0f : 0.0f) : 0.0f;
-			float ForwardInput = KeyboardForward
-				+ (bUseGamepad ? PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftY) : 0.0f);
-			float RightInput = KeyboardRight
-				+ (bUseGamepad ? PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftX) : 0.0f);
-			if (bUseGamepad && !bUseKeyboard)
-			{
-				const FVector2D Filtered = ApplyRadialStickDeadZone(
-					FVector2D(RightInput, ForwardInput), MovementStickDeadZone);
-				RightInput = Filtered.X;
-				ForwardInput = Filtered.Y;
-			}
+		bool bStick = false;
+		FVector2D Input = ChaosImpactSettings::GetMoveInput(PlayerController, bStick);
+		if (bStick)
+		{
+			Input = ApplyRadialStickDeadZone(Input, MovementStickDeadZone);
+		}
+		const float ForwardInput = static_cast<float>(Input.Y);
+		const float RightInput = static_cast<float>(Input.X);
 
 		if (!FVector2D(RightInput, ForwardInput).IsNearlyZero())
 		{
@@ -1003,14 +994,19 @@ void AChaosImpactCharacter::ReleaseChargedThrow()
 	{
 		// This screen already reported the lethal hit; the server would refuse the throw.
 	}
-	else if (GetPendingPickupCount() > 0 && CarriedBallCount - GetPendingPickupCount() <= 0)
+	else if (GetPendingPickupCount() > 0 && CarriedBallCount - GetPendingPickupCount() <= 0
+		&& PendingPickupContested.Contains(true))
 	{
-		// The only ball in hand is a pickup the server has not confirmed yet: throw once it is.
+		// The only ball in hand was snatched right by someone else: it may be theirs, so throw once it is confirmed
+		// (a throw that is then taken back looks worse than one a moment late).
 		bThrowAwaitingPickup = true;
 		AwaitingThrowChargeAlpha = ChargeAlpha;
 	}
 	else
 	{
+		// Thrown at once, even with a pickup the server has not confirmed yet: the claim and the throw reach it
+		// in order (both reliable), and waiting held every quick pickup-and-throw back by a whole round trip.
+		// If the claim is refused after all, the throw is too and its preview is taken back.
 		ReleaseThrowNow(ChargeAlpha);
 	}
 }
@@ -1042,9 +1038,8 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		if (const AChaosImpactPlayerController* PadController = Cast<AChaosImpactPlayerController>(GetController());
 			PadController && PadController->IsUsingGamepad())
 		{
-			StickAimInput = ApplyRadialStickDeadZone(ConvertRawControllerAimAxes(FVector2D(
-				PadController->GetInputAnalogKeyState(EKeys::Gamepad_RightX),
-				PadController->GetInputAnalogKeyState(EKeys::Gamepad_RightY))), StickAimDeadZone);
+			StickAimInput = ApplyRadialStickDeadZone(ConvertRawControllerAimAxes(
+				ChaosImpactSettings::GetAimStick(PadController)), StickAimDeadZone);
 		}
 	}
 	if (!IsLocallyControlled())
@@ -1068,7 +1063,8 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		const FVector RawStickDirection =
 			(CameraForward * StickAimInput.Y + CameraRight * StickAimInput.X).GetSafeNormal2D();
 		// While charging, the charge magnet below takes the place of the stick's own assist.
-		DesiredDirection = bIsChargingThrow ? RawStickDirection : ApplyControllerAimAssist(RawStickDirection);
+		DesiredDirection = bIsChargingThrow || !ChaosImpactSettings::IsAimAssistOn(Cast<APlayerController>(GetController()))
+			? RawStickDirection : ApplyControllerAimAssist(RawStickDirection);
 	}
 	else
 	{
@@ -1079,11 +1075,24 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		}
 	}
 	if (bIsChargingThrow && !IsChargingNova() && IsLocallyControlled() && !bDevAutoInput
-		&& Cast<APlayerController>(GetController()))
+		&& Cast<APlayerController>(GetController())
+		&& ChaosImpactSettings::IsAimAssistOn(Cast<APlayerController>(GetController())))
 	{
 		DesiredDirection = ApplyChargeAimMagnet(DesiredDirection);
 	}
 
+	if (IsDriving())
+	{
+		// Steering a drive ball, the thrower turns to watch it, guiding it with an outstretched arm.
+		if (const AChaosImpactBall* Guided = DrivenBall.Get())
+		{
+			const FVector Toward = (Guided->GetActorLocation() - GetActorLocation()).GetSafeNormal2D();
+			if (!Toward.IsNearlyZero())
+			{
+				DesiredDirection = Toward;
+			}
+		}
+	}
 	if (!DesiredDirection.IsNearlyZero())
 	{
 		AimDirection = DesiredDirection;
@@ -1327,8 +1336,6 @@ void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
 	}
 
 	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(PlayerController);
-	const bool bUsingGamepad = InputController && InputController->IsUsingGamepad();
 	if (!bNovaTargetValid)
 	{
 		FVector StageCenter;
@@ -1341,21 +1348,11 @@ void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
 	FVector2D CursorInput = FVector2D::ZeroVector;
 	if (PlayerController)
 	{
-		if (bUsingGamepad)
-		{
-			CursorInput = ApplyRadialStickDeadZone(FVector2D(
-				PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftX),
-				PlayerController->GetInputAnalogKeyState(EKeys::Gamepad_LeftY)), MovementStickDeadZone);
-		}
-		else
-		{
-			CursorInput = FVector2D(
-				(PlayerController->IsInputKeyDown(EKeys::D) || PlayerController->IsInputKeyDown(EKeys::Right) ? 1.0f : 0.0f)
-					- (PlayerController->IsInputKeyDown(EKeys::A) || PlayerController->IsInputKeyDown(EKeys::Left) ? 1.0f : 0.0f),
-				(PlayerController->IsInputKeyDown(EKeys::W) || PlayerController->IsInputKeyDown(EKeys::Up) ? 1.0f : 0.0f)
-					- (PlayerController->IsInputKeyDown(EKeys::S) || PlayerController->IsInputKeyDown(EKeys::Down) ? 1.0f : 0.0f));
-			CursorInput = CursorInput.GetClampedToMaxSize(1.0f);
-		}
+		// The movement controls the player has set (keys, or the movement stick and any set buttons).
+		bool bStick = false;
+		CursorInput = ChaosImpactSettings::GetMoveInput(PlayerController, bStick);
+		CursorInput = bStick ? ApplyRadialStickDeadZone(CursorInput, MovementStickDeadZone)
+			: CursorInput.GetClampedToMaxSize(1.0f);
 	}
 	if (bNovaTargetValid && !CursorInput.IsNearlyZero() && DeltaSeconds > 0.0f)
 	{
@@ -1472,6 +1469,11 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 			Ball->PrepareForAnimatedThrow(GetRootComponent(), NAME_None,
 				GetOverheadHoldOffset(Ball->GetBallType(), Ball->GetSnowScale()), FRotator::ZeroRotator);
 		}
+		else if (Ball->GetBallType() == EChaosImpactBallType::Drive)
+		{
+			// Pushed straight out from between the cupped hands, where it was held.
+			Ball->PrepareForAnimatedThrow(GetRootComponent(), NAME_None, DriveHoldOffset, FRotator::ZeroRotator);
+		}
 		else
 		{
 			Ball->PrepareForAnimatedThrow(GetMesh(), TEXT("hand_r"),
@@ -1545,6 +1547,17 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 		}
 		Ball->Launch(PendingThrowDirection, PendingThrowSpeed,
 			PendingThrowFlightMode, PendingThrowArcUpwardSpeed);
+		if (HasAuthority())
+		{
+			if (AChaosImpactGameMode* Mode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
+			{
+				Mode->RecordThrow(this, Ball->IsSpecialBall());
+			}
+		}
+		if (Ball->GetBallType() == EChaosImpactBallType::Drive)
+		{
+			BeginDriving(Ball);
+		}
 	}
 	bPendingNovaTarget = false;
 	PendingNovaTarget = FVector::ZeroVector;
@@ -1563,6 +1576,9 @@ void AChaosImpactCharacter::PlayThrowAnimation()
 	}
 	GetWorldTimerManager().ClearTimer(ThrowAnimationResetTimer);
 	ThrowAnimationStartedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	// A drive ball is pushed out with both hands instead (the thrower knows the ball; others, what was charged).
+	const AChaosImpactBall* Thrown = PendingThrowBall.Get();
+	bDriveThrowAnimation = (Thrown ? Thrown->GetBallType() : LastChargedType) == EChaosImpactBallType::Drive;
 	GetMesh()->PlayAnimation(ThrowAnimation, false);
 	if (UAnimSingleNodeInstance* SingleNode = GetMesh()->GetSingleNodeInstance())
 	{
@@ -1636,6 +1652,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 			{
 				ScoringMode->AwardMatchPoints(SourcePawn->GetPlayerState(), Points, bKnockout);
 			}
+			ScoringMode->RecordHit(SourcePawn, this, DamageCauser);
 		}
 	}
 
@@ -2188,6 +2205,7 @@ void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, ReplicatedDashDirection, COND_SkipOwner);
 	DOREPLIFETIME(AChaosImpactCharacter, bEliminated);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CPUNumber, COND_InitialOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, DriveEndsAtServerTime, COND_SkipOwner);
 }
 
 void AChaosImpactCharacter::ServerStartCharge_Implementation()
@@ -2487,8 +2505,10 @@ void AChaosImpactCharacter::NotifyServerTeleport()
 	{
 		return;
 	}
-	// Moves already in flight still carry the old position; ignore them briefly so the teleport sticks.
-	ServerAuthoritativeUntil = GetWorld()->GetTimeSeconds() + ServerTeleportAuthoritySeconds;
+	// Moves already in flight still carry the old position; ignore them briefly so the teleport sticks (at a high
+	// ping, for as long as the teleport takes to arrive and the first moves from there to come back).
+	ServerAuthoritativeUntil = GetWorld()->GetTimeSeconds()
+		+ FMath::Max(ServerTeleportAuthoritySeconds, GetNetworkRoundTripSeconds() * 2.0f + 0.3f);
 	UpdateMovementAuthority();
 	ClientTeleportTo(GetActorLocation(), GetActorRotation());
 }
@@ -2522,7 +2542,7 @@ AChaosImpactBall* AChaosImpactCharacter::TakePredictedThrowBall()
 	return Predicted;
 }
 
-void AChaosImpactCharacter::ClaimPickupFromClient(AChaosImpactBall* Ball)
+void AChaosImpactCharacter::ClaimPickupFromClient(AChaosImpactBall* Ball, const bool bContested)
 {
 	if (HasAuthority() || !IsLocallyControlled() || bEliminated || !IsValid(Ball)
 		|| CarriedBallCount >= MaximumCarriedBalls || IsEliminationPredicted())
@@ -2531,14 +2551,17 @@ void AChaosImpactCharacter::ClaimPickupFromClient(AChaosImpactBall* Ball)
 	}
 	// Predicted: the ball is in hand the moment it is touched on this screen.
 	PendingBallActions.Add(static_cast<int8>(1 + static_cast<int32>(Ball->GetBallType())));
+	PendingPickupContested.Add(bContested);
 	RefreshPredictedBallCount();
 	ServerClaimPickup(Ball);
 }
 
 void AChaosImpactCharacter::ServerClaimPickup_Implementation(AChaosImpactBall* Ball)
 {
-	// Generous reach: this copy of the player can trail the owner's own screen by a round trip.
-	constexpr float MaxClaimDistance = 320.0f;
+	// Generous reach: this copy of the player can trail the owner's own screen by a round trip, and a rolling ball
+	// has rolled on meanwhile.
+	const float MaxClaimDistance = IsValid(Ball) ? FMath::Min(320.0f + static_cast<float>(Ball->GetVelocity().Size2D())
+		* (GetNetworkRoundTripSeconds() + 0.1f), 900.0f) : 320.0f;
 	const TCHAR* RejectReason = !IsValid(Ball) ? TEXT("ball gone")
 		: bEliminated ? TEXT("eliminated")
 		: CarriedBallCount >= MaximumCarriedBalls ? TEXT("hands full")
@@ -2556,6 +2579,10 @@ void AChaosImpactCharacter::ClientPickupResolved_Implementation(const bool bAcce
 	const int32 ServerBallCount, const uint8 ServerBallTypes, AChaosImpactBall* Ball)
 {
 	ResolveOldestBallAction(ServerBallCount, ServerBallTypes);
+	if (!PendingPickupContested.IsEmpty())
+	{
+		PendingPickupContested.RemoveAt(0);
+	}
 	if (!bAccepted && IsValid(Ball))
 	{
 		Ball->CancelLocalPickupClaim();
@@ -2613,6 +2640,16 @@ void AChaosImpactCharacter::ServerSwapBalls_Implementation()
 		UpdateBallPresentation();
 	}
 	// Always answered, even when nothing changed, so the client's queued swap is resolved in order.
+	ClientSwapResolved(CarriedBallCount, CarriedBallTypes);
+}
+
+void AChaosImpactCharacter::ServerDropBall_Implementation()
+{
+	if (CanDropBall())
+	{
+		DropFrontBall();
+	}
+	// Always answered, like a swap, so the client's queued drop is resolved in order.
 	ClientSwapResolved(CarriedBallCount, CarriedBallTypes);
 }
 
@@ -2721,29 +2758,66 @@ void AChaosImpactCharacter::TickDevAutoInput()
 			Opponent = *It;
 		}
 	}
-	if (!Goal && Opponent && OpponentDistance > 700.0f)
+	// With a ball in hand, close in to throwing range first (a fight, not two players throwing from afar).
+	if (Opponent && ((CarriedBallCount > 0 && OpponentDistance > 1100.0f) || (!Goal && OpponentDistance > 700.0f)))
 	{
 		Goal = Opponent;
 	}
-	if (Goal)
+	if (Now < DevDetourUntil)
+	{
+		AddMovementInput(DevDetourDirection, 1.0f);
+		LastMoveDirection = DevDetourDirection;
+	}
+	else if (Goal)
 	{
 		const FVector Direction = (Goal->GetActorLocation() - GetActorLocation()).GetSafeNormal2D();
 		AddMovementInput(Direction, 1.0f);
 		LastMoveDirection = Direction;
+		// Hardly moving while trying to: a wall or a ledge is in the way; go round it sideways for a moment.
+		if (GetVelocity().Size2D() < 120.0f)
+		{
+			if (DevSlowSince < 0.0)
+			{
+				DevSlowSince = Now;
+			}
+			else if (Now - DevSlowSince > 0.4)
+			{
+				DevDetourDirection = (FVector::CrossProduct(FVector::UpVector, Direction) * (FMath::RandBool() ? 1.0f : -1.0f)
+					- Direction * 0.4f).GetSafeNormal2D();
+				DevDetourUntil = Now + FMath::FRandRange(0.6, 1.2);
+				DevSlowSince = -1.0;
+			}
+		}
+		else
+		{
+			DevSlowSince = -1.0;
+		}
+	}
+	else if (Opponent)
+	{
+		// In range: sidestep back and forth, as a player keeps moving to be hard to hit.
+		const FVector Toward = (Opponent->GetActorLocation() - GetActorLocation()).GetSafeNormal2D();
+		const FVector Side = FVector::CrossProduct(FVector::UpVector, Toward) * (FMath::Sin(Now * 1.7) > 0.0 ? 1.0f : -1.0f);
+		AddMovementInput(Side, 1.0f);
+		LastMoveDirection = Side;
 	}
 	if (Opponent)
 	{
-		SetAIAimDirection(Opponent->GetActorLocation() - GetActorLocation());
+		// Aim where they will be when the ball gets there.
+		const float Speed = FMath::Max(GetThrowSpeedForCharge(0.6f, false), 1.0f);
+		FVector Velocity = Opponent->GetVelocity();
+		Velocity.Z = 0.0f;
+		SetAIAimDirection(Opponent->GetActorLocation() + Velocity * (OpponentDistance / Speed) - GetActorLocation());
 	}
 	if (bIsChargingThrow && Now >= DevReleaseAt)
 	{
 		ReleaseChargedThrow();
 	}
-	else if (!bIsChargingThrow && Opponent && CarriedBallCount > 0 && Now >= DevNextThrowAt)
+	else if (!bIsChargingThrow && Opponent && CarriedBallCount > 0 && Now >= DevNextThrowAt && OpponentDistance < 1800.0f)
 	{
 		StartChargingThrow();
-		DevReleaseAt = Now + 0.35;
-		DevNextThrowAt = Now + 1.6;
+		DevReleaseAt = Now + 0.45;
+		DevNextThrowAt = Now + 1.4;
 	}
 	if (Now >= DevNextDashAt && CanDashNow())
 	{
@@ -2757,7 +2831,7 @@ void AChaosImpactCharacter::TickDevAutoInput()
 float AChaosImpactCharacter::GetNetworkRoundTripSeconds() const
 {
 	const APlayerState* State = GetPlayerState();
-	return State ? FMath::Clamp(State->GetPingInMilliseconds() / 1000.0f, 0.0f, 0.5f) : 0.0f;
+	return State ? FMath::Clamp(State->GetPingInMilliseconds() / 1000.0f, 0.0f, 1.0f) : 0.0f;
 }
 
 bool AChaosImpactCharacter::IsEliminationPredicted() const
@@ -2800,8 +2874,11 @@ void AChaosImpactCharacter::TraceNetPresentation(const float DeltaSeconds)
 	}
 	const bool bOwnTruth = IsLocallyControlled();
 	const FVector Drawn = bOwnTruth ? GetActorLocation() : GetPresentationLocation();
-	UE_LOG(LogChaosImpact, Log, TEXT("NetTrace t=%.3f who=%s own=%d x=%.1f y=%.1f"), GetSharedServerTime(),
-		*State->GetPlayerName(), bOwnTruth ? 1 : 0, Drawn.X, Drawn.Y);
+	// wall: the machine's clock, shared by every game on one PC (the test runs them side by side), so what each
+	// screen draws can be compared at the same real moment.
+	UE_LOG(LogChaosImpact, Log, TEXT("NetTrace t=%.3f who=%s own=%d x=%.1f y=%.1f rtt=%.0f wall=%.3f"), GetSharedServerTime(),
+		*State->GetPlayerName(), bOwnTruth ? 1 : 0, Drawn.X, Drawn.Y, GetNetworkRoundTripSeconds() * 1000.0f,
+		FPlatformTime::Seconds());
 #endif
 }
 
@@ -2816,6 +2893,26 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 	FVector TargetLead = FVector::ZeroVector;
 	const bool bDrawnFromNetwork = GetNetMode() != NM_Standalone && !IsLocallyControlled()
 		&& (GetLocalRole() == ROLE_SimulatedProxy || IsRemotePlayerOnServer());
+	// How late this copy is: the way from its owner to the host (half their round trip) and, on a client's screen,
+	// on from the host to here (half this screen's own round trip). The host's own player has no round trip, so on
+	// a client the host was not led at all before.
+	float ViewerRoundTrip = 0.0f;
+	if (!HasAuthority() && GetWorld())
+	{
+		const APlayerController* Viewer = GetWorld()->GetFirstPlayerController();
+		const APlayerState* ViewerState = Viewer ? Viewer->PlayerState.Get() : nullptr;
+		ViewerRoundTrip = ViewerState ? FMath::Clamp(ViewerState->GetPingInMilliseconds() / 1000.0f, 0.0f, 1.0f) : 0.0f;
+	}
+	const float PathRoundTrip = GetNetworkRoundTripSeconds() + ViewerRoundTrip;
+	if (bDrawnFromNetwork)
+	{
+		// The slower the connection, the more its updates bunch up and spread out: smooth over longer so they never
+		// show as little jumps (the lead below makes up for the extra delay).
+		const float Smoothing = FMath::Lerp(0.06f, 0.15f, FMath::Clamp((PathRoundTrip - 0.08f) / 0.35f, 0.0f, 1.0f));
+		UCharacterMovementComponent* SmoothedMovement = GetCharacterMovement();
+		SmoothedMovement->NetworkSimulatedSmoothLocationTime = Smoothing;
+		SmoothedMovement->ListenServerNetworkSimulatedSmoothLocationTime = Smoothing;
+	}
 	if (bDrawnFromNetwork && !bEliminated)
 	{
 		// This copy trails the player's own screen by their round trip plus smoothing; draw it that far ahead.
@@ -2844,7 +2941,7 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 		LeadScale = DevLeadScale;
 		SmoothingShare = DevSmoothingShare;
 #endif
-		const float LeadSeconds = FMath::Clamp(GetNetworkRoundTripSeconds() * LeadScale + SmoothingLag * SmoothingShare,
+		const float LeadSeconds = FMath::Clamp(PathRoundTrip * LeadScale + SmoothingLag * SmoothingShare,
 			0.0f, MaxPresentationLeadSeconds);
 		FVector HorizontalVelocity = GetVelocity();
 		HorizontalVelocity.Z = 0.0f;
@@ -2854,9 +2951,39 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 		}
 		TargetLead = (HorizontalVelocity * LeadSeconds).GetClampedToMaxSize(MaxPresentationLeadDistance);
 	}
+	// A turn or a stop swings the lead the other way: never faster than a walk, so it never shows as a jump.
+	const FVector BlendedLead = FMath::VInterpTo(PresentationLeadWorld, TargetLead, DeltaSeconds, PresentationLeadBlendSpeed);
 	PresentationLeadWorld = bEliminated ? FVector::ZeroVector
-		: FMath::VInterpTo(PresentationLeadWorld, TargetLead, DeltaSeconds, PresentationLeadBlendSpeed);
-	const FVector NewBase = CachedBaseTranslationOffset + GetActorQuat().UnrotateVector(PresentationLeadWorld);
+		: PresentationLeadWorld + (BlendedLead - PresentationLeadWorld).GetClampedToMaxSize(MaxPresentationLeadChangeSpeed * DeltaSeconds);
+	// Uneven steps: whatever the copy moved beyond (or short of) its own speed this frame is taken up by the glide
+	// and let out over about a tenth of a second. A big jump (respawn, teleport) is shown at once. Only on the host:
+	// a client's copies of others are already smoothed by their movement (the host's copy of a remote player is
+	// simply put where that player says it is, update by update).
+	const FVector ActorLocation = GetActorLocation();
+	bool bGlide = IsRemotePlayerOnServer();
+#if !UE_BUILD_SHIPPING
+	// Development (-CIGlideAll): clients' copies of others glide too (to compare when measuring online lag).
+	static const bool bDevGlideAll = FParse::Param(FCommandLine::Get(), TEXT("CIGlideAll"));
+	bGlide = bGlide || (bDevGlideAll && bDrawnFromNetwork);
+#endif
+	if (bGlide && !bEliminated && bPresentationHasLast && DeltaSeconds > 0.0f)
+	{
+		FVector Step = ActorLocation - PresentationLastActorLocation;
+		FVector Expected = GetVelocity() * DeltaSeconds;
+		Step.Z = 0.0f;
+		Expected.Z = 0.0f;
+		const FVector Surprise = Step - Expected;
+		PresentationGlideWorld = Surprise.SizeSquared() < FMath::Square(400.0f)
+			? (PresentationGlideWorld - Surprise).GetClampedToMaxSize(160.0f) : FVector::ZeroVector;
+		PresentationGlideWorld *= FMath::Exp(-PresentationGlideRate * DeltaSeconds);
+	}
+	else
+	{
+		PresentationGlideWorld = FVector::ZeroVector;
+	}
+	PresentationLastActorLocation = ActorLocation;
+	bPresentationHasLast = true;
+	const FVector NewBase = CachedBaseTranslationOffset + GetActorQuat().UnrotateVector(PresentationLeadWorld + PresentationGlideWorld);
 	if (!NewBase.Equals(BaseTranslationOffset, 0.01f))
 	{
 		// Keep movement smoothing's current offset and only swap the lead underneath it.
@@ -3264,6 +3391,25 @@ void AChaosImpactCharacter::RequestBallSwap()
 	}
 }
 
+int32 AChaosImpactCharacter::GetShownCharacter() const
+{
+	if (ToonCharacter)
+	{
+		return ToonCharacter->GetCharacterIndex();
+	}
+	return ShownCharacterIndex(GetPlayerState<AChaosImpactPlayerState>());
+}
+
+int32 AChaosImpactCharacter::GetShownColour() const
+{
+	if (ToonCharacter && ToonCharacter->GetColourIndex() >= 0)
+	{
+		return ToonCharacter->GetColourIndex();
+	}
+	const AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>();
+	return State && State->ColourChoice >= 0 ? State->ColourChoice : 0;
+}
+
 FString AChaosImpactCharacter::GetOverheadDisplayName() const
 {
 	if (CPUNumber > 0)
@@ -3281,6 +3427,10 @@ FString AChaosImpactCharacter::GetOverheadDisplayName() const
 	const UGameInstance* GameInstance = GetGameInstance();
 	if (OwningController && OwningController->GetLocalPlayer() && GameInstance)
 	{
+		if (const int32 Profile = ChaosImpactSettings::GetPlayerProfile(OwningController); Profile > 0)
+		{
+			return ChaosImpactSettings::GetProfile(Profile).Name;
+		}
 		const TArray<ULocalPlayer*>& LocalPlayers = GameInstance->GetLocalPlayers();
 		if (LocalPlayers.Num() <= 1)
 		{
@@ -3397,6 +3547,13 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		}
 		Material = HeldSimaeMaterial;
 		break;
+	case EChaosImpactBallType::Drive:
+		if (!HeldDriveMaterial)
+		{
+			HeldDriveMaterial = MakeEmissive(this, FLinearColor(1.0f, 0.6f, 0.12f), 3.0f);
+		}
+		Material = HeldDriveMaterial;
+		break;
 	default:
 		// No override for a normal ball: the mesh's own material.
 		break;
@@ -3412,7 +3569,8 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		: Type == EChaosImpactBallType::Thunder ? Effects::Electricity
 		: Type == EChaosImpactBallType::Black ? Effects::DarkAura
 		: Type == EChaosImpactBallType::Smoke ? Effects::LastHitSmoke
-		: Type == EChaosImpactBallType::Beam || Type == EChaosImpactBallType::Nova ? Effects::WindSparks : nullptr;
+		: Type == EChaosImpactBallType::Beam || Type == EChaosImpactBallType::Nova || Type == EChaosImpactBallType::Drive
+			? Effects::WindSparks : nullptr;
 	const bool bWantEffect = WantedSystem && HandBall->IsVisible() && GetNetMode() != NM_DedicatedServer;
 	if (HandEffect && WantedSystem && HandEffectType != Type)
 	{
@@ -3554,7 +3712,7 @@ void AChaosImpactCharacter::SnapCameraToCharacter()
 
 bool AChaosImpactCharacter::CanJumpInternal_Implementation() const
 {
-	return !IsMatchInputLocked() && !IsChargingNova() && Super::CanJumpInternal_Implementation();
+	return !IsMatchInputLocked() && !IsChargingNova() && !IsDriving() && Super::CanJumpInternal_Implementation();
 }
 
 double AChaosImpactCharacter::GetSharedServerTime() const
@@ -3865,7 +4023,7 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 	// put exactly there; the rest of the time the arm keeps its own proportions.
 	const float SinceThrow = static_cast<float>(GetWorld()->GetTimeSeconds() - ThrowAnimationStartedAt);
 	const float Release = ThrowReleaseDelaySeconds + 0.05f;
-	const float Weight = bThrowAnimationActive
+	const float Weight = bThrowAnimationActive && !bDriveThrowAnimation
 		? FMath::Clamp(SinceThrow / 0.08f, 0.0f, 1.0f) * (1.0f - FMath::Clamp((SinceThrow - Release) / 0.15f, 0.0f, 1.0f))
 		: 0.0f;
 	ToonCharacter->SetRightHandExactWeight(Weight);
@@ -3877,6 +4035,24 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 		|| (Held == EChaosImpactBallType::Snow && ChaosImpactBallTypes::IsSnowOverhead(ChaosImpactBallTypes::GetSnowScale(GetSnowGrowth(0)))));
 	ArmsRaisedWeight = FMath::FInterpTo(ArmsRaisedWeight, bRaise ? 1.0f : 0.0f, GetWorld()->GetDeltaSeconds(), 10.0f);
 	ToonCharacter->SetArmsRaised(ArmsRaisedWeight * (1.0f - Weight));
+	// A drive ball: charged, it floats cupped between both hands in front of the chest; thrown, both hands push it out;
+	// steered, the right arm reaches after it, guiding it, the left fist drawn back.
+	const float PoseDelta = GetWorld()->GetDeltaSeconds();
+	if (bCharging)
+	{
+		LastChargedType = Held;
+	}
+	const bool bDriveCharge = bCharging && !bEliminated && Held == EChaosImpactBallType::Drive;
+	const bool bDrivePush = bThrowAnimationActive && bDriveThrowAnimation && !bEliminated
+		&& SinceThrow < ThrowReleaseDelaySeconds + 0.25f;
+	const AChaosImpactBall* Guided = IsDriving() && !bEliminated ? FindShownDriveBall() : nullptr;
+	const FVector HoldPoint = GetActorTransform().TransformPosition(DriveHoldOffset);
+	DriveHoldWeight = FMath::FInterpTo(DriveHoldWeight, bDriveCharge ? 1.0f : 0.0f, PoseDelta, bDrivePush ? 9.0f : 14.0f);
+	DrivePointWeight = FMath::FInterpTo(DrivePointWeight, bDrivePush || Guided ? 1.0f : 0.0f, PoseDelta,
+		bDrivePush ? 24.0f : 8.0f);
+	const FVector PointAt = Guided ? Guided->GetActorLocation() : HoldPoint + GetActorForwardVector() * 60.0f;
+	DrivePointShown = DrivePointWeight < 0.02f ? PointAt : FMath::VInterpTo(DrivePointShown, PointAt, PoseDelta, 12.0f);
+	ToonCharacter->SetDrivePose(DriveHoldWeight * (1.0f - Weight), HoldPoint, DrivePointWeight, DrivePointShown);
 }
 
 bool AChaosImpactCharacter::IsShowingLastHitSmoke() const
@@ -4033,7 +4209,7 @@ void AChaosImpactCharacter::UpdateSnowball()
 	if (BaseMaxWalkSpeed > 0.0f)
 	{
 		// Charging a nova roots its thrower to the spot.
-		GetCharacterMovement()->MaxWalkSpeed = IsChargingNova() ? 0.0f
+		GetCharacterMovement()->MaxWalkSpeed = IsChargingNova() || IsDriving() ? 0.0f
 			: BaseMaxWalkSpeed * (1.0f - ChaosImpactBallTypes::SnowMaxSlowdown * Heaviest);
 	}
 }
@@ -4127,6 +4303,59 @@ void AChaosImpactCharacter::UpdateSnowRollPresentation()
 	SnowRollMesh->SetWorldLocationAndRotation(Center, SnowRollSpin);
 	SnowRollMesh->SetWorldScale3D(FVector(0.48f * RightScale));
 	SnowRollMesh->SetVisibility(true, true);
+}
+
+bool AChaosImpactCharacter::CanDropBall() const
+{
+	return !bEliminated && !bTrainingMenuFrozen && CarriedBallCount > 0 && !bIsChargingThrow && !bThrowReleasePending
+		&& GetWorld() && !IsEliminationPredicted() && !IsIceFrozen() && !IsMatchInputLocked();
+}
+
+void AChaosImpactCharacter::RequestDropBall()
+{
+	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(GetController());
+	if ((MenuController && !MenuController->IsGameplayActive()) || !CanDropBall())
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		DropFrontBall();
+	}
+	else
+	{
+		// Taken out of the hand at once, like a throw (-1 takes slot 0); the server's answer resolves it in order.
+		PendingBallActions.Add(-1);
+		ServerDropBall();
+		RefreshPredictedBallCount();
+	}
+}
+
+void AChaosImpactCharacter::DropFrontBall()
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World || !BallClass || CarriedBallCount <= 0)
+	{
+		return;
+	}
+	const EChaosImpactBallType Type = GetCarriedBallType(0);
+	FVector Forward = GetActorForwardVector().GetSafeNormal2D();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = FVector::ForwardVector;
+	}
+	const FTransform SpawnTransform(FRotator::ZeroRotator, GetActorLocation() + Forward * 60.0f);
+	if (AChaosImpactBall* Ball = World->SpawnActorDeferred<AChaosImpactBall>(BallClass, SpawnTransform, nullptr, nullptr,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+	{
+		Ball->SetBallType(Type);
+		Ball->FinishSpawning(SpawnTransform);
+		// Rolls a little way off (out of reach for a moment), then lies there like any landed ball.
+		Ball->MakeRollingPickup(Forward * 600.0f);
+	}
+	PopCarriedBall();
+	UpdateBallPresentation();
+	UE_LOG(LogChaosImpact, Log, TEXT("%s dropped a %s ball"), *GetName(), ChaosImpactBallTypes::GetInternalName(Type));
 }
 
 void AChaosImpactCharacter::DropCarriedBalls()
@@ -4313,6 +4542,15 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 		OutUpSpeed = ChaosImpactBallTypes::NovaThrowUpSpeed;
 		OutMode = EChaosImpactBallFlightMode::Arc;
 		bOutOverhead = true;
+	}
+	else if (Type == EChaosImpactBallType::Drive)
+	{
+		// Flies level, at a speed set by the charge (a fast one turns wider), however it is steered after.
+		OutHorizontalSpeed = FMath::Lerp(ChaosImpactBallTypes::DriveMinSpeed, ChaosImpactBallTypes::DriveMaxSpeed,
+			FMath::Clamp(ChargeAlpha, 0.0f, 1.0f));
+		OutUpSpeed = 0.0f;
+		OutMode = EChaosImpactBallFlightMode::Straight;
+		bOutOverhead = false;
 	}
 }
 
@@ -4687,9 +4925,10 @@ void AChaosImpactCharacter::AddCameraShake(const float Strength, const float Sec
 	}
 	const double Now = GetWorld()->GetTimeSeconds();
 	const float Remaining = CameraShakeStrength * FMath::Clamp(1.0f - static_cast<float>(Now - CameraShakeStartedAt) / CameraShakeSeconds, 0.0f, 1.0f);
-	if (Strength >= Remaining)
+	const float Shake = Strength * ChaosImpactSettings::GetCameraShakeScale();
+	if (Shake > 0.01f && Shake >= Remaining)
 	{
-		CameraShakeStrength = Strength;
+		CameraShakeStrength = Shake;
 		CameraShakeSeconds = FMath::Max(Seconds, 0.1f);
 		CameraShakeStartedAt = Now;
 	}
@@ -4720,4 +4959,171 @@ void AChaosImpactCharacter::UpdateCameraShake()
 	const float Amount = 55.0f * CameraShakeStrength * Left * Left;
 	FollowCamera->SetRelativeLocation(CameraRestLocation
 		+ FVector(0.0f, FMath::FRandRange(-1.0f, 1.0f) * Amount, FMath::FRandRange(-1.0f, 1.0f) * Amount));
+}
+
+bool AChaosImpactCharacter::IsDriving() const
+{
+	const double Now = GetSharedServerTime();
+	if (DriveEndsAt > 0.0)
+	{
+		return Now < DriveEndsAt;
+	}
+	// Another screen's player: from the replicated end time.
+	return !IsLocallyControlled() && !HasAuthority() && DriveEndsAtServerTime > 0.0f && Now < DriveEndsAtServerTime;
+}
+
+const AChaosImpactBall* AChaosImpactCharacter::FindShownDriveBall()
+{
+	if (const AChaosImpactBall* Ball = DrivenBall.Get())
+	{
+		return Ball;
+	}
+	if (ShownDriveBall.IsValid() && !ShownDriveBall->HasDetonated())
+	{
+		return ShownDriveBall.Get();
+	}
+	UWorld* World = GetWorld();
+	if (!World || World->GetTimeSeconds() < NextDriveBallSearchAt)
+	{
+		return nullptr;
+	}
+	NextDriveBallSearchAt = World->GetTimeSeconds() + 0.2;
+	for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
+	{
+		if (It->GetBallType() == EChaosImpactBallType::Drive && !It->HasDetonated() && It->GetDriveControlLeft() >= 0.0f
+			&& It->WasThrownBy(this))
+		{
+			ShownDriveBall = *It;
+			return *It;
+		}
+	}
+	return nullptr;
+}
+
+void AChaosImpactCharacter::SetAIDriveSteer(const FVector& Direction)
+{
+	DriveSteer = FVector(Direction.X, Direction.Y, 0.0f).GetSafeNormal();
+	DriveSteerAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+}
+
+void AChaosImpactCharacter::OnDriveBallAdopted(AChaosImpactBall* Predicted, AChaosImpactBall* Adopted)
+{
+	if (Adopted && Adopted->GetBallType() == EChaosImpactBallType::Drive && DriveEndsAt > 0.0
+		&& (!DrivenBall.IsValid() || DrivenBall.Get() == Predicted))
+	{
+		DrivenBall = Adopted;
+		Adopted->SetDriveSteer(DriveSteer);
+	}
+}
+
+void AChaosImpactCharacter::BeginDriving(AChaosImpactBall* Ball)
+{
+	if (!Ball || !GetWorld())
+	{
+		return;
+	}
+	DriveEndsAt = GetSharedServerTime() + ChaosImpactBallTypes::DriveControlSeconds;
+	DrivenBall = Ball;
+	DriveSteer = FVector::ZeroVector;
+	LastSentDriveSteer = FVector::ZeroVector;
+	Ball->BeginDrive(DriveEndsAt);
+	if (HasAuthority())
+	{
+		DriveEndsAtServerTime = static_cast<float>(DriveEndsAt);
+		ForceNetUpdate();
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("%s steers a drive ball for %.1f s"), *GetName(), ChaosImpactBallTypes::DriveControlSeconds);
+}
+
+void AChaosImpactCharacter::UpdateDriving(const float DeltaSeconds)
+{
+	if (DriveEndsAt <= 0.0 || !GetWorld())
+	{
+		return;
+	}
+	const double Now = GetSharedServerTime();
+	AChaosImpactBall* Ball = DrivenBall.Get();
+	if ((!Ball || Ball->HasDetonated()) && !HasAuthority() && IsLocallyControlled() && Now < DriveEndsAt)
+	{
+		// The preview went before the server's ball was matched to it: find that ball.
+		for (TActorIterator<AChaosImpactBall> It(GetWorld()); It; ++It)
+		{
+			if (It->GetBallType() == EChaosImpactBallType::Drive && !It->HasDetonated() && It->GetDriveControlLeft() >= 0.0f
+				&& It->WasThrownBy(this))
+			{
+				Ball = *It;
+				DrivenBall = Ball;
+				break;
+			}
+		}
+	}
+	if (!Ball || Ball->HasDetonated() || bEliminated || Now >= DriveEndsAt + 0.1)
+	{
+		EndDriving(false);
+		return;
+	}
+	if (IsLocallyControlled())
+	{
+		// A player's controls arrive only while held: a moment without them is straight on.
+		if (GetWorld()->GetTimeSeconds() - DriveSteerAt > 0.08)
+		{
+			DriveSteer = FVector::ZeroVector;
+		}
+		Ball->SetDriveSteer(DriveSteer);
+		if (!HasAuthority() && (FVector::DistSquared(DriveSteer, LastSentDriveSteer) > 0.0004 || Now >= NextDriveSendAt))
+		{
+			ServerDriveSteer(DriveSteer);
+			LastSentDriveSteer = DriveSteer;
+			NextDriveSendAt = Now + 0.1;
+		}
+	}
+}
+
+void AChaosImpactCharacter::EndDriving(const bool bLetGo)
+{
+	AChaosImpactBall* Ball = DrivenBall.Get();
+	if (bLetGo)
+	{
+		if (Ball && !Ball->HasDetonated())
+		{
+			Ball->FizzleDrive();
+		}
+		if (!HasAuthority() && IsLocallyControlled())
+		{
+			ServerCancelDrive();
+		}
+	}
+	DrivenBall.Reset();
+	DriveEndsAt = -1.0;
+	DriveSteer = FVector::ZeroVector;
+	if (HasAuthority())
+	{
+		DriveEndsAtServerTime = -1.0f;
+		ForceNetUpdate();
+	}
+}
+
+void AChaosImpactCharacter::ServerDriveSteer_Implementation(const FVector_NetQuantizeNormal Direction)
+{
+	DriveSteer = FVector(Direction.X, Direction.Y, 0.0f).GetSafeNormal();
+	if (AChaosImpactBall* Ball = DrivenBall.Get())
+	{
+		Ball->SetDriveSteer(DriveSteer);
+	}
+}
+
+void AChaosImpactCharacter::ServerCancelDrive_Implementation()
+{
+	if (IsDriving())
+	{
+		EndDriving(true);
+	}
+}
+
+void AChaosImpactCharacter::StopDrivenBall()
+{
+	if (IsDriving())
+	{
+		EndDriving(true);
+	}
 }

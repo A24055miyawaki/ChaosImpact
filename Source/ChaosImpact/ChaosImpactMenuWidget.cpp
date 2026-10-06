@@ -7,6 +7,9 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactCharacterSelect.h"
+#include "ChaosImpactSettings.h"
+#include "ChaosImpactSettingsScreen.h"
+#include "ChaosImpactResults.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "Blueprint/WidgetTree.h"
@@ -666,6 +669,7 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 	}
 
 	CharacterSelect = NewObject<UChaosImpactCharacterSelect>(this);
+	SettingsScreen = NewObject<UChaosImpactSettingsScreen>(this);
 
 	if (FSlateApplication::IsInitialized() && !JoinInputProcessor.IsValid())
 	{
@@ -705,6 +709,10 @@ void UChaosImpactMenuWidget::NativeDestruct()
 	{
 		CharacterSelect->Close();
 	}
+	if (SettingsScreen)
+	{
+		SettingsScreen->Close();
+	}
 	if (JoinInputProcessor.IsValid() && FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().UnregisterInputPreProcessor(JoinInputProcessor);
@@ -715,12 +723,49 @@ void UChaosImpactMenuWidget::NativeDestruct()
 
 bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 {
+	// F11 / Alt+Enter in menus and in play alike (this sees every key first), kept the same as the settings screen.
+	if (!GIsEditor && !InKeyEvent.IsRepeat()
+		&& (InKeyEvent.GetKey() == EKeys::F11 || (InKeyEvent.GetKey() == EKeys::Enter && InKeyEvent.IsAltDown())))
+	{
+		ChaosImpactSettings::ToggleFullscreen();
+		return true;
+	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
 		return CharacterSelect->HandleKeyDown(InKeyEvent);
 	}
+	if (IsSettingsActive())
+	{
+		return SettingsScreen->HandleKeyDown(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::MatchEnd && Entries.IsEmpty() && GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		if (!InKeyEvent.IsRepeat())
+		{
+			GoOnFromPodium();
+		}
+		return true;
+	}
 	return TryJoinControllerFromAnyUser(InKeyEvent);
+}
+
+void UChaosImpactMenuWidget::GoOnFromPodium()
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	UChaosImpactResultsView* Results = Controller ? Controller->GetResultsView() : nullptr;
+	if (Results && Results->GetPage() == 0 && Results->CanAdvance())
+	{
+		Results->ShowStats();
+		// The menu comes in fresh under the numbers.
+		ShowScreen(EChaosImpactScreen::MatchEnd);
+	}
+}
+
+bool UChaosImpactMenuWidget::IsSettingsActive() const
+{
+	return Screen == EChaosImpactScreen::Settings && SettingsScreen && SettingsScreen->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed;
 }
 
 bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent)
@@ -729,6 +774,10 @@ bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnal
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
 		return CharacterSelect->HandleAnalog(InAnalogEvent);
+	}
+	if (IsSettingsActive())
+	{
+		return SettingsScreen->HandleAnalog(InAnalogEvent);
 	}
 	return false;
 }
@@ -757,7 +806,15 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		CharacterSelect->Close();
 	}
+	if (SettingsScreen && NewScreen != EChaosImpactScreen::Settings)
+	{
+		SettingsScreen->Close();
+	}
 	Screen = NewScreen;
+	if (Screen == EChaosImpactScreen::Settings && SettingsScreen && !SettingsScreen->IsOpen())
+	{
+		SettingsScreen->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
+	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect
 		&& (PreviousScreen != EChaosImpactScreen::CharacterSelect || !CharacterSelect->IsOpen()))
 	{
@@ -781,6 +838,19 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		// Back from stage select lands on 決定 again.
 		SelectedIndex = 4;
+	}
+	else if (Screen == EChaosImpactScreen::MatchEnd)
+	{
+		// Under the numbers the cursor starts on the first choice (もう一度 / ロビーへもどる).
+		ResultsRowCursor = 0;
+		for (int32 Index = 0; Index < Entries.Num(); ++Index)
+		{
+			if (IsResultsChoice(Index))
+			{
+				SelectedIndex = Index;
+				break;
+			}
+		}
 	}
 
 	// Slots that are already filled when the page opens (the reserved keyboard, or a
@@ -941,6 +1011,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("VSモード"), TEXT(""), TEXT("VS"), Fire});
 		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
 		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(520, 720, 940, 792), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
 		break;
 	case EChaosImpactScreen::TrainingSetup:
 	{
@@ -1070,6 +1141,13 @@ void UChaosImpactMenuWidget::BuildEntries()
 		{
 			float Y = 285.0f;
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("ゲームに戻る"), TEXT("resume"), TEXT(""), Ice});
+			if (Controller->CanChangeLoadoutInRoom())
+			{
+				Y += 80.0f;
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("キャラを変える"), TEXT("change_character"), TEXT(""), Ice});
+				Y += 80.0f;
+				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("名前を変える"), TEXT("change_name"), TEXT(""), Ice});
+			}
 			const AChaosImpactGameState* PauseRoom = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 			if (Controller->CanOpenMatchRulesFromPause())
 			{
@@ -1097,15 +1175,23 @@ void UChaosImpactMenuWidget::BuildEntries()
 					TEXT(""), Ice});
 			}
 			Y += 80.0f;
-			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
-				AChaosImpactPlayerController::IsRumbleEnabled() ? TEXT("振動：ON") : TEXT("振動：OFF"),
-				TEXT("rumble"), TEXT(""), AChaosImpactPlayerController::IsRumbleEnabled() ? Ice : Muted});
+			Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
 			Y += 80.0f;
 			const bool bLeaveArmed = ArmedIndex == Entries.Num();
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
 				bLeaveArmed ? TEXT("もう一度おすと決定")
 					: Controller->IsOnlineRoomHost() ? TEXT("部屋を解散する") : TEXT("部屋をぬける"),
 				TEXT("leave"), TEXT(""), Fire});
+			// Many choices (a host in the lobby has up to nine): closer together, all on screen under PAUSE.
+			if (Entries.Num() > 6)
+			{
+				const float Step = FMath::Min(80.0f, 600.0f / (Entries.Num() - 1));
+				for (int32 Index = 0; Index < Entries.Num(); ++Index)
+				{
+					const float Top = 240.0f + Index * Step;
+					Entries[Index].Rect = FSlateRect(490, Top, 1110, Top + FMath::Min(62.0f, Step - 8.0f));
+				}
+			}
 			break;
 		}
 
@@ -1120,9 +1206,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Entries.Add({ FSlateRect(490, 485, 1110, 547), TEXT("ステージ選択へ"), TEXT("solo_stage_select"), TEXT(""), Ice });
 			Entries.Add({ FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire });
 			Entries.Add({ FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted });
-			Entries.Add({ FSlateRect(490, 725, 1110, 787),
-				AChaosImpactPlayerController::IsRumbleEnabled() ? TEXT("振動：ON") : TEXT("振動：OFF"),
-				TEXT("rumble"), TEXT(""), AChaosImpactPlayerController::IsRumbleEnabled() ? Ice : Muted });
+			Entries.Add({ FSlateRect(490, 725, 1110, 787), TEXT("設定"), TEXT("settings"), TEXT(""), Violet });
 			break;
 		}
 
@@ -1139,9 +1223,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire});
 		Entries.Add({FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted});
 		// Appended last so the existing pause entry indices stay unchanged.
-		Entries.Add({FSlateRect(490, 725, 1110, 787),
-			AChaosImpactPlayerController::IsRumbleEnabled() ? TEXT("振動：ON") : TEXT("振動：OFF"),
-			TEXT("rumble"), TEXT(""), AChaosImpactPlayerController::IsRumbleEnabled() ? Ice : Muted});
+		Entries.Add({FSlateRect(490, 725, 1110, 787), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
 		if (Controller && Controller->IsSearchingForRoom())
 		{
 			Entries.Add({FSlateRect(490, 805, 1110, 867),
@@ -1248,10 +1330,47 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::MatchEnd:
-		Entries.Add({FSlateRect(230, 776, 630, 846), TEXT("もう一度"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(670, 776, 1070, 846), TEXT("ルールを変える"), TEXT(""), TEXT(""), Ice});
-		Entries.Add({FSlateRect(1110, 776, 1510, 846), TEXT("メニューへ"), TEXT(""), TEXT(""), Muted});
+	{
+		// On the podium any button goes on (no choices yet); under the numbers, a rematch (local) or the lobby (online).
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const UChaosImpactResultsView* Results = Controller ? Controller->GetResultsView() : nullptr;
+		if (Results && Results->GetPage() == 0)
+		{
+			break;
+		}
+		if (Results)
+		{
+			// The numbers: each row picks whose line the graph shows; an arrow at the edge goes to the awards and back.
+			if (Results->GetStatsTab() == 0)
+			{
+				const TArray<FChaosImpactResultEntry>& Rows = Results->GetData().Entries;
+				for (int32 Row = 0; Row < Rows.Num(); ++Row)
+				{
+					Entries.Add({UChaosImpactResultsView::GetStatsRowRect(Row, Rows.Num()), Rows[Row].Name, TEXT("row"),
+						FString::FromInt(Row), Rows[Row].Color});
+				}
+				if (UChaosImpactResultsView::bAwardsEnabled)
+				{
+					Entries.Add({UChaosImpactResultsView::GetTabArrowRect(0), TEXT("アワード"), TEXT("awards"), TEXT(""), Gold});
+				}
+			}
+			else
+			{
+				Entries.Add({UChaosImpactResultsView::GetTabArrowRect(1), TEXT("成績"), TEXT("stats"), TEXT(""), Ice});
+			}
+		}
+		if (Controller && Controller->IsOnlineRoom())
+		{
+			Entries.Add({FSlateRect(600, 776, 1000, 846), TEXT("ロビーへもどる"), TEXT("lobby"), TEXT(""), Gold});
+		}
+		else
+		{
+			Entries.Add({FSlateRect(230, 776, 630, 846), TEXT("もう一度"), TEXT("rematch"), TEXT(""), Gold});
+			Entries.Add({FSlateRect(670, 776, 1070, 846), TEXT("ルールを変える"), TEXT("rules"), TEXT(""), Ice});
+			Entries.Add({FSlateRect(1110, 776, 1510, 846), TEXT("メニューへ"), TEXT("menu"), TEXT(""), Muted});
+		}
 		break;
+	}
 	default:
 		break;
 	}
@@ -1266,6 +1385,10 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
 	{
 		CharacterSelect->Tick(InDeltaTime);
+	}
+	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
+	{
+		SettingsScreen->Tick(InDeltaTime);
 	}
 
 	SelectBlend.SetNumZeroed(Entries.Num());
@@ -1375,10 +1498,14 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	}
 	else if (Screen == EChaosImpactScreen::MatchEnd)
 	{
-		// The results stay visible above; only a band for the choices is added.
-		const FMenuPainter Band{DesignGeometry, OutDrawElements, BaseLayer + 1, EaseOut(T / 0.3f)};
-		Band.Box(-800.0f, 752.0f, 3200.0f, 118.0f, WithAlpha(Ink, 0.86f));
-		Band.Box(-800.0f, 752.0f, 3200.0f, 4.0f, Gold);
+		// On the podium nothing is added: any button goes on.
+		if (!Entries.IsEmpty())
+		{
+			// The results stay visible above; only a band for the choices is added.
+			const FMenuPainter Band{DesignGeometry, OutDrawElements, BaseLayer + 1, EaseOut(T / 0.3f)};
+			Band.Box(-800.0f, 752.0f, 3200.0f, 118.0f, WithAlpha(Ink, 0.86f));
+			Band.Box(-800.0f, 752.0f, 3200.0f, 4.0f, Gold);
+		}
 	}
 	else
 	{
@@ -1400,6 +1527,12 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const int32 SelectLayer = CharacterSelect->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
 		PaintEnterWipe(DesignGeometry, OutDrawElements, SelectLayer + 1, T);
 		return SelectLayer + 2;
+	}
+	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
+	{
+		const int32 SettingsLayer = SettingsScreen->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
+		PaintEnterWipe(DesignGeometry, OutDrawElements, SettingsLayer + 1, T);
+		return SettingsLayer + 2;
 	}
 
 	if (Screen == EChaosImpactScreen::Title)
@@ -1860,6 +1993,45 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				Row.Outline(-4.0f, -4.0f, W + 8.0f, H + 8.0f, WithAlpha(Paper, 0.6f * Blend), 3.0f);
 			}
 		}
+		else if (Screen == EChaosImpactScreen::MatchEnd && Entry.Detail == TEXT("row"))
+		{
+			// The row itself is drawn with the results: only the cursor on it.
+			if (Blend > 0.01f)
+			{
+				const FMenuPainter RowCursor{DesignGeometry, OutDrawElements, BaseLayer + 4, Blend};
+				const float W = static_cast<float>(Rect.GetSize().X);
+				const float H = static_cast<float>(Rect.GetSize().Y);
+				RowCursor.Outline(static_cast<float>(Rect.Left) - 4.0f, static_cast<float>(Rect.Top) - 4.0f, W + 8.0f, H + 8.0f,
+					WithAlpha(Paper, 0.6f + 0.3f * FMath::Sin(T * 6.0f)), 3.0f);
+				RowCursor.Text(TEXT("▶"), static_cast<float>(Rect.Left) - 30.0f, static_cast<float>(Rect.Top) + H * 0.5f - 13.0f, 20.0f, Paper);
+			}
+		}
+		else if (Screen == EChaosImpactScreen::MatchEnd && (Entry.Detail == TEXT("awards") || Entry.Detail == TEXT("stats")))
+		{
+			// A tab at the screen's edge: a chevron pointing the way, with the page's name down it.
+			const bool bForward = Entry.Detail == TEXT("awards");
+			const float W = static_cast<float>(Rect.GetSize().X);
+			const float H = static_cast<float>(Rect.GetSize().Y);
+			const float X = static_cast<float>(Rect.Left);
+			const float Y = static_cast<float>(Rect.Top);
+			const FMenuPainter Tab{DesignGeometry, OutDrawElements, BaseLayer + 4};
+			Tab.Box(X, Y, W, H, FMath::Lerp(WithAlpha(Ink, 0.82f), FLinearColor(0.05f, 0.09f, 0.16f, 0.95f), Blend));
+			Tab.Box(bForward ? X + W - 5.0f : X, Y, 5.0f, H, Entry.Accent);
+			const float Direction = bForward ? 1.0f : -1.0f;
+			const float Nudge = Direction * 6.0f * (0.5f + 0.5f * FMath::Sin(T * 5.0f));
+			const FVector2D Tip(X + W * 0.5f + 12.0f * Direction + Nudge, Y + 56.0f);
+			const FLinearColor ChevronColor = FMath::Lerp(Entry.Accent, Paper, Blend * 0.6f);
+			Tab.Line(Tip + FVector2D(-22.0f * Direction, -28.0f), Tip, ChevronColor, 7.0f);
+			Tab.Line(Tip, Tip + FVector2D(-22.0f * Direction, 28.0f), ChevronColor, 7.0f);
+			for (int32 Letter = 0; Letter < Entry.Title.Len(); ++Letter)
+			{
+				Tab.Text(Entry.Title.Mid(Letter, 1), X + W * 0.5f, Y + 104.0f + Letter * 28.0f, 21.0f, Paper, ETextAlign::Center, TEXT("Black"));
+			}
+			if (Blend > 0.01f)
+			{
+				Tab.Outline(X - 3.0f, Y - 3.0f, W + 6.0f, H + 6.0f, WithAlpha(Paper, 0.7f * Blend), 3.0f);
+			}
+		}
 		else
 		{
 			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Entry.Title, Entry.Accent,
@@ -1908,7 +2080,36 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	}
 	const bool bBack = Key == EKeys::Up || Key == EKeys::Left
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Left;
-	if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::MultiReady)
+	if (Screen == EChaosImpactScreen::MatchEnd && Key != EKeys::Tab)
+	{
+		NavigateResults(Key);
+	}
+	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() == 5)
+	{
+		// Solo/VS above; タイトルへ, 設定 and トレーニング along the bottom.
+		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
+			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		if (bHorizontal && SelectedIndex <= 1)
+		{
+			SelectedIndex = 1 - SelectedIndex;
+		}
+		else if (bHorizontal)
+		{
+			const int32 Bottom[] = {3, 4, 2};
+			int32 At = 0;
+			for (int32 Index = 0; Index < 3; ++Index)
+			{
+				At = Bottom[Index] == SelectedIndex ? Index : At;
+			}
+			SelectedIndex = Bottom[(At + (bRight ? 1 : 2)) % 3];
+		}
+		else
+		{
+			const int32 Vertical[] = {3, 2, 1, 0, 0};
+			SelectedIndex = Vertical[SelectedIndex];
+		}
+	}
+	else if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::MultiReady)
 		&& Key != EKeys::Tab)
 	{
 		// A spatial grid: Solo/Multi above Back/Training.
@@ -1950,6 +2151,149 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	DisarmSelection();
 }
 
+bool UChaosImpactMenuWidget::IsResultsChoice(const int32 Index) const
+{
+	return Entries.IsValidIndex(Index) && Entries[Index].Detail != TEXT("row") && Entries[Index].Detail != TEXT("awards")
+		&& Entries[Index].Detail != TEXT("stats");
+}
+
+void UChaosImpactMenuWidget::SwitchResultsTab(const int32 Tab)
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	UChaosImpactResultsView* Results = Controller ? Controller->GetResultsView() : nullptr;
+	if (!Results || Results->GetPage() != 1 || (Tab != 0 && !UChaosImpactResultsView::bAwardsEnabled))
+	{
+		return;
+	}
+	Results->SetStatsTab(Tab);
+	BuildEntries();
+	SelectBlend.Init(0.0f, Entries.Num());
+	PressedIndex = INDEX_NONE;
+	// On the awards the cursor is on the arrow back; back on the numbers, on the row it was on.
+	SelectedIndex = 0;
+	if (Tab == 0)
+	{
+		for (int32 Index = 0; Index < Entries.Num(); ++Index)
+		{
+			if (Entries[Index].Detail == TEXT("row") && FCString::Atoi(*Entries[Index].Number) == ResultsRowCursor)
+			{
+				SelectedIndex = Index;
+			}
+		}
+	}
+}
+
+void UChaosImpactMenuWidget::NavigateResults(const FKey Key)
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const UChaosImpactResultsView* Results = Controller ? Controller->GetResultsView() : nullptr;
+	const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
+	const bool bDown = Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Down;
+	const bool bLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
+	const bool bRight = Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right;
+	TArray<int32> Rows;
+	TArray<int32> Choices;
+	int32 Arrow = INDEX_NONE;
+	for (int32 Index = 0; Index < Entries.Num(); ++Index)
+	{
+		if (Entries[Index].Detail == TEXT("row"))
+		{
+			Rows.Add(Index);
+		}
+		else if (IsResultsChoice(Index))
+		{
+			Choices.Add(Index);
+		}
+		else
+		{
+			Arrow = Index;
+		}
+	}
+	const int32 Row = Rows.IndexOfByKey(SelectedIndex);
+	const int32 Choice = Choices.IndexOfByKey(SelectedIndex);
+	const bool bOnArrow = SelectedIndex == Arrow && Arrow != INDEX_NONE;
+	const auto Sideways = [this, &Choices, Choice, bRight]()
+	{
+		if (!Choices.IsEmpty())
+		{
+			SelectedIndex = Choices[(FMath::Max(Choice, 0) + (bRight ? 1 : Choices.Num() - 1)) % Choices.Num()];
+		}
+	};
+	if (!Results || Results->GetStatsTab() == 0)
+	{
+		// The numbers: up and down through the rows (and on down to the choices); right from a row goes to the awards.
+		if (Row != INDEX_NONE)
+		{
+			if (bRight)
+			{
+				SwitchResultsTab(1);
+			}
+			else if (bUp && Row > 0)
+			{
+				SelectedIndex = Rows[Row - 1];
+			}
+			else if (bDown)
+			{
+				SelectedIndex = Row + 1 < Rows.Num() ? Rows[Row + 1] : Choices.IsEmpty() ? SelectedIndex : Choices[0];
+			}
+		}
+		else if (bOnArrow)
+		{
+			if (bRight)
+			{
+				SwitchResultsTab(1);
+			}
+			else if (bLeft && Rows.IsValidIndex(ResultsRowCursor))
+			{
+				SelectedIndex = Rows[ResultsRowCursor];
+			}
+			else if (bDown && !Choices.IsEmpty())
+			{
+				SelectedIndex = Choices.Last();
+			}
+		}
+		else if (bUp && !Rows.IsEmpty())
+		{
+			SelectedIndex = Rows[FMath::Clamp(ResultsRowCursor, 0, Rows.Num() - 1)];
+		}
+		else if (bLeft || bRight)
+		{
+			Sideways();
+		}
+	}
+	else
+	{
+		// The awards: left goes back (from the arrow, or past the first choice).
+		if (bOnArrow)
+		{
+			if (bLeft)
+			{
+				SwitchResultsTab(0);
+			}
+			else if (bDown && !Choices.IsEmpty())
+			{
+				SelectedIndex = Choices[0];
+			}
+		}
+		else if (bUp && Arrow != INDEX_NONE)
+		{
+			SelectedIndex = Arrow;
+		}
+		else if (bLeft && Choice <= 0)
+		{
+			SwitchResultsTab(0);
+		}
+		else if (bLeft || bRight)
+		{
+			Sideways();
+		}
+	}
+	if (Entries.IsValidIndex(SelectedIndex) && Entries[SelectedIndex].Detail == TEXT("row"))
+	{
+		ResultsRowCursor = FCString::Atoi(*Entries[SelectedIndex].Number);
+	}
+}
+
 void UChaosImpactMenuWidget::DisarmSelection()
 {
 	if (ArmedIndex != INDEX_NONE && ArmedIndex != SelectedIndex)
@@ -1979,6 +2323,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::VSSelect); }
 		else if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
+		else if (SelectedIndex == 4) { Controller->OpenSettings(); }
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::Title); }
 		break;
 
@@ -2128,11 +2473,30 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		break;
 	case EChaosImpactScreen::MatchEnd:
-		if (SelectedIndex == 0)
+	{
+		const FString Choice = Entries[SelectedIndex].Detail;
+		if (Choice == TEXT("row"))
+		{
+			// Only this person's line in the graph (again: everyone's).
+			ResultsRowCursor = FCString::Atoi(*Entries[SelectedIndex].Number);
+			if (UChaosImpactResultsView* Results = Controller->GetResultsView())
+			{
+				Results->ToggleGraphFocus(ResultsRowCursor);
+			}
+		}
+		else if (Choice == TEXT("awards") || Choice == TEXT("stats"))
+		{
+			SwitchResultsTab(Choice == TEXT("awards") ? 1 : 0);
+		}
+		else if (Choice == TEXT("lobby"))
+		{
+			Controller->ReturnToLobbyFromResults();
+		}
+		else if (Choice == TEXT("rematch"))
 		{
 			Controller->RetryVersusMatch();
 		}
-		else if (SelectedIndex == 1)
+		else if (Choice == TEXT("rules"))
 		{
 			Controller->OpenMatchRules(EChaosImpactScreen::MatchEnd);
 		}
@@ -2141,6 +2505,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			Controller->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 		}
 		break;
+	}
 	case EChaosImpactScreen::Pause:
 		// Gameplay keeps running behind the online pause menu, so a throw click or dash press
 		// right as it opens must not activate anything.
@@ -2164,12 +2529,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			Controller->ShowMenuScreen(EChaosImpactScreen::SoloStageSelect);
 		}
-		if (Entries[SelectedIndex].Detail == TEXT("rumble"))
+		if (Entries[SelectedIndex].Detail == TEXT("settings"))
 		{
-			Controller->ToggleRumbleEnabled();
-			const int32 KeepSelection = SelectedIndex;
-			BuildEntries();
-			SelectedIndex = KeepSelection;
+			Controller->OpenSettings();
+			break;
 		}
 		else if (Entries[SelectedIndex].Detail == TEXT("resume"))
 		{
@@ -2190,6 +2553,14 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (Entries[SelectedIndex].Detail == TEXT("rename_room"))
 		{
 			Controller->BeginRoomRename();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("change_character"))
+		{
+			Controller->BeginRoomCharacterChange();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("change_name"))
+		{
+			Controller->BeginRoomPlayerRename();
 		}
 		else if (Entries[SelectedIndex].Detail == TEXT("leave"))
 		{
@@ -2316,6 +2687,9 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::TrainingSettings:
 			Controller->ShowMenuScreen(EChaosImpactScreen::Pause);
 			break;
+		case EChaosImpactScreen::Settings:
+			Controller->CloseSettings();
+			break;
 		case EChaosImpactScreen::TrainingOverlay:
 			Controller->CloseTrainingOverlay();
 			break;
@@ -2343,6 +2717,15 @@ void UChaosImpactMenuWidget::GoBack()
 			Controller->ShowMenuScreen(Controller->GetControllerAssignmentReturnScreen());
 			break;
 		case EChaosImpactScreen::OnlineName:
+			if (Controller->IsRenamingPlayer())
+			{
+				Controller->CancelRoomPlayerRename();
+			}
+			else
+			{
+				Controller->ShowMenuScreen(EChaosImpactScreen::MultiReady);
+			}
+			break;
 		case EChaosImpactScreen::OnlinePassword:
 			Controller->ShowMenuScreen(EChaosImpactScreen::MultiReady);
 			break;
@@ -2376,7 +2759,7 @@ void UChaosImpactMenuWidget::GoBack()
 
 FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
-	const FKey Key = InKeyEvent.GetKey();
+	const FKey Key = ChaosImpactSettings::ToMenuKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
 	if (Screen == EChaosImpactScreen::ControllerAssignment && !Key.IsGamepadKey()
 		&& !InKeyEvent.IsRepeat())
 	{
@@ -2431,9 +2814,9 @@ FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
 			ConfirmSelection();
 		}
 		else if (Key == EKeys::BackSpace || Key == EKeys::Escape || Key == EKeys::Gamepad_FaceButton_Right
-			|| ((Key == EKeys::T || Key == EKeys::Hyphen || Key == EKeys::Gamepad_Special_Left)
+			|| (ChaosImpactSettings::IsActionKey(GetOwningPlayer(), EChaosImpactAction::TrainingMenu, Key)
 				&& Screen == EChaosImpactScreen::TrainingOverlay)
-			|| ((Key == EKeys::P || Key == EKeys::Gamepad_Special_Right)
+			|| (ChaosImpactSettings::IsActionKey(GetOwningPlayer(), EChaosImpactAction::Pause, Key)
 				&& (Screen == EChaosImpactScreen::Pause || Screen == EChaosImpactScreen::TrainingSettings)))
 		{
 			GoBack();
@@ -2455,7 +2838,8 @@ FReply UChaosImpactMenuWidget::NativeOnPreviewKeyDown(
 	}
 	// The name field would otherwise swallow Escape; B also leaves while it has focus.
 	if (Screen == EChaosImpactScreen::OnlineName && !InKeyEvent.IsRepeat()
-		&& (Key == EKeys::Escape || Key == EKeys::Gamepad_FaceButton_Right))
+		&& (Key == EKeys::Escape
+			|| ChaosImpactSettings::ToMenuKey(Key, InKeyEvent.GetInputDeviceId().GetId()) == EKeys::Gamepad_FaceButton_Right))
 	{
 		GoBack();
 		return FReply::Handled();
@@ -2508,8 +2892,42 @@ int32 UChaosImpactMenuWidget::HitTestEntry(const FGeometry& Geometry, const FVec
 	return INDEX_NONE;
 }
 
+FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, const FCharacterEvent& InCharEvent)
+{
+	// Letters typed for a nickname (the keys themselves are handled before this).
+	if (IsSettingsActive() && SettingsScreen->HandleCharacter(InCharEvent.GetCharacter()))
+	{
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
+		&& CharacterSelect->HandleCharacter(InCharEvent.GetCharacter()))
+	{
+		return FReply::Handled();
+	}
+	return Super::NativeOnKeyChar(InGeometry, InCharEvent);
+}
+
+FReply UChaosImpactMenuWidget::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (IsSettingsActive())
+	{
+		SettingsScreen->HandleWheel(InMouseEvent.GetWheelDelta());
+		return FReply::Handled();
+	}
+	return Super::NativeOnMouseWheel(InGeometry, InMouseEvent);
+}
+
 FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (IsSettingsActive())
+	{
+		SettingsScreen->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
+	{
+		CharacterSelect->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+	}
 	if (!IsMenuMouseAllowed(this))
 	{
 		return FReply::Handled();
@@ -2528,6 +2946,17 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (IsSettingsActive())
+	{
+		SettingsScreen->HandleMouseDown(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),
+			InMouseEvent.GetEffectingButton());
+		return FReply::Handled().SetUserFocus(TakeWidget());
+	}
+	if (Screen == EChaosImpactScreen::MatchEnd && Entries.IsEmpty())
+	{
+		GoOnFromPodium();
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
 	{
 		const float Scale = DesignScale(InGeometry);

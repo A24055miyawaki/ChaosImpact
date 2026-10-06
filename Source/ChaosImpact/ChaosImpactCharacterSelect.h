@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Styling/SlateBrush.h"
+#include "ChaosImpactNameEntry.h"
 #include "ChaosImpactCharacterSelect.generated.h"
 
 class AChaosImpactCharacterPreview;
@@ -46,8 +47,24 @@ public:
 	/** Keys and sticks from every device; true when consumed. */
 	bool HandleKeyDown(const FKeyEvent& Event);
 	bool HandleAnalog(const FAnalogInputEvent& Event);
-	/** A click in design space, for the keyboard and mouse player: an icon, or the start bar. */
+	/** A click in design space, for the keyboard and mouse player: an icon, the start bar, or their nickname. */
 	bool HandleClick(const FVector2D& DesignPoint);
+	void HandleMouseMove(const FVector2D& DesignPoint);
+	/** Letters typed on a keyboard for a nickname being written. */
+	bool HandleCharacter(TCHAR Character);
+
+	/**
+	 * Nicknames: each window shows the nickname its player plays as (whose controls they use). Y (N or Tab on a
+	 * keyboard) opens the list for that player: pick one, or 「＋ 新しく作る」 to write one. The tests call these too.
+	 */
+	void OpenNamePicker(int32 Player);
+	void CloseNamePicker() { NamePickerOwner = INDEX_NONE; }
+	bool IsNamePickerOpen() const { return NamePickerOwner != INDEX_NONE; }
+	/** A nickname (by its index), or the profile count for a new one (which opens the name entry). */
+	void PickName(int32 Choice);
+	int32 GetProfile(int32 Player) const { return Slots.IsValidIndex(Player) ? Slots[Player].Profile : 0; }
+	bool IsNameEntryOpen() const { return NameEntry.IsOpen(); }
+	FChaosImpactNameEntry& GetNameEntry() { return NameEntry; }
 
 	// What each player does; the device handlers above call these, and so do the tests.
 	/** On the icons this moves the cursor; on the colour row, left and right change the colour. */
@@ -84,7 +101,22 @@ private:
 		int32 LastDirection = 1;
 		double NextStickAt[2] = {0.0, 0.0};
 		bool bStickHeld[2] = {false, false};
+		/** The nickname (ChaosImpactSettings profile) this player plays as; 0 is the guest. */
+		int32 Profile = 0;
 	};
+
+	void SetProfile(int32 Player, int32 Profile);
+	void FinishNameEntry();
+	/** How many lines the nickname list has: every nickname, and 「＋ 新しく作る」 while there is room. */
+	int32 NamePickerLines() const;
+	FBox2D NameTagRect(int32 Player) const;
+	FBox2D PickerLineRect(int32 Line) const;
+	void PaintNamePicker(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, double Now) const;
+	int32 NamePickerOwner = INDEX_NONE;
+	int32 NamePickerChoice = 0;
+	double NamePickerAt = 0.0;
+	double NextPickerStickAt = 0.0;
+	FChaosImpactNameEntry NameEntry;
 
 	bool IsColourTaken(int32 Player, int32 Character, int32 Colour) const;
 	/** The nearest colour from Start in Direction that no other player has on the same character. */

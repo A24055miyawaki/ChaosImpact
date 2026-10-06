@@ -429,6 +429,34 @@ namespace
 	};
 }
 
+void ChaosImpactBallTypes::GetPreloadPaths(TArray<FSoftObjectPath>& OutPaths)
+{
+	for (const TCHAR* Path : AllEffectPaths)
+	{
+		OutPaths.Add(FSoftObjectPath(Path));
+	}
+	const TCHAR* const OtherPaths[] =
+	{
+		TEXT("/Game/ChaosImpact/FX/M_CI_Additive.M_CI_Additive"), TEXT("/Game/ChaosImpact/FX/M_CI_Emissive.M_CI_Emissive"),
+		TEXT("/Game/ChaosImpact/FX/M_CI_Ice.M_CI_Ice"), TEXT("/Game/ChaosImpact/FX/M_CI_IceCrystal.M_CI_IceCrystal"),
+		TEXT("/Game/ChaosImpact/FX/M_CI_IceSurface.M_CI_IceSurface"), TEXT("/Game/LevelPrototyping/Materials/M_FlatCol.M_FlatCol"),
+		TEXT("/Engine/BasicShapes/Sphere.Sphere"), TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
+		TEXT("/Engine/BasicShapes/Cone.Cone"), TEXT("/Engine/BasicShapes/Cube.Cube"),
+		SimaeAssets::BallMesh, SimaeAssets::BallTexture, SimaeAssets::BirdTexture, SimaeAssets::BirdBody, SimaeAssets::BirdTail,
+		SimaeAssets::BirdWing, SimaeAssets::BirdEye, SimaeAssets::BirdCrest, SimaeAssets::Chirp01, SimaeAssets::Chirp02,
+		SimaeAssets::Chirp03, SimaeAssets::TexturedMaterial,
+		TEXT("/Game/Characters/Mannequins/Anims/Death/MM_Death_Front_01.MM_Death_Front_01"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Fall_Loop.MM_Fall_Loop"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Land.MM_Land"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_ChargedAttack.MM_ChargedAttack"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle")
+	};
+	for (const TCHAR* Path : OtherPaths)
+	{
+		OutPaths.Add(FSoftObjectPath(Path));
+	}
+}
+
 void ChaosImpactBallTypes::PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAlive)
 {
 	const double StartedAt = FPlatformTime::Seconds();
@@ -478,6 +506,22 @@ void ChaosImpactBallTypes::PreloadAssets(TArray<TObjectPtr<UObject>>& OutKeepAli
 		SimaeAssets::Chirp01, SimaeAssets::Chirp02, SimaeAssets::Chirp03, SimaeAssets::TexturedMaterial
 	};
 	for (const TCHAR* Path : SimaePaths)
+	{
+		if (UObject* Asset = LoadObject<UObject>(nullptr, Path))
+		{
+			OutKeepAlive.AddUnique(Asset);
+		}
+	}
+	// The results podium's poses, so the show never loads one as it starts.
+	const TCHAR* const PodiumPaths[] =
+	{
+		TEXT("/Game/Characters/Mannequins/Anims/Death/MM_Death_Front_01.MM_Death_Front_01"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Fall_Loop.MM_Fall_Loop"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Land.MM_Land"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_ChargedAttack.MM_ChargedAttack"),
+		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle")
+	};
+	for (const TCHAR* Path : PodiumPaths)
 	{
 		if (UObject* Asset = LoadObject<UObject>(nullptr, Path))
 		{

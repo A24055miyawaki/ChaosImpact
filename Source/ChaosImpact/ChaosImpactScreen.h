@@ -42,7 +42,9 @@ enum class EChaosImpactScreen : uint8
 	/** VS: the stage, picked after the rules; picking one starts the match with those rules. */
 	StageSelect,
 	// --- ソロモード用（末尾に追加） ---
-	SoloStageSelect
+	SoloStageSelect,
+	/** Settings: screen, picture, controls (per nickname and device) and the rest. */
+	Settings
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

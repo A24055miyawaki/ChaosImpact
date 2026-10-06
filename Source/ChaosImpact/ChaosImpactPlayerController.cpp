@@ -17,6 +17,10 @@
 #include "ChaosImpactWarpPad.h"
 #include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ChaosImpactResults.h"
+#include "ChaosImpactFxPreloadSubsystem.h"
+#include "ChaosImpactLoadingScreen.h"
+#include "Misc/App.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactBallTypes.h"
@@ -31,6 +35,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactLoadoutSubsystem.h"
+#include "ChaosImpactSettings.h"
 #include "GameFramework/PlayerInput.h"
 #include "GameFramework/InputSettings.h"
 #include "EnhancedInputSubsystems.h"
@@ -51,6 +56,8 @@
 void AChaosImpactPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	// The saved volume and brightness (Unreal applies its own screen and picture settings).
+	ChaosImpactSettings::ApplyStartupSettings();
 	bTrainingMode = ChaosImpact::IsTrainingWorld(GetWorld());
 
 	// ソロモードオプション (?CISolo=1) の読み込み処理を追加
@@ -140,7 +147,29 @@ void AChaosImpactPlayerController::BeginPlay()
 			GetWorldTimerManager().SetTimer(VersusRevealTimer, this, &AChaosImpactPlayerController::UpdateVersusReveal, 0.02f, true);
 		}
 	}
-	if (bTitleDemoWorld && IsPrimaryLocalPlayerController())
+	// The game's effects: at the title they load in the background behind a loading screen that can be played with
+	// (automated tests load them at once, unless -CIAsyncPreload); anywhere else they load now.
+	if (UChaosImpactFxPreloadSubsystem* Preload = UChaosImpactFxPreloadSubsystem::Get(this); Preload && !Preload->IsComplete())
+	{
+		const bool bInBackground = bTitleDemoWorld && IsPrimaryLocalPlayerController()
+			&& (!FApp::IsUnattended() || FParse::Param(FCommandLine::Get(), TEXT("CIAsyncPreload")));
+		if (bInBackground)
+		{
+			Preload->StartAsync();
+			bAwaitingStartupLoad = true;
+			if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+			{
+				TWeakObjectPtr<UChaosImpactFxPreloadSubsystem> WeakPreload = Preload;
+				Loading->ShowWaiting(EChaosImpactLoadingKind::Startup,
+					[WeakPreload]() { return WeakPreload.IsValid() ? WeakPreload->GetProgress() : 1.0f; });
+			}
+		}
+		else
+		{
+			Preload->FinishNow();
+		}
+	}
+	if (bTitleDemoWorld && IsPrimaryLocalPlayerController() && !bAwaitingStartupLoad)
 	{
 		// After the logo has landed, so setting the stage up never stutters its arrival.
 		GetWorldTimerManager().SetTimer(TitleDemoTimer, this, &AChaosImpactPlayerController::StartTitleDemo, 1.4f, false);
@@ -265,6 +294,10 @@ void AChaosImpactPlayerController::BeginPlay()
 		{
 			// Back to this machine's own training with the same players and controllers as before.
 			bTravelPending = true;
+			if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+			{
+				Loading->BeginTravel(EChaosImpactLoadingKind::RoomLeave);
+			}
 			UGameplayStatics::OpenLevel(this, FName(*TrainingLevel.GetLongPackageName()), true,
 				Sessions->GetOfflineTrainingOptions());
 			return;
@@ -276,19 +309,48 @@ void AChaosImpactPlayerController::BeginPlay()
 	EnsureTrainingWarpPads();
 	EnsureTrainingTargets();
 
-	// Every world balls fly in (training, VS, solo, and the title with its demo match).
-	if ((bTrainingMode || bSoloMode || bTitleDemoWorld) && IsLocalController() && IsPrimaryLocalPlayerController())
+	// Every world: once the effects are in, they are shown once out of sight, then any loading screen goes.
+	if (IsLocalController() && IsPrimaryLocalPlayerController())
 	{
-		// Ball effects are loaded at game start; show each once now, out of sight below the arena, so the
-		// first real fire or ice ball does not stall while pipeline states and GPU resources are created.
-		FTimerHandle WarmUpTimer;
-		GetWorldTimerManager().SetTimer(WarmUpTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
-		{
-			FVector Below = GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
-			Below.Z -= 6000.0f;
-			ChaosImpactBallTypes::WarmUpEffects(GetWorld(), Below);
-		}), 0.3f, false);
+		GetWorldTimerManager().SetTimer(WarmUpTimer, this, &AChaosImpactPlayerController::WarmUpWhenLoaded, 0.1f, true, 0.3f);
 	}
+}
+
+void AChaosImpactPlayerController::WarmUpWhenLoaded()
+{
+	if (const UChaosImpactFxPreloadSubsystem* Preload = UChaosImpactFxPreloadSubsystem::Get(this); Preload && !Preload->IsComplete())
+	{
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(WarmUpTimer);
+	// Every world balls fly in (training, VS, solo, and the title with its demo match): each effect shown once now,
+	// out of sight below the arena, so the first real fire or ice ball does not stall while pipeline states and GPU
+	// resources are created.
+	if (bTrainingMode || bSoloMode || bTitleDemoWorld)
+	{
+		FVector Below = GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
+		Below.Z -= 6000.0f;
+		ChaosImpactBallTypes::WarmUpEffects(GetWorld(), Below);
+	}
+	// A few frames for that to be drawn, then this world is ready.
+	FTimerHandle ReadyTimer;
+	GetWorldTimerManager().SetTimer(ReadyTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+		{
+			Loading->NotifyWorldReady();
+		}
+		if (bAwaitingStartupLoad)
+		{
+			// The title from its start: the logo lands, then the demo match comes on behind it.
+			bAwaitingStartupLoad = false;
+			if (MenuWidget && CurrentScreen == EChaosImpactScreen::Title)
+			{
+				MenuWidget->ShowScreen(EChaosImpactScreen::Title);
+			}
+			GetWorldTimerManager().SetTimer(TitleDemoTimer, this, &AChaosImpactPlayerController::StartTitleDemo, 1.4f, false);
+		}
+	}), 0.3f, false);
 }
 
 bool AChaosImpactPlayerController::IsPrimaryLocalPlayerController() const
@@ -319,26 +381,42 @@ bool AChaosImpactPlayerController::IsUsingGamepad() const
 	return GetThisLocalPlayerIndex() != ActiveKeyboardPlayerIndex;
 }
 
+void AChaosImpactPlayerController::HandleBoundKeyPressed(const FKey Key)
+{
+	using namespace ChaosImpactSettings;
+	if (IsActionKey(this, EChaosImpactAction::Pause, Key))
+	{
+		TogglePauseMenu();
+		return;
+	}
+	if (GetWorld() && GetWorld()->IsPaused())
+	{
+		return;
+	}
+	if (IsActionKey(this, EChaosImpactAction::TrainingMenu, Key))
+	{
+		ToggleTrainingOverlay();
+	}
+	else if (IsActionKey(this, EChaosImpactAction::LobbyReady, Key))
+	{
+		ToggleReadyForMatch();
+	}
+	else if (IsActionKey(this, EChaosImpactAction::LobbySpectate, Key))
+	{
+		ToggleSpectating();
+	}
+}
+
 void AChaosImpactPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
-	InputComponent->BindKey(EKeys::P, IE_Pressed, this,
-		&AChaosImpactPlayerController::TogglePauseMenu).bExecuteWhenPaused = true;
-	InputComponent->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this,
-		&AChaosImpactPlayerController::TogglePauseMenu).bExecuteWhenPaused = true;
-	InputComponent->BindKey(EKeys::T, IE_Pressed, this,
-		&AChaosImpactPlayerController::ToggleTrainingOverlay);
-	InputComponent->BindKey(EKeys::Hyphen, IE_Pressed, this,
-		&AChaosImpactPlayerController::ToggleTrainingOverlay);
-	// Special_Left maps to Minus on Switch, Create on DualSense and View on Xbox pads.
-	InputComponent->BindKey(EKeys::Gamepad_Special_Left, IE_Pressed, this,
-		&AChaosImpactPlayerController::ToggleTrainingOverlay);
-	// Online lobby 準備OK: keys nothing else uses in play (Y throws, so the D-pad).
-	InputComponent->BindKey(EKeys::R, IE_Pressed, this, &AChaosImpactPlayerController::ToggleReadyForMatch);
-	InputComponent->BindKey(EKeys::Gamepad_DPad_Up, IE_Pressed, this, &AChaosImpactPlayerController::ToggleReadyForMatch);
-	// Online lobby: play or watch the next match.
-	InputComponent->BindKey(EKeys::V, IE_Pressed, this, &AChaosImpactPlayerController::ToggleSpectating);
-	InputComponent->BindKey(EKeys::Gamepad_DPad_Down, IE_Pressed, this, &AChaosImpactPlayerController::ToggleSpectating);
+	// Pause, the training menu and the online lobby's 準備OK / 観戦 are the player's own controls (the settings
+	// screen): every press comes here and is matched against them. Pause also works while paused, to close it.
+	FInputKeyBinding AnyKey(FInputChord(EKeys::AnyKey), IE_Pressed);
+	AnyKey.bConsumeInput = false;
+	AnyKey.bExecuteWhenPaused = true;
+	AnyKey.KeyDelegate.BindDelegate(this, &AChaosImpactPlayerController::HandleBoundKeyPressed);
+	InputComponent->KeyBindings.Add(AnyKey);
 
 	// only add IMCs for local player controllers
 	if (IsLocalPlayerController())
@@ -425,7 +503,8 @@ bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 		return true;
 	}
 	const bool bHandledByBase = Super::InputKey(Params);
-	if (Params.Key == EKeys::LeftMouseButton && IsGameplayActive())
+	// The player's throw keys act at once (the character also reads them every frame, for whatever this misses).
+	if (IsGameplayActive() && ChaosImpactSettings::IsActionKey(this, EChaosImpactAction::Throw, Params.Key))
 	{
 		if (Params.Event == IE_Pressed)
 		{
@@ -734,9 +813,10 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	{
 		ExitTrainingOverlayPresentation();
 	}
-	// A pause screen is only reachable from an active play session.
+	// A pause screen is only reachable from an active play session (or back from a screen opened from it).
 	if (NewScreen == EChaosImpactScreen::Pause && !IsGameplayActive()
-		&& CurrentScreen != EChaosImpactScreen::TrainingSettings)
+		&& CurrentScreen != EChaosImpactScreen::TrainingSettings
+		&& !(CurrentScreen == EChaosImpactScreen::Settings && SettingsReturnScreen == EChaosImpactScreen::Pause))
 	{
 		return;
 	}
@@ -759,6 +839,66 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	if (TitleDemo)
 	{
 		TitleDemo->SetFilming(NewScreen == EChaosImpactScreen::Title);
+	}
+}
+
+UChaosImpactResultsView* AChaosImpactPlayerController::GetResultsView() const
+{
+	// The primary player's announcer covers the whole screen; the other local players share it.
+	const AChaosImpactPlayerController* Primary = this;
+	if (!IsPrimaryLocalPlayerController())
+	{
+		const UGameInstance* GameInstance = GetGameInstance();
+		const ULocalPlayer* First = GameInstance && !GameInstance->GetLocalPlayers().IsEmpty() ? GameInstance->GetLocalPlayers()[0] : nullptr;
+		Primary = First ? Cast<AChaosImpactPlayerController>(First->GetPlayerController(GetWorld())) : nullptr;
+	}
+	const UChaosImpactMatchAnnouncerWidget* Announcer = Primary ? Cast<UChaosImpactMatchAnnouncerWidget>(Primary->MatchAnnouncer) : nullptr;
+	return Announcer ? Announcer->GetResultsView() : nullptr;
+}
+
+void AChaosImpactPlayerController::ReturnToLobbyFromResults()
+{
+	if (UChaosImpactResultsView* Results = GetResultsView())
+	{
+		Results->Leave();
+	}
+	// Every player on this machine is back.
+	if (const UGameInstance* GameInstance = GetGameInstance())
+	{
+		for (const ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+		{
+			if (AChaosImpactPlayerController* Local = LocalPlayer ? Cast<AChaosImpactPlayerController>(LocalPlayer->GetPlayerController(GetWorld())) : nullptr)
+			{
+				Local->ServerReturnFromResults();
+			}
+		}
+	}
+	EnterPlayingScreen();
+}
+
+void AChaosImpactPlayerController::ServerReturnFromResults_Implementation()
+{
+	if (AChaosImpactGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		Mode->ReturnFromResults(PlayerState);
+	}
+}
+
+void AChaosImpactPlayerController::OpenSettings()
+{
+	if (!IsPrimaryLocalPlayerController() || CurrentScreen == EChaosImpactScreen::Settings)
+	{
+		return;
+	}
+	SettingsReturnScreen = CurrentScreen == EChaosImpactScreen::Pause ? EChaosImpactScreen::Pause : EChaosImpactScreen::ModeSelect;
+	ShowMenuScreen(EChaosImpactScreen::Settings);
+}
+
+void AChaosImpactPlayerController::CloseSettings()
+{
+	if (CurrentScreen == EChaosImpactScreen::Settings)
+	{
+		ShowMenuScreen(SettingsReturnScreen);
 	}
 }
 
@@ -785,6 +925,14 @@ void AChaosImpactPlayerController::TogglePauseMenu()
 	if (CurrentScreen == EChaosImpactScreen::TrainingSettings)
 	{
 		ShowMenuScreen(EChaosImpactScreen::Pause);
+		return;
+	}
+	if (CurrentScreen == EChaosImpactScreen::Settings)
+	{
+		if (SettingsReturnScreen == EChaosImpactScreen::Pause)
+		{
+			CloseSettings();
+		}
 		return;
 	}
 	if (CurrentScreen == EChaosImpactScreen::TrainingOverlay)
@@ -958,6 +1106,13 @@ void AChaosImpactPlayerController::CancelCharacterSelection()
 {
 	if (CurrentScreen == EChaosImpactScreen::CharacterSelect && !bTravelPending)
 	{
+		if (bRoomCharacterChange)
+		{
+			// Opened from the room's pause menu: back there, nothing changed.
+			bRoomCharacterChange = false;
+			ShowMenuScreen(EChaosImpactScreen::Pause);
+			return;
+		}
 		ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
 	}
 }
@@ -994,6 +1149,24 @@ void AChaosImpactPlayerController::ConfirmCharacterSelection()
 {
 	if (CurrentScreen != EChaosImpactScreen::CharacterSelect || bTravelPending)
 	{
+		return;
+	}
+	if (bRoomCharacterChange)
+	{
+		// In a room: every player of this machine sends their new choice again, and play carries on.
+		bRoomCharacterChange = false;
+		if (const UGameInstance* GameInstance = GetGameInstance())
+		{
+			for (const ULocalPlayer* Local : GameInstance->GetLocalPlayers())
+			{
+				if (AChaosImpactPlayerController* LocalController = Local
+					? Cast<AChaosImpactPlayerController>(Local->GetPlayerController(GetWorld())) : nullptr)
+				{
+					LocalController->bLoadoutSent = false;
+				}
+			}
+		}
+		EnterPlayingScreen();
 		return;
 	}
 	// Decide by where the assignment was opened from, not by the current world: after leaving an online
@@ -1248,6 +1421,14 @@ void AChaosImpactPlayerController::SubmitOnlineName(const FString& Name)
 	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
 	{
 		Sessions->SetPlayerName(Name);
+		if (bRenamingPlayer)
+		{
+			// In a room: the new name goes to everyone (this machine's second player becomes "<name>(2)" too).
+			bRenamingPlayer = false;
+			ServerSetPlayerName(Sessions->GetPlayerName());
+			EnterPlayingScreen();
+			return;
+		}
 	}
 	ShowMenuScreen(bOnlineNameOnly ? EChaosImpactScreen::MultiReady : EChaosImpactScreen::OnlinePassword);
 }
@@ -1309,6 +1490,37 @@ void AChaosImpactPlayerController::BeginRoomRename()
 void AChaosImpactPlayerController::CancelRoomRename()
 {
 	bRenamingRoom = false;
+	ShowMenuScreen(EChaosImpactScreen::Pause);
+}
+
+bool AChaosImpactPlayerController::CanChangeLoadoutInRoom() const
+{
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	return IsOnlineRoom() && IsPrimaryLocalPlayerController() && !bTravelPending && Room
+		&& Room->Phase == EChaosImpactOnlinePhase::Lobby;
+}
+
+void AChaosImpactPlayerController::BeginRoomCharacterChange()
+{
+	if (CanChangeLoadoutInRoom())
+	{
+		bRoomCharacterChange = true;
+		ShowMenuScreen(EChaosImpactScreen::CharacterSelect);
+	}
+}
+
+void AChaosImpactPlayerController::BeginRoomPlayerRename()
+{
+	if (CanChangeLoadoutInRoom())
+	{
+		bRenamingPlayer = true;
+		ShowMenuScreen(EChaosImpactScreen::OnlineName);
+	}
+}
+
+void AChaosImpactPlayerController::CancelRoomPlayerRename()
+{
+	bRenamingPlayer = false;
 	ShowMenuScreen(EChaosImpactScreen::Pause);
 }
 
@@ -1647,11 +1859,15 @@ void AChaosImpactPlayerController::OpenTitleLevel()
 	{
 		Viewport->SetForceDisableSplitscreen(false);
 	}
+	if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::Title);
+	}
 	// No options: the same title world the game starts in.
 	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true);
 }
 
-void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode, const bool bOnlineSearch)
+void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode, const bool bOnlineSearch, const bool bLoadingScreen)
 {
 	const FString MapPackage = TrainingLevel.GetLongPackageName();
 	if (MapPackage.IsEmpty())
@@ -1695,6 +1911,14 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode,
 	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
 	{
 		Viewport->SetForceDisableSplitscreen(false);
+	}
+	// From the title, the load is covered (a retry or a settings change in training just reloads).
+	if (bLoadingScreen && bTitleDemoWorld)
+	{
+		if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+		{
+			Loading->BeginTravel(EChaosImpactLoadingKind::Training);
+		}
 	}
 	// Reloading clears balls, actors, health, stamina and position.
 	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true, Options);
@@ -2267,9 +2491,136 @@ void AChaosImpactPlayerController::PlayVersusCardThenOpen()
 		}
 		VersusCard.Reset();
 		bTravelPending = false;
-		OpenTrainingLevel(false);
+		OpenTrainingLevel(false, false, false);
 		return false;
 	}));
+}
+
+FChaosImpactVersusCardInfo AChaosImpactPlayerController::BuildOnlineVersusCardInfo() const
+{
+	FChaosImpactVersusCardInfo Info;
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Match)
+	{
+		return Info;
+	}
+	TArray<AChaosImpactPlayerState*> Fighters = Match->GetCompetitors(true);
+	if (Match->IsTeamBattle())
+	{
+		// Team by team, so each side of the card is one team.
+		Fighters.StableSort([](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B) { return A.TeamIndex < B.TeamIndex; });
+	}
+	for (const AChaosImpactPlayerState* Member : Fighters)
+	{
+		FChaosImpactVersusEntrant Entrant;
+		const bool bColour = Member->ColourChoice >= 0;
+		Entrant.Label = Member->GetPlayerName();
+		Entrant.Name = ChaosImpactRoster::Get(Member->CharacterIndex).Name;
+		Entrant.Detail = Member->IsABot() ? FString(TEXT("CPU"))
+			: bColour ? FString(ChaosImpactRoster::ColourNames[FMath::Clamp(Member->ColourChoice, 0, ChaosImpactRoster::ColourCount - 1)])
+			: FString();
+		Entrant.Color = bColour ? ChaosImpactRoster::GetColourSwatch(Member->ColourChoice)
+			: ChaosImpactPaint::PlayerAccents[Info.Entrants.Num() % 4];
+		Info.Entrants.Add(Entrant);
+	}
+	const FChaosImpactMatchRules& Rules = Match->Rules;
+	Info.Footer = FString::Printf(TEXT("%s ・ %s ・ %d分 ・ %s"), *ChaosImpactMatch::GetStageLabel(Rules.StageIndex),
+		*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, *Match->RoomName);
+	return Info;
+}
+
+void AChaosImpactPlayerController::UpdateOnlineVersusCard(const float DeltaSeconds)
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (!IsPrimaryLocalPlayerController() || !Match || !Viewport)
+	{
+		return;
+	}
+	const bool bOpening = Match->bOnlineRoom && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Intro;
+	// How far into the card this screen is (the opening's own clock runs from the card's end).
+	const float CardElapsed = bOpening ? Match->GetIntroElapsedSeconds() + ChaosImpactMatch::OnlineCardSeconds : 0.0f;
+	if (bOpening && !bOnlineCardUp && OnlineCardShownFor != Match->PhaseStartedAt
+		&& CardElapsed < ChaosImpactMatch::OnlineCardSeconds - 0.3f && !VersusCard.IsValid())
+	{
+		OnlineCardShownFor = Match->PhaseStartedAt;
+		FChaosImpactVersusCardInfo Info = BuildOnlineVersusCardInfo();
+		// Every copy plays from the same start (a late arrival joins it part-way).
+		Info.StartedAt = FPlatformTime::Seconds() - CardElapsed;
+		FActorSpawnParameters Parameters;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Parameters.ObjectFlags |= RF_Transient;
+		const TArray<AChaosImpactPlayerState*> Fighters = Match->GetCompetitors(true);
+		for (int32 Index = 0; Index < Info.Entrants.Num(); ++Index)
+		{
+			// Each fighter's character in their colour, filmed far outside the stage.
+			FChaosImpactVersusEntrant& Entrant = Info.Entrants[Index];
+			const AChaosImpactPlayerState* Member = nullptr;
+			for (const AChaosImpactPlayerState* Candidate : Fighters)
+			{
+				Member = !Member && Candidate->GetPlayerName() == Entrant.Label ? Candidate : Member;
+			}
+			if (!Member)
+			{
+				continue;
+			}
+			if (AChaosImpactCharacterPreview* Preview = GetWorld()->SpawnActor<AChaosImpactCharacterPreview>(
+				AChaosImpactCharacterPreview::StaticClass(), FVector(Index * 1600.0f, -84000.0f, 40000.0f), FRotator::ZeroRotator, Parameters))
+			{
+				Preview->ShowLoadout(Member->CharacterIndex, FMath::Max(Member->ColourChoice, 0), Entrant.Color);
+				Entrant.Picture = Preview->GetPicture();
+				VersusCardPreviews.Add(Preview);
+			}
+		}
+		VersusCard = SNew(SChaosImpactVersusCard).Info(Info);
+		Viewport->AddViewportWidgetContent(VersusCard.ToSharedRef(), 10000);
+		bOnlineCardUp = true;
+		bOnlineCardPosed = false;
+		UE_LOG(LogChaosImpact, Log, TEXT("VS card shown online (%d fighters, %.2f s in)"), Info.Entrants.Num(), CardElapsed);
+	}
+	if (!bOnlineCardUp)
+	{
+		return;
+	}
+	for (AChaosImpactCharacterPreview* Preview : VersusCardPreviews)
+	{
+		if (IsValid(Preview))
+		{
+			Preview->Animate(DeltaSeconds);
+			if (!bOnlineCardPosed && CardElapsed >= SChaosImpactVersusCard::VersusLandsAt)
+			{
+				Preview->PlayReady();
+			}
+		}
+	}
+	bOnlineCardPosed = bOnlineCardPosed || CardElapsed >= SChaosImpactVersusCard::VersusLandsAt;
+	if (bOpening && CardElapsed < ChaosImpactMatch::OnlineCardSeconds)
+	{
+		return;
+	}
+	// The card is over (or the match went): the stage shows through the VS emblem as it opens from the middle.
+	bOnlineCardUp = false;
+	for (AChaosImpactCharacterPreview* Preview : VersusCardPreviews)
+	{
+		if (IsValid(Preview))
+		{
+			Preview->ReleasePicture();
+			Preview->Destroy();
+		}
+	}
+	VersusCardPreviews.Reset();
+	if (VersusCard.IsValid())
+	{
+		Viewport->RemoveViewportWidgetContent(VersusCard.ToSharedRef());
+		VersusCard.Reset();
+	}
+	if (bOpening && !VersusReveal.IsValid())
+	{
+		VersusReveal = SNew(SChaosImpactVersusReveal);
+		Viewport->AddViewportWidgetContent(VersusReveal.ToSharedRef(), 10000);
+		VersusRevealDeadline = FPlatformTime::Seconds();
+		GetWorldTimerManager().SetTimer(VersusRevealTimer, this, &AChaosImpactPlayerController::UpdateVersusReveal, 0.02f, true);
+	}
 }
 
 void AChaosImpactPlayerController::UpdateVersusReveal()
@@ -2404,6 +2755,8 @@ void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 I
 		State->CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
 		State->ColourChoice = FMath::Clamp(InColour, 0, ChaosImpactRoster::ColourCount - 1);
 		State->ForceNetUpdate();
+		UE_LOG(LogChaosImpact, Log, TEXT("Loadout set for %s: character %d, colour %d"), *State->GetPlayerName(),
+			State->CharacterIndex, State->ColourChoice);
 	}
 }
 
@@ -2412,6 +2765,7 @@ void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 	Super::PlayerTick(DeltaTime);
 	SendLoadout();
 	UpdateMatchScreens();
+	UpdateOnlineVersusCard(DeltaTime);
 	UpdateMatchIntroCamera();
 	UpdateRumble();
 #if !UE_BUILD_SHIPPING
@@ -2422,6 +2776,53 @@ void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 		FParse::Value(FCommandLine::Get(), TEXT("CIAutoReady="), Value);
 		return Value;
 	}();
+	// Development (-CIDevRoomChange=<seconds>): in a room's lobby, that long after joining, rename this player and
+	// pick another character through the pause menu's own steps (online tests).
+	static const float DevRoomChangeDelay = []()
+	{
+		float Value = -1.0f;
+		FParse::Value(FCommandLine::Get(), TEXT("CIDevRoomChange="), Value);
+		return Value;
+	}();
+	if (DevRoomChangeDelay >= 0.0f && GetWorld() && DevRoomChangeStep < 4 && IsPrimaryLocalPlayerController())
+	{
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (DevRoomChangeAt <= 0.0)
+		{
+			DevRoomChangeAt = Now + DevRoomChangeDelay;
+		}
+		else if (Now >= DevRoomChangeAt && CanChangeLoadoutInRoom())
+		{
+			DevRoomChangeAt = Now + 1.5;
+			switch (DevRoomChangeStep++)
+			{
+			case 0:
+				ShowMenuScreen(EChaosImpactScreen::Pause);
+				BeginRoomPlayerRename();
+				UE_LOG(LogChaosImpact, Log, TEXT("DevRoomChange: name entry open %d"), CurrentScreen == EChaosImpactScreen::OnlineName);
+				break;
+			case 1:
+				SubmitOnlineName(TEXT("RENAMED"));
+				break;
+			case 2:
+				ShowMenuScreen(EChaosImpactScreen::Pause);
+				BeginRoomCharacterChange();
+				UE_LOG(LogChaosImpact, Log, TEXT("DevRoomChange: character select open %d"), CurrentScreen == EChaosImpactScreen::CharacterSelect);
+				break;
+			default:
+				if (UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(this))
+				{
+					FChaosImpactLoadout Loadout = Loadouts->GetLoadout(0);
+					Loadout.Character = (Loadout.Character + 1) % ChaosImpactRoster::Num();
+					Loadout.Colour = 3;
+					Loadouts->SetLoadout(0, Loadout);
+				}
+				ConfirmCharacterSelection();
+				UE_LOG(LogChaosImpact, Log, TEXT("DevRoomChange: back to play %d"), CurrentScreen == EChaosImpactScreen::Playing);
+				break;
+			}
+		}
+	}
 	const AChaosImpactPlayerState* Own = GetPlayerState<AChaosImpactPlayerState>();
 	if (AutoReadyDelay >= 0.0f && IsLocalController() && Own && !Own->bReadyForMatch && CanToggleReady() && GetWorld())
 	{
@@ -2467,6 +2868,12 @@ void AChaosImpactPlayerController::UpdateMatchScreens()
 	{
 		return;
 	}
+	if ((bRoomCharacterChange || bRenamingPlayer) && Match->Phase != EChaosImpactOnlinePhase::Lobby)
+	{
+		bRoomCharacterChange = false;
+		bRenamingPlayer = false;
+		EnterPlayingScreen();
+	}
 	// Spectators have no team to pick; they keep watching.
 	const bool bTeamSelect = Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::TeamSelect && !IsSpectating();
 	if (bTeamSelect && CurrentScreen == EChaosImpactScreen::Playing)
@@ -2477,14 +2884,14 @@ void AChaosImpactPlayerController::UpdateMatchScreens()
 	{
 		EnterPlayingScreen();
 	}
-	// A local match waits on its results for the players to choose what comes next.
-	const bool bLocalResults = Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Results && !IsOnlineRoom();
-	if (bLocalResults && CurrentScreen == EChaosImpactScreen::Playing
-		&& Match->GetPhaseElapsedSeconds() > ChaosImpactMatch::ResultsRevealSeconds)
+	// Once the results' show is over, their menu comes up: the pages, and a rematch (local) or the lobby (online).
+	const UChaosImpactResultsView* Results = GetResultsView();
+	const bool bResultsMenu = Results && Results->CanAdvance() && IsPrimaryLocalPlayerController();
+	if (bResultsMenu && CurrentScreen == EChaosImpactScreen::Playing)
 	{
 		ShowMenuScreen(EChaosImpactScreen::MatchEnd);
 	}
-	else if (!bLocalResults && CurrentScreen == EChaosImpactScreen::MatchEnd)
+	else if (!bResultsMenu && CurrentScreen == EChaosImpactScreen::MatchEnd)
 	{
 		EnterPlayingScreen();
 	}

@@ -8,6 +8,7 @@
 class UTexture2D;
 class UEditableText;
 class UChaosImpactCharacterSelect;
+class UChaosImpactSettingsScreen;
 
 /** Native, resolution-independent front end. All hit regions and D-pad focus share one layout. */
 UCLASS()
@@ -35,6 +36,7 @@ public:
 	bool HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent);
 	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
+	UChaosImpactSettingsScreen* GetSettingsScreen() const { return SettingsScreen; }
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -45,6 +47,8 @@ protected:
 		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual FReply NativeOnKeyChar(const FGeometry& InGeometry, const FCharacterEvent& InCharEvent) override;
+	virtual FReply NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual FReply NativeOnAnalogValueChanged(const FGeometry& InGeometry,
 		const FAnalogInputEvent& InAnalogEvent) override;
 	virtual FReply NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
@@ -75,6 +79,12 @@ private:
 	/** Pause entries that leave the room/search need a second confirm on the same entry. */
 	int32 ArmedIndex = INDEX_NONE;
 	void DisarmSelection();
+	/** The results' numbers: the cursor among their rows, the tab arrows and the choices below. */
+	void NavigateResults(FKey Key);
+	void SwitchResultsTab(int32 Tab);
+	bool IsResultsChoice(int32 Index) const;
+	/** The results row the cursor was last on (it comes back there from the choices or the awards). */
+	int32 ResultsRowCursor = 0;
 	double ScreenStartedAt = 0.0;
 	float AnimationSeconds = 0.0f;
 	double LastAnalogNavigationAt = 0.0;
@@ -106,6 +116,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactCharacterSelect> CharacterSelect;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactSettingsScreen> SettingsScreen;
+	bool IsSettingsActive() const;
+	/** The results' podium: any button or click goes on to the numbers (and their menu). */
+	void GoOnFromPodium();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> LogoTexture;

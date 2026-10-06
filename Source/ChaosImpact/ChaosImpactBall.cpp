@@ -11,6 +11,8 @@
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactSimaeBird.h"
+#include "ChaosImpactDriveBall.h"
+#include "ChaosImpactGameMode.h"
 #include "ChaosImpactTornado.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
@@ -127,21 +129,31 @@ void AChaosImpactBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AChaosImpactBall, bDetonated);
 	DOREPLIFETIME(AChaosImpactBall, SnowScale);
 	DOREPLIFETIME(AChaosImpactBall, LandedPickupExpiresAt);
+	DOREPLIFETIME(AChaosImpactBall, PickupAvailableAtSeconds);
+	DOREPLIFETIME(AChaosImpactBall, DriveDeadline);
 }
 
 namespace
 {
 	enum class EChaosImpactBallNetMode : uint8 { Held, Straight, Arc, Rolling, Hover };
 
-	constexpr float MaxFlightExtrapolationSeconds = 0.15f;
-	constexpr float MaxRollingExtrapolationSeconds = 0.1f;
+	// A flight is fully known from one update (straight or a fixed arc, mirrored off walls), so it can be carried on
+	// well past the newest update: at a high ping with jitter or a lost packet the ball never stops in the air.
+	constexpr float MaxFlightExtrapolationSeconds = 0.6f;
+	constexpr float MaxRollingExtrapolationSeconds = 0.35f;
+	constexpr float ThunderMaxAheadSeconds = 0.12f;
 	constexpr float ClientErrorDecayRate = 14.0f;
-	constexpr float ClientSnapDistance = 400.0f;
+	// Bigger differences than this are a different ball state altogether (respawned, picked up): jump to it.
+	// Anything smaller is blended away, so a late update never makes a ball jump.
+	constexpr float ClientSnapDistance = 900.0f;
+	/** A very fast ball (a thunder ball after a few walls) travels that far in moments: allow a little time of it. */
+	constexpr float ClientSnapSeconds = 0.2f;
 	constexpr float HoverFrequency = 2.2f;
 	constexpr float HoverHeight = 7.0f;
 	constexpr float HoverYawSpeed = 55.0f;
-	/** A state can be slightly newer than the displayed time; predict back that far instead of stalling. */
-	constexpr float MaxBackExtrapolationSeconds = 0.15f;
+	/** A state can be newer than the displayed time (and the thrower's own ball can be shown a little behind its
+	 * server copy); predict back that far instead of stalling. */
+	constexpr float MaxBackExtrapolationSeconds = 0.4f;
 
 	struct FChaosImpactNetClock
 	{
@@ -239,8 +251,12 @@ void AChaosImpactBall::UpdateNetState()
 	NetState = NewState;
 }
 
-FVector AChaosImpactBall::PredictNetLocation(const double ServerNow) const
+FVector AChaosImpactBall::PredictNetLocation(const double ServerNow, bool* bOutBurst) const
 {
+	if (bOutBurst)
+	{
+		*bOutBurst = false;
+	}
 	const FVector Start = NetState.Location;
 	const FVector Velocity = NetState.Velocity;
 	const float Elapsed = static_cast<float>(ServerNow - NetState.ServerTime);
@@ -255,8 +271,11 @@ FVector AChaosImpactBall::PredictNetLocation(const double ServerNow) const
 	case EChaosImpactBallNetMode::Arc:
 	{
 		const bool bArc = NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Arc);
-		// The thrower's own ball may be shown a little ahead (ClientTimeLead); allow that much further.
-		const float Seconds = FMath::Clamp(Elapsed, -MaxBackExtrapolationSeconds, MaxFlightExtrapolationSeconds + ClientTimeLead);
+		// The thrower's own ball may be shown a little ahead (ClientTimeLead); allow that much further. A thunder ball
+		// gets faster at every wall (up to two metres a frame) and soon bounces about in corners: only a short way
+		// ahead of its updates, never far enough to go wrong.
+		const float MaxAhead = BallType == EChaosImpactBallType::Thunder ? ThunderMaxAheadSeconds : MaxFlightExtrapolationSeconds;
+		const float Seconds = FMath::Clamp(Elapsed, -MaxBackExtrapolationSeconds, MaxAhead + ClientTimeLead);
 		FVector End = Start + Velocity * Seconds;
 		if (bArc && GetWorld())
 		{
@@ -267,25 +286,84 @@ FVector AChaosImpactBall::PredictNetLocation(const double ServerNow) const
 			// A beam goes straight through everything.
 			return End;
 		}
-		// Do not extrapolate through walls: mirror off the first blocking surface like the server does.
-		FHitResult Hit;
+		// Do not extrapolate through walls: do at each wall what the server does there.
 		FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactBallPredict), false, this);
 		const float Radius = CollisionSphere->GetScaledSphereRadius();
-		if (GetWorld() && GetWorld()->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, ECC_WorldStatic,
-			FCollisionShape::MakeSphere(Radius), Params) && !Hit.bStartPenetrating)
+		// A special ball (all but thunder) bursts on the first wall: it is shown stopping there, never through it.
+		const bool bBurstsOnWalls = IsSpecialBall() && BallType != EChaosImpactBallType::Thunder;
+		// Only the stage (players, other balls and effects are not walls: a ball meeting them is decided otherwise).
+		const FCollisionObjectQueryParams StageOnly(ECC_WorldStatic);
+		if (bArc || Seconds <= 0.0f || !GetWorld())
 		{
-			if (bArc && Hit.ImpactNormal.Z > 0.65f)
+			FHitResult Hit;
+			if (GetWorld() && GetWorld()->SweepSingleByObjectType(Hit, Start, End, FQuat::Identity, StageOnly,
+				FCollisionShape::MakeSphere(Radius), Params) && !Hit.bStartPenetrating)
 			{
+				if (bArc && Hit.ImpactNormal.Z > 0.65f && !bBurstsOnWalls && Seconds > 0.0f)
+				{
+					// Landed: the server lets it roll on from there (MakeRollingPickup), so it is shown rolling on
+					// instead of sitting where it touched down until that news arrives.
+					const float Rolled = Seconds * (1.0f - Hit.Time);
+					const FVector Roll = FVector(Velocity.X, Velocity.Y, 0.0f).GetClampedToMaxSize(1600.0f) * 0.55f;
+					constexpr float RollDamping = 0.75f;
+					return Hit.Location + Roll * ((1.0f - FMath::Exp(-RollDamping * Rolled)) / RollDamping);
+				}
+				if ((bArc && Hit.ImpactNormal.Z > 0.65f) || bBurstsOnWalls)
+				{
+					if (bOutBurst)
+					{
+						*bOutBurst = bBurstsOnWalls;
+					}
+					return Hit.Location;
+				}
+				FVector Remaining = FMath::GetReflectionVector(End - Hit.Location, Hit.ImpactNormal);
+				if (!bArc)
+				{
+					Remaining.Z = 0.0f;
+				}
+				return Hit.Location + Remaining;
+			}
+			return End;
+		}
+		// Straight: carried on wall after wall (a long extrapolation of a fast ball can meet several), a thunder ball
+		// speeding up at each like the server's.
+		FVector Position = Start;
+		FVector Moving = Velocity;
+		float TimeLeft = Seconds;
+		for (int32 Bounce = 0; Bounce < 4 && TimeLeft > 0.0f; ++Bounce)
+		{
+			const FVector SegmentEnd = Position + Moving * TimeLeft;
+			FHitResult Hit;
+			if (!GetWorld()->SweepSingleByObjectType(Hit, Position, SegmentEnd, FQuat::Identity, StageOnly,
+				FCollisionShape::MakeSphere(Radius), Params))
+			{
+				return SegmentEnd;
+			}
+			if (Hit.bStartPenetrating)
+			{
+				// Wedged in a corner: stay put rather than slip through the wall (the next update says where it went).
+				return Bounce == 0 ? SegmentEnd : Position;
+			}
+			if (bBurstsOnWalls)
+			{
+				if (bOutBurst)
+				{
+					*bOutBurst = true;
+				}
 				return Hit.Location;
 			}
-			FVector Remaining = FMath::GetReflectionVector(End - Hit.Location, Hit.ImpactNormal);
-			if (!bArc)
+			TimeLeft *= 1.0f - Hit.Time;
+			// Just off the wall, so the next leg does not start inside it.
+			Position = Hit.Location + Hit.ImpactNormal * 1.0f;
+			Moving = FMath::GetReflectionVector(Moving, Hit.ImpactNormal);
+			Moving.Z = 0.0f;
+			if (BallType == EChaosImpactBallType::Thunder)
 			{
-				Remaining.Z = 0.0f;
+				Moving = Moving.GetSafeNormal() * FMath::Min(static_cast<float>(Moving.Size()) * ChaosImpactBallTypes::ThunderBounceSpeedUp,
+					ChaosImpactBallTypes::ThunderMaxSpeed);
 			}
-			return Hit.Location + Remaining;
 		}
-		return End;
+		return Position;
 	}
 	case EChaosImpactBallNetMode::Held:
 	case EChaosImpactBallNetMode::Hover:
@@ -335,7 +413,7 @@ void AChaosImpactBall::OnRep_NetState()
 	// Compare against the new state at the same moment the current position was drawn for; comparing
 	// with "now" instead pulled the ball back by one frame of travel on every update.
 	ClientErrorOffset = GetActorLocation() - PredictNetLocation(ClientLastPresentationTime);
-	if (ClientErrorOffset.SizeSquared() > FMath::Square(ClientSnapDistance))
+	if (ClientErrorOffset.SizeSquared() > FMath::Square(FMath::Max(ClientSnapDistance, static_cast<float>(FVector(NetState.Velocity).Size()) * ClientSnapSeconds)))
 	{
 		ClientErrorOffset = FVector::ZeroVector;
 	}
@@ -368,7 +446,7 @@ void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
 		bClientHasPresentation = false;
 		return;
 	}
-	if (IsHidden() && !bClientPickupClaimed)
+	if (IsHidden() && !bClientPickupClaimed && !bPredictedBurstShown)
 	{
 		SetActorHiddenInGame(false);
 	}
@@ -380,8 +458,9 @@ void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
 	{
 		return;
 	}
-	const double PresentationTime = GetPresentationServerTime() + ClientTimeLead;
-	FVector Desired = PredictNetLocation(PresentationTime);
+	double PresentationTime = GetPresentationServerTime() + ClientTimeLead;
+	bool bBurstReached = false;
+	FVector Desired = PredictNetLocation(PresentationTime, &bBurstReached);
 	const bool bHover = NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Hover);
 	if (bHover)
 	{
@@ -393,7 +472,7 @@ void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
 	{
 		bClientHasPresentation = true;
 		ClientErrorOffset = GetActorLocation() - Desired;
-		if (ClientErrorOffset.SizeSquared() > FMath::Square(ClientSnapDistance))
+		if (ClientErrorOffset.SizeSquared() > FMath::Square(FMath::Max(ClientSnapDistance, static_cast<float>(FVector(NetState.Velocity).Size()) * ClientSnapSeconds)))
 		{
 			ClientErrorOffset = FVector::ZeroVector;
 		}
@@ -406,6 +485,28 @@ void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
 		&& (bFlightState || NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Rolling)))
 	{
 		TryAdoptPredictedThrow(Desired);
+		// The adoption may have set a time lead: draw this very frame with it too (or the ball steps back for one frame).
+		PresentationTime = GetPresentationServerTime() + ClientTimeLead;
+		Desired = PredictNetLocation(PresentationTime, &bBurstReached);
+	}
+	// A special ball reaching the stage bursts there: shown at once (a flash, the ball gone) instead of the ball
+	// waiting there for the server's news, which can take a whole round trip for the thrower's own ball shown ahead.
+	// Its zone comes with the news. Should the next update show it flying on after all, it simply reappears.
+	const bool bShowsBurst = bBurstReached && bFlightState && BallType != EChaosImpactBallType::Drive
+		&& BallType != EChaosImpactBallType::Beam && BallType != EChaosImpactBallType::Thunder;
+	if (bShowsBurst && !bPredictedBurstShown)
+	{
+		bPredictedBurstShown = true;
+		SetActorHiddenInGame(true);
+		MulticastContactBurst_Implementation(Desired, FRotator::ZeroRotator);
+	}
+	else if (!bShowsBurst && bPredictedBurstShown)
+	{
+		bPredictedBurstShown = false;
+		if (!bClientPickupClaimed)
+		{
+			SetActorHiddenInGame(false);
+		}
 	}
 	if (!bFlightState)
 	{
@@ -417,6 +518,23 @@ void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
 	const FVector PreviousLocation = GetActorLocation();
 	SetActorLocation(Desired + ClientErrorOffset);
 	ClientLastPresentationTime = PresentationTime;
+#if !UE_BUILD_SHIPPING
+	// Development (-CINetTrace): a flying ball drawn faster or slower than it flies (a jump or a stall) is logged.
+	static const bool bTraceBalls = FParse::Param(FCommandLine::Get(), TEXT("CINetTrace"));
+	if (bTraceBalls && bFlightState && DeltaSeconds > 0.0f && bAdoptionTraced && !bPredictedBurstShown)
+	{
+		const float Drawn = static_cast<float>((GetActorLocation() - PreviousLocation).Size());
+		const float Expected = static_cast<float>(FVector(NetState.Velocity).Size()) * DeltaSeconds;
+		if (FMath::Abs(Drawn - Expected) > FMath::Max(25.0f, Expected * 0.5f))
+		{
+			const AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ReplicatedThrower.Get());
+			UE_LOG(LogChaosImpact, Log, TEXT("BallJerk drawn=%.0f expected=%.0f own=%d type=%s mode=%d lead=%.3f err=%.0f age=%.3f dt=%.3f"),
+				Drawn, Expected, Thrower && Thrower->IsLocallyControlled() ? 1 : 0, ChaosImpactBallTypes::GetInternalName(BallType),
+				NetState.Mode, ClientTimeLead, ClientErrorOffset.Size(), PresentationTime - NetState.ServerTime, DeltaSeconds);
+		}
+	}
+	bAdoptionTraced = bFlightState;
+#endif
 	TryReportLocalHit(PreviousLocation, GetActorLocation());
 }
 
@@ -487,7 +605,7 @@ bool AChaosImpactBall::AcceptReportedHit(AChaosImpactCharacter* Victim, const FV
 	float PingSeconds = 0.1f;
 	if (const APlayerState* VictimState = Victim->GetPlayerState())
 	{
-		PingSeconds = FMath::Clamp(VictimState->GetPingInMilliseconds() / 1000.0f, 0.0f, 0.5f);
+		PingSeconds = FMath::Clamp(VictimState->GetPingInMilliseconds() / 1000.0f, 0.0f, 1.0f);
 	}
 	// The reported point is on the ball's path (its centre): a big ball's centre is well away from whoever it touched.
 	const float VictimReach = 450.0f + CollisionSphere->GetScaledSphereRadius();
@@ -532,7 +650,7 @@ bool AChaosImpactBall::AcceptReportedHit(AChaosImpactCharacter* Victim, const FV
 	}
 	// Generous bounds: the victim's screen can be up to a round trip away from this copy.
 	const float BallSpeed = bLandedMomentsAgo ? 2000.0f : ProjectileMovement->Velocity.Size();
-	const float BallTolerance = FMath::Min(250.0f + BallSpeed * (PingSeconds + 0.1f), 1800.0f);
+	const float BallTolerance = FMath::Min(250.0f + BallSpeed * (PingSeconds + 0.1f), 2600.0f);
 	const float BallError = FVector::Dist(GetActorLocation(), HitLocation);
 	const float VictimError = FVector::Dist(Victim->GetActorLocation(), HitLocation);
 	const bool bAccepted = BallError <= BallTolerance && VictimError <= VictimReach;
@@ -618,7 +736,7 @@ void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 	{
 		// Continue from the ball this screen has been showing since the release.
 		ClientErrorOffset = Predicted->GetActorLocation() - Desired;
-		if (ClientErrorOffset.SizeSquared() > FMath::Square(ClientSnapDistance))
+		if (ClientErrorOffset.SizeSquared() > FMath::Square(FMath::Max(ClientSnapDistance, static_cast<float>(FVector(NetState.Velocity).Size()) * ClientSnapSeconds)))
 		{
 			ClientErrorOffset = FVector::ZeroVector;
 		}
@@ -637,13 +755,15 @@ void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 		{
 			const FVector FlightDirection = FlightVelocity / FlightSpeed;
 			const double Along = FVector::DotProduct(ClientErrorOffset, FlightDirection);
-			if (Along > 0.0)
-			{
-				ClientTimeLead = static_cast<float>(FMath::Min(Along / FlightSpeed, static_cast<double>(MaxOwnThrowTimeLeadSeconds)));
-				ClientErrorOffset -= FlightDirection * (ClientTimeLead * FlightSpeed);
-			}
+			// Ahead (the usual case) or behind (the server let go of it sooner): either way a steady time offset, so
+			// the ball carries on at full speed from where this screen shows it instead of lurching to catch up.
+			const double MaxLead = BallType == EChaosImpactBallType::Thunder ? ThunderMaxAheadSeconds : MaxOwnThrowTimeLeadSeconds;
+			ClientTimeLead = static_cast<float>(FMath::Clamp(Along / FlightSpeed, -0.35, MaxLead));
+			ClientErrorOffset -= FlightDirection * (ClientTimeLead * FlightSpeed);
 		}
 		InheritContactPresentation(*Predicted);
+		// A drive ball being steered: the thrower steers (and the camera follows) this one from now on.
+		Thrower->OnDriveBallAdopted(Predicted, this);
 		Predicted->Destroy();
 		UE_LOG(LogChaosImpact, Log, TEXT("Predicted throw adopted (offset %.0f, along flight %.0f) lead %.3fs"),
 			ClientErrorOffset.Size(), FVector::DotProduct(ClientErrorOffset, FVector(NetState.Velocity).GetSafeNormal()),
@@ -657,6 +777,12 @@ void AChaosImpactBall::TryClaimLocalPickup()
 		|| NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Rolling);
 	if (bClientPickupClaimed || !bPickupState || !GetWorld()
 		|| GetWorld()->GetTimeSeconds() < ClientPickupRetryAt)
+	{
+		return;
+	}
+	// The server's own lockout (just hit, carried by a tornado): a claim before it ends would only be refused,
+	// making the ball vanish and come back. By the time this claim arrives the server is a little further on.
+	if (GetPresentationServerTime() < static_cast<double>(PickupAvailableAtSeconds) - 0.1)
 	{
 		return;
 	}
@@ -684,9 +810,16 @@ void AChaosImpactBall::TryClaimLocalPickup()
 		if (FVector(Delta.X, Delta.Y, 0.0f).SizeSquared() <= FMath::Square(Reach)
 			&& FMath::Abs(Delta.Z) <= Capsule->GetScaledCapsuleHalfHeight() + BallRadius)
 		{
+			// Someone else right by it (as drawn here, so really perhaps already on it): the server may give it to them.
+			bool bContested = false;
+			for (TActorIterator<AChaosImpactCharacter> Other(GetWorld()); Other && !bContested; ++Other)
+			{
+				bContested = *Other != LocalCharacter && !Other->IsEliminated()
+					&& FVector::Dist2D(Other->GetPresentationLocation(), GetActorLocation()) < 350.0f;
+			}
 			bClientPickupClaimed = true;
 			SetActorHiddenInGame(true);
-			LocalCharacter->ClaimPickupFromClient(this);
+			LocalCharacter->ClaimPickupFromClient(this, bContested);
 			return;
 		}
 	}
@@ -805,7 +938,7 @@ void AChaosImpactBall::UpdateContactPresentation(const float DeltaSeconds)
 	constexpr float VisualOffsetDecayRate = 10.0f;
 	constexpr float ConfirmationMarginSeconds = 0.08f;
 	constexpr float MinWaitSeconds = 0.1f;
-	constexpr float MaxWaitSeconds = 0.6f;
+	constexpr float MaxWaitSeconds = 1.3f;
 	// The ball stays still on the body for at most this long before showing the likely hit.
 	constexpr float MaxStillSeconds = 0.1f;
 	// Same as a real hit on the server (DropToGroundAsPickup -> MakeRollingPickup).
@@ -904,7 +1037,7 @@ void AChaosImpactBall::UpdateContactPresentation(const float DeltaSeconds)
 				const APlayerController* LocalController = GetWorld()->GetFirstPlayerController();
 				if (const APlayerState* LocalState = LocalController ? LocalController->PlayerState.Get() : nullptr)
 				{
-					LocalRoundTrip = FMath::Clamp(LocalState->GetPingInMilliseconds() / 1000.0f, 0.0f, 0.5f);
+					LocalRoundTrip = FMath::Clamp(LocalState->GetPingInMilliseconds() / 1000.0f, 0.0f, 1.0f);
 				}
 			}
 			const float HoldSeconds = FMath::Clamp(Character->GetNetworkRoundTripSeconds()
@@ -1006,10 +1139,20 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 			{
 				UpdateBeamHits();
 			}
+			else if (BallType == EChaosImpactBallType::Drive)
+			{
+				UpdateDriveFlight(DeltaSeconds);
+				if (bDetonated || IsHidden())
+				{
+					return;
+				}
+			}
 		}
 		FlightSeconds += DeltaSeconds;
 		const float Flight = BallType == EChaosImpactBallType::Thunder ? ChaosImpactBallTypes::ThunderFlightSeconds
 			: BallType == EChaosImpactBallType::Beam ? ChaosImpactBallTypes::BeamRange / ChaosImpactBallTypes::BeamSpeed
+			// Its steering time decides its end; this only catches one never steered.
+			: BallType == EChaosImpactBallType::Drive ? ChaosImpactBallTypes::DriveControlSeconds + 1.0f
 			: LifeSeconds;
 		if (FlightSeconds >= Flight && !GetAttachParentActor())
 		{
@@ -1472,6 +1615,26 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 	{
 		return;
 	}
+	if (AChaosImpactBall* OtherBall = Cast<AChaosImpactBall>(ImpactResult.GetActor()))
+	{
+		// No ball stops or turns a drive ball: it flies straight on through and knocks the other away.
+		if (BallType == EChaosImpactBallType::Drive)
+		{
+			CollisionSphere->IgnoreActorWhenMoving(OtherBall, true);
+			ProjectileMovement->Velocity = ImpactVelocity;
+			if (!bCosmeticPrediction)
+			{
+				OtherBall->KnockAwayByDrive(this);
+			}
+			return;
+		}
+		if (!bCosmeticPrediction && OtherBall->BallType == EChaosImpactBallType::Drive && !OtherBall->bIsPickup
+			&& !OtherBall->bDetonated)
+		{
+			KnockAwayByDrive(OtherBall);
+			return;
+		}
+	}
 	// A thunder ball rebounds like a normal ball until it meets someone or its time runs out.
 	if (IsSpecialBall() && BallType != EChaosImpactBallType::Thunder)
 	{
@@ -1556,6 +1719,16 @@ void AChaosImpactBall::UpdateDashPassThrough()
 		}
 		// Both ways: the ball flies on through, and the dash goes on through the ball.
 		const bool bDashing = Character->IsDashing();
+		// A dash right through a ball that would have hit counts as a dodge (once per ball, for the results).
+		if (bDashing && HasAuthority() && !bCosmeticPrediction && !DodgedBy.Contains(Character)
+			&& FVector::DistSquared(Character->GetActorLocation(), GetActorLocation()) < FMath::Square(120.0f))
+		{
+			DodgedBy.Add(Character);
+			if (AChaosImpactGameMode* Mode = World->GetAuthGameMode<AChaosImpactGameMode>())
+			{
+				Mode->RecordDodge(Character);
+			}
+		}
 		CollisionSphere->IgnoreActorWhenMoving(Character, bDashing);
 		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 		{
@@ -1691,6 +1864,13 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 	if (BallType == EChaosImpactBallType::Simae)
 	{
 		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim);
+		DetonationZone = nullptr;
+	}
+	else if (BallType == EChaosImpactBallType::Drive)
+	{
+		// No blast of its own: the hit (if any) has been dealt; this is only its show.
+		DriveDeadline = 0.0;
+		MulticastDriveBurst(Location, DirectVictim != nullptr);
 		DetonationZone = nullptr;
 	}
 	else
@@ -1880,6 +2060,15 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 			BallMesh->SetMaterial(0, Look);
 			BallMesh->SetMaterial(1, Look);
 		}
+		// Its own light and company (three little birds, ripples, sparkles): see BuildSimaeBallLook.
+		BuildSimaeBallLook(this, BallMesh, SimaeLook);
+		LightIntensity = 0.0f;
+	}
+	else if (BallType == EChaosImpactBallType::Drive)
+	{
+		// A golden ball of energy: its core, glow, rings and trail are the drive look (ChaosImpactDriveBall.cpp).
+		BallMesh->SetMaterial(0, MakeEmissive(this, FLinearColor(1.0f, 0.58f, 0.1f), 2.4f));
+		ChaosImpactDrive::BuildLook(this, BallMesh, DriveLook);
 		LightIntensity = 0.0f;
 	}
 	else if (BallType == EChaosImpactBallType::Snow)
@@ -1946,8 +2135,29 @@ void AChaosImpactBall::UpdateBallTypePresentation(const float DeltaSeconds)
 	{
 		ChaosImpactBallTypes::UpdateNovaLook(NovaLook, 24.0f * SnowScale, T);
 	}
+	if (SimaeLook.IsBuilt())
+	{
+		ChaosImpactBallTypes::UpdateSimaeBallLook(this, SimaeLook, T, DeltaSeconds, bIsPickup, bFlying,
+			!IsHidden() && !bDetonated && !GetAttachParentActor());
+		if (bIsPickup)
+		{
+			// Waiting, it looks about: turning its face this way and that, tilting its head.
+			BallMesh->SetRelativeRotation(FRotator(5.0f * FMath::Sin(T * 2.3f), 38.0f * FMath::Sin(T * 0.85f)
+				+ 14.0f * FMath::Sin(T * 2.1f), 7.0f * FMath::Sin(T * 1.6f)));
+		}
+		else if (bFlying && GetVelocity().SizeSquared() > 2500.0f)
+		{
+			// Flying face first.
+			BallMesh->SetWorldRotation(GetVelocity().GetSafeNormal2D().Rotation());
+		}
+	}
+	if (DriveLook.IsBuilt())
+	{
+		ChaosImpactDrive::UpdateLook(this, DriveLook, T, DeltaSeconds, bFlying,
+			!IsHidden() && !bDetonated && !GetAttachParentActor(), GetDriveControlLeft(), GetVelocity());
+	}
 	// A nova is far too big for a ribbon trail.
-	if (bFlying && !FlightTrailEffect && BallType != EChaosImpactBallType::Nova)
+	if (bFlying && !FlightTrailEffect && BallType != EChaosImpactBallType::Nova && BallType != EChaosImpactBallType::Drive)
 	{
 		using namespace ChaosImpactBallTypes;
 		const TCHAR* TrailPath = bFire ? Effects::FireTrail : Effects::BallTrail;
@@ -2232,4 +2442,129 @@ void AChaosImpactBall::UpdateBeamShaft(const float DeltaSeconds, const bool bFly
 	{
 		BeamGlowMaterial->SetScalarParameterValue(TEXT("Intensity"), 2.2f * BeamShaftFade * Shimmer);
 	}
+}
+
+void AChaosImpactBall::BeginDrive(const double DeadlineServerTime)
+{
+	DriveDeadline = DeadlineServerTime;
+	DriveSteer = FVector::ZeroVector;
+	DriveSpeed = 0.0f;
+	ForceNetUpdate();
+}
+
+void AChaosImpactBall::SetDriveSteer(const FVector& Direction)
+{
+	DriveSteer = FVector(Direction.X, Direction.Y, 0.0f).GetSafeNormal();
+}
+
+float AChaosImpactBall::GetDriveControlLeft() const
+{
+	if (DriveDeadline <= 0.0 || bDetonated)
+	{
+		return -1.0f;
+	}
+	return FMath::Clamp(static_cast<float>(DriveDeadline - GetServerNow()) / ChaosImpactBallTypes::DriveControlSeconds, 0.0f, 1.0f);
+}
+
+void AChaosImpactBall::FizzleDrive()
+{
+	DriveDeadline = 0.0;
+	if (bDetonated)
+	{
+		return;
+	}
+	if (bCosmeticPrediction)
+	{
+		// This screen's throw preview: the server's ball shows the real end.
+		SetActorHiddenInGame(true);
+		SetLifeSpan(0.5f);
+		return;
+	}
+	if (HasAuthority())
+	{
+		Detonate(GetActorLocation(), nullptr);
+	}
+}
+
+void AChaosImpactBall::KnockAwayByDrive(const AChaosImpactBall* Drive)
+{
+	if (!Drive || !HasAuthority() || bCosmeticPrediction || bIsPickup || bDetonated || !GetWorld()
+		|| BallType == EChaosImpactBallType::Drive)
+	{
+		return;
+	}
+	if (IsSpecialBall() && BallType != EChaosImpactBallType::Thunder)
+	{
+		// As against anything else it touches.
+		Detonate(GetActorLocation(), nullptr);
+		return;
+	}
+	// Batted aside, the way the drive ball was going, and left rolling on the floor.
+	const FVector Along = Drive->GetVelocity().GetSafeNormal2D();
+	FVector Away = (GetActorLocation() - Drive->GetActorLocation()).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = Along;
+	}
+	const FVector Fling = (Away + Along).GetSafeNormal2D() * 1100.0f + FVector::UpVector * 420.0f;
+	MakeRollingPickup(Fling.IsNearlyZero() ? FVector::UpVector * 420.0f : Fling);
+	ForceNetUpdate();
+	UE_LOG(LogChaosImpact, Log, TEXT("%s ball knocked away by a drive ball"), ChaosImpactBallTypes::GetInternalName(BallType));
+}
+
+void AChaosImpactBall::UpdateDriveFlight(const float DeltaSeconds)
+{
+	if (DriveDeadline <= 0.0)
+	{
+		return;
+	}
+	if (GetServerNow() >= DriveDeadline)
+	{
+		// Its time is up: it fizzles out where it is.
+		FizzleDrive();
+		return;
+	}
+	FVector Velocity = ProjectileMovement->Velocity;
+	// The server's ball (and this screen's throw preview) keeps its own heading and speed; a copy follows the server.
+	const bool bOwnFlight = HasAuthority();
+	if (bOwnFlight)
+	{
+		if (DriveSpeed <= 0.0f)
+		{
+			DriveSpeed = static_cast<float>(Velocity.Size2D());
+			DriveHeading = Velocity.GetSafeNormal2D();
+		}
+		Velocity = DriveHeading * DriveSpeed + FVector(0.0f, 0.0f, Velocity.Z);
+	}
+	const float Speed = static_cast<float>(Velocity.Size2D());
+	if (Speed < 1.0f)
+	{
+		return;
+	}
+	if (DriveSteer.IsNearlyZero())
+	{
+		ProjectileMovement->Velocity = Velocity;
+		return;
+	}
+	// Turns toward where it is steered, at a rate that a fast ball (a charged throw) cannot match.
+	using namespace ChaosImpactBallTypes;
+	const FVector Current = FVector(Velocity.X, Velocity.Y, 0.0f) / Speed;
+	const float Cross = static_cast<float>(Current.X * DriveSteer.Y - Current.Y * DriveSteer.X);
+	const float Dot = static_cast<float>(FVector::DotProduct(Current, DriveSteer));
+	const float Wanted = FMath::RadiansToDegrees(FMath::Atan2(Cross, Dot));
+	const float Alpha = FMath::Clamp((Speed - DriveMinSpeed) / (DriveMaxSpeed - DriveMinSpeed), 0.0f, 1.0f);
+	const float MaxTurn = FMath::Lerp(DriveTurnSlowBallDegrees, DriveTurnFastBallDegrees, Alpha) * DeltaSeconds;
+	// Sent back the way it came (or anywhere far round), it snaps round at once; otherwise it curves.
+	const FVector Turned = FMath::Abs(Wanted) > DriveSnapDegrees ? DriveSteer
+		: Current.RotateAngleAxis(FMath::Clamp(Wanted, -MaxTurn, MaxTurn), FVector::UpVector);
+	ProjectileMovement->Velocity = Turned * Speed + FVector(0.0f, 0.0f, Velocity.Z);
+	if (bOwnFlight)
+	{
+		DriveHeading = Turned;
+	}
+}
+
+void AChaosImpactBall::MulticastDriveBurst_Implementation(const FVector_NetQuantize Location, const bool bHit)
+{
+	AChaosImpactDriveBurst::Play(GetWorld(), Location, bHit);
 }

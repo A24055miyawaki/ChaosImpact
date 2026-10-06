@@ -3,6 +3,7 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPaint.h"
+#include "ChaosImpactResults.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Engine/GameInstance.h"
@@ -34,6 +35,16 @@ void UChaosImpactMatchAnnouncerWidget::NativeOnInitialized()
 		WidgetTree->RootWidget = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("AnnouncerRoot"));
 	}
 	SetVisibility(ESlateVisibility::HitTestInvisible);
+	ResultsView = NewObject<UChaosImpactResultsView>(this);
+}
+
+void UChaosImpactMatchAnnouncerWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+	if (ResultsView)
+	{
+		ResultsView->Tick(GetOwningPlayer(), InDeltaTime);
+	}
 }
 
 int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -44,6 +55,11 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 
 	const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId,
 		InWidgetStyle, bParentEnabled);
+	// The results (podium, numbers) take the whole screen once FINISH is over; online they stay into the lobby.
+	if (ResultsView && ResultsView->IsActive() && ResultsView->GetShowSeconds() >= 0.0f)
+	{
+		return ResultsView->Paint(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	}
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
 	const bool bStarting = Match && Match->bOnlineRoom && Match->Phase == EChaosImpactOnlinePhase::Starting;
@@ -167,205 +183,6 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		Full.Box(0.0f, 0.0f, Size.X, Size.Y, WithAlpha(Paper, 0.45f * FMath::Clamp(1.0f - Elapsed / 0.25f, 0.0f, 1.0f)));
 		PaintCallout(TEXT("FINISH"), 120.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Elapsed / 0.2f)),
 			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 3);
-	}
-	const float Show = Elapsed - 1.5f;
-	if (Show <= 0.0f)
-	{
-		return BaseLayer + 4;
-	}
-	Full.Box(0.0f, 0.0f, Size.X, Size.Y, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f * EaseOut(Show / 0.5f)));
-
-	// Players on this machine get their P tag in the list.
-	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
-	if (const UGameInstance* GameInstance = GetGameInstance())
-	{
-		for (const ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
-		{
-			const APlayerController* LocalController = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
-			LocalStates.Add(LocalController ? LocalController->PlayerState.Get() : nullptr);
-		}
-	}
-	const TArray<AChaosImpactPlayerState*> Ranking = Match->GetRanking();
-	const auto RankOf = [&Ranking](const int32 Index)
-	{
-		int32 Rank = 1;
-		for (int32 Other = 0; Other < Index; ++Other)
-		{
-			Rank += Ranking[Other]->Points > Ranking[Index]->Points ? 1 : 0;
-		}
-		return Rank;
-	};
-	const auto ColorOf = [bTeams](const AChaosImpactPlayerState* Member)
-	{
-		return bTeams && Member->TeamIndex >= 0 ? ChaosImpactMatch::GetTeamColor(Member->TeamIndex)
-			: Member->IsABot() ? Muted : Paper;
-	};
-
-	const FPainter Board{Center, OutDrawElements, BaseLayer + 2};
-	{
-		// A small caption whose rules open outwards.
-		const float In = EaseOut(Show / 0.5f);
-		const FPainter Caption{Center, OutDrawElements, BaseLayer + 2, In};
-		Caption.Text(TEXT("RESULT"), 0.0f, -352.0f, 20.0f, WithAlpha(Paper, 0.7f), ETextAlign::Center, TEXT("Bold"));
-		Caption.Box(-60.0f - 180.0f * In, -338.0f, 180.0f * In, 1.0f, WithAlpha(Paper, 0.4f));
-		Caption.Box(60.0f, -338.0f, 180.0f * In, 1.0f, WithAlpha(Paper, 0.4f));
-	}
-
-	float WinnerAt = 0.0f;
-	FString Headline;
-	FLinearColor HeadlineColor = Gold;
-	float ListTop = -200.0f;
-
-	if (bTeams)
-	{
-		// Team totals count up while each bar grows to its share of the best total.
-		TArray<TPair<int32, int32>> Teams;
-		for (int32 Team = 0; Team < Match->Rules.TeamCount; ++Team)
-		{
-			Teams.Add({Team, Match->GetTeamPoints(Team)});
-		}
-		Teams.StableSort([](const TPair<int32, int32>& A, const TPair<int32, int32>& B) { return A.Value > B.Value; });
-		const int32 Best = FMath::Max(1, Teams[0].Value);
-		const bool bTie = Teams.Num() > 1 && Teams[1].Value == Teams[0].Value;
-		for (int32 Index = 0; Index < Teams.Num(); ++Index)
-		{
-			const float Grow = EaseOut((Show - 0.4f - Index * 0.12f) / 1.1f);
-			if (Grow <= 0.0f)
-			{
-				continue;
-			}
-			const float Y = -240.0f + Index * 54.0f;
-			const FLinearColor TeamColor = ChaosImpactMatch::GetTeamColor(Teams[Index].Key);
-			const FPainter Bar{Center, OutDrawElements, BaseLayer + 2, FMath::Min(1.0f, Grow * 3.0f)};
-			Bar.Box(-320.0f, Y, 640.0f, 44.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f));
-			Bar.Box(-320.0f, Y, 640.0f * Grow * Teams[Index].Value / Best, 44.0f, WithAlpha(TeamColor, 0.78f));
-			Bar.Text(ChaosImpactMatch::GetTeamName(Teams[Index].Key), -304.0f, Y + 9.0f, 22.0f, Paper,
-				ETextAlign::Left, TEXT("Bold"), 2.0f, Ink);
-			Bar.Text(FString::FromInt(FMath::RoundToInt(Teams[Index].Value * Grow)), 304.0f, Y + 6.0f, 26.0f, Paper,
-				ETextAlign::Right, TEXT("Black"), 2.0f, Ink);
-			if (Index == 0 && !bTie && Show > 1.7f)
-			{
-				Bar.Outline(-322.0f, Y - 2.0f, 644.0f, 48.0f,
-					WithAlpha(Paper, 0.5f + 0.4f * FMath::Sin((Show - 1.7f) * 6.0f)), 2.0f);
-			}
-		}
-		WinnerAt = 1.8f;
-		Headline = bTie ? FString(TEXT("DRAW"))
-			: FString::Printf(TEXT("%sチームの勝ち！"), ChaosImpactMatch::GetTeamName(Teams[0].Key));
-		HeadlineColor = bTie ? Paper : ChaosImpactMatch::GetTeamColor(Teams[0].Key);
-		ListTop = -240.0f + Teams.Num() * 54.0f + 26.0f;
-
-		// Everyone's own score, in a compact list under the bars.
-		for (int32 Index = 0; Index < Ranking.Num(); ++Index)
-		{
-			const float RowIn = EaseOut((Show - 2.1f - Index * 0.07f) / 0.3f);
-			if (RowIn <= 0.0f)
-			{
-				continue;
-			}
-			const AChaosImpactPlayerState* Member = Ranking[Index];
-			const float Y = ListTop + Index * 30.0f + (1.0f - RowIn) * 10.0f;
-			const FPainter Row{Center, OutDrawElements, BaseLayer + 2, RowIn};
-			const int32 LocalIndex = LocalStates.IndexOfByKey(Member);
-			Row.Box(-320.0f, Y, 640.0f, 26.0f, FLinearColor(0.0f, 0.0f, 0.0f, LocalIndex >= 0 ? 0.5f : 0.3f));
-			Row.Box(-320.0f, Y, 3.0f, 26.0f, ColorOf(Member));
-			Row.Text(GetAnnouncerName(Member), -300.0f, Y + 3.0f, 17.0f, Paper, ETextAlign::Left, TEXT("Regular"));
-			// The tag is only useful when the name does not already say which player it is.
-			if (LocalIndex >= 0 && GetAnnouncerName(Member) != FString::Printf(TEXT("P%d"), LocalIndex + 1))
-			{
-				Row.Text(FString::Printf(TEXT("P%d"), LocalIndex + 1), -60.0f, Y + 4.0f, 15.0f,
-					PlayerAccents[LocalIndex % 4], ETextAlign::Left, TEXT("Bold"));
-			}
-			Row.Text(FString::Printf(TEXT("KO %d"), Member->Knockouts), 200.0f, Y + 5.0f, 14.0f, Muted,
-				ETextAlign::Right, TEXT("Regular"));
-			Row.Text(FString::Printf(TEXT("%d pt"), Member->Points), 304.0f, Y + 3.0f, 17.0f, Paper,
-				ETextAlign::Right, TEXT("Bold"));
-		}
-	}
-	else if (!Ranking.IsEmpty())
-	{
-		// Places are revealed from last to first, each score counting up; the winner comes last and larger.
-		const int32 Count = Ranking.Num();
-		constexpr float RowStep = 42.0f;
-		const float RowsTop = -150.0f;
-		for (int32 Index = Count - 1; Index >= 0; --Index)
-		{
-			const float RevealAt = 0.5f + (Count - 1 - Index) * 0.32f;
-			const float RowIn = EaseOut((Show - RevealAt) / 0.3f);
-			if (RowIn <= 0.0f)
-			{
-				continue;
-			}
-			const AChaosImpactPlayerState* Member = Ranking[Index];
-			const bool bFirst = Index == 0;
-			const float Height = bFirst ? 54.0f : 34.0f;
-			const float Y = bFirst ? RowsTop - 70.0f : RowsTop + (Index - 1) * RowStep;
-			const float Slide = (1.0f - RowIn) * 24.0f;
-			const float Counted = EaseOut((Show - RevealAt) / 0.45f);
-			const FPainter Row{Center, OutDrawElements, BaseLayer + 2, RowIn};
-			const int32 LocalIndex = LocalStates.IndexOfByKey(Member);
-			const int32 Rank = RankOf(Index);
-			Row.Box(-320.0f + Slide, Y, 640.0f, Height, FLinearColor(0.0f, 0.0f, 0.0f, bFirst ? 0.55f : 0.36f));
-			Row.Box(-320.0f + Slide, Y, bFirst ? 5.0f : 3.0f, Height, bFirst ? Gold : ColorOf(Member));
-			const float TextSize = bFirst ? 28.0f : 19.0f;
-			const float TextY = Y + (Height - TextSize * 1.3f) * 0.5f;
-			Row.Text(FString::FromInt(Rank), -290.0f + Slide, TextY, TextSize, Rank == 1 ? Gold : Muted,
-				ETextAlign::Center, TEXT("Bold"));
-			Row.Text(GetAnnouncerName(Member), -258.0f + Slide, TextY, TextSize, Paper, ETextAlign::Left,
-				bFirst ? TEXT("Black") : TEXT("Regular"), bFirst ? 2.0f : 0.0f, Ink);
-			// The tag is only useful when the name does not already say which player it is.
-			if (LocalIndex >= 0 && GetAnnouncerName(Member) != FString::Printf(TEXT("P%d"), LocalIndex + 1))
-			{
-				Row.Text(FString::Printf(TEXT("P%d"), LocalIndex + 1), 40.0f + Slide, TextY + 3.0f, 15.0f,
-					PlayerAccents[LocalIndex % 4], ETextAlign::Left, TEXT("Bold"));
-			}
-			Row.Text(FString::Printf(TEXT("KO %d"), Member->Knockouts), 190.0f + Slide, TextY + 4.0f, 14.0f, Muted,
-				ETextAlign::Right, TEXT("Regular"));
-			Row.Text(FString::Printf(TEXT("%d pt"), FMath::RoundToInt(Member->Points * Counted)), 304.0f + Slide, TextY,
-				TextSize, bFirst ? Gold : Paper, ETextAlign::Right, TEXT("Bold"), bFirst ? 2.0f : 0.0f, Ink);
-			if (bFirst && Show > RevealAt + 0.3f)
-			{
-				// A thin gold line sweeps under the winner once they land.
-				const float Sweep = EaseOut((Show - RevealAt - 0.3f) / 0.5f);
-				Row.Box(-320.0f, Y + Height + 3.0f, 640.0f * Sweep, 2.0f, Gold);
-			}
-		}
-		WinnerAt = 0.5f + (Count - 1) * 0.32f + 0.35f;
-		const bool bTie = Count > 1 && Ranking[1]->Points == Ranking[0]->Points;
-		Headline = bTie ? FString(TEXT("DRAW")) : FString(TEXT("WINNER"));
-		HeadlineColor = bTie ? Paper : Gold;
-	}
-
-	// The headline lands once the winner is known, followed by a short fall of confetti.
-	if (Show > WinnerAt && !Headline.IsEmpty())
-	{
-		const float T = Show - WinnerAt;
-		const FGeometry HeadSpace = MakeSkewed(Center, -800.0f, -318.0f, 1600.0f, 70.0f, 0.0f,
-			1.0f + 0.35f * FMath::Exp(-10.0f * T));
-		const FPainter Head{HeadSpace, OutDrawElements, BaseLayer + 3, EaseOut(T / 0.15f)};
-		Head.Text(Headline, 800.0f, 0.0f, 44.0f, HeadlineColor, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
-
-		if (Headline != TEXT("DRAW") && T < 4.0f)
-		{
-			const FLinearColor ConfettiColors[] = {Gold, Paper, Ice, Fire, HeadlineColor};
-			const FPainter Confetti{Center, OutDrawElements, BaseLayer + 1, FMath::Clamp((4.0f - T) / 0.8f, 0.0f, 1.0f)};
-			const float HalfWidth = Size.X * 0.5f / S;
-			const float HalfHeight = Size.Y * 0.5f / S;
-			for (int32 Piece = 0; Piece < 70; ++Piece)
-			{
-				const float Speed = 180.0f + 260.0f * AnnouncerHash(Piece, 1.0f);
-				const float Y = -HalfHeight - 40.0f + (T * Speed) - AnnouncerHash(Piece, 2.0f) * 400.0f;
-				if (Y < -HalfHeight - 20.0f || Y > HalfHeight)
-				{
-					continue;
-				}
-				const float X = (AnnouncerHash(Piece, 3.0f) * 2.0f - 1.0f) * HalfWidth
-					+ FMath::Sin(T * (2.0f + AnnouncerHash(Piece, 4.0f) * 3.0f) + Piece) * 18.0f;
-				// A flat piece seen edge-on now and then, which reads as tumbling.
-				const float Turn = FMath::Abs(FMath::Sin(T * (4.0f + AnnouncerHash(Piece, 5.0f) * 6.0f) + Piece));
-				Confetti.Box(X, Y, 3.0f + 6.0f * Turn, 10.0f, ConfettiColors[Piece % UE_ARRAY_COUNT(ConfettiColors)]);
-			}
-		}
 	}
 	return BaseLayer + 4;
 }

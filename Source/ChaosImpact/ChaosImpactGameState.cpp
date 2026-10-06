@@ -19,6 +19,29 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, bHostMachine);
 	DOREPLIFETIME(AChaosImpactPlayerState, bSecondOfMachine);
 	DOREPLIFETIME(AChaosImpactPlayerState, bReadyForMatch);
+	DOREPLIFETIME(AChaosImpactPlayerState, Throws);
+	DOREPLIFETIME(AChaosImpactPlayerState, Hits);
+	DOREPLIFETIME(AChaosImpactPlayerState, TimesHit);
+	DOREPLIFETIME(AChaosImpactPlayerState, Dodges);
+	DOREPLIFETIME(AChaosImpactPlayerState, SpecialThrows);
+	DOREPLIFETIME(AChaosImpactPlayerState, DriveHits);
+	DOREPLIFETIME(AChaosImpactPlayerState, LongestHit);
+	DOREPLIFETIME(AChaosImpactPlayerState, PointsHistory);
+	DOREPLIFETIME(AChaosImpactPlayerState, bViewingResults);
+}
+
+void AChaosImpactPlayerState::ResetMatchStats()
+{
+	Points = 0;
+	Knockouts = 0;
+	Throws = 0;
+	Hits = 0;
+	TimesHit = 0;
+	Dodges = 0;
+	SpecialThrows = 0;
+	DriveHits = 0;
+	LongestHit = 0;
+	PointsHistory.Reset();
 }
 
 void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -55,7 +78,9 @@ float AChaosImpactGameState::GetIntroElapsedSeconds() const
 		// Arriving a moment late stays in step with the host; arriving much later starts from the top.
 		IntroSeenOffset = FMath::Min(GetPhaseElapsedSeconds(), 0.3f);
 	}
-	return static_cast<float>(LocalNow - IntroSeenLocalTime) + IntroSeenOffset;
+	// Online the VS card comes first (see AChaosImpactPlayerController::UpdateOnlineVersusCard): the flyover starts
+	// after it, so this is negative while the card plays.
+	return static_cast<float>(LocalNow - IntroSeenLocalTime) + IntroSeenOffset - (bOnlineRoom ? ChaosImpactMatch::OnlineCardSeconds : 0.0f);
 }
 
 TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetMembersInJoinOrder() const

@@ -30,6 +30,9 @@ struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
 
+/** A character has just been knocked out (see AChaosImpactCharacter::OnEliminated). */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChaosImpactCharacterEliminated, AChaosImpactCharacter*, Character);
+
 /**
  *  Player character for the top-down dodgeball prototype.
  *  Movement is camera-relative while the character faces the current aim point.
@@ -179,6 +182,16 @@ public:
 
 	UFUNCTION(BlueprintSetter, Category="Chaos Impact|Solo Enemy")
 	void SetCPULevel(EChaosImpactCPULevel Level);
+
+	// ---- Solo mode (rooms)
+
+	/** The moment this character is knocked out (a solo room starts over on its player's). Blueprints can bind it too. */
+	UPROPERTY(BlueprintAssignable, Category="Chaos Impact|Solo")
+	FChaosImpactCharacterEliminated OnEliminated;
+
+	/** Where this character comes back after its next knockout (a solo room sets its entrance). Nothing moves now. */
+	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Solo")
+	void SetRespawnPoint(FVector Location, FRotator Rotation);
 	/** Server: an ice ball landed next to this player; they cannot move, dash or throw for Seconds. */
 	void ApplyIceFreeze(float Seconds);
 	bool IsIceFrozen() const;

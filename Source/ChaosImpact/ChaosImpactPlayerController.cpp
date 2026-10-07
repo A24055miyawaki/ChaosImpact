@@ -131,7 +131,8 @@ void AChaosImpactPlayerController::BeginPlay()
 	}
 	BallFlightMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIBallStraight=1"))
 		? EChaosImpactBallFlightMode::Straight : EChaosImpactBallFlightMode::Arc;
-	CurrentScreen = bTrainingMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
+	// A solo level (?CISolo=1) is played straight away too, like training.
+	CurrentScreen = bTrainingMode || bSoloMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
 	// The title plays a CPU match behind it, started a moment after the title appears (-CINoTitleDemo: none).
 	bTitleDemoWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && GetNetMode() == NM_Standalone
 		&& GetWorld() && !GetWorld()->URL.HasOption(TEXT("CIVersus=1")) && !FParse::Param(FCommandLine::Get(), TEXT("CINoTitleDemo"));

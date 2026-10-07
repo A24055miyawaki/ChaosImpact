@@ -1,6 +1,7 @@
 #include "ChaosImpactSettingsScreen.h"
 
 #include "ChaosImpact.h"
+#include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "Input/Events.h"
@@ -209,6 +210,8 @@ void UChaosImpactSettingsScreen::BuildOtherRows()
 	Rows.Add(MakeRow(ERowKind::Value, RowShake, TEXT("画面の揺れ"), Shakes[GetCameraShakeLevel()]));
 	Rows.Add(MakeRow(ERowKind::Value, RowSwitchConfirm, TEXT("Switchコントローラーの決定ボタン"),
 		IsSwitchConfirmRight() ? TEXT("A（右のボタン）") : TEXT("B（下のボタン）")));
+	// Tucked away at the very end: the loading screens' little games, to play for as long as you like.
+	Rows.Add(MakeRow(ERowKind::Button, RowMiniGames, TEXT("ミニゲーム")));
 }
 
 bool UChaosImpactSettingsScreen::IsSelectable(const int32 Row) const
@@ -432,6 +435,12 @@ void UChaosImpactSettingsScreen::Activate()
 			EditedProfile = FMath::Clamp(EditedProfile - 1, 0, GetProfileCount() - 1);
 			bDeleteArmed = false;
 			ShowMessage(FString::Printf(TEXT("%s を消しました"), *Name));
+		}
+		break;
+	case RowMiniGames:
+		if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(Controller.Get()))
+		{
+			Loading->ShowArcade();
 		}
 		break;
 	case RowResetDevice:

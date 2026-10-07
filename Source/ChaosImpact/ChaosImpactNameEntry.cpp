@@ -27,11 +27,11 @@ namespace
 		TEXT("+=()☆★♪・♡%*")};
 	const TCHAR* const KeyNames[] = {TEXT("ひらがな"), TEXT("カタカナ"), TEXT("ABC"), TEXT("abc"), TEXT("けす"), TEXT("おわり")};
 
-	constexpr float GridLeft = 276.0f;
-	constexpr float GridTop = 300.0f;
-	constexpr float CellWidth = 88.0f;
-	constexpr float CellHeight = 70.0f;
-	constexpr float CellGap = 8.0f;
+	constexpr float KeyGridLeft = 276.0f;
+	constexpr float KeyGridTop = 300.0f;
+	constexpr float KeyCellWidth = 88.0f;
+	constexpr float KeyCellHeight = 70.0f;
+	constexpr float KeyCellGap = 8.0f;
 
 	bool IsHiragana(const TCHAR Letter)
 	{
@@ -94,14 +94,14 @@ FBox2D FChaosImpactNameEntry::CellRect(const int32 Row, const int32 Column) cons
 {
 	if (Row >= LetterRows)
 	{
-		const float Width = (Columns * (CellWidth + CellGap) - CellGap - (KeyRowCellCount() - 1) * CellGap) / KeyRowCellCount();
-		const float X = GridLeft + Column * (Width + CellGap);
-		const float Y = GridTop + LetterRows * (CellHeight + CellGap) + 6.0f;
-		return FBox2D(FVector2D(X, Y), FVector2D(X + Width, Y + CellHeight));
+		const float Width = (Columns * (KeyCellWidth + KeyCellGap) - KeyCellGap - (KeyRowCellCount() - 1) * KeyCellGap) / KeyRowCellCount();
+		const float X = KeyGridLeft + Column * (Width + KeyCellGap);
+		const float Y = KeyGridTop + LetterRows * (KeyCellHeight + KeyCellGap) + 6.0f;
+		return FBox2D(FVector2D(X, Y), FVector2D(X + Width, Y + KeyCellHeight));
 	}
-	const float X = GridLeft + Column * (CellWidth + CellGap);
-	const float Y = GridTop + Row * (CellHeight + CellGap);
-	return FBox2D(FVector2D(X, Y), FVector2D(X + CellWidth, Y + CellHeight));
+	const float X = KeyGridLeft + Column * (KeyCellWidth + KeyCellGap);
+	const float Y = KeyGridTop + Row * (KeyCellHeight + KeyCellGap);
+	return FBox2D(FVector2D(X, Y), FVector2D(X + KeyCellWidth, Y + KeyCellHeight));
 }
 
 void FChaosImpactNameEntry::MoveCursor(const int32 InColumns, const int32 InRows)

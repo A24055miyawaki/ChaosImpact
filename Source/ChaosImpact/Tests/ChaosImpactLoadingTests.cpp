@@ -182,7 +182,7 @@ namespace
 				}
 			}
 			UChaosImpactLoadingSubsystem* Loading = World ? UChaosImpactLoadingSubsystem::Get(World) : nullptr;
-			if (Now - StartedAt > 120.0)
+			if (Now - StartedAt > static_cast<int32>(EChaosImpactLoadingGame::Count) * 15.0 + 30.0)
 			{
 				Test->AddError(FString::Printf(TEXT("Stuck on game %d."), Game));
 				return true;
@@ -194,6 +194,40 @@ namespace
 			constexpr int32 Count = static_cast<int32>(EChaosImpactLoadingGame::Count);
 			if (Game >= Count)
 			{
+				// Then the arcade (from the settings): it stays up, switches game with E, and goes with Escape.
+				if (ArcadeStep == 0)
+				{
+					Loading->ShowArcade();
+					Test->TestTrue(TEXT("The arcade is up"), Loading->IsArcade());
+					const EChaosImpactLoadingGame First = Loading->GetGame();
+					Loading->HandleKey(EKeys::E, 0);
+					Test->TestTrue(TEXT("E switches to the next game"), Loading->GetGame() != First);
+					// Breakout, to take a picture of.
+					while (Loading->GetGame() != EChaosImpactLoadingGame::Breakout)
+					{
+						Loading->HandleKey(EKeys::E, 0);
+					}
+					Loading->HandleKey(EKeys::SpaceBar, 0);
+					ArcadeStep = 1;
+					NextAt = Now + 3.0;
+					return false;
+				}
+				if (ArcadeStep == 1)
+				{
+					Test->TestTrue(TEXT("The arcade never goes by itself"), Loading->IsArcade());
+					FScreenshotRequest::RequestScreenshot(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("LoadingQA"), TEXT("Arcade.png")), true, false);
+					ArcadeStep = 2;
+					NextAt = Now + 0.5;
+					return false;
+				}
+				if (ArcadeStep == 2)
+				{
+					Loading->HandleKey(EKeys::Escape, 0);
+					ArcadeStep = 3;
+					NextAt = Now + 0.5;
+					return false;
+				}
+				Test->TestFalse(TEXT("Escape leaves the arcade"), Loading->IsShowing());
 				return true;
 			}
 			const EChaosImpactLoadingGame Which = static_cast<EChaosImpactLoadingGame>(Game);
@@ -212,10 +246,12 @@ namespace
 				bUp = true;
 				UpAt = Now;
 				Presses = 0;
+				RunScore = 0;
 				NextAt = Now + 0.4;
 				return false;
 			}
 			const double Up = Now - UpAt;
+			RunScore = FMath::Max(RunScore, Loading->GetScore());
 			// Pressed a few times (popping, turning pages); the moving games are left to play themselves.
 			if ((Which == EChaosImpactLoadingGame::Pop || Which == EChaosImpactLoadingGame::Gallery) && Presses < 3)
 			{
@@ -224,7 +260,17 @@ namespace
 				NextAt = Now + 0.3;
 				return false;
 			}
-			if (Up < 4.5)
+			// シマエナガ大ぼうけん: one more picture early on, mid-dodge.
+			if (Which == EChaosImpactLoadingGame::Quest && !bDodgeShot && Up > 2.5)
+			{
+				FScreenshotRequest::RequestScreenshot(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("LoadingQA"), TEXT("LoadingGame_Quest_Early.png")), true, false);
+				bDodgeShot = true;
+				NextAt = Now + 0.3;
+				return false;
+			}
+			// Loading/prewarm can hitch; physics deliberately clamps a long frame. Give the demo a bounded
+			// chance to score, and inspect this run's peak rather than a snapshot just after a miss/restart.
+			if (Up < 6.5 || (Which != EChaosImpactLoadingGame::Target && RunScore == 0 && Up < 12.5))
 			{
 				NextAt = Now + 0.1;
 				return false;
@@ -232,9 +278,9 @@ namespace
 			if (!bShot)
 			{
 				const int32 Score = Loading->GetScore();
-				UE_LOG(LogTemp, Display, TEXT("LOADINGGAME %d score %d after %.1f s"), Game, Score, Up);
+				UE_LOG(LogTemp, Display, TEXT("LOADINGGAME %d score %d run peak %d after %.1f s"), Game, Score, RunScore, Up);
 				Test->TestTrue(FString::Printf(TEXT("Game %d scores (pressed or by itself)"), Game),
-					Which == EChaosImpactLoadingGame::Target ? Score >= 0 : Score >= 1);
+					Which == EChaosImpactLoadingGame::Target ? RunScore >= 0 : RunScore >= 1);
 				FScreenshotRequest::RequestScreenshot(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("LoadingQA"),
 					FString::Printf(TEXT("LoadingGame_%d.png"), Game)), true, false);
 				bShot = true;
@@ -261,8 +307,11 @@ namespace
 		double UpAt = 0.0;
 		int32 Game = 0;
 		int32 Presses = 0;
+		int32 RunScore = 0;
 		bool bUp = false;
 		bool bShot = false;
+		bool bDodgeShot = false;
+		int32 ArcadeStep = 0;
 	};
 }
 

@@ -124,6 +124,7 @@ public:
 		RowRumble,
 		RowShake,
 		RowSwitchConfirm,
+		RowMiniGames,
 		RowBinding = 1000
 	};
 

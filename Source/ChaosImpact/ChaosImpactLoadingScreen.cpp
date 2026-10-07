@@ -11,6 +11,7 @@
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/CommandLine.h"
+#include "Misc/App.h"
 #include "Misc/Parse.h"
 #include "MoviePlayer.h"
 #include "UObject/UObjectGlobals.h"
@@ -72,6 +73,7 @@ namespace
 		case EChaosImpactLoadingKind::RoomCreate: return TEXT("部屋をつくっています");
 		case EChaosImpactLoadingKind::RoomJoin: return TEXT("部屋に入っています");
 		case EChaosImpactLoadingKind::RoomLeave: return TEXT("部屋から出ています");
+		case EChaosImpactLoadingKind::Arcade: return TEXT("ミニゲーム");
 		default: return TEXT("タイトルにもどります");
 		}
 	}
@@ -84,7 +86,10 @@ namespace
 		case EChaosImpactLoadingGame::Juggle: return TEXT("リフティング");
 		case EChaosImpactLoadingGame::Target: return TEXT("まとあて");
 		case EChaosImpactLoadingGame::Gallery: return TEXT("ボールずかん");
-		default: return TEXT("ボールわり");
+		case EChaosImpactLoadingGame::Breakout: return TEXT("ブロックくずし");
+		case EChaosImpactLoadingGame::Flappy: return TEXT("シマエナガとべ！");
+		case EChaosImpactLoadingGame::Avoid: return TEXT("よけまくれ！");
+		default: return Game >= EChaosImpactLoadingGame::Catch ? FChaosImpactLoadingState::ExtraGameName(Game) : TEXT("ボールわり");
 		}
 	}
 
@@ -163,6 +168,66 @@ namespace
 	constexpr int32 LoadingTargetCount = 4;
 	// Gallery
 	constexpr float LoadingPageSeconds = 4.0f;
+	// Breakout
+	constexpr float LoadingBreakLeft = 380.0f;
+	constexpr float LoadingBreakRight = 1220.0f;
+	constexpr float LoadingBreakTop = 200.0f;
+	constexpr float LoadingBreakPaddleY = 590.0f;
+	constexpr float LoadingBreakPaddleHalf = 75.0f;
+	constexpr float LoadingBreakMissY = 630.0f;
+	constexpr int32 LoadingBreakColumns = 10;
+	constexpr int32 LoadingBreakRows = 5;
+	constexpr float LoadingBreakBrickWidth = (LoadingBreakRight - LoadingBreakLeft) / LoadingBreakColumns;
+	constexpr float LoadingBreakBrickHeight = 22.0f;
+	constexpr float LoadingBreakBrickStep = 30.0f;
+	constexpr float LoadingBreakBallRadius = 11.0f;
+	// Flappy
+	constexpr float LoadingFlapLeft = 300.0f;
+	constexpr float LoadingFlapRight = 1300.0f;
+	constexpr float LoadingFlapTop = 200.0f;
+	constexpr float LoadingFlapGround = 620.0f;
+	constexpr float LoadingFlapBirdX = 560.0f;
+	constexpr float LoadingFlapBirdRadius = 24.0f;
+	constexpr float LoadingFlapGravity = 1700.0f;
+	constexpr float LoadingFlapImpulse = -560.0f;
+	constexpr float LoadingFlapPillarWidth = 80.0f;
+	constexpr float LoadingFlapPillarEvery = 1.55f;
+	constexpr float LoadingFlapGapHalf = 110.0f;
+	// Avoid
+	constexpr float LoadingAvoidLeft = 380.0f;
+	constexpr float LoadingAvoidRight = 1220.0f;
+	constexpr float LoadingAvoidTop = 200.0f;
+	constexpr float LoadingAvoidGround = 610.0f;
+	constexpr float LoadingAvoidHalf = 22.0f;
+	constexpr float LoadingAvoidTall = 70.0f;
+
+	/** Left or right on a key (keys, the d-pad); 0 for any other. The stick comes as an analog value instead. */
+	int32 LoadingSteerDirection(const FKey& Key)
+	{
+		if (Key == EKeys::Left || Key == EKeys::A || Key == EKeys::Gamepad_DPad_Left)
+		{
+			return -1;
+		}
+		if (Key == EKeys::Right || Key == EKeys::D || Key == EKeys::Gamepad_DPad_Right)
+		{
+			return 1;
+		}
+		return 0;
+	}
+
+	/** -1 up, 1 down (only for the games that move up and down too). */
+	int32 LoadingVerticalDirection(const FKey& Key)
+	{
+		if (Key == EKeys::Up || Key == EKeys::W || Key == EKeys::Gamepad_DPad_Up)
+		{
+			return -1;
+		}
+		if (Key == EKeys::Down || Key == EKeys::S || Key == EKeys::Gamepad_DPad_Down)
+		{
+			return 1;
+		}
+		return 0;
+	}
 
 	/** Each game's best this session. */
 	int32 LoadingBest[static_cast<int32>(EChaosImpactLoadingGame::Count)] = {};
@@ -176,13 +241,25 @@ namespace
 		virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
 		{
 			UChaosImpactLoadingSubsystem* Loading = Owner.Get();
-			return Loading && !InKeyEvent.IsRepeat() && Loading->HandleKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
+			if (!Loading) { return false; }
+			// Unattended runs use explicit test commands, never the user's live devices.
+			if (FApp::IsUnattended()) { return Loading->IsShowing(); }
+			// Held keys must not leak into the menu beneath the arcade, or repeatedly trigger timing games.
+			if (InKeyEvent.IsRepeat()) { return Loading->IsShowing() && InKeyEvent.GetKey() != EKeys::F11; }
+			return Loading->HandleKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
+		}
+		virtual bool HandleKeyUpEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+		{
+			UChaosImpactLoadingSubsystem* Loading = Owner.Get();
+			if (FApp::IsUnattended()) { return Loading && Loading->IsShowing(); }
+			return Loading && Loading->HandleKeyUp(InKeyEvent.GetKey());
 		}
 		virtual bool HandleAnalogInputEvent(FSlateApplication& SlateApp, const FAnalogInputEvent& InAnalogInputEvent) override
 		{
-			// The sticks do not move the menus underneath meanwhile.
-			const UChaosImpactLoadingSubsystem* Loading = Owner.Get();
-			return Loading && Loading->IsShowing();
+			// The sticks steer the paddle, and do not move the menus underneath meanwhile.
+			UChaosImpactLoadingSubsystem* Loading = Owner.Get();
+			if (FApp::IsUnattended()) { return Loading && Loading->IsShowing(); }
+			return Loading && Loading->HandleAnalog(InAnalogInputEvent.GetKey(), InAnalogInputEvent.GetAnalogValue());
 		}
 		virtual const TCHAR* GetDebugName() const override { return TEXT("ChaosImpactLoading"); }
 
@@ -222,7 +299,13 @@ namespace
 			OutLeft = LoadingBallColor(State.Page);
 			OutRight = LoadingPaint::Ice;
 			break;
-		default: OutLeft = LoadingPaint::Ice; OutRight = LoadingPaint::Fire; break;
+		case EChaosImpactLoadingGame::Breakout: OutLeft = LoadingPaint::Gold; OutRight = LoadingPaint::Violet; break;
+		case EChaosImpactLoadingGame::Flappy: OutLeft = LoadingPaint::Ice; OutRight = LoadingPaint::Paper; break;
+		case EChaosImpactLoadingGame::Avoid: OutLeft = LoadingPaint::Fire; OutRight = LoadingPaint::Gold; break;
+		default:
+			OutLeft = LoadingPaint::PlayerAccents[static_cast<int32>(State.Game) % 4];
+			OutRight = LoadingPaint::PlayerAccents[(static_cast<int32>(State.Game) + 1) % 4];
+			break;
 		}
 	}
 }
@@ -241,36 +324,15 @@ FChaosImpactLoadingState::FChaosImpactLoadingState(const EChaosImpactLoadingKind
 	StartedAt = FPlatformTime::Seconds();
 	LastStepAt = StartedAt;
 	PageAt = StartedAt;
-	Best = LoadingBest[static_cast<int32>(Game)];
-	switch (Game)
-	{
-	case EChaosImpactLoadingGame::Pop:
-		for (int32 Index = 0; Index < LoadingPopCount; ++Index)
-		{
-			AddBall(false);
-		}
-		break;
-	case EChaosImpactLoadingGame::Juggle:
-		ResetJuggle();
-		break;
-	case EChaosImpactLoadingGame::Target:
-		for (int32 Index = 0; Index < LoadingTargetCount; ++Index)
-		{
-			AddTarget(true);
-		}
-		break;
-	case EChaosImpactLoadingGame::Gallery:
-		Page = Random.RandRange(0, LoadingBallTypeCount - 1);
-		Score = 1;
-		break;
-	default:
-		break;
-	}
+	StartGame(InGame);
 }
 
 bool FChaosImpactLoadingState::IsAuto(const double Now) const
 {
-	return Now - LastPressAt > LoadingAutoAfter;
+	// The arcade is for playing: it never plays itself.
+	// A direction held down (or the stick held over) is playing too.
+	const bool bHeld = SteerLeft || SteerRight || SteerUp || SteerDown || StickX != 0.0f || StickY != 0.0f;
+	return !bArcade && !bHeld && Now - LastPressAt > LoadingAutoAfter;
 }
 
 FVector2D FChaosImpactLoadingState::GetAim() const
@@ -360,7 +422,10 @@ void FChaosImpactLoadingState::Step(const double Now)
 			NextPage(Now);
 		}
 		break;
-	default: break;
+	case EChaosImpactLoadingGame::Breakout: StepBreakout(Delta, bAuto); break;
+	case EChaosImpactLoadingGame::Flappy: StepFlappy(Delta, bAuto); break;
+	case EChaosImpactLoadingGame::Avoid: StepAvoid(Delta, bAuto); break;
+	default: StepExtraGame(Delta, bAuto); break;
 	}
 	for (FBurst& Each : Bursts)
 	{
@@ -672,13 +737,31 @@ void FChaosImpactLoadingState::Press(const double Now)
 		}
 		break;
 	case EChaosImpactLoadingGame::Gallery: NextPage(Now); break;
-	default: break;
+	case EChaosImpactLoadingGame::Breakout:
+		if (bBallStuck && !Balls.IsEmpty())
+		{
+			// Off it goes, a little to one side.
+			bBallStuck = false;
+			const float Angle = FMath::DegreesToRadians(Random.FRandRange(-30.0f, 30.0f));
+			Balls[0].Velocity = FVector2D(FMath::Sin(Angle), -FMath::Cos(Angle)) * 640.0f;
+		}
+		break;
+	case EChaosImpactLoadingGame::Flappy: Flap(); break;
+	default: PressExtraGame(); break;
 	}
 }
 
 void FChaosImpactLoadingState::ClickAt(const FVector2D& DesignPoint, const double Now)
 {
-	if (Game == EChaosImpactLoadingGame::Pop)
+	if (Game == EChaosImpactLoadingGame::Memory)
+	{
+		if (DesignPoint.Y >= 340 && DesignPoint.Y <= 495 && DesignPoint.X >= 455 && DesignPoint.X <= 1145)
+		{
+			Selection = FMath::Clamp(FMath::RoundToInt((DesignPoint.X - 530) / 180), 0, 3);
+			Press(Now);
+		}
+	}
+	else if (Game == EChaosImpactLoadingGame::Pop)
 	{
 		LastPressAt = Now;
 		PopAt(DesignPoint);
@@ -698,6 +781,441 @@ void FChaosImpactLoadingState::ClickAt(const FVector2D& DesignPoint, const doubl
 	}
 }
 
+
+// ---- New games, the arcade, steering ---------------------------------------------------------------------------------
+
+void FChaosImpactLoadingState::StartGame(const EChaosImpactLoadingGame NewGame)
+{
+	Game = NewGame < EChaosImpactLoadingGame::Count ? NewGame : EChaosImpactLoadingGame::Pop;
+	Balls.Reset();
+	Shots.Reset();
+	Bursts.Reset();
+	Score = 0;
+	Best = LoadingBest[static_cast<int32>(Game)];
+	HitFlash = 0.0f;
+	RespawnIn = 0.0f;
+	Cooldown = 0.0f;
+	SpawnIn = 0.8f;
+	RunnerHeight = 0.0f;
+	RunnerSpeed = 0.0f;
+	Scroll = 0.0f;
+	AimClock = 0.0f;
+	ThrowCooldown = 0.0f;
+	PageAt = FPlatformTime::Seconds();
+	PaddleX = 800.0f;
+	bBallStuck = true;
+	SteerLeft = SteerRight = 0;
+	StickX = 0.0f;
+	SteerUp = SteerDown = 0;
+	StickY = 0.0f;
+	PointerX = -1.0f;
+	PointerMovedAt = -100.0;
+	switch (Game)
+	{
+	case EChaosImpactLoadingGame::Pop:
+		for (int32 Index = 0; Index < LoadingPopCount; ++Index)
+		{
+			AddBall(false);
+		}
+		break;
+	case EChaosImpactLoadingGame::Juggle:
+		ResetJuggle();
+		break;
+	case EChaosImpactLoadingGame::Target:
+		for (int32 Index = 0; Index < LoadingTargetCount; ++Index)
+		{
+			AddTarget(true);
+		}
+		break;
+	case EChaosImpactLoadingGame::Gallery:
+		Page = Random.RandRange(0, LoadingBallTypeCount - 1);
+		Score = 1;
+		break;
+	case EChaosImpactLoadingGame::Breakout:
+	{
+		ResetBricks();
+		FLoadingBall Ball;
+		Ball.Type = Random.RandRange(0, LoadingBallTypeCount - 1);
+		Ball.Radius = LoadingBreakBallRadius;
+		Balls.Add(Ball);
+		Cooldown = 0.6f;
+		break;
+	}
+	case EChaosImpactLoadingGame::Flappy:
+		ResetFlappy();
+		break;
+	case EChaosImpactLoadingGame::Avoid:
+		SpawnIn = 0.6f;
+		break;
+	default:
+		StartExtraGame();
+		break;
+	}
+}
+
+void FChaosImpactLoadingState::SwitchGame(const int32 Direction)
+{
+	constexpr int32 Count = static_cast<int32>(EChaosImpactLoadingGame::Count);
+	StartGame(static_cast<EChaosImpactLoadingGame>((static_cast<int32>(Game) + Direction % Count + Count) % Count));
+}
+
+void FChaosImpactLoadingState::SetSteerKey(const int32 Direction, const bool bDown, const double Now)
+{
+	(Direction < 0 ? SteerLeft : SteerRight) = bDown ? 1 : 0;
+	if (bDown)
+	{
+		TurnExtraGame(Direction);
+		LastPressAt = Now;
+		// The keys take over from the mouse.
+		PointerMovedAt = -100.0;
+	}
+}
+
+void FChaosImpactLoadingState::SetStick(const float X, const double Now)
+{
+	// A drifting/unused axis must not repeatedly cancel the one-button games' automatic demo.
+	if (!UsesSteering()) { StickX = 0.0f; return; }
+	if (FMath::Abs(X) > 0.6f && (FMath::Abs(StickX) <= 0.6f || FMath::Sign(X) != FMath::Sign(StickX)))
+	{
+		TurnExtraGame(X < 0.0f ? -1 : 1);
+	}
+	StickX = FMath::Abs(X) > 0.25f ? X : 0.0f;
+	if (StickX != 0.0f)
+	{
+		LastPressAt = Now;
+		PointerMovedAt = -100.0;
+	}
+}
+
+void FChaosImpactLoadingState::SetVerticalKey(const int32 Direction, const bool bDown, const double Now)
+{
+	(Direction < 0 ? SteerUp : SteerDown) = bDown ? 1 : 0;
+	if (bDown)
+	{
+		TurnVertical(Direction);
+		LastPressAt = Now;
+	}
+}
+
+void FChaosImpactLoadingState::SetStickY(const float Y, const double Now)
+{
+	if (!UsesVertical()) { StickY = 0.0f; return; }
+	// The stick's up is positive; the screen's is negative.
+	const float Down = -Y;
+	if (FMath::Abs(Down) > 0.6f && (FMath::Abs(StickY) <= 0.6f || FMath::Sign(Down) != FMath::Sign(StickY)))
+	{
+		TurnVertical(Down < 0.0f ? -1 : 1);
+	}
+	StickY = FMath::Abs(Down) > 0.25f ? Down : 0.0f;
+	if (StickY != 0.0f)
+	{
+		LastPressAt = Now;
+	}
+}
+
+void FChaosImpactLoadingState::SetPointer(const float DesignX, const double Now)
+{
+	// Hovering is not playing: only games that actually steer with the pointer treat it as input.
+	if (!UsesPointerSteering()) { return; }
+	if (FMath::Abs(DesignX - PointerX) > 2.0f)
+	{
+		PointerX = DesignX;
+		PointerMovedAt = Now;
+		LastPressAt = Now;
+	}
+}
+
+float FChaosImpactLoadingState::Steer(const float X, const float Speed, const float Delta, const bool bAuto, const float AutoX,
+	const float Min, const float Max) const
+{
+	float Moved = X;
+	if (bAuto)
+	{
+		Moved = X + FMath::Clamp(AutoX - X, -Speed * Delta, Speed * Delta);
+	}
+	else if (PointerX >= 0.0f && LastStepAt - PointerMovedAt < 2.0)
+	{
+		// The mouse: straight to under the pointer (quickly, not at once).
+		Moved = X + FMath::Clamp(PointerX - X, -Speed * 1.8f * Delta, Speed * 1.8f * Delta);
+	}
+	else
+	{
+		const float Direction = FMath::Clamp(static_cast<float>(SteerRight - SteerLeft) + StickX, -1.0f, 1.0f);
+		Moved = X + Direction * Speed * Delta;
+	}
+	return FMath::Clamp(Moved, Min, Max);
+}
+
+void FChaosImpactLoadingState::ResetBricks()
+{
+	Bricks.SetNumZeroed(LoadingBreakColumns * LoadingBreakRows);
+	for (int32 Row = 0; Row < LoadingBreakRows; ++Row)
+	{
+		// A row of one ball's colour each.
+		const uint8 Colour = static_cast<uint8>(1 + (Row * 3 + Random.RandRange(0, 2)) % LoadingBallTypeCount);
+		for (int32 Column = 0; Column < LoadingBreakColumns; ++Column)
+		{
+			Bricks[Row * LoadingBreakColumns + Column] = Colour;
+		}
+	}
+}
+
+void FChaosImpactLoadingState::StepBreakout(const float Delta, const bool bAuto)
+{
+	if (Balls.IsEmpty())
+	{
+		return;
+	}
+	FLoadingBall& Ball = Balls[0];
+	// Playing itself: under the ball, a little to one side so it goes off at an angle.
+	const float AutoX = static_cast<float>(Ball.Position.X) + (Ball.Velocity.X >= 0.0 ? -18.0f : 18.0f);
+	PaddleX = Steer(PaddleX, 1300.0f, Delta, bAuto, AutoX, LoadingBreakLeft + LoadingBreakPaddleHalf,
+		LoadingBreakRight - LoadingBreakPaddleHalf);
+	if (bBallStuck)
+	{
+		Ball.Position = FVector2D(PaddleX, LoadingBreakPaddleY - Ball.Radius - 2.0f);
+		Cooldown -= Delta;
+		if (bAuto && Cooldown <= 0.0f)
+		{
+			Press(LastStepAt - 100.0);
+		}
+		return;
+	}
+	const float Speed = 640.0f + FMath::Min(Score * 8.0f, 360.0f);
+	Ball.Velocity = Ball.Velocity.GetSafeNormal() * Speed;
+	const float PreviousBottom = static_cast<float>(Ball.Position.Y) + Ball.Radius;
+	Ball.Position += Ball.Velocity * Delta;
+	if (Ball.Position.X < LoadingBreakLeft + Ball.Radius)
+	{
+		Ball.Position.X = LoadingBreakLeft + Ball.Radius;
+		Ball.Velocity.X = FMath::Abs(Ball.Velocity.X);
+	}
+	else if (Ball.Position.X > LoadingBreakRight - Ball.Radius)
+	{
+		Ball.Position.X = LoadingBreakRight - Ball.Radius;
+		Ball.Velocity.X = -FMath::Abs(Ball.Velocity.X);
+	}
+	if (Ball.Position.Y < LoadingBreakTop + Ball.Radius)
+	{
+		Ball.Position.Y = LoadingBreakTop + Ball.Radius;
+		Ball.Velocity.Y = FMath::Abs(Ball.Velocity.Y);
+	}
+	// Off the paddle at an angle by where it struck (the ends send it off sideways).
+	// (Crossing the paddle's top this frame, however far it went in one long frame.)
+	if (Ball.Velocity.Y > 0.0 && Ball.Position.Y + Ball.Radius >= LoadingBreakPaddleY && PreviousBottom <= LoadingBreakPaddleY + 4.0f
+		&& FMath::Abs(Ball.Position.X - PaddleX) <= LoadingBreakPaddleHalf + Ball.Radius)
+	{
+		const float Off = FMath::Clamp(static_cast<float>(Ball.Position.X - PaddleX) / LoadingBreakPaddleHalf, -1.0f, 1.0f);
+		const float Angle = FMath::DegreesToRadians(Off * 62.0f);
+		Ball.Velocity = FVector2D(FMath::Sin(Angle), -FMath::Cos(Angle)) * Speed;
+		Ball.Position.Y = LoadingBreakPaddleY - Ball.Radius;
+	}
+	// One brick a frame: knocked out, the ball turned back on the side it came in.
+	for (int32 Index = 0; Index < Bricks.Num(); ++Index)
+	{
+		if (Bricks[Index] == 0)
+		{
+			continue;
+		}
+		const float X = LoadingBreakLeft + (Index % LoadingBreakColumns) * LoadingBreakBrickWidth + 3.0f;
+		const float Y = LoadingBreakTop + 20.0f + (Index / LoadingBreakColumns) * LoadingBreakBrickStep;
+		const float W = LoadingBreakBrickWidth - 6.0f;
+		const float H = LoadingBreakBrickHeight;
+		if (!LoadingCircleHitsBox(Ball.Position, Ball.Radius, X, Y, X + W, Y + H))
+		{
+			continue;
+		}
+		const float OverX = FMath::Min(static_cast<float>(Ball.Position.X) + Ball.Radius - X, X + W - static_cast<float>(Ball.Position.X) + Ball.Radius);
+		const float OverY = FMath::Min(static_cast<float>(Ball.Position.Y) + Ball.Radius - Y, Y + H - static_cast<float>(Ball.Position.Y) + Ball.Radius);
+		if (OverX < OverY)
+		{
+			Ball.Velocity.X = -Ball.Velocity.X;
+		}
+		else
+		{
+			Ball.Velocity.Y = -Ball.Velocity.Y;
+		}
+		Burst(FVector2D(X + W * 0.5f, Y + H * 0.5f), LoadingBallColor(Bricks[Index] - 1));
+		Bricks[Index] = 0;
+		AddScore(1);
+		break;
+	}
+	if (!Bricks.Contains(static_cast<uint8>(1)) && Bricks.FindByPredicate([](const uint8 Brick) { return Brick != 0; }) == nullptr)
+	{
+		// The wall is down: a new one, and on it goes (faster).
+		Burst(FVector2D(800.0f, 380.0f), LoadingPaint::Gold, TEXT("クリア！"));
+		ResetBricks();
+	}
+	if (Ball.Position.Y - Ball.Radius > LoadingBreakMissY)
+	{
+		// Missed: from the start again.
+		Burst(FVector2D(Ball.Position.X, LoadingBreakPaddleY), LoadingPaint::Muted, TEXT("おしい！"));
+		Score = 0;
+		ResetBricks();
+		bBallStuck = true;
+		Cooldown = 0.7f;
+	}
+}
+
+void FChaosImpactLoadingState::ResetFlappy()
+{
+	Balls.Reset();
+	BirdY = (LoadingFlapTop + LoadingFlapGround) * 0.5f;
+	BirdSpeed = 0.0f;
+	SpawnIn = 1.0f;
+	RespawnIn = 0.0f;
+}
+
+void FChaosImpactLoadingState::Flap()
+{
+	if (RespawnIn <= 0.0f)
+	{
+		BirdSpeed = LoadingFlapImpulse;
+		BirdFlapAt = static_cast<float>(LastStepAt - StartedAt);
+	}
+}
+
+void FChaosImpactLoadingState::StepFlappy(const float Delta, const bool bAuto)
+{
+	HitFlash = FMath::Max(0.0f, HitFlash - Delta);
+	if (RespawnIn > 0.0f)
+	{
+		RespawnIn -= Delta;
+		if (RespawnIn <= 0.0f)
+		{
+			ResetFlappy();
+		}
+		return;
+	}
+	BirdSpeed += LoadingFlapGravity * Delta;
+	BirdY += BirdSpeed * Delta;
+	if (BirdY - LoadingFlapBirdRadius < LoadingFlapTop)
+	{
+		BirdY = LoadingFlapTop + LoadingFlapBirdRadius;
+		BirdSpeed = FMath::Max(BirdSpeed, 0.0f);
+	}
+	const float Speed = 260.0f + FMath::Min(Score * 6.0f, 160.0f);
+	SpawnIn -= Delta;
+	if (SpawnIn <= 0.0f)
+	{
+		FLoadingBall Pillar;
+		Pillar.Type = Random.RandRange(0, LoadingBallTypeCount - 1);
+		Pillar.Radius = FMath::Max(LoadingFlapGapHalf - Score * 1.5f, 82.0f);
+		Pillar.Position = FVector2D(LoadingFlapRight + LoadingFlapPillarWidth,
+			Random.FRandRange(LoadingFlapTop + Pillar.Radius + 30.0f, LoadingFlapGround - Pillar.Radius - 30.0f));
+		Balls.Add(Pillar);
+		SpawnIn = LoadingFlapPillarEvery * 260.0f / Speed;
+	}
+	bool bCrashed = BirdY + LoadingFlapBirdRadius > LoadingFlapGround;
+	const FLoadingBall* Next = nullptr;
+	for (int32 Index = Balls.Num() - 1; Index >= 0; --Index)
+	{
+		FLoadingBall& Pillar = Balls[Index];
+		Pillar.Position.X -= Speed * Delta;
+		const float Reach = LoadingFlapPillarWidth * 0.5f + LoadingFlapBirdRadius * 0.8f;
+		if (FMath::Abs(Pillar.Position.X - LoadingFlapBirdX) < Reach
+			&& (BirdY - LoadingFlapBirdRadius * 0.8f < Pillar.Position.Y - Pillar.Radius
+				|| BirdY + LoadingFlapBirdRadius * 0.8f > Pillar.Position.Y + Pillar.Radius))
+		{
+			bCrashed = true;
+		}
+		if (!Pillar.bCounted && Pillar.Position.X + LoadingFlapPillarWidth * 0.5f < LoadingFlapBirdX - LoadingFlapBirdRadius)
+		{
+			Pillar.bCounted = true;
+			AddScore(1);
+		}
+		if (Pillar.Position.X < LoadingFlapLeft - LoadingFlapPillarWidth)
+		{
+			Balls.RemoveAt(Index);
+		}
+	}
+	for (const FLoadingBall& Pillar : Balls)
+	{
+		if (Pillar.Position.X + LoadingFlapPillarWidth * 0.5f > LoadingFlapBirdX - LoadingFlapBirdRadius && (!Next || Pillar.Position.X < Next->Position.X))
+		{
+			Next = &Pillar;
+		}
+	}
+	if (bCrashed)
+	{
+		Burst(FVector2D(LoadingFlapBirdX, BirdY), LoadingPaint::Paper, TEXT("ぶつかった！"));
+		Score = 0;
+		HitFlash = 0.5f;
+		RespawnIn = 0.8f;
+		return;
+	}
+	if (bAuto)
+	{
+		// Playing itself: a flap whenever it sinks below the middle of the next gap.
+		const float Aim = Next ? static_cast<float>(Next->Position.Y) + 30.0f : (LoadingFlapTop + LoadingFlapGround) * 0.5f;
+		if (BirdY > Aim && BirdSpeed > -120.0f)
+		{
+			Flap();
+		}
+	}
+}
+
+void FChaosImpactLoadingState::StepAvoid(const float Delta, const bool bAuto)
+{
+	HitFlash = FMath::Max(0.0f, HitFlash - Delta);
+	// Playing itself: to the spot with the least coming down on it soon (staying put if that is as good).
+	float AutoX = PaddleX;
+	if (bAuto)
+	{
+		float BestDanger = TNumericLimits<float>::Max();
+		for (float X = LoadingAvoidLeft + LoadingAvoidHalf; X <= LoadingAvoidRight - LoadingAvoidHalf; X += 40.0f)
+		{
+			float Danger = FMath::Abs(X - PaddleX) * 0.002f;
+			for (const FLoadingBall& Ball : Balls)
+			{
+				const float Arrive = static_cast<float>(LoadingAvoidGround - LoadingAvoidTall - Ball.Position.Y) / FMath::Max(static_cast<float>(Ball.Velocity.Y), 1.0f);
+				const float Reach = FMath::Abs(X - PaddleX) / 900.0f;
+				if (Arrive < 1.2f && FMath::Abs(static_cast<float>(Ball.Position.X) - X) < Ball.Radius + LoadingAvoidHalf + 25.0f)
+				{
+					Danger += Arrive < Reach + 0.1f ? 50.0f : 3.0f / FMath::Max(Arrive, 0.05f);
+				}
+			}
+			if (Danger < BestDanger)
+			{
+				BestDanger = Danger;
+				AutoX = X;
+			}
+		}
+	}
+	PaddleX = Steer(PaddleX, 900.0f, Delta, bAuto, AutoX, LoadingAvoidLeft + LoadingAvoidHalf, LoadingAvoidRight - LoadingAvoidHalf);
+	SpawnIn -= Delta;
+	if (SpawnIn <= 0.0f)
+	{
+		FLoadingBall Ball;
+		Ball.Type = Random.RandRange(0, LoadingBallTypeCount - 1);
+		Ball.Radius = Random.FRandRange(16.0f, 34.0f);
+		Ball.Position = FVector2D(Random.FRandRange(LoadingAvoidLeft + 30.0f, LoadingAvoidRight - 30.0f), LoadingAvoidTop - Ball.Radius);
+		Ball.Velocity = FVector2D(0.0f, Random.FRandRange(320.0f, 560.0f) + FMath::Min(Score * 5.0f, 320.0f));
+		Balls.Add(Ball);
+		SpawnIn = FMath::Max(0.16f, 0.55f - Score * 0.006f);
+	}
+	for (int32 Index = Balls.Num() - 1; Index >= 0; --Index)
+	{
+		FLoadingBall& Ball = Balls[Index];
+		Ball.Position += Ball.Velocity * Delta;
+		if (LoadingCircleHitsBox(Ball.Position, Ball.Radius * 0.85f, PaddleX - LoadingAvoidHalf, LoadingAvoidGround - LoadingAvoidTall,
+			PaddleX + LoadingAvoidHalf, LoadingAvoidGround))
+		{
+			Burst(Ball.Position, LoadingPaint::Fire, TEXT("いたっ！"));
+			HitFlash = 0.5f;
+			Score = 0;
+			Balls.RemoveAt(Index);
+			continue;
+		}
+		if (Ball.Position.Y + Ball.Radius > LoadingAvoidGround)
+		{
+			Burst(FVector2D(Ball.Position.X, LoadingAvoidGround), LoadingPaint::WithAlpha(LoadingBallColor(Ball.Type), 0.6f));
+			AddScore(1);
+			Balls.RemoveAt(Index);
+		}
+	}
+}
+
 // =====================================================================================================================
 // Widget
 // =====================================================================================================================
@@ -711,6 +1229,7 @@ void SChaosImpactLoadingScreen::Construct(const FArguments& InArgs)
 
 FReply SChaosImpactLoadingScreen::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	if (bInteractive && FApp::IsUnattended()) { return FReply::Handled(); }
 	if (!bInteractive || !State.IsValid())
 	{
 		return FReply::Unhandled();
@@ -724,6 +1243,23 @@ FReply SChaosImpactLoadingScreen::OnMouseButtonDown(const FGeometry& MyGeometry,
 	{
 		State->ClickAt(Design, FPlatformTime::Seconds());
 	}
+	return FReply::Handled();
+}
+
+FReply SChaosImpactLoadingScreen::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (bInteractive && FApp::IsUnattended()) { return FReply::Handled(); }
+	if (!bInteractive || !State.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+	// The mouse steers the paddle (or the player) left and right.
+	const FVector2D Size = FVector2D(MyGeometry.GetLocalSize());
+	const float Fit = FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f);
+	const FVector2D Local = FVector2D(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()));
+	const float DesignX = static_cast<float>((Local.X - (Size.X - 1600.0f * Fit) * 0.5f) / Fit);
+	FScopeLock Guard(&State->Lock);
+	State->SetPointer(DesignX, FPlatformTime::Seconds());
 	return FReply::Handled();
 }
 
@@ -935,7 +1471,132 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 		Hint = TEXT("ボタン・クリックで次のボールへ");
 		break;
 	}
+	case EChaosImpactLoadingGame::Breakout:
+	{
+		// The court: its frame, the wall of bricks, the paddle and the ball.
+		const float Width = LoadingBreakRight - LoadingBreakLeft;
+		Back.Box(LoadingBreakLeft - 8.0f, LoadingBreakTop - 8.0f, Width + 16.0f, 6.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.35f));
+		Back.Box(LoadingBreakLeft - 8.0f, LoadingBreakTop - 8.0f, 6.0f, LoadingBreakMissY - LoadingBreakTop, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.35f));
+		Back.Box(LoadingBreakRight + 2.0f, LoadingBreakTop - 8.0f, 6.0f, LoadingBreakMissY - LoadingBreakTop, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.35f));
+		Back.Box(LoadingBreakLeft, LoadingBreakTop, Width, LoadingBreakMissY - LoadingBreakTop, FLinearColor(0.0f, 0.0f, 0.0f, 0.25f));
+		for (int32 Index = 0; Index < S.Bricks.Num(); ++Index)
+		{
+			if (S.Bricks[Index] == 0)
+			{
+				continue;
+			}
+			const float X = LoadingBreakLeft + (Index % LoadingBreakColumns) * LoadingBreakBrickWidth + 3.0f;
+			const float Y = LoadingBreakTop + 20.0f + (Index / LoadingBreakColumns) * LoadingBreakBrickStep;
+			const FLinearColor Colour = LoadingBallColor(S.Bricks[Index] - 1);
+			Back.Box(X, Y, LoadingBreakBrickWidth - 6.0f, LoadingBreakBrickHeight, Colour);
+			Front.Box(X, Y, LoadingBreakBrickWidth - 6.0f, 5.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.35f));
+			Front.Box(X, Y + LoadingBreakBrickHeight - 4.0f, LoadingBreakBrickWidth - 6.0f, 4.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.25f));
+		}
+		Back.Box(S.PaddleX - LoadingBreakPaddleHalf, LoadingBreakPaddleY, LoadingBreakPaddleHalf * 2.0f, 14.0f, LoadingPaint::Gold);
+		Front.Box(S.PaddleX - LoadingBreakPaddleHalf, LoadingBreakPaddleY, LoadingBreakPaddleHalf * 2.0f, 4.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.5f));
+		if (!S.Balls.IsEmpty())
+		{
+			const FLoadingBall& Ball = S.Balls[0];
+			if (!S.bBallStuck)
+			{
+				Back.Line(Ball.Position - Ball.Velocity.GetSafeNormal() * 34.0f, Ball.Position,
+					LoadingPaint::WithAlpha(LoadingBallColor(Ball.Type), 0.4f), 6.0f);
+			}
+			LoadingDrawBall(Back, Front, Ball.Position, Ball.Radius, Ball.Type);
+		}
+		if (bAuto)
+		{
+			Front.Text(TEXT("AUTO"), S.PaddleX, LoadingBreakPaddleY + 20.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
+				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
+		}
+		Hint = FString::Printf(TEXT("←→・スティック・マウスで動かす　ボタンで発射　こわした数 %d"), S.Score);
+		break;
+	}
+	case EChaosImpactLoadingGame::Flappy:
+	{
+		// The sky between the ceiling and the ground, pillars coming through it, and the bird.
+		const float Width = LoadingFlapRight - LoadingFlapLeft;
+		Back.Box(LoadingFlapLeft, LoadingFlapTop, Width, LoadingFlapGround - LoadingFlapTop, FLinearColor(0.02f, 0.06f, 0.12f, 0.55f));
+		Back.Box(LoadingFlapLeft, LoadingFlapGround, Width, 10.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.5f));
+		Back.Box(LoadingFlapLeft, LoadingFlapTop - 6.0f, Width, 6.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.25f));
+		for (int32 Snow = 0; Snow < 26; ++Snow)
+		{
+			// Snow drifting by behind (a shima-enaga's winter).
+			const float X = LoadingFlapRight - FMath::Fmod(Snow * 97.0f + T * (40.0f + (Snow % 3) * 25.0f), Width);
+			const float Y = LoadingFlapTop + FMath::Fmod(Snow * 53.0f + T * 30.0f, LoadingFlapGround - LoadingFlapTop);
+			Back.Disc(FVector2D(X, Y), 2.0f + (Snow % 3), LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.25f));
+		}
+		for (const FLoadingBall& Pillar : S.Balls)
+		{
+			const float PillarLeft = FMath::Max(static_cast<float>(Pillar.Position.X) - LoadingFlapPillarWidth * 0.5f, LoadingFlapLeft);
+			const float PillarRight = FMath::Min(static_cast<float>(Pillar.Position.X) + LoadingFlapPillarWidth * 0.5f, LoadingFlapRight);
+			if (PillarRight <= PillarLeft)
+			{
+				continue;
+			}
+			const FLinearColor Colour = LoadingBallColor(Pillar.Type);
+			const float GapTop = static_cast<float>(Pillar.Position.Y) - Pillar.Radius;
+			const float GapBottom = static_cast<float>(Pillar.Position.Y) + Pillar.Radius;
+			Back.Box(PillarLeft, LoadingFlapTop, PillarRight - PillarLeft, GapTop - LoadingFlapTop, Colour);
+			Back.Box(PillarLeft, GapBottom, PillarRight - PillarLeft, LoadingFlapGround - GapBottom, Colour);
+			Front.Box(PillarLeft - 6.0f, GapTop - 18.0f, PillarRight - PillarLeft + 12.0f, 18.0f, LoadingPaint::WithAlpha(Colour, 0.9f));
+			Front.Box(PillarLeft - 6.0f, GapBottom, PillarRight - PillarLeft + 12.0f, 18.0f, LoadingPaint::WithAlpha(Colour, 0.9f));
+			Front.Box(PillarLeft, LoadingFlapTop, 6.0f, GapTop - LoadingFlapTop, FLinearColor(1.0f, 1.0f, 1.0f, 0.25f));
+			Front.Box(PillarLeft, GapBottom, 6.0f, LoadingFlapGround - GapBottom, FLinearColor(1.0f, 1.0f, 1.0f, 0.25f));
+		}
+		if (S.RespawnIn <= 0.0f)
+		{
+			// A round white bird: tilted with its climb, a wing up just after each flap.
+			const FVector2D Bird(LoadingFlapBirdX, S.BirdY);
+			const float R = LoadingFlapBirdRadius;
+			const float Tilt = FMath::Clamp(S.BirdSpeed / 900.0f, -0.5f, 0.6f);
+			const float SinceFlap = T - S.BirdFlapAt;
+			const float Wing = SinceFlap < 0.18f ? -1.0f : FMath::Sin(T * 14.0f) * 0.3f;
+			Back.Disc(Bird + FVector2D(-R * 0.9f, R * 0.1f), R * 0.45f, LoadingPaint::Ink);
+			Back.Disc(Bird, R, FLinearColor(0.97f, 0.97f, 0.97f));
+			Front.Disc(Bird + FVector2D(-R * 0.15f, R * (0.25f + 0.3f * Wing)), R * 0.48f, FLinearColor(0.82f, 0.84f, 0.88f));
+			Front.Disc(Bird + FVector2D(R * 0.42f, -R * 0.2f + Tilt * R * 0.3f), R * 0.11f, LoadingPaint::Ink);
+			Front.Disc(Bird + FVector2D(R * 0.82f, R * 0.02f + Tilt * R * 0.3f), R * 0.1f, LoadingPaint::Gold);
+		}
+		if (bAuto)
+		{
+			Front.Text(TEXT("AUTO"), LoadingFlapBirdX, LoadingFlapGround + 16.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
+				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
+		}
+		Hint = FString::Printf(TEXT("ボタン・クリックで羽ばたく　くぐった数 %d"), S.Score);
+		break;
+	}
+	case EChaosImpactLoadingGame::Avoid:
+	{
+		// Balls raining down onto a strip of floor, each with its landing spot marked; the player steps about below.
+		const float Width = LoadingAvoidRight - LoadingAvoidLeft;
+		Back.Box(LoadingAvoidLeft, LoadingAvoidTop, Width, LoadingAvoidGround - LoadingAvoidTop, FLinearColor(0.0f, 0.0f, 0.0f, 0.22f));
+		Back.Box(LoadingAvoidLeft, LoadingAvoidGround, Width, 6.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.55f));
+		for (const FLoadingBall& Ball : S.Balls)
+		{
+			const float Near = FMath::Clamp(static_cast<float>(Ball.Position.Y - LoadingAvoidTop) / (LoadingAvoidGround - LoadingAvoidTop), 0.0f, 1.0f);
+			Back.Box(static_cast<float>(Ball.Position.X) - Ball.Radius * Near, LoadingAvoidGround - 3.0f, Ball.Radius * 2.0f * Near, 5.0f,
+				LoadingPaint::WithAlpha(LoadingPaint::Fire, 0.25f + 0.5f * Near));
+			LoadingDrawBall(Back, Front, Ball.Position, Ball.Radius, Ball.Type);
+		}
+		const float X = S.PaddleX + (S.HitFlash > 0.0f ? 5.0f * FMath::Sin(T * 70.0f) : 0.0f);
+		const float Base = LoadingAvoidGround;
+		const FLinearColor Body = S.HitFlash > 0.0f && FMath::Fmod(T, 0.12f) < 0.06f ? LoadingPaint::Fire : LoadingPaint::Ice;
+		Back.Line(FVector2D(X, Base - 26.0f), FVector2D(X - 9.0f, Base), Body, 7.0f);
+		Back.Line(FVector2D(X, Base - 26.0f), FVector2D(X + 9.0f, Base), Body, 7.0f);
+		Back.Disc(FVector2D(X, Base - 48.0f), 16.0f, Body);
+		Back.Box(X - 16.0f, Base - 48.0f, 32.0f, 20.0f, Body);
+		Front.Disc(FVector2D(X, Base - 70.0f), 13.0f, LoadingPaint::Paper);
+		if (bAuto)
+		{
+			Front.Text(TEXT("AUTO"), X, Base + 14.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
+				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
+		}
+		Hint = FString::Printf(TEXT("←→・スティック・マウスでよける　よけた数 %d"), S.Score);
+		break;
+	}
 	default:
+		Hint = S.PaintExtraGame(Back, Front);
 		break;
 	}
 
@@ -964,11 +1625,21 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	// What is loading, and how far it has got.
 	const LoadingPaint::FPainter Text{Design, OutDrawElements, LayerId + 5, Fade};
 	const int32 Dots = FMath::FloorToInt(T * 3.0f) % 4;
-	Text.Text(FString(TEXT("LOADING")) + FString::ChrN(Dots, TEXT('.')), 70.0f, 46.0f, 56.0f, LoadingPaint::Paper,
-		LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, LoadingPaint::Ink);
-	Text.Text(S.Status, 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f), LoadingPaint::ETextAlign::Left,
-		TEXT("Bold"), 2.0f, LoadingPaint::Ink);
-	if (S.Progress >= 0.0f)
+	if (S.bArcade)
+	{
+		Text.Text(TEXT("MINI GAME"), 70.0f, 46.0f, 56.0f, LoadingPaint::Paper, LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f,
+			LoadingPaint::Ink);
+		Text.Text(TEXT("Q / E ・ LB / RB 切りかえ　R / ＋ リトライ"), 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f),
+			LoadingPaint::ETextAlign::Left, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+	}
+	else
+	{
+		Text.Text(FString(TEXT("LOADING")) + FString::ChrN(Dots, TEXT('.')), 70.0f, 46.0f, 56.0f, LoadingPaint::Paper,
+			LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, LoadingPaint::Ink);
+		Text.Text(S.Status, 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f), LoadingPaint::ETextAlign::Left,
+			TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+	}
+	if (S.Progress >= 0.0f && !S.bArcade)
 	{
 		Text.Box(74.0f, 170.0f, 440.0f, 8.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.15f));
 		Text.Box(74.0f, 170.0f, 440.0f * FMath::Clamp(S.Progress, 0.0f, 1.0f), 8.0f, LoadingPaint::Gold);
@@ -977,7 +1648,8 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	}
 
 	// Which game this is, and its best.
-	Text.Text(TEXT("MINI GAME"), 1530.0f, 44.0f, 16.0f, LoadingPaint::Gold, LoadingPaint::ETextAlign::Right, TEXT("BlackItalic"));
+	Text.Text(S.bArcade ? FString::Printf(TEXT("%d / %d"), static_cast<int32>(S.Game) + 1, static_cast<int32>(EChaosImpactLoadingGame::Count))
+		: FString(TEXT("MINI GAME")), 1530.0f, 44.0f, 16.0f, LoadingPaint::Gold, LoadingPaint::ETextAlign::Right, TEXT("BlackItalic"));
 	Text.Text(LoadingGameName(S.Game), 1530.0f, 66.0f, 34.0f, LoadingPaint::Paper, LoadingPaint::ETextAlign::Right, TEXT("BlackItalic"),
 		3.0f, LoadingPaint::Ink);
 	if (S.Game != EChaosImpactLoadingGame::Gallery && S.Best > 0)
@@ -987,7 +1659,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	}
 
 	// A tip, on a card with its ball (the gallery is all tips already).
-	if (S.Game != EChaosImpactLoadingGame::Gallery)
+	if (S.Game != EChaosImpactLoadingGame::Gallery && !S.bArcade)
 	{
 		const FLoadingTip& Tip = LoadingTips[FMath::Clamp(S.Tip, 0, static_cast<int32>(UE_ARRAY_COUNT(LoadingTips)) - 1)];
 		const float In = LoadingPaint::EaseOut(T / 0.35f);
@@ -1020,7 +1692,8 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			TEXT("Bold"), 2.0f, LoadingPaint::Ink);
 		if (S.bCancelable)
 		{
-			Hints.Text(TEXT("Esc / B でやめる"), 70.0f, 838.0f, 18.0f, LoadingPaint::Muted, LoadingPaint::ETextAlign::Left, TEXT("Bold"));
+			Hints.Text(S.bArcade ? TEXT("Esc / B でもどる") : TEXT("Esc / B でやめる"), 70.0f, 838.0f, 18.0f, LoadingPaint::Muted,
+				LoadingPaint::ETextAlign::Left, TEXT("Bold"));
 		}
 	}
 	return LayerId + 9;
@@ -1183,9 +1856,90 @@ bool UChaosImpactLoadingSubsystem::HandleKey(const FKey& Key, const int32 InputD
 		bCancelRequested = true;
 		return true;
 	}
+	const double Now = FPlatformTime::Seconds();
 	FScopeLock Guard(&State->Lock);
-	State->Press(FPlatformTime::Seconds());
+	if (State->bArcade && (Key == EKeys::R || Key == EKeys::Gamepad_Special_Right))
+	{
+		State->StartGame(State->Game);
+		return true;
+	}
+	if (State->bArcade && (Key == EKeys::Q || Key == EKeys::E || Key == EKeys::Tab
+		|| Key == EKeys::Gamepad_LeftShoulder || Key == EKeys::Gamepad_RightShoulder))
+	{
+		State->SwitchGame(Key == EKeys::Q || Key == EKeys::Gamepad_LeftShoulder ? -1 : 1);
+		LastArcadeGame = State->Game;
+		return true;
+	}
+	if (const int32 Steer = LoadingSteerDirection(Key))
+	{
+		State->SetSteerKey(Steer, true, Now);
+		if (State->UsesSteering())
+		{
+			// Steering only (not a press as well).
+			return true;
+		}
+	}
+	if (const int32 Vertical = LoadingVerticalDirection(Key); Vertical && State->UsesVertical())
+	{
+		State->SetVerticalKey(Vertical, true, Now);
+		return true;
+	}
+	State->Press(Now);
 	return true;
+}
+
+bool UChaosImpactLoadingSubsystem::HandleKeyUp(const FKey& Key)
+{
+	if (Overlay.IsValid() && State.IsValid())
+	{
+		if (const int32 Steer = LoadingSteerDirection(Key))
+		{
+			FScopeLock Guard(&State->Lock);
+			State->SetSteerKey(Steer, false, FPlatformTime::Seconds());
+		}
+		if (const int32 Vertical = LoadingVerticalDirection(Key))
+		{
+			FScopeLock Guard(&State->Lock);
+			State->SetVerticalKey(Vertical, false, FPlatformTime::Seconds());
+		}
+	}
+	// Never kept from the game: a key let go meanwhile must not stay held down there.
+	return false;
+}
+
+bool UChaosImpactLoadingSubsystem::HandleAnalog(const FKey& Key, const float Value)
+{
+	if (!Overlay.IsValid() || !State.IsValid())
+	{
+		return false;
+	}
+	if (Key == EKeys::Gamepad_LeftX)
+	{
+		FScopeLock Guard(&State->Lock);
+		State->SetStick(Value, FPlatformTime::Seconds());
+	}
+	else if (Key == EKeys::Gamepad_LeftY)
+	{
+		FScopeLock Guard(&State->Lock);
+		State->SetStickY(Value, FPlatformTime::Seconds());
+	}
+	return true;
+}
+
+void UChaosImpactLoadingSubsystem::ShowArcade()
+{
+	ForcedGame = LastArcadeGame;
+	Show(EChaosImpactLoadingKind::Arcade);
+	if (!State.IsValid())
+	{
+		return;
+	}
+	// Escape / B: back to where it was opened from (nothing else to do).
+	CancelAction = []() {};
+	FScopeLock Guard(&State->Lock);
+	State->bArcade = true;
+	State->bCancelable = true;
+	State->Progress = -1.0f;
 }
 
 bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
@@ -1198,6 +1952,10 @@ bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
 	if (bCancelRequested)
 	{
 		bCancelRequested = false;
+		if (State->bArcade)
+		{
+			LastArcadeGame = State->Game;
+		}
 		const TFunction<void()> Cancel = CancelAction;
 		Remove();
 		if (Cancel)

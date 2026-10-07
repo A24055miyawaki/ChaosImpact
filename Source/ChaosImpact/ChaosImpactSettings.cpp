@@ -639,7 +639,7 @@ FString ChaosImpactSettings::GetKeyName(const FKey& Key, const EChaosImpactDevic
 		const FKey* Key;
 		const TCHAR* Name;
 	};
-	static const FKeyName KeyNames[] = {
+	static const FKeyName SpecialKeyNames[] = {
 		{&EKeys::LeftMouseButton, TEXT("左クリック")}, {&EKeys::RightMouseButton, TEXT("右クリック")},
 		{&EKeys::MiddleMouseButton, TEXT("ホイールクリック")}, {&EKeys::ThumbMouseButton, TEXT("マウス4")},
 		{&EKeys::ThumbMouseButton2, TEXT("マウス5")}, {&EKeys::SpaceBar, TEXT("スペース")},
@@ -650,7 +650,7 @@ FString ChaosImpactSettings::GetKeyName(const FKey& Key, const EChaosImpactDevic
 		{&EKeys::Hyphen, TEXT("－")}, {&EKeys::Enter, TEXT("Enter")}, {&EKeys::BackSpace, TEXT("BackSpace")},
 		{&EKeys::Tab, TEXT("Tab")}, {&EKeys::CapsLock, TEXT("CapsLock")},
 	};
-	for (const FKeyName& Name : KeyNames)
+	for (const FKeyName& Name : SpecialKeyNames)
 	{
 		if (*Name.Key == Key)
 		{

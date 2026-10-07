@@ -1700,6 +1700,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		SetActorEnableCollision(false);
 		StartEliminationEffect();
 		OnPlayerEliminated();
+		OnEliminated.Broadcast(this);
 
 		AChaosImpactCharacter* Eliminator = EventInstigator
 			? Cast<AChaosImpactCharacter>(EventInstigator->GetPawn()) : nullptr;
@@ -3227,6 +3228,12 @@ void AChaosImpactCharacter::RecoverStaminaFromBallHit()
 	{
 		ClientAddStamina(StaminaRecoveredPerBallHit);
 	}
+}
+
+void AChaosImpactCharacter::SetRespawnPoint(const FVector Location, const FRotator Rotation)
+{
+	InitialSpawnLocation = Location;
+	InitialSpawnRotation = FRotator(0.0f, Rotation.Yaw, 0.0f);
 }
 
 void AChaosImpactCharacter::SetTrainingStartTransform(

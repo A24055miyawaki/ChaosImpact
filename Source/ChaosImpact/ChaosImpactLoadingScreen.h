@@ -209,6 +209,10 @@ private:
 	bool bCancelRequested = false;
 	double ShownAt = 0.0;
 	double WorldLoadedAt = 0.0;
+	/** Loading has really finished: it goes once it has been up for MinimumShowSeconds (looking as if still loading). */
+	bool bReady = false;
+	/** Up at least this long, so its little game can be played even when the load is quick. */
+	static constexpr double MinimumShowSeconds = 4.0;
 	EChaosImpactLoadingGame LastGame = EChaosImpactLoadingGame::Count;
 	EChaosImpactLoadingGame ForcedGame = EChaosImpactLoadingGame::Count;
 	FTSTicker::FDelegateHandle Ticker;

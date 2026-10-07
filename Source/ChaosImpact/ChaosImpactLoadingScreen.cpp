@@ -1119,6 +1119,7 @@ void UChaosImpactLoadingSubsystem::Remove()
 	bCancelRequested = false;
 	bTravelling = false;
 	bWorldLoaded = false;
+	bReady = false;
 }
 
 void UChaosImpactLoadingSubsystem::BeginTravel(const EChaosImpactLoadingKind Kind)
@@ -1166,8 +1167,8 @@ void UChaosImpactLoadingSubsystem::NotifyWorldReady()
 	{
 		return;
 	}
-	FScopeLock Guard(&State->Lock);
-	State->FadeStartedAt = FPlatformTime::Seconds();
+	// Done, but it stays up (still looking busy) until its minimum time is over: see Tick.
+	bReady = true;
 }
 
 bool UChaosImpactLoadingSubsystem::HandleKey(const FKey& Key, const int32 InputDeviceId)
@@ -1207,9 +1208,16 @@ bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
 	}
 	if (ProgressSource)
 	{
-		const float Progress = ProgressSource();
+		// The bar never runs ahead of the minimum time either, so it fills steadily to the end.
+		const float Progress = FMath::Min(ProgressSource(), static_cast<float>((Now - ShownAt) / MinimumShowSeconds));
 		FScopeLock Guard(&State->Lock);
 		State->Progress = Progress;
+	}
+	if (bReady && State->FadeStartedAt < 0.0 && Now - ShownAt >= MinimumShowSeconds)
+	{
+		FScopeLock Guard(&State->Lock);
+		State->Progress = State->Progress >= 0.0f ? 1.0f : State->Progress;
+		State->FadeStartedAt = Now;
 	}
 	// Never stuck up: a level that never came, or never said it was ready.
 	if (State->FadeStartedAt < 0.0 && ((bTravelling && !bWorldLoaded && Now - ShownAt > 30.0)

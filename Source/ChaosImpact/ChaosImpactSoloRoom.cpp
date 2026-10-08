@@ -1,4 +1,5 @@
 #include "ChaosImpactSoloRoom.h"
+#include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
@@ -216,6 +217,10 @@ void AChaosImpactSoloRoom::ResetRoom()
 
 void AChaosImpactSoloRoom::SetDoorsClosed(const bool bClosed)
 {
+	if (HasActorBegunPlay() && bClosed != bDoorsClosed)
+	{
+		ChaosImpactSfx::PlayAt(this, bClosed ? EChaosImpactSfx::SoloDoorClose : EChaosImpactSfx::SoloDoorOpen, Door->GetComponentLocation());
+	}
 	bDoorsClosed = bClosed;
 	Door->SetCollisionEnabled(bClosed ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
 	if (bClosed)
@@ -262,6 +267,7 @@ void AChaosImpactSoloRoom::HandleEnemyDestroyed(AActor* DestroyedActor)
 		Phase = EChaosImpactSoloRoomPhase::Cleared;
 		SetDoorsClosed(false);
 		BindPlayer(nullptr);
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloClear);
 		UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s cleared"), *GetName());
 		OnRoomCleared.Broadcast(this);
 		ReceiveRoomCleared();
@@ -356,6 +362,10 @@ void AChaosImpactSoloRoom::SpawnBoss()
 		Enemies.Add(NewBoss);
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: boss %s"), *GetName(), *GetNameSafe(NewBoss));
+	if (NewBoss)
+	{
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloBoss);
+	}
 	OnBossSpawned.Broadcast(this);
 	ReceiveBossSpawned(NewBoss);
 	if (!NewBoss)

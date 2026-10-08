@@ -1,4 +1,5 @@
 #include "ChaosImpactWarpPad.h"
+#include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
@@ -477,6 +478,7 @@ void AChaosImpactWarpPad::MulticastWarpEffects_Implementation(AChaosImpactCharac
 		}
 		// The warp itself: a thump in the warping player's own controller.
 		Character->PlayControllerRumble(0.3f, 0.85f, 0.25f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageWarp, From);
 		// Here the move may reach this machine a moment later; there they have just arrived.
 		ArrivedAt.Add(Character, Now);
 		if (IsValid(Destination))

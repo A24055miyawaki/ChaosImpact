@@ -75,6 +75,9 @@ private:
 	double SlotJoinedAt[4] = {};
 	EChaosImpactScreen Screen = EChaosImpactScreen::Title;
 	int32 SelectedIndex = 0;
+	/** What the cursor was on last frame (a move to another entry clicks). */
+	EChaosImpactScreen SoundScreen = EChaosImpactScreen::Title;
+	int32 SoundSelectedIndex = INDEX_NONE;
 	int32 PressedIndex = INDEX_NONE;
 	/** Pause entries that leave the room/search need a second confirm on the same entry. */
 	int32 ArmedIndex = INDEX_NONE;

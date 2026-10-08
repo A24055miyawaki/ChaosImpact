@@ -1,6 +1,7 @@
 #include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactTitleDemo.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "ChaosImpactCharacter.h"
@@ -811,6 +812,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 		SettingsScreen->Close();
 	}
 	Screen = NewScreen;
+	if (Screen == EChaosImpactScreen::Pause && PreviousScreen != EChaosImpactScreen::Pause)
+	{
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiOpen);
+	}
 	if (Screen == EChaosImpactScreen::Settings && SettingsScreen && !SettingsScreen->IsOpen())
 	{
 		SettingsScreen->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
@@ -1382,6 +1387,13 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	// Slate continues to animate while the gameplay world is paused.
 	const double Now = FPlatformTime::Seconds();
 	AnimationSeconds = static_cast<float>(Now - ScreenStartedAt);
+	// The cursor moved to another entry (keys, stick or mouse): a tick. A new screen starting on its first does not.
+	if (Screen == SoundScreen && SelectedIndex != SoundSelectedIndex && SoundSelectedIndex != INDEX_NONE && Entries.IsValidIndex(SelectedIndex))
+	{
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiMove);
+	}
+	SoundScreen = Screen;
+	SoundSelectedIndex = SelectedIndex;
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
 	{
 		CharacterSelect->Tick(InDeltaTime);
@@ -2069,12 +2081,14 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 				return;
 			}
 			Controller->AdjustMatchRule(SelectedIndex, bRight ? 1 : -1);
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
 			BuildEntries();
 			return;
 		}
 		if (Screen == EChaosImpactScreen::TeamSelect)
 		{
 			Controller->ChangeOwnTeam(bRight ? 1 : -1);
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
 			return;
 		}
 	}
@@ -2166,6 +2180,7 @@ void UChaosImpactMenuWidget::SwitchResultsTab(const int32 Tab)
 		return;
 	}
 	Results->SetStatsTab(Tab);
+	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiTab);
 	BuildEntries();
 	SelectBlend.Init(0.0f, Entries.Num());
 	PressedIndex = INDEX_NONE;
@@ -2310,6 +2325,8 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 	{
 		return;
 	}
+	ChaosImpactSfx::Play2D(this, Entries[SelectedIndex].bDisabled ? EChaosImpactSfx::UiDeny
+		: Screen == EChaosImpactScreen::Title ? EChaosImpactSfx::UiStart : EChaosImpactSfx::UiConfirm);
 	switch (Screen)
 	{
 	case EChaosImpactScreen::Title:
@@ -2679,6 +2696,10 @@ void UChaosImpactMenuWidget::GoBack()
 {
 	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
 	{
+		if (Screen != EChaosImpactScreen::Title)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiBack);
+		}
 		switch (Screen)
 		{
 		case EChaosImpactScreen::Pause:

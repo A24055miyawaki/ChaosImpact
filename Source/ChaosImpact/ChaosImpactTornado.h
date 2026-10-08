@@ -8,6 +8,7 @@ class AChaosImpactBall;
 class AChaosImpactCharacter;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
+class UAudioComponent;
 class UPointLightComponent;
 class UProceduralMeshComponent;
 class UStaticMesh;
@@ -92,6 +93,10 @@ private:
 
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TObjectPtr<USceneComponent> SceneRoot;
+
+	/** The roar of the wind while it whirls (it moves with the tornado). */
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> WindSound;
 
 	/** Path simulated so far on this machine (a fixed step, so every machine lands on the same points). */
 	FVector PathPosition = FVector::ZeroVector;

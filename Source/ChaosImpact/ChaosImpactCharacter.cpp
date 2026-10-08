@@ -5,6 +5,7 @@
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameMode.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactSessionSubsystem.h"
@@ -355,6 +356,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	UpdateDriving(DeltaSeconds);
 	if (GetNetMode() != NM_DedicatedServer)
 	{
+		UpdateSoundPresentation();
 		UpdateSnowRollPresentation();
 		UpdateNovaChargePresentation(DeltaSeconds);
 		UpdateLandingPreview(DeltaSeconds);
@@ -1880,8 +1882,9 @@ void AChaosImpactCharacter::StartEliminationEffect()
 {
 	bRespawnEffectActive = false;
 	GetMesh()->SetRelativeScale3D(InitialMeshRelativeScale);
-	bEliminationEffectActive = true;
+		bEliminationEffectActive = true;
 	EliminationEffectTime = 0.0f;
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharKO, GetActorLocation());
 	GetMesh()->SetVisibility(false, true);
 	HeldBallMesh->SetVisibility(false, true);
 	LeftHeldBallMesh->SetVisibility(false, true);
@@ -1958,6 +1961,7 @@ void AChaosImpactCharacter::StartRespawnEffect()
 {
 	bRespawnEffectActive = true;
 	RespawnEffectTime = 0.0f;
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharRespawn, GetActorLocation());
 	GetMesh()->SetVisibility(true, false);
 	if (ToonCharacter)
 	{
@@ -2103,6 +2107,7 @@ void AChaosImpactCharacter::NotifyOpponentEliminated(const FString& VictimName)
 	{
 		ChargeWidget->ShowKnockout(VictimName);
 	}
+	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchKO);
 	// A knockout: two light taps.
 	PlayControllerRumble(0.25f, 0.6f, 0.09f);
 	PlayControllerRumble(0.25f, 0.6f, 0.09f, 0.17f);
@@ -3031,6 +3036,7 @@ void AChaosImpactCharacter::ClientShowKnockout_Implementation(const FString& Vic
 	{
 		ChargeWidget->ShowKnockout(VictimName);
 	}
+	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchKO);
 	PlayControllerRumble(0.25f, 0.6f, 0.09f);
 	PlayControllerRumble(0.25f, 0.6f, 0.09f, 0.17f);
 }
@@ -3826,6 +3832,7 @@ void AChaosImpactCharacter::SetIceFreezePresentation(const bool bFrozen)
 		if (bIceThawing)
 		{
 			ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation(), 1.1f, 2.0f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharIceShatter, GetActorLocation());
 		}
 		else if (IceBlockMesh)
 		{
@@ -3890,7 +3897,110 @@ void AChaosImpactCharacter::SetIceFreezePresentation(const bool bFrozen)
 		}
 	}
 	ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation(), 0.7f, 1.0f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharFreeze, GetActorLocation());
 	UpdateIceFreezePresentation(0.0f);
+}
+
+void AChaosImpactCharacter::UpdateSoundPresentation()
+{
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Movement || !GetWorld())
+	{
+		return;
+	}
+	const FVector Feet = GetActorLocation() - FVector(0.0f, 0.0f, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	const bool bAlive = !bEliminated && !bEliminationEffectActive;
+
+	// A dash (this screen's own, or another's as it arrives).
+	const bool bDashing = bIsDashing || bReplicatedDashing;
+	if (bDashing && !bSoundWasDashing && bAlive)
+	{
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharDash, GetActorLocation());
+	}
+	bSoundWasDashing = bDashing;
+
+	// Off the ground going up: a jump. Down again after a real fall: a landing (louder the harder).
+	const bool bFalling = Movement->IsFalling();
+	if (bFalling && !bSoundWasFalling && GetVelocity().Z > 200.0f && bAlive && !bDashing)
+	{
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharJump, Feet);
+	}
+	if (bFalling)
+	{
+		SoundFallSpeed = FMath::Max(SoundFallSpeed, static_cast<float>(-GetVelocity().Z));
+	}
+	else
+	{
+		if (bSoundWasFalling && Movement->IsMovingOnGround() && SoundFallSpeed > 250.0f && bAlive)
+		{
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharLand, Feet, FMath::GetMappedRangeValueClamped(
+				FVector2f(250.0f, 1200.0f), FVector2f(0.55f, 1.0f), SoundFallSpeed));
+		}
+		SoundFallSpeed = 0.0f;
+	}
+	bSoundWasFalling = bFalling;
+
+	// A ball picked up; the two swapped round.
+	if (SoundBallCount >= 0 && bAlive)
+	{
+		if (CarriedBallCount > SoundBallCount)
+		{
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharPickup, GetActorLocation());
+		}
+		else if (CarriedBallCount == SoundBallCount && CarriedBallCount >= 2 && CarriedBallTypes != SoundBallTypes)
+		{
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharSwap, GetActorLocation());
+		}
+	}
+	SoundBallCount = CarriedBallCount;
+	SoundBallTypes = CarriedBallTypes;
+
+	// The throw: the swing (heavier for a big snowball or a nova), and what some balls do as they leave the hand.
+	if (bThrowAnimationActive && !bSoundWasThrowing)
+	{
+		const AChaosImpactBall* Thrown = PendingThrowBall.Get();
+		const EChaosImpactBallType Type = Thrown ? Thrown->GetBallType() : LastChargedType;
+		const bool bHeavy = Type == EChaosImpactBallType::Nova || (Type == EChaosImpactBallType::Snow && SnowLift > 0.5f);
+		const FVector Hand = GetActorLocation() + GetActorForwardVector() * 50.0f + FVector(0.0f, 0.0f, 40.0f);
+		ChaosImpactSfx::PlayAt(this, bHeavy ? EChaosImpactSfx::CharThrowHeavy : EChaosImpactSfx::CharThrow, Hand);
+		switch (Type)
+		{
+		case EChaosImpactBallType::Fire: ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::FireThrow, Hand); break;
+		case EChaosImpactBallType::Beam: ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamFire, Hand); break;
+		case EChaosImpactBallType::Nova: ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaThrow, Hand); break;
+		case EChaosImpactBallType::Thunder: ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBounce, Hand, 0.8f); break;
+		default: break;
+		}
+	}
+	bSoundWasThrowing = bThrowAnimationActive;
+
+	// Hit (health down, on every screen as it arrives).
+	if (SoundHealth >= 0.0f && Health < SoundHealth - KINDA_SMALL_NUMBER && Health > 0.0f)
+	{
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharHit, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f));
+	}
+	SoundHealth = Health;
+
+	// The player's own charge reaching full: a small ping, on its own screen only.
+	const bool bChargeFull = bIsChargingThrow && GetThrowChargeAlpha() >= 1.0f;
+	if (bChargeFull && !bSoundChargeFull && IsLocallyControlled() && IsPlayerControlled()
+		&& GetCarriedBallType(0) != EChaosImpactBallType::Nova)
+	{
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::CharChargeReady);
+	}
+	bSoundChargeFull = bChargeFull;
+
+	// A nova swelling over the head hums, rising, until it is thrown (or the charge is let go).
+	const bool bNova = IsChargingNova() && bAlive;
+	if (bNova && !NovaChargeSound)
+	{
+		NovaChargeSound = ChaosImpactSfx::PlayAttached(EChaosImpactSfx::NovaCharge, GetRootComponent());
+	}
+	else if (!bNova && NovaChargeSound)
+	{
+		ChaosImpactSfx::Stop(NovaChargeSound, 0.15f);
+		NovaChargeSound = nullptr;
+	}
 }
 
 void AChaosImpactCharacter::UpdateLastHitPresentation()

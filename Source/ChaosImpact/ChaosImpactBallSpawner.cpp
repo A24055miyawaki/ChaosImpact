@@ -39,12 +39,83 @@ AChaosImpactBallSpawner::AChaosImpactBallSpawner()
 	SpawnLight->SetCastShadows(false);
 
 	BallClass = AChaosImpactBall::StaticClass();
+	UpdateChanceSummary();
+}
+
+void AChaosImpactBallSpawner::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+	UpdateChanceSummary();
+}
+
+float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
+{
+	switch (Type)
+	{
+	case EChaosImpactBallType::Normal: return &NormalBallChance;
+	case EChaosImpactBallType::Fire: return &FireBallChance;
+	case EChaosImpactBallType::Ice: return &IceBallChance;
+	case EChaosImpactBallType::Thunder: return &ThunderBallChance;
+	case EChaosImpactBallType::Black: return &BlackBallChance;
+	case EChaosImpactBallType::Wind: return &WindBallChance;
+	case EChaosImpactBallType::Smoke: return &SmokeBallChance;
+	case EChaosImpactBallType::Beam: return &BeamBallChance;
+	case EChaosImpactBallType::Snow: return &SnowBallChance;
+	case EChaosImpactBallType::Nova: return &NovaBallChance;
+	case EChaosImpactBallType::Simae: return &SimaeBallChance;
+	case EChaosImpactBallType::Drive: return &DriveBallChance;
+	default: return nullptr;
+	}
+}
+
+float AChaosImpactBallSpawner::GetChance(const EChaosImpactBallType Type) const
+{
+	float Total = 0.0f;
+	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
+	{
+		const float* Weight = WeightFor(static_cast<EChaosImpactBallType>(Index));
+		Total += Weight ? FMath::Max(0.0f, *Weight) : 0.0f;
+	}
+	const float* Weight = WeightFor(Type);
+	// Every weight 0: only normal balls.
+	if (Total <= 0.0f)
+	{
+		return Type == EChaosImpactBallType::Normal ? 1.0f : 0.0f;
+	}
+	return Weight ? FMath::Max(0.0f, *Weight) / Total : 0.0f;
+}
+
+void AChaosImpactBallSpawner::SetChanceWeight(const EChaosImpactBallType Type, const float Weight)
+{
+	if (float* Setting = WeightFor(Type))
+	{
+		*Setting = FMath::Max(0.0f, Weight);
+		UpdateChanceSummary();
+	}
+}
+
+void AChaosImpactBallSpawner::UpdateChanceSummary()
+{
+	TArray<FString> Lines;
+	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
+	{
+		const EChaosImpactBallType Type = static_cast<EChaosImpactBallType>(Index);
+		const float Chance = GetChance(Type);
+		if (Chance > 0.0f)
+		{
+			Lines.Add(FString::Printf(TEXT("%s %.1f%%"), ChaosImpactBallTypes::GetInternalName(Type), Chance * 100.0f));
+		}
+	}
+	ChanceSummary = FString::Join(Lines, TEXT("\n"));
 }
 
 void AChaosImpactBallSpawner::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!bAlwaysActive && !ChaosImpact::IsTrainingWorld(GetWorld()))
+	// Placed in a level: training and solo mode (the title and VS make their own pads).
+	const UWorld* World = GetWorld();
+	const bool bSoloWorld = World && World->URL.HasOption(TEXT("CISolo=1"));
+	if (!bAlwaysActive && !ChaosImpact::IsTrainingWorld(World) && !bSoloWorld)
 	{
 		SetActorHiddenInGame(true);
 		SetActorEnableCollision(false);
@@ -60,23 +131,14 @@ void AChaosImpactBallSpawner::BeginPlay()
 
 EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
 {
-	const TPair<EChaosImpactBallType, float> Chances[] =
+	float Roll = FMath::FRand();
+	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
 	{
-		{EChaosImpactBallType::Fire, FireBallChance}, {EChaosImpactBallType::Ice, IceBallChance},
-		{EChaosImpactBallType::Thunder, ThunderBallChance}, {EChaosImpactBallType::Black, BlackBallChance},
-		{EChaosImpactBallType::Wind, WindBallChance}, {EChaosImpactBallType::Smoke, SmokeBallChance},
-		{EChaosImpactBallType::Beam, BeamBallChance}, {EChaosImpactBallType::Snow, SnowBallChance},
-		{EChaosImpactBallType::Nova, NovaBallChance}, {EChaosImpactBallType::Simae, SimaeBallChance},
-		{EChaosImpactBallType::Drive, DriveBallChance}
-	};
-	const float Roll = FMath::FRand();
-	float Threshold = 0.0f;
-	for (const TPair<EChaosImpactBallType, float>& Chance : Chances)
-	{
-		Threshold += Chance.Value;
-		if (Roll < Threshold)
+		const EChaosImpactBallType Type = static_cast<EChaosImpactBallType>(Index);
+		Roll -= GetChance(Type);
+		if (Roll < 0.0f)
 		{
-			return Chance.Key;
+			return Type;
 		}
 	}
 	return EChaosImpactBallType::Normal;

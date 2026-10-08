@@ -1,4 +1,5 @@
 #include "ChaosImpactVersusCard.h"
+#include "ChaosImpactSfx.h"
 
 #include "ChaosImpactPaint.h"
 #include "Engine/Texture.h"
@@ -66,6 +67,8 @@ void SChaosImpactVersusCard::Construct(const FArguments& InArgs)
 	{
 		Info.StartedAt = FPlatformTime::Seconds();
 	}
+	// The card slams in.
+	ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiReveal);
 	for (const FChaosImpactVersusEntrant& Entrant : Info.Entrants)
 	{
 		FSlateBrush& Brush = PictureBrushes.AddDefaulted_GetRef();
@@ -264,6 +267,8 @@ void SChaosImpactVersusReveal::Open()
 	if (OpenedAt <= 0.0)
 	{
 		OpenedAt = FPlatformTime::Seconds();
+		// The card parts to show the stage.
+		ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::MatchStarting);
 	}
 }
 

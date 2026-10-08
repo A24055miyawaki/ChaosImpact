@@ -1,4 +1,5 @@
 #include "ChaosImpactSettingsScreen.h"
+#include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactLoadingScreen.h"
@@ -79,6 +80,10 @@ void UChaosImpactSettingsScreen::Close()
 
 void UChaosImpactSettingsScreen::SetTab(const ETab NewTab)
 {
+	if (bOpen && static_cast<ETab>(Wrap(static_cast<int32>(NewTab), static_cast<int32>(ETab::Count))) != Tab)
+	{
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiTab);
+	}
 	Tab = static_cast<ETab>(Wrap(static_cast<int32>(NewTab), static_cast<int32>(ETab::Count)));
 	TabChangedAt = FPlatformTime::Seconds();
 	bDeleteArmed = false;
@@ -228,6 +233,7 @@ void UChaosImpactSettingsScreen::SelectRow(const int32 Row, const int32 Cell)
 	if (Row != SelectedRow)
 	{
 		bDeleteArmed = false;
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
 	}
 	SelectedRow = Row;
 	SelectedCell = Rows[Row].Kind == ERowKind::Binding ? FMath::Clamp(Cell, 0, 1) : 0;
@@ -301,6 +307,7 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 	using namespace ChaosImpactSettings;
 	const int32 Step = Direction < 0 ? -1 : 1;
 	const int32 Id = Row.Id;
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 	if (Id == RowWindowMode)
 	{
 		SetWindowMode(Wrap(GetWindowMode() + Step, 3));
@@ -399,6 +406,7 @@ void UChaosImpactSettingsScreen::Activate()
 	using namespace ChaosImpactSettings;
 	if (!IsSelectable(SelectedRow) || Rows[SelectedRow].bDisabled)
 	{
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiDeny);
 		return;
 	}
 	const FRow& Row = Rows[SelectedRow];
@@ -407,6 +415,7 @@ void UChaosImpactSettingsScreen::Activate()
 		ChangeValue(Row, 1);
 		return;
 	}
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiConfirm);
 	if (Row.Kind == ERowKind::Binding)
 	{
 		bWaitingForKey = true;
@@ -507,6 +516,7 @@ void UChaosImpactSettingsScreen::ShowMessage(const FString& Text)
 
 void UChaosImpactSettingsScreen::Leave()
 {
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
 	bWaitingForKey = false;
 	if (AChaosImpactPlayerController* Owner = Controller.Get())
 	{

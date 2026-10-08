@@ -8,6 +8,7 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactSimaeBird.h"
@@ -1092,6 +1093,11 @@ void AChaosImpactBall::UpdateContactPresentation(const float DeltaSeconds)
 
 void AChaosImpactBall::MulticastContactBurst_Implementation(FVector_NetQuantize Location, FRotator Rotation)
 {
+	if (!bContactSoundPlayed)
+	{
+		bContactSoundPlayed = true;
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, Location);
+	}
 	if (UNiagaraSystem* ContactBurst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, ContactBurst,
@@ -1102,6 +1108,7 @@ void AChaosImpactBall::MulticastContactBurst_Implementation(FVector_NetQuantize 
 void AChaosImpactBall::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	UpdateSoundPresentation(DeltaSeconds);
 	if (!HasAuthority())
 	{
 		TickClientPresentation(DeltaSeconds);
@@ -1843,7 +1850,62 @@ void AChaosImpactBall::OnRep_Detonated()
 	if (bDetonated)
 	{
 		SetActorHiddenInGame(true);
+		StopFlightSound();
 	}
+}
+
+void AChaosImpactBall::UpdateSoundPresentation(const float DeltaSeconds)
+{
+	if (GetNetMode() == NM_DedicatedServer || DeltaSeconds <= 0.0f || !BallMesh)
+	{
+		return;
+	}
+	const bool bShown = !IsHidden() && !bDetonated && BallMesh->IsVisible() && !GetAttachParentActor();
+	const FVector At = BallMesh->GetComponentLocation();
+	const FVector Velocity = bSoundHasLast ? (At - SoundLastLocation) / DeltaSeconds : FVector::ZeroVector;
+	// A bounce: going fast, then suddenly another way (not a correction's jump: the new speed stays believable).
+	const double LastSpeed = SoundLastVelocity.Size();
+	const double Speed = Velocity.Size();
+	if (bShown && bSoundHasLast && LastSpeed > 400.0 && Speed > 120.0 && Speed < LastSpeed * 2.5
+		&& FVector::DotProduct(SoundLastVelocity / LastSpeed, Velocity / Speed) < 0.6)
+	{
+		const float Loudness = FMath::GetMappedRangeValueClamped(FVector2f(400.0f, 2500.0f), FVector2f(0.45f, 1.0f),
+			static_cast<float>(LastSpeed));
+		ChaosImpactSfx::PlayAt(this, BallType == EChaosImpactBallType::Thunder ? EChaosImpactSfx::ThunderBounce
+			: EChaosImpactSfx::BallBounce, At, Loudness);
+	}
+	SoundLastLocation = At;
+	SoundLastVelocity = Velocity;
+	bSoundHasLast = bShown;
+	if (bShown && !bSoundSpawnChecked)
+	{
+		// Not the balls already there as a level starts (or as this screen joins).
+		bSoundSpawnChecked = true;
+		if (bIsPickup && !ThrowingPawn.IsValid() && GetGameTimeSinceCreation() < 0.5f && GetWorld()->GetTimeSeconds() > 3.0)
+		{
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageBallSpawn, At);
+		}
+	}
+
+	// The hum of a ball in flight.
+	const EChaosImpactSfx Hum = BallType == EChaosImpactBallType::Fire ? EChaosImpactSfx::FireLoop
+		: BallType == EChaosImpactBallType::Thunder ? EChaosImpactSfx::ThunderLoop
+		: BallType == EChaosImpactBallType::Drive ? EChaosImpactSfx::DriveLoop : EChaosImpactSfx::Count;
+	const bool bFlying = bShown && !bIsPickup && Hum != EChaosImpactSfx::Count;
+	if (bFlying && !FlightSound)
+	{
+		FlightSound = ChaosImpactSfx::PlayAttached(Hum, BallMesh);
+	}
+	else if (!bFlying && FlightSound)
+	{
+		StopFlightSound();
+	}
+}
+
+void AChaosImpactBall::StopFlightSound()
+{
+	ChaosImpactSfx::Stop(FlightSound, 0.12f);
+	FlightSound = nullptr;
 }
 
 void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
@@ -1853,6 +1915,7 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 		return;
 	}
 	bDetonated = true;
+	StopFlightSound();
 	DetonatedAt = GetWorld()->GetTimeSeconds();
 	FlightEndedAt = DetonatedAt;
 	ProjectileMovement->StopMovementImmediately();
@@ -2329,6 +2392,7 @@ void AChaosImpactBall::MulticastBeamStrike_Implementation(FVector_NetQuantize Lo
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		ChaosImpactBallTypes::PlayBeamBurst(this, Location, 0.9f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, Location);
 	}
 }
 
@@ -2567,4 +2631,6 @@ void AChaosImpactBall::UpdateDriveFlight(const float DeltaSeconds)
 void AChaosImpactBall::MulticastDriveBurst_Implementation(const FVector_NetQuantize Location, const bool bHit)
 {
 	AChaosImpactDriveBurst::Play(GetWorld(), Location, bHit);
+	StopFlightSound();
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::DriveBurst, Location, bHit ? 1.0f : 0.8f);
 }

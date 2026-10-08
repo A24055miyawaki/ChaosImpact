@@ -10,6 +10,7 @@ class AChaosImpactCharacter;
 class APawn;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
+class UAudioComponent;
 class UPointLightComponent;
 class UProceduralMeshComponent;
 class USceneComponent;
@@ -211,6 +212,11 @@ protected:
 	bool bLoopingStopped = false;
 	bool bMistStopped = false;
 	bool bThawPlayed = false;
+	/** The burst's sound on every screen; a burning area keeps crackling until it dies down. */
+	void PlayZoneSound();
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> ZoneLoopSound;
+	bool bZoneEndSoundPlayed = false;
 
 	void BuildPresentation();
 	void BuildFirePresentation(FRandomStream& Stream);

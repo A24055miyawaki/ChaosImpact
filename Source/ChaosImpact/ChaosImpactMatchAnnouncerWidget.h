@@ -29,4 +29,12 @@ protected:
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactResultsView> ResultsView;
+
+	/** The call-outs' sounds (the countdown's ticks, GO!, the last minute, FINISH, the podium), as each arrives. */
+	void UpdateSounds();
+	int32 SoundPhase = -1;
+	int32 SoundSecond = MAX_int32;
+	double SoundReadyAt = 0.0;
+	bool bSoundMinuteCalled = false;
+	bool bSoundPodiumShown = false;
 };

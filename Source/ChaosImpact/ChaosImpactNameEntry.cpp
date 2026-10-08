@@ -1,4 +1,5 @@
 #include "ChaosImpactNameEntry.h"
+#include "ChaosImpactSfx.h"
 
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactSettings.h"
@@ -106,6 +107,10 @@ FBox2D FChaosImpactNameEntry::CellRect(const int32 Row, const int32 Column) cons
 
 void FChaosImpactNameEntry::MoveCursor(const int32 InColumns, const int32 InRows)
 {
+	if (InColumns != 0 || InRows != 0)
+	{
+		ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiMove);
+	}
 	if (InRows != 0)
 	{
 		const int32 OldRow = CursorRow;
@@ -129,6 +134,7 @@ void FChaosImpactNameEntry::MoveCursor(const int32 InColumns, const int32 InRows
 
 void FChaosImpactNameEntry::SetPage(const int32 InPage)
 {
+	ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiTab);
 	Page = (InPage + PageCount) % PageCount;
 }
 
@@ -142,8 +148,10 @@ void FChaosImpactNameEntry::Append(const FString& Letter)
 	{
 		Message = FString::Printf(TEXT("%d文字までです"), ChaosImpactSettings::MaxNameLength);
 		MessageAt = FPlatformTime::Seconds();
+		ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiDeny);
 		return;
 	}
+	ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiType);
 	Text += Letter;
 }
 
@@ -218,6 +226,7 @@ void FChaosImpactNameEntry::Backspace()
 	if (!Text.IsEmpty())
 	{
 		Text.LeftChopInline(1);
+		ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiErase);
 	}
 }
 
@@ -227,8 +236,10 @@ void FChaosImpactNameEntry::Finish()
 	{
 		Message = TEXT("なまえを入れてください");
 		MessageAt = FPlatformTime::Seconds();
+		ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiDeny);
 		return;
 	}
+	ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiConfirm);
 	Result = EResult::Done;
 	bOpen = false;
 }

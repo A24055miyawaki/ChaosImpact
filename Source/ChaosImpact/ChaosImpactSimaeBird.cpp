@@ -2,6 +2,7 @@
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactGameState.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
@@ -634,6 +635,15 @@ void AChaosImpactSimaeBird::UpdateAppearance(const float DeltaSeconds)
 void AChaosImpactSimaeBird::MulticastChirp_Implementation(const uint8 Moment)
 {
 	if (Moment != 3) { PlayChirp(Moment); }
+	// The flock bursting out (and a flutter as a dash shakes it off); a peck landing.
+	if (Moment == 0 || Moment == 3)
+	{
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SimaeFlock, GetActorLocation(), Moment == 0 ? 1.0f : 0.6f, Moment == 0 ? 1.0f : 1.15f);
+	}
+	else if (Moment == 2)
+	{
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SimaePeck, GetActorLocation());
+	}
 	if (Moment == 0 || Moment == 2 || Moment == 3)
 	{
 		AChaosImpactSimaeFeatherBurst::Play(GetWorld(), GetActorLocation(), Moment == 0 ? 1.6f : Moment == 2 ? 0.85f : 0.65f);

@@ -179,6 +179,7 @@ void FChaosImpactLoadingState::StartExtraGame()
 void FChaosImpactLoadingState::MiniMiss(const FVector2D& At)
 {
 	using namespace ChaosImpactLoadingArcadeDetails;
+	QueueSound(EChaosImpactSfx::MiniMiss);
 	Burst(At, P::Fire, TEXT("もう一回！"));
 	HitFlash = 0.4f;
 	Score = Combo = 0;

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpact.h"
 #include "Net/UnrealNetwork.h"
 
@@ -322,6 +323,7 @@ float AChaosImpactTrainingTarget::TakeDamage(const float DamageAmount,
 
 void AChaosImpactTrainingTarget::MulticastDefeat_Implementation(FVector_NetQuantize ImpactPoint)
 {
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageTargetHit, ImpactPoint);
 	Defeat(ImpactPoint);
 }
 

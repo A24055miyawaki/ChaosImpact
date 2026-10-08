@@ -1,4 +1,5 @@
 #include "ChaosImpactCharacterSelect.h"
+#include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacterPreview.h"
@@ -342,6 +343,7 @@ void UChaosImpactCharacterSelect::MoveCursor(const int32 Player, const int32 Col
 	}
 	Slot.Cursor = Tile;
 	Slot.MovedAt = FPlatformTime::Seconds();
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
 	// The window shows the character under the cursor straight away.
 	if (IsTileUnlocked(Tile) && Tile != Slot.Character)
 	{
@@ -365,6 +367,7 @@ void UChaosImpactCharacterSelect::ChangeColour(const int32 Player, const int32 D
 	}
 	Slot.Colour = Next;
 	Slot.LastDirection = Step;
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 	Slot.ChangedAt = FPlatformTime::Seconds();
 	RefreshPreview(Player);
 	Commit(Player);
@@ -379,6 +382,7 @@ void UChaosImpactCharacterSelect::PressConfirm(const int32 Player)
 	if (AreAllReady())
 	{
 		// Everyone is done: whoever presses again starts.
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiStart);
 		bStarting = true;
 		StartAt = FPlatformTime::Seconds() + StartDelay;
 		for (AChaosImpactCharacterPreview* Stage : Previews)
@@ -396,8 +400,10 @@ void UChaosImpactCharacterSelect::PressConfirm(const int32 Player)
 	{
 		if (!IsTileUnlocked(Slot.Cursor))
 		{
+			ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiDeny);
 			return;
 		}
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiSelect);
 		Slot.Character = Slot.Cursor;
 		SetStep(Player, EStep::Colour);
 		// The row opens on a colour nobody else has on this character.
@@ -408,6 +414,7 @@ void UChaosImpactCharacterSelect::PressConfirm(const int32 Player)
 	}
 	else if (Slot.Step == EStep::Colour)
 	{
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiReady);
 		SetStep(Player, EStep::Done);
 		Commit(Player);
 		if (Previews.IsValidIndex(Player) && IsValid(Previews[Player]))
@@ -424,6 +431,7 @@ void UChaosImpactCharacterSelect::PressBack(const int32 Player)
 		return;
 	}
 	const FSlot& Slot = Slots[Player];
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
 	if (Slot.Step == EStep::Done)
 	{
 		SetStep(Player, EStep::Colour);

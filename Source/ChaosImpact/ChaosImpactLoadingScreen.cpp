@@ -389,8 +389,22 @@ void FChaosImpactLoadingState::ResetJuggle()
 	Balls.Add(Ball);
 }
 
+void FChaosImpactLoadingState::QueueSound(const EChaosImpactSfx Sound)
+{
+	if ((bArcade || !IsAuto(LastStepAt)) && PendingSounds.Num() < 8)
+	{
+		PendingSounds.Add(Sound);
+	}
+}
+
 void FChaosImpactLoadingState::Burst(const FVector2D& Where, const FLinearColor& Color, const FString& Label)
 {
+	// The big moments ring out.
+	if (Label.Contains(TEXT("PERFECT")) || Label.Contains(TEXT("KO")) || Label.Contains(TEXT("クリア"))
+		|| Label.Contains(TEXT("やっつけた")) || Label.Contains(TEXT("CRITICAL")))
+	{
+		QueueSound(EChaosImpactSfx::MiniBig);
+	}
 	FBurst New;
 	New.Position = Where;
 	New.Color = Color;
@@ -400,6 +414,7 @@ void FChaosImpactLoadingState::Burst(const FVector2D& Where, const FLinearColor&
 
 void FChaosImpactLoadingState::AddScore(const int32 Points)
 {
+	QueueSound(EChaosImpactSfx::MiniScore);
 	Score += Points;
 	Best = FMath::Max(Best, Score);
 	LoadingBest[static_cast<int32>(Game)] = Best;
@@ -432,6 +447,12 @@ void FChaosImpactLoadingState::Step(const double Now)
 		Each.Age += Delta;
 	}
 	Bursts.RemoveAll([](const FBurst& Each) { return Each.Age > (Each.Label.IsEmpty() ? LoadingBurstSeconds : LoadingLabelSeconds); });
+	// Hit (or missed), whichever game: the flash has just begun.
+	if (HitFlash > SoundHitFlash + 0.05f)
+	{
+		QueueSound(EChaosImpactSfx::MiniMiss);
+	}
+	SoundHitFlash = HitFlash;
 }
 
 void FChaosImpactLoadingState::StepPop(const float Delta)
@@ -719,6 +740,7 @@ void FChaosImpactLoadingState::NextPage(const double Now)
 void FChaosImpactLoadingState::Press(const double Now)
 {
 	LastPressAt = Now;
+	QueueSound(EChaosImpactSfx::MiniTap);
 	switch (Game)
 	{
 	case EChaosImpactLoadingGame::Pop: PopOne(); break;
@@ -855,6 +877,7 @@ void FChaosImpactLoadingState::StartGame(const EChaosImpactLoadingGame NewGame)
 
 void FChaosImpactLoadingState::SwitchGame(const int32 Direction)
 {
+	QueueSound(EChaosImpactSfx::UiTab);
 	constexpr int32 Count = static_cast<int32>(EChaosImpactLoadingGame::Count);
 	StartGame(static_cast<EChaosImpactLoadingGame>((static_cast<int32>(Game) + Direction % Count + Count) % Count));
 }
@@ -1947,6 +1970,17 @@ bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
 	if (!Overlay.IsValid() || !State.IsValid())
 	{
 		return true;
+	}
+	{
+		TArray<EChaosImpactSfx> Sounds;
+		{
+			FScopeLock Guard(&State->Lock);
+			Swap(Sounds, State->PendingSounds);
+		}
+		for (const EChaosImpactSfx Sound : Sounds)
+		{
+			ChaosImpactSfx::Play2D(GetGameInstance(), Sound);
+		}
 	}
 	const double Now = FPlatformTime::Seconds();
 	if (bCancelRequested)

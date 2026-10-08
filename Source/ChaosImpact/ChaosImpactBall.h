@@ -14,6 +14,7 @@ class UNiagaraComponent;
 class UProceduralMeshComponent;
 class UPointLightComponent;
 class UProjectileMovementComponent;
+class UAudioComponent;
 class USphereComponent;
 class UStaticMeshComponent;
 class USceneComponent;
@@ -287,6 +288,22 @@ protected:
 	/** Server time at which this landed ball is removed; 0 while flying, held, or a spawner pickup. */
 	UPROPERTY(Replicated)
 	double LandedPickupExpiresAt = 0.0;
+
+	/**
+	 * Sounds, on every screen from what it shows: a bounce (a sharp turn at speed) and, while a fire, thunder or drive
+	 * ball flies, its hum.
+	 */
+	void UpdateSoundPresentation(float DeltaSeconds);
+	void StopFlightSound();
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> FlightSound;
+	FVector SoundLastLocation = FVector::ZeroVector;
+	FVector SoundLastVelocity = FVector::ZeroVector;
+	bool bSoundHasLast = false;
+	/** The contact smack, once (a predicted burst and the server's are the same hit). */
+	bool bContactSoundPlayed = false;
+	/** A new ball popping up on its pad: heard once, the first frame it shows. */
+	bool bSoundSpawnChecked = false;
 
 	/** Every machine blinks and shrinks the ball from the replicated expiry time. */
 	void UpdateExpiryPresentation(float DeltaSeconds);

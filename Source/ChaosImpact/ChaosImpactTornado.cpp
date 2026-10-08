@@ -2,6 +2,7 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
@@ -284,6 +285,7 @@ void AChaosImpactTornado::MulticastGust_Implementation(FVector_NetQuantize Locat
 	{
 		return;
 	}
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindGust, Location, bBig ? 1.0f : 0.7f, bBig ? 0.9f : 1.05f);
 	using namespace ChaosImpactBallTypes;
 	if (UNiagaraSystem* GustSparks = LoadEffect(Effects::SparkBurst))
 	{
@@ -579,6 +581,8 @@ void AChaosImpactTornado::BuildPresentation()
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst, Origin, FRotator::ZeroRotator, FVector(0.9f));
 	}
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindTornado, Origin);
+	WindSound = ChaosImpactSfx::PlayAttached(EChaosImpactSfx::WindLoop, SceneRoot);
 	bPresentationBuilt = true;
 	UpdatePresentation(0.0f, 0.0f);
 }
@@ -723,6 +727,11 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 		{
 			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Dirt, Center, FRotator::ZeroRotator, FVector(0.55f));
 		}
+	}
+	if (!bLooping && WindSound)
+	{
+		ChaosImpactSfx::Stop(WindSound, CollapseSeconds);
+		WindSound = nullptr;
 	}
 	if (!bLooping && CollapseT >= 1.0f && Funnel.IsValid() && Funnel->IsVisible())
 	{

@@ -22,6 +22,7 @@ class UAnimInstance;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
 class UProceduralMeshComponent;
+class UAudioComponent;
 class AChaosImpactBall;
 class AChaosImpactTornado;
 class UChaosImpactPuppetComponent;
@@ -690,6 +691,23 @@ protected:
 	FVector DriveHoldOffset = FVector(58.0f, 0.0f, 22.0f);
 	/** A big snowball being lifted from the ground up over the head, 0-1. */
 	float SnowLift = 0.0f;
+
+	/**
+	 * Sounds from what changed since last frame (a dash begun, a jump, a landing, a ball picked up or thrown, a hit),
+	 * on every screen alike, whoever drives this character.
+	 */
+	void UpdateSoundPresentation();
+	bool bSoundWasDashing = false;
+	bool bSoundWasFalling = false;
+	bool bSoundWasThrowing = false;
+	bool bSoundChargeFull = false;
+	float SoundFallSpeed = 0.0f;
+	int32 SoundBallCount = -1;
+	uint8 SoundBallTypes = 0;
+	float SoundHealth = -1.0f;
+	/** A nova swelling up over the head hums as it grows. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> NovaChargeSound;
 
 	void UpdateCameraShake();
 	float CameraShakeStrength = 0.0f;

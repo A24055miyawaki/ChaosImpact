@@ -3006,8 +3006,10 @@ void AChaosImpactPlayerController::OpenSoloLevel(const int32 StageIndex)
 {
 	CurrentSoloStage = FMath::Max(1, StageIndex);
 
-	// ステージに応じたマップパッケージ指定（例: /Game/Solo/Lvl_Solo_Stage1）
-	const FString MapPackage = FString::Printf(TEXT("/Game/Solo/Lvl_Solo_Stage%d"), CurrentSoloStage);
+	// ステージに応じたマップパッケージ指定。ステージ1はソロ部屋のレベル（入ると扉が閉まって雑魚→ボスの部屋）。
+	// それ以外はまだ専用のマップを作る前提の名前（例: /Game/Solo/Lvl_Solo_Stage2）。
+	const FString MapPackage = CurrentSoloStage == 1 ? FString(TEXT("/Game/ChaosImpact/solo/Lvl_SoloRoomTest"))
+		: FString::Printf(TEXT("/Game/Solo/Lvl_Solo_Stage%d"), CurrentSoloStage);
 
 	bTravelPending = true;
 	ExitTrainingOverlayPresentation();

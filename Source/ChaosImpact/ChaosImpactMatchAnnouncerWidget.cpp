@@ -4,6 +4,7 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactResults.h"
+#include "ChaosImpactSfx.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Engine/GameInstance.h"
@@ -44,6 +45,81 @@ void UChaosImpactMatchAnnouncerWidget::NativeTick(const FGeometry& MyGeometry, c
 	if (ResultsView)
 	{
 		ResultsView->Tick(GetOwningPlayer(), InDeltaTime);
+	}
+	UpdateSounds();
+}
+
+void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	const bool bStarting = Match && Match->bOnlineRoom && Match->Phase == EChaosImpactOnlinePhase::Starting;
+	if (!Match || (!Match->bVersusMatch && !bStarting))
+	{
+		SoundPhase = -1;
+		return;
+	}
+	// Starting (online, before the stage opens) counts as a phase of its own here.
+	const int32 Phase = bStarting ? 1000 : static_cast<int32>(Match->Phase);
+	if (Phase != SoundPhase)
+	{
+		SoundPhase = Phase;
+		SoundSecond = MAX_int32;
+		bSoundMinuteCalled = false;
+		bSoundPodiumShown = false;
+		if (bStarting)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchStarting);
+		}
+		else if (Match->Phase == EChaosImpactOnlinePhase::Match)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchGo);
+		}
+		else if (Match->Phase == EChaosImpactOnlinePhase::Results)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchFinish);
+		}
+	}
+	const float Remaining = Match->GetPhaseRemainingSeconds();
+	const int32 Seconds = FMath::CeilToInt(Remaining);
+	if (bStarting)
+	{
+		// 3, 2, 1.
+		if (Seconds > 0 && Seconds < SoundSecond)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchTick);
+		}
+		SoundSecond = Seconds;
+	}
+	else if (Match->Phase == EChaosImpactOnlinePhase::Intro)
+	{
+		if (Match->ReadyStartedAt > 0.0 && Match->ReadyStartedAt != SoundReadyAt)
+		{
+			SoundReadyAt = Match->ReadyStartedAt;
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchReady);
+		}
+	}
+	else if (Match->Phase == EChaosImpactOnlinePhase::Match)
+	{
+		const float Elapsed = Match->GetPhaseElapsedSeconds();
+		if (!bSoundMinuteCalled && Elapsed + Remaining > 61.0f && Remaining <= 60.0f && Remaining > 58.5f)
+		{
+			bSoundMinuteCalled = true;
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchMinute);
+		}
+		// The last five seconds, each a little higher.
+		if (Remaining > 0.0f && Seconds <= 5 && Seconds < SoundSecond)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchTick, 1.0f, 1.0f + (5 - Seconds) * 0.06f);
+		}
+		SoundSecond = Seconds;
+	}
+	else if (Match->Phase == EChaosImpactOnlinePhase::Results && ResultsView && ResultsView->IsActive()
+		&& ResultsView->GetShowSeconds() >= 0.0f && !bSoundPodiumShown)
+	{
+		// The podium: confetti and the crowd.
+		bSoundPodiumShown = true;
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchConfetti);
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchCheer);
 	}
 }
 

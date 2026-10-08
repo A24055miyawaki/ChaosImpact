@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ChaosImpactSfx.h"
 #include "Containers/Ticker.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Widgets/SLeafWidget.h"
@@ -123,6 +124,12 @@ public:
 	void SetPointer(float DesignX, double Now);
 
 	FCriticalSection Lock;
+	/**
+	 * Sounds the games asked for since the subsystem last played them (the games may step on the movie player's
+	 * thread, where sounds cannot start). Only while someone is playing, not the self-playing demo.
+	 */
+	TArray<EChaosImpactSfx> PendingSounds;
+	void QueueSound(EChaosImpactSfx Sound);
 	/** Pop: the bouncing balls. Dodge: the balls rolling in. Juggle: the one ball. Target: the targets. */
 	TArray<FBall> Balls;
 	/** Target: the balls thrown. */
@@ -150,6 +157,8 @@ public:
 	float RunnerHeight = 0.0f;
 	float RunnerSpeed = 0.0f;
 	float HitFlash = 0.0f;
+	/** Last step's hit flash (a new hit, in any game, makes a sound). */
+	float SoundHitFlash = 0.0f;
 	float SpawnIn = 0.8f;
 	float Scroll = 0.0f;
 	// Juggle

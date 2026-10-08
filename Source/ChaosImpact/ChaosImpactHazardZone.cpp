@@ -5,6 +5,7 @@
 #include "Engine/GameInstance.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactIceMeshes.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactTrainingTarget.h"
 
@@ -1017,6 +1018,7 @@ void AChaosImpactHazardZone::MulticastShock_Implementation(AActor* Victim)
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, Victim->GetActorLocation(), FRotator::ZeroRotator, FVector(1.2f));
 	}
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderShock, Victim->GetActorLocation());
 	if (Shock)
 	{
 		// Crackles for a moment, then dies out and removes itself.
@@ -1073,6 +1075,7 @@ void AChaosImpactHazardZone::TickBurning(const float Radius)
 
 void AChaosImpactHazardZone::MulticastBurnHit_Implementation(FVector_NetQuantize Location)
 {
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::FireSizzle, Location);
 	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::Damage))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst, Location, FRotator::ZeroRotator, FVector(0.7f));
@@ -1103,6 +1106,17 @@ void AChaosImpactHazardZone::Tick(const float DeltaSeconds)
 	if (bPresentationBuilt)
 	{
 		UpdatePresentation(Age);
+		if (!bZoneEndSoundPlayed && Age >= GetActiveSeconds())
+		{
+			// The fire dies down; a black hole closes with a thump.
+			bZoneEndSoundPlayed = true;
+			ChaosImpactSfx::Stop(ZoneLoopSound, FadeSeconds);
+			ZoneLoopSound = nullptr;
+			if (ZoneType == EChaosImpactBallType::Black)
+			{
+				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BlackClose, GetActorLocation());
+			}
+		}
 	}
 }
 
@@ -1143,8 +1157,48 @@ void AChaosImpactHazardZone::BuildPresentation()
 		}
 		break;
 	}
+	PlayZoneSound();
 	bPresentationBuilt = true;
 	UpdatePresentation(0.0f);
+}
+
+void AChaosImpactHazardZone::PlayZoneSound()
+{
+	const FVector At = GetActorLocation() + FVector(0.0f, 0.0f, 40.0f);
+	switch (ZoneType)
+	{
+	case EChaosImpactBallType::Ice:
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::IceBurst, At);
+		break;
+	case EChaosImpactBallType::Thunder:
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBurst, At);
+		break;
+	case EChaosImpactBallType::Black:
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BlackOpen, At);
+		break;
+	case EChaosImpactBallType::Smoke:
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SmokePoof, At);
+		break;
+	case EChaosImpactBallType::Beam:
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, At, 0.8f);
+		break;
+	case EChaosImpactBallType::Snow:
+		// A big snowball: a deeper, louder crunch.
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SnowBurst, At, FMath::Clamp(0.6f + 0.25f * BurstScale, 0.6f, 1.2f),
+			FMath::Clamp(1.15f - 0.12f * BurstScale, 0.8f, 1.15f));
+		break;
+	case EChaosImpactBallType::Nova:
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBlast, At);
+		break;
+	default:
+		// The small fires a fire ball leaves along its flight are its own hum's business.
+		if (!bFireTrail)
+		{
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::FireExplode, At);
+			ZoneLoopSound = ChaosImpactSfx::PlayAttached(EChaosImpactSfx::FireLoop, SceneRoot, 1.1f, 0.85f);
+		}
+		break;
+	}
 }
 
 UNiagaraComponent* AChaosImpactHazardZone::AddLoopingEffect(const TCHAR* SystemPath, const FVector& RelativeLocation)
@@ -1959,6 +2013,7 @@ void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 		{
 			bThawPlayed = true;
 			ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f), 1.2f, 1.5f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharIceShatter, GetActorLocation(), 0.55f, 1.15f);
 		}
 		for (const TWeakObjectPtr<USceneComponent>& Sheet : IceSheets)
 		{

@@ -113,6 +113,8 @@ public:
 	void SetSnowScale(float Scale);
 	float GetSnowScale() const { return SnowScale; }
 	bool HasDetonated() const { return bDetonated; }
+	/** Nova: let go straight up, out of sight, then down onto a spot (on the ground) from high over it. */
+	void LaunchNovaDrop(const FVector& GroundTarget);
 
 	/** Drive: steered until this shared server time (its thrower's control time). */
 	void BeginDrive(double DeadlineServerTime);
@@ -224,6 +226,18 @@ protected:
 	UFUNCTION()
 	void OnRep_SnowScale();
 	void ApplySnowScale();
+
+	/** Nova: on its way down onto NovaDropTarget once it has gone up long enough (LaunchNovaDrop). */
+	void UpdateNovaDrop();
+	/** Nova: not shown while high up (gone up out of sight, or not yet come down), on every screen. */
+	void UpdateNovaHeightVisibility();
+	bool bNovaDrop = false;
+	bool bNovaDropping = false;
+	FVector NovaDropTarget = FVector::ZeroVector;
+	/** The height it was let go from (followed while held), here. */
+	float NovaLaunchZ = 0.0f;
+	bool bNovaLaunchZKnown = false;
+	bool bNovaHiddenHigh = false;
 
 	/**
 	 * Beam in flight: whoever its line passes this frame is struck, each once (the server's own copies of players

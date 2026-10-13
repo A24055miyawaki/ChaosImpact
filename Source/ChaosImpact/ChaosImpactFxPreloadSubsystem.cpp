@@ -2,6 +2,7 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactNovaRig.h"
 #include "ChaosImpactSfx.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -34,6 +35,8 @@ void UChaosImpactFxPreloadSubsystem::StartAsync()
 	ChaosImpactBallTypes::GetPreloadPaths(Paths);
 	// The sound effects too: the first of each then plays at once (and they stay loaded with the rest).
 	ChaosImpactSfx::GetAllAssetPaths(Paths);
+	// The nova's models, textures and materials.
+	ChaosImpactNova::GetAssetPaths(Paths);
 	StartedAt = FPlatformTime::Seconds();
 	Phase = EPhase::Loading;
 	Handle = Streamable.RequestAsyncLoad(Paths, FStreamableDelegate::CreateUObject(this, &UChaosImpactFxPreloadSubsystem::OnLoaded),

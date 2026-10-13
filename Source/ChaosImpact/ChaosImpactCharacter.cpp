@@ -1,10 +1,15 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactShoulderCameraComponent.h"
+#include "ChaosImpactClickNavigation.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameMode.h"
+#include "ChaosImpactNovaParts.h"
 #include "ChaosImpactSfx.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
@@ -145,6 +150,7 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
+	ShoulderCamera = CreateDefaultSubobject<UChaosImpactShoulderCameraComponent>(TEXT("TrainingShoulderCamera"));
 
 	HeldBallMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("HeldBallMesh"));
 	HeldBallMesh->SetupAttachment(GetMesh(), TEXT("hand_r"));
@@ -274,6 +280,7 @@ void AChaosImpactCharacter::BeginPlay()
 	Health = MaxHealth;
 	Stamina = MaxStamina;
 	ClearCarriedBalls();
+	NovaParts = 0;
 	NextDashAvailableAtSeconds = 0.0f;
 	// Restored when leaving frozen ground.
 	DefaultGroundFriction = GetCharacterMovement()->GroundFriction;
@@ -379,9 +386,11 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	{
 		CameraBoom->bEnableCameraLag = bCameraLagBeforeSnap;
 	}
+	if (ShoulderCamera) { ShoulderCamera->UpdateCamera(DeltaSeconds); }
 	if (CameraBoom)
 	{
 		const bool bNovaOverview = IsLocallyControlled() && IsChargingNova() && !bTrainingMenuCameraActive;
+		const bool bShoulder = IsShoulderViewActive();
 		FVector NovaStageCenter = GetActorLocation();
 		FVector2D NovaStageHalfExtent(3000.0f, 3000.0f);
 		if (bNovaOverview)
@@ -391,17 +400,17 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		const float NovaOverviewArm = FMath::Max(NovaStageHalfExtent.X, NovaStageHalfExtent.Y)
 			* NovaOverviewHeightScale + NovaOverviewPadding;
 		const float DesiredArmLength = bTrainingMenuCameraActive
-			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : SavedCameraArmLength + NovaCameraExtra;
+			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : bShoulder ? ShoulderCamera->ArmLength : SavedCameraArmLength + NovaCameraExtra;
 		const FVector DesiredSocketOffset = bTrainingMenuCameraActive
-			? TrainingMenuCameraSocketOffset : SavedCameraSocketOffset;
+			? TrainingMenuCameraSocketOffset : bShoulder ? ShoulderCamera->SocketOffset : SavedCameraSocketOffset;
 		const FRotator DesiredBoomRotation = bNovaOverview
-			? FRotator(-90.0f, SavedCameraBoomRotation.Yaw, 0.0f) : SavedCameraBoomRotation;
+			? FRotator(-90.0f, SavedCameraBoomRotation.Yaw, 0.0f) : bShoulder ? ShoulderCamera->GetViewRotation() : SavedCameraBoomRotation;
 		// Steering a drive ball, the camera follows the ball (and sits a little further out to see round it).
 		const AChaosImpactBall* Driven = IsLocallyControlled() && !bTrainingMenuCameraActive && IsDriving() ? DrivenBall.Get() : nullptr;
 		FVector DriveOffset = Driven ? Driven->GetActorLocation() - GetActorLocation() : FVector::ZeroVector;
 		DriveOffset.Z = 0.0f;
 		const FVector DesiredTargetOffset = bTrainingMenuCameraActive
-			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : NovaCameraLead;
+			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead;
 		const float DriveBlendSpeed = 6.0f;
 		CameraBoom->TargetArmLength = FMath::FInterpTo(CameraBoom->TargetArmLength,
 			DesiredArmLength + (Driven ? ChaosImpactBallTypes::DriveCameraExtra : 0.0f), DeltaSeconds,
@@ -410,7 +419,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 			DesiredSocketOffset, DeltaSeconds, TrainingMenuCameraBlendSpeed);
 		CameraBoom->TargetOffset = FMath::VInterpTo(CameraBoom->TargetOffset, DesiredTargetOffset, DeltaSeconds,
 			bNovaOverview ? NovaOverviewBlendSpeed : Driven ? DriveBlendSpeed : TrainingMenuCameraBlendSpeed);
-		CameraBoom->SetWorldRotation(FMath::RInterpTo(CameraBoom->GetComponentRotation(),
+		CameraBoom->SetWorldRotation(bShoulder ? DesiredBoomRotation : FMath::RInterpTo(CameraBoom->GetComponentRotation(),
 			DesiredBoomRotation, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed));
 	}
 	if (bEliminationEffectActive)
@@ -451,8 +460,13 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		}
 	}
 
+	if (HasAuthority() && NovaParts == ChaosImpactNovaParts::All)
+	{
+		TryFinishNova();
+	}
 	if (ChargeWidget)
 	{
+		ChargeWidget->SetNovaParts(NovaParts);
 		ChargeWidget->SetHealth(Health, MaxHealth);
 		ChargeWidget->SetStamina(Stamina, MaxStamina);
 		if (bEliminated && RespawnAtWorldSeconds > 0.0f && GetWorld())
@@ -519,11 +533,35 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	using namespace ChaosImpactSettings;
 	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(PlayerController);
 	const bool bGameplay = !MenuController || MenuController->IsGameplayActive();
+	const EChaosImpactControlScheme Scheme = GetPlayerControlScheme(PlayerController);
+	if (LastControlScheme != static_cast<uint8>(Scheme))
+	{
+		if (LastControlScheme != 255) { RequestCancelThrow(); ResetEasyControls(); }
+		LastControlScheme = static_cast<uint8>(Scheme);
+	}
+	if (!bGameplay || bEliminated || bTrainingMenuFrozen || IsEliminationPredicted() || IsMatchInputLocked())
+	{
+		ResetEasyControls();
+		return;
+	}
+	const bool bPhysicalThrow = IsActionDown(PlayerController, EChaosImpactAction::Throw);
+	if (!bPhysicalThrow) { bWaitForThrowRelease = false; }
+	const bool bPointerBlocked = bSuppressPointerThrow || bWaitForThrowRelease
+		|| (IsPointerOverGameplayUI() && !bMouseChargeActive);
+	if (!bPhysicalThrow) { bSuppressPointerThrow = false; }
+	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	if (bPointerDropActive)
+	{
+		const bool bDown = FSlateApplication::IsInitialized()
+			&& FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::RightMouseButton);
+		if (PointerDropGesture.Update(bDown, Now) == ChaosImpactEasyControls::EManageResult::Drop) { RequestDropBall(); }
+		if (!bDown) { bPointerDropActive = false; }
+	}
 
 	// Throw: held to charge, let go to throw (a tap within one frame still throws). A charge this started ends
 	// when the button is let go or the controls are taken away (a menu).
-	const bool bThrowDown = bGameplay && IsActionDown(PlayerController, EChaosImpactAction::Throw);
-	const bool bThrowTapped = bGameplay && !bThrowDown && !bWasMouseDownLastTick
+	const bool bThrowDown = bGameplay && !bPointerBlocked && bPhysicalThrow;
+	const bool bThrowTapped = bGameplay && !bPointerBlocked && !bThrowDown && !bWasMouseDownLastTick
 		&& WasActionJustPressed(PlayerController, EChaosImpactAction::Throw);
 	if ((bThrowDown && !bWasMouseDownLastTick) || bThrowTapped)
 	{
@@ -553,9 +591,14 @@ void AChaosImpactCharacter::UpdateBoundControls()
 		bHeld = bDown;
 		return bEdge;
 	};
-	if (Pressed(EChaosImpactAction::Dash))
+	if (Pressed(EChaosImpactAction::Dash) && !bPointerDropActive && !IsPointerOverGameplayUI())
 	{
-		StartDash();
+		if (IsMouseOnlyScheme(Scheme))
+		{
+			FVector Point;
+			if (FindMouseAimPoint(Point)) { RequestDirectionalDash(Point - GetActorLocation()); }
+		}
+		else { StartDash(); }
 	}
 	bool bJumpReleased = false;
 	if (Pressed(EChaosImpactAction::Jump, &bJumpReleased))
@@ -566,7 +609,13 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	{
 		StopJumping();
 	}
-	if (Pressed(EChaosImpactAction::SwapBall))
+	if (Scheme == EChaosImpactControlScheme::Simple)
+	{
+		const auto Result = BallManageGesture.Update(IsActionDown(PlayerController, EChaosImpactAction::SwapBall), Now);
+		if (Result == ChaosImpactEasyControls::EManageResult::Swap) { RequestBallSwap(); }
+		else if (Result == ChaosImpactEasyControls::EManageResult::Drop) { RequestDropBall(); }
+	}
+	else if (Pressed(EChaosImpactAction::SwapBall))
 	{
 		RequestBallSwap();
 	}
@@ -580,7 +629,15 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	}
 
 	// Moving: the set keys, or the movement stick (with its dead zone) and any buttons set for moving.
-	if (bGameplay)
+	if (bGameplay && Scheme == EChaosImpactControlScheme::MouseHold)
+	{
+		UpdateHeldMouseMovement();
+	}
+	else if (bGameplay && Scheme == EChaosImpactControlScheme::MouseOnly)
+	{
+		UpdateClickMovement();
+	}
+	else if (bGameplay)
 	{
 		bool bStick = false;
 		FVector2D Movement = GetMoveInput(PlayerController, bStick);
@@ -593,6 +650,155 @@ void AChaosImpactCharacter::UpdateBoundControls()
 			DoMove(static_cast<float>(Movement.X), static_cast<float>(Movement.Y));
 		}
 	}
+}
+
+void AChaosImpactCharacter::ResetEasyControls()
+{
+	BallManageGesture.Reset(); PointerDropGesture.Reset(); MoveClickGesture.Reset();
+	bPointerDropActive = false; bClickMoveActive = false; bClickMoveRejected = false;
+	bPointerMoveHeld = false;
+	bSuppressPointerThrow = false;
+	ClickMovePath.Reset(); ClickMoveWaypoint = 0;
+	bWaitForThrowRelease = true;
+	bMouseChargeActive = false;
+	bWasMouseDownLastTick = false;
+	FMemory::Memzero(BoundActionHeld);
+	StopJumping();
+}
+
+bool AChaosImpactCharacter::IsShoulderViewActive() const
+{
+	return ShoulderCamera && ShoulderCamera->IsShoulderViewActive();
+}
+
+bool AChaosImpactCharacter::IsPointerOverGameplayUI() const
+{
+	return ChargeWidget && ChargeWidget->GetGameplayPointerHit() != 0;
+}
+
+bool AChaosImpactCharacter::HandleEasyPointerKey(const FKey& Key, const EInputEvent Event)
+{
+	AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetController());
+	if (!PC || PC->IsUsingGamepad() || !PC->IsGameplayActive()) { return false; }
+	const auto Scheme = ChaosImpactSettings::GetPlayerControlScheme(PC);
+	if (Scheme == EChaosImpactControlScheme::Normal) { return false; }
+	const int32 Hit = ChargeWidget ? ChargeWidget->GetGameplayPointerHit() : 0;
+	const bool bPress = Event == IE_Pressed || Event == IE_DoubleClick;
+	if (Key == EKeys::RightMouseButton && Event == IE_Released) { bPointerMoveHeld = false; }
+	if (Key == EKeys::LeftMouseButton && (Hit || bSuppressPointerThrow))
+	{
+		if (bPress)
+		{
+			bSuppressPointerThrow = true;
+			if (Hit == 1) { PC->TogglePauseMenu(); }
+			else if (Hit == 2) { PC->ToggleTrainingOverlay(); }
+			else if (Hit == 3) { StartDash(); }
+			else if (Hit == 4) { PC->ToggleReadyForMatch(); }
+			else if (Hit == 5) { PC->ToggleSpectating(); }
+			else if (Hit == 11) { RequestBallSwap(); }
+		}
+		return true;
+	}
+	if (Key == EKeys::RightMouseButton && Hit)
+	{
+		if (bPress) { bPointerMoveHeld = false; }
+		MoveClickGesture.Reset();
+		if (bPress && (Hit == 10 || Hit == 11) && Hit - 10 < CarriedBallCount && CanDropBall())
+		{
+			if (Hit == 11) { RequestBallSwap(); }
+			PointerDropGesture.Reset();
+			PointerDropGesture.Update(true, GetWorld()->GetTimeSeconds());
+			bPointerDropActive = true;
+		}
+		return true;
+	}
+	if (Key == EKeys::RightMouseButton && bPointerDropActive) { return true; }
+	if (!ChaosImpactSettings::IsMouseOnlyScheme(Scheme)) { return false; }
+	if (Key == EKeys::MouseScrollUp || Key == EKeys::MouseScrollDown)
+	{
+		if (bPress) { RequestBallSwap(); }
+		return true;
+	}
+	if (Key != EKeys::RightMouseButton) { return false; }
+	if (!bPress || bEliminated || bTrainingMenuFrozen || IsMatchInputLocked()) { return true; }
+	FVector Point;
+	if (!FindMouseAimPoint(Point)) { bClickMoveRejected = true; return true; }
+	if (IsChargingNova()) { SetNovaTargetPoint(Point); return true; }
+	if (IsDriving()) { return true; } // During driving the cursor steers continuously, not a movement destination.
+	if (Scheme == EChaosImpactControlScheme::MouseHold)
+	{
+		bPointerMoveHeld = true;
+		bClickMoveRejected = false;
+		return true;
+	}
+	float MouseX = 0.0f, MouseY = 0.0f;
+	PC->GetMousePosition(MouseX, MouseY);
+	const FVector2D Position = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCursorPos() : FVector2D(MouseX, MouseY);
+	const bool bDouble = MoveClickGesture.Press(Position, GetWorld()->GetTimeSeconds());
+	TArray<FVector> Route;
+	if (!ChaosImpactClickNavigation::FindPath(this, Point, Route))
+	{
+		bClickMoveRejected = true; bClickMoveActive = false; ClickMovePath.Reset();
+		return true;
+	}
+	bClickMoveRejected = false; bClickMoveActive = true;
+	ClickMovePath = MoveTemp(Route); ClickMoveWaypoint = 0;
+	ClickMoveGoal = ClickMovePath.Last(); ClickLastProgress = GetActorLocation(); ClickProgressAt = GetWorld()->GetTimeSeconds();
+	if (bDouble && ChaosImpactSettings::GetProfile(ChaosImpactSettings::GetPlayerProfile(PC)).bMouseDoubleClickDash)
+	{
+		RequestDirectionalDash(Point - GetActorLocation());
+	}
+	return true;
+}
+
+void AChaosImpactCharacter::RequestDirectionalDash(const FVector& Direction)
+{
+	if (!CanDashNow() || IsChargingNova() || IsMatchInputLocked()) { return; }
+	if (IsDriving()) { EndDriving(true); }
+	const FVector Unit = Direction.GetSafeNormal2D();
+	if (Unit.IsNearlyZero()) { return; }
+	LastMoveDirection = Unit;
+	if (!HasAuthority()) { ServerStartDash(Unit); }
+	PerformDash(Unit);
+}
+
+void AChaosImpactCharacter::UpdateHeldMouseMovement()
+{
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	// The controller records the consumed RMB too, so releasing outside the viewport or losing focus cancels it.
+	if (!PC || !PC->IsInputKeyDown(EKeys::RightMouseButton)) { bPointerMoveHeld = false; return; }
+	if (!bPointerMoveHeld || bPointerDropActive || IsPointerOverGameplayUI()
+		|| IsChargingNova() || IsDriving() || IsIceFrozen()) { return; }
+	FVector Point;
+	if (!FindMouseAimPoint(Point)) { return; }
+	const FVector Delta = Point - GetActorLocation();
+	// Do not circle or jitter when the pointer is directly over the player.
+	if (Delta.SizeSquared2D() <= FMath::Square(55.0f)) { return; }
+	const FVector Toward = Delta.GetSafeNormal2D();
+	const FRotator Yaw(0, CameraBoom->GetComponentRotation().Yaw, 0);
+	const FVector Forward = FRotationMatrix(Yaw).GetUnitAxis(EAxis::X), Right = FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y);
+	DoMove(FVector::DotProduct(Toward, Right), FVector::DotProduct(Toward, Forward)); // Includes the reduced-mode auto-jump.
+}
+
+void AChaosImpactCharacter::UpdateClickMovement()
+{
+	if (!bClickMoveActive || !ClickMovePath.IsValidIndex(ClickMoveWaypoint) || IsChargingNova() || IsDriving() || IsIceFrozen()) { return; }
+	const FVector Here = GetActorLocation();
+	while (ClickMovePath.IsValidIndex(ClickMoveWaypoint)
+		&& FVector::Dist2D(Here, ClickMovePath[ClickMoveWaypoint]) < 48.0f) { ++ClickMoveWaypoint; }
+	if (!ClickMovePath.IsValidIndex(ClickMoveWaypoint)) { bClickMoveActive = false; return; }
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (FVector::Dist2D(Here, ClickLastProgress) > 25.0f) { ClickProgressAt = Now; ClickLastProgress = Here; }
+	else if (Now - ClickProgressAt > 1.2)
+	{
+		// Dynamic obstruction or a changed stage: stop safely instead of endlessly pushing into a wall.
+		bClickMoveActive = false; bClickMoveRejected = true; return;
+	}
+	const FVector Toward = (ClickMovePath[ClickMoveWaypoint] - Here).GetSafeNormal2D();
+	const FRotator Yaw(0, CameraBoom->GetComponentRotation().Yaw, 0);
+	const FVector Forward = FRotationMatrix(Yaw).GetUnitAxis(EAxis::X), Right = FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y);
+	DoMove(FVector::DotProduct(Toward, Right), FVector::DotProduct(Toward, Forward));
+	if (ClickMovePath[ClickMoveWaypoint].Z > Here.Z + 45 && GetCharacterMovement()->IsMovingOnGround()) { Jump(); }
 }
 
 void AChaosImpactCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -689,12 +895,29 @@ void AChaosImpactCharacter::DoMove(float Right, float Forward)
 		if (!bIsDashing)
 		{
 			AddMovementInput(DesiredMoveDirection, 1.0f);
+			if (MenuController && ChaosImpactSettings::GetPlayerControlScheme(MenuController) != EChaosImpactControlScheme::Normal
+				&& GetCharacterMovement()->IsMovingOnGround() && !DesiredMoveDirection.IsNearlyZero())
+			{
+				// Low cover should not force a fourth action in the reduced presets.
+				FCollisionObjectQueryParams Walls; Walls.AddObjectTypesToQuery(ECC_WorldStatic);
+				FCollisionQueryParams Query(SCENE_QUERY_STAT(ChaosImpactEasyStep), false, this);
+				const FVector Foot = GetActorLocation() - FVector::UpVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+				FHitResult Low, High;
+				const FVector Ahead = DesiredMoveDirection.GetSafeNormal2D() * 90.0f;
+				if (GetWorld()->LineTraceSingleByObjectType(Low, Foot + FVector::UpVector * 35.0f,
+					Foot + Ahead + FVector::UpVector * 35.0f, Walls, Query)
+					&& FMath::Abs(Low.ImpactNormal.Z) < 0.4f
+					&& !GetWorld()->LineTraceSingleByObjectType(High, Foot + FVector::UpVector * 145.0f,
+						Foot + Ahead + FVector::UpVector * 145.0f, Walls, Query))
+				{ Jump(); }
+			}
 		}
 	}
 }
 
 void AChaosImpactCharacter::DoLook(float Yaw, float Pitch)
 {
+	if (IsShoulderViewActive()) { ShoulderCamera->AddLookDegrees(Yaw, Pitch); return; }
 	StickAimInput = FVector2D(Yaw, Pitch);
 }
 
@@ -1033,6 +1256,10 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		return;
 	}
 	FVector DesiredDirection = AimDirection;
+	const APlayerController* LocalPlayer = Cast<APlayerController>(GetController());
+	const bool bSimplePad = LocalPlayer && IsLocallyControlled()
+		&& ChaosImpactSettings::GetPlayerDevice(LocalPlayer) != EChaosImpactDevice::KeyboardMouse
+		&& ChaosImpactSettings::GetPlayerControlScheme(LocalPlayer) == EChaosImpactControlScheme::Simple;
 	if (IsLocallyControlled() && !bDevAutoInput && !IsChargingNova())
 	{
 		// Read the right stick itself every frame. The look action's trigger state can report the stick as
@@ -1056,6 +1283,20 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	{
 		// Nova targeting belongs to movement input; mouse/right-stick aim must not pull it away.
 		DesiredDirection = (FVector(NovaTargetLocation) - GetActorLocation()).GetSafeNormal2D();
+	}
+	else if (IsShoulderViewActive())
+	{
+		// The pitch is visual only. All perspectives use the existing flat throw + charge pipeline.
+		DesiredDirection = ShoulderCamera->GetFlatAimDirection();
+	}
+	else if (bSimplePad)
+	{
+		bool bStick = false;
+		const FVector2D Move = ApplyRadialStickDeadZone(ChaosImpactSettings::GetMoveInput(LocalPlayer, bStick), MovementStickDeadZone);
+		const FRotator Yaw(0.0f, CameraBoom->GetComponentRotation().Yaw, 0.0f);
+		const FVector Raw = Move.IsNearlyZero() ? LastMoveDirection.GetSafeNormal2D()
+			: (FRotationMatrix(Yaw).GetUnitAxis(EAxis::X) * Move.Y + FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y) * Move.X).GetSafeNormal2D();
+		DesiredDirection = ChaosImpactSettings::IsAimAssistOn(LocalPlayer) ? ApplyControllerAimAssist(Raw) : Raw;
 	}
 	else if (!StickAimInput.IsNearlyZero())
 	{
@@ -1225,18 +1466,36 @@ bool AChaosImpactCharacter::FindMouseAimPoint(FVector& OutAimPoint) const
 		return false;
 	}
 
+	FVector RayOrigin;
+	FVector RayDirection;
+	bool bDeprojected = false;
+	const bool bEasy = ChaosImpactSettings::GetPlayerControlScheme(PlayerController) != EChaosImpactControlScheme::Normal;
+	FHitResult NormalCursorHit;
+	if (!bEasy && PlayerController->GetHitResultUnderCursor(ECC_Visibility, false, NormalCursorHit))
+	{
+		OutAimPoint = NormalCursorHit.ImpactPoint;
+		return true;
+	}
+	if (bEasy
+		&& FSlateApplication::IsInitialized())
+	{
+		// Read the same absolute pointer as the painted reticle, including window offset and DPI. The viewport's
+		// cached mouse position can lag a click by one frame after capture or a resize.
+		const FGeometry Geometry = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this);
+		const FVector2D Local = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+		if (!FBox2D(FVector2D::ZeroVector, FVector2D(Geometry.GetLocalSize())).IsInside(Local)) { return false; }
+		const FVector2D Pixels = Local * UWidgetLayoutLibrary::GetViewportScale(this);
+		bDeprojected = PlayerController->DeprojectScreenPositionToWorld(Pixels.X, Pixels.Y, RayOrigin, RayDirection);
+	}
+	else { bDeprojected = PlayerController->DeprojectMousePositionToWorld(RayOrigin, RayDirection); }
+	if (!bDeprojected) { return false; }
 	FHitResult CursorHit;
-	if (PlayerController->GetHitResultUnderCursor(ECC_Visibility, false, CursorHit))
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(ChaosImpactMouseAim), false, this);
+	if (bEasy && GetWorld()->LineTraceSingleByChannel(CursorHit, RayOrigin, RayOrigin + RayDirection * 100000.0f,
+		ECC_Visibility, Query))
 	{
 		OutAimPoint = CursorHit.ImpactPoint;
 		return true;
-	}
-
-	FVector RayOrigin;
-	FVector RayDirection;
-	if (!PlayerController->DeprojectMousePositionToWorld(RayOrigin, RayDirection))
-	{
-		return false;
 	}
 
 	const float Denominator = RayDirection.Z;
@@ -1345,14 +1604,36 @@ void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
 		GetNovaStageView(StageCenter, HalfExtent);
 		const float InitialDistance = FMath::Min(FMath::Max(HalfExtent.X, HalfExtent.Y) * 0.55f, 2400.0f);
 		SetNovaTargetPoint(GetActorLocation() + AimDirection.GetSafeNormal2D() * InitialDistance);
+		// Simple controller: begin at the closest opponent in front; the left stick can still adjust it.
+		if (PlayerController && ChaosImpactSettings::GetPlayerControlScheme(PlayerController) == EChaosImpactControlScheme::Simple
+			&& ChaosImpactSettings::GetPlayerDevice(PlayerController) != EChaosImpactDevice::KeyboardMouse)
+		{
+			float Best = ControllerAimAssistDistance;
+			for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+			{
+				const FVector Offset = It->GetActorLocation() - GetActorLocation();
+				const float Distance = Offset.Size2D();
+				if (*It != this && !It->IsEliminated() && !AChaosImpactGameState::AreTeammates(GetWorld(), this, *It)
+					&& Distance < Best && FVector::DotProduct(Offset.GetSafeNormal2D(), AimDirection) > 0.8f)
+				{ Best = Distance; SetNovaTargetPoint(It->GetActorLocation()); }
+			}
+		}
 	}
 
 	FVector2D CursorInput = FVector2D::ZeroVector;
 	if (PlayerController)
 	{
+		if (ChaosImpactSettings::GetPlayerDevice(PlayerController) == EChaosImpactDevice::KeyboardMouse
+			&& ChaosImpactSettings::GetPlayerControlScheme(PlayerController) != EChaosImpactControlScheme::Normal)
+		{
+			FVector Point;
+			if (FindMouseAimPoint(Point) && !IsPointerOverGameplayUI()) { SetNovaTargetPoint(Point); }
+		}
 		// The movement controls the player has set (keys, or the movement stick and any set buttons).
 		bool bStick = false;
-		CursorInput = ChaosImpactSettings::GetMoveInput(PlayerController, bStick);
+		CursorInput = ChaosImpactSettings::GetPlayerDevice(PlayerController) == EChaosImpactDevice::KeyboardMouse
+			&& ChaosImpactSettings::GetPlayerControlScheme(PlayerController) != EChaosImpactControlScheme::Normal
+			? FVector2D::ZeroVector : ChaosImpactSettings::GetMoveInput(PlayerController, bStick);
 		CursorInput = bStick ? ApplyRadialStickDeadZone(CursorInput, MovementStickDeadZone)
 			: CursorInput.GetClampedToMaxSize(1.0f);
 	}
@@ -1392,29 +1673,6 @@ void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
 	}
 }
 
-bool AChaosImpactCharacter::CalculateNovaLaunchToTarget(const FVector& LaunchLocation, const FVector& GroundTarget,
-	const float BallRadius, FVector& OutDirection, float& OutHorizontalSpeed, float& OutUpSpeed) const
-{
-	if (!GetWorld())
-	{
-		return false;
-	}
-	const FVector TargetCenter = GroundTarget + FVector(0.0f, 0.0f, BallRadius + 3.0f);
-	const FVector HorizontalDelta(TargetCenter.X - LaunchLocation.X, TargetCenter.Y - LaunchLocation.Y, 0.0f);
-	const float HorizontalDistance = HorizontalDelta.Size();
-	OutDirection = HorizontalDistance > 1.0f ? HorizontalDelta / HorizontalDistance : AimDirection.GetSafeNormal2D();
-	if (OutDirection.IsNearlyZero())
-	{
-		OutDirection = GetActorForwardVector().GetSafeNormal2D();
-	}
-	// A long, high throw clears the arena's walls and still arrives exactly on the selected point.
-	const float FlightSeconds = FMath::Clamp(1.6f + HorizontalDistance / 3000.0f, 1.6f, 3.8f);
-	const float Gravity = GetWorld()->GetGravityZ() * ChaosImpactBallTypes::NovaGravityScale;
-	OutHorizontalSpeed = HorizontalDistance / FlightSeconds;
-	OutUpSpeed = (TargetCenter.Z - LaunchLocation.Z - 0.5f * Gravity * FlightSeconds * FlightSeconds) / FlightSeconds;
-	return FMath::IsFinite(OutHorizontalSpeed) && FMath::IsFinite(OutUpSpeed);
-}
-
 bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 {
 	if (!GetWorld() || !BallClass || AimDirection.IsNearlyZero() || CarriedBallCount <= 0
@@ -1443,7 +1701,7 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		}
 		else if (GetCarriedBallType(0) == EChaosImpactBallType::Nova)
 		{
-			// As big as it was charged.
+			// Its blast as far-reaching as it was charged (the ball itself stays small).
 			Ball->SetSnowScale(ChaosImpactBallTypes::GetNovaScale(ChargeAlpha));
 			// The thrower's camera stays out while it flies and bursts.
 			NovaCameraHoldUntil = GetWorld()->GetTimeSeconds() + 2.8;
@@ -1464,6 +1722,12 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		PendingThrowArcUpwardSpeed = ArcUpwardSpeed;
 		bPendingNovaTarget = Ball->GetBallType() == EChaosImpactBallType::Nova && bNovaTargetValid;
 		PendingNovaTarget = bPendingNovaTarget ? FVector(NovaTargetLocation) : FVector::ZeroVector;
+		if (Ball->GetBallType() == EChaosImpactBallType::Nova && !bPendingNovaTarget)
+		{
+			// No spot picked (a CPU's): it comes down where its landing was shown.
+			float Unused = 0.0f;
+			bPendingNovaTarget = PredictThrowLanding(ChargeAlpha, PendingNovaTarget, Unused);
+		}
 		PendingThrowBall = Ball;
 		bThrowReleasePending = true;
 		if (bOverhead)
@@ -1543,12 +1807,14 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 		ThrowOriginOffset = FVector::ZeroVector;
 		if (bPendingNovaTarget && Ball->GetBallType() == EChaosImpactBallType::Nova)
 		{
-			CalculateNovaLaunchToTarget(Ball->GetActorLocation(), PendingNovaTarget,
-				24.0f * Ball->GetSnowScale(), PendingThrowDirection, PendingThrowSpeed, PendingThrowArcUpwardSpeed);
-			PendingThrowFlightMode = EChaosImpactBallFlightMode::Arc;
+			// Straight up out of sight, then down onto the spot.
+			Ball->LaunchNovaDrop(PendingNovaTarget);
 		}
-		Ball->Launch(PendingThrowDirection, PendingThrowSpeed,
-			PendingThrowFlightMode, PendingThrowArcUpwardSpeed);
+		else
+		{
+			Ball->Launch(PendingThrowDirection, PendingThrowSpeed,
+				PendingThrowFlightMode, PendingThrowArcUpwardSpeed);
+		}
 		if (HasAuthority())
 		{
 			if (AChaosImpactGameMode* Mode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
@@ -1681,6 +1947,20 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		if (!bKnockedOutLeavingStage)
 		{
 			DropCarriedBalls();
+		}
+		// The nova is never lost: its parts drop here, and off the stage they (and a finished one) come back over a pad.
+		const FVector DownAt = GetActorLocation();
+		ChaosImpactNovaParts::Drop(GetWorld(), NovaParts, bKnockedOutLeavingStage ? nullptr : &DownAt);
+		NovaParts = 0;
+		if (bKnockedOutLeavingStage)
+		{
+			for (int32 Slot = 0; Slot < FMath::Min(CarriedBallCount, 2); ++Slot)
+			{
+				if (GetCarriedBallType(Slot) == EChaosImpactBallType::Nova)
+				{
+					ChaosImpactNovaParts::DropNovaBall(GetWorld(), nullptr);
+				}
+			}
 		}
 		ClearCarriedBalls();
 		IceFrozenUntilServerTime = 0.0;
@@ -1815,6 +2095,7 @@ void AChaosImpactCharacter::ResetAfterElimination()
 	Health = MaxHealth;
 	Stamina = MaxStamina;
 	ClearCarriedBalls();
+	NovaParts = 0;
 	IceFrozenUntilServerTime = 0.0;
 	BlindedUntilServerTime = 0.0;
 	if (IsRemotePlayerOnServer())
@@ -2207,6 +2488,7 @@ void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, WindCarrier, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, WindCarryStartServerTime, COND_SkipOwner);
 	DOREPLIFETIME(AChaosImpactCharacter, Health);
+	DOREPLIFETIME(AChaosImpactCharacter, NovaParts);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, bReplicatedDashing, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, ReplicatedDashDirection, COND_SkipOwner);
 	DOREPLIFETIME(AChaosImpactCharacter, bEliminated);
@@ -2300,6 +2582,53 @@ void AChaosImpactCharacter::ServerUpdateNovaTarget_Implementation(FVector_NetQua
 		&& GetCarriedBallType(0) == EChaosImpactBallType::Nova && SetNovaTargetPoint(FVector(Target)))
 	{
 		ForceNetUpdate();
+	}
+}
+
+void AChaosImpactCharacter::AddNovaPart(const EChaosImpactNovaPart Part)
+{
+	if (!HasAuthority() || bEliminated)
+	{
+		return;
+	}
+	NovaParts |= ChaosImpactNovaParts::Bit(Part);
+	UE_LOG(LogChaosImpact, Log, TEXT("%s picked up the nova's %s (parts %d)"), *GetName(), ChaosImpactNovaParts::GetName(Part), NovaParts);
+	MulticastNovaPart(false);
+	TryFinishNova();
+}
+
+void AChaosImpactCharacter::TryFinishNova()
+{
+	if (!HasAuthority() || bEliminated || NovaParts != ChaosImpactNovaParts::All || CarriedBallCount >= MaximumCarriedBalls)
+	{
+		return;
+	}
+	NovaParts = 0;
+	PushCarriedBall(EChaosImpactBallType::Nova);
+	if (IsRemotePlayerOnServer())
+	{
+		ClientBallCountReset(CarriedBallCount, CarriedBallTypes);
+	}
+	UpdateBallPresentation();
+	UE_LOG(LogChaosImpact, Log, TEXT("%s put the nova together"), *GetName());
+	MulticastNovaPart(true);
+}
+
+void AChaosImpactCharacter::MulticastNovaPart_Implementation(const bool bFinished)
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	const FVector Chest = GetActorLocation() + FVector(0.0f, 0.0f, 50.0f);
+	ChaosImpactSfx::PlayAt(this, bFinished ? EChaosImpactSfx::CharRespawn : EChaosImpactSfx::CharPickup, Chest, 1.0f, bFinished ? 1.0f : 0.8f);
+	if (bFinished && IsLocallyControlled())
+	{
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchKO);
+	}
+	if (UNiagaraSystem* Sparks = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::SparkBurst))
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, Chest, FRotator::ZeroRotator, FVector(bFinished ? 2.2f : 0.9f));
 	}
 }
 
@@ -3125,6 +3454,7 @@ void AChaosImpactCharacter::ResetForOnlineMatch(const FVector& Location, const F
 	Health = MaxHealth;
 	Stamina = MaxStamina;
 	ClearCarriedBalls();
+	NovaParts = 0;
 	IceFrozenUntilServerTime = 0.0;
 	BlindedUntilServerTime = 0.0;
 	NextDashAvailableAtSeconds = 0.0f;
@@ -3138,6 +3468,7 @@ void AChaosImpactCharacter::ResetForOnlineMatch(const FVector& Location, const F
 
 void AChaosImpactCharacter::SetGameplayUIVisible(const bool bVisible)
 {
+	if (!bVisible) { ResetEasyControls(); }
 	TryCreateChargeWidget();
 	if (ChargeWidget)
 	{
@@ -3210,6 +3541,22 @@ void AChaosImpactCharacter::CancelChargingThrow()
 void AChaosImpactCharacter::BeginThrowInput()
 {
 	StartChargingThrow();
+}
+
+void AChaosImpactCharacter::BeginBoundThrowInput()
+{
+	if (Cast<APlayerController>(GetController()))
+	{
+		if (bWaitForThrowRelease || bSuppressPointerThrow || IsPointerOverGameplayUI()) { return; }
+		if (ChaosImpactSettings::GetPlayerControlScheme(Cast<APlayerController>(GetController())) != EChaosImpactControlScheme::Normal)
+		{ UpdateAim(0.0f); }
+	}
+	StartChargingThrow();
+	if (Cast<APlayerController>(GetController()))
+	{
+		bMouseChargeActive = bIsChargingThrow;
+		bWasMouseDownLastTick = true;
+	}
 }
 
 void AChaosImpactCharacter::EndThrowInput()
@@ -4674,7 +5021,7 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 FVector AChaosImpactCharacter::GetOverheadHoldOffset(const EChaosImpactBallType Type, const float Scale) const
 {
 	const float HalfHeight = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 96.0f;
-	const float Radius = 24.0f * Scale;
+	const float Radius = 24.0f * (Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaShownScale : Scale);
 	return FVector(0.0f, 0.0f, Type == EChaosImpactBallType::Nova
 		? HalfHeight + ChaosImpactBallTypes::NovaHoldGap + Radius : HalfHeight + Radius * 0.85f);
 }
@@ -4716,7 +5063,7 @@ bool AChaosImpactCharacter::PredictThrowLanding(const float ChargeAlpha, FVector
 	const bool bArc = Mode == EChaosImpactBallFlightMode::Arc;
 	FVector Velocity = Direction * Horizontal + FVector(0.0f, 0.0f, bArc ? Upward : 0.0f);
 	const float Gravity = bArc ? World->GetGravityZ() * (Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaGravityScale : 1.0f) : 0.0f;
-	const float Radius = 24.0f * Scale;
+	const float Radius = 24.0f * (Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaShownScale : Scale);
 	// The same flight the ball will make, stepped until it first touches the stage itself (a nova meets nothing else).
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactThrowPreview), false, this);
 	const FCollisionObjectQueryParams Stage(ECC_WorldStatic);
@@ -4893,7 +5240,8 @@ void AChaosImpactCharacter::UpdateNovaChargePresentation(const float DeltaSecond
 	using namespace ChaosImpactBallTypes;
 	const float Alpha = FMath::Clamp(Seconds / NovaChargeSeconds, 0.0f, 1.0f);
 	const float Scale = GetNovaScale(Alpha);
-	const float Radius = 24.0f * Scale;
+	// Held up small however long it is charged: the charge shows in its glow, the energy streaming in, and the area.
+	const float Radius = 24.0f * NovaShownScale;
 	const double Now = GetWorld()->GetTimeSeconds();
 	if (!NovaAnchor)
 	{
@@ -5000,10 +5348,10 @@ void AChaosImpactCharacter::UpdateNovaChargePresentation(const float DeltaSecond
 	{
 		NovaMoteMaterial->SetScalarParameterValue(TEXT("Intensity"), 1.2f + 1.3f * Alpha);
 	}
-	// This player's own camera draws back to fit the swelling nova in, and over toward where it will land.
+	// This player's own camera draws back as its reach grows, and over toward where it will land.
 	if (IsLocallyControlled())
 	{
-		NovaCameraExtra = FMath::FInterpTo(NovaCameraExtra, Radius * 2.6f + 400.0f, DeltaSeconds, 3.0f);
+		NovaCameraExtra = FMath::FInterpTo(NovaCameraExtra, GetNovaBlastRadius(Scale) * 1.3f + 200.0f, DeltaSeconds, 3.0f);
 	}
 }
 
@@ -5181,6 +5529,17 @@ void AChaosImpactCharacter::UpdateDriving(const float DeltaSeconds)
 	}
 	if (IsLocallyControlled())
 	{
+		if (const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetController());
+			PC && PC->IsGameplayActive() && !bTrainingMenuFrozen
+			&& ChaosImpactSettings::IsMouseOnlyScheme(ChaosImpactSettings::GetPlayerControlScheme(PC)))
+		{
+			FVector Point;
+			if (FindMouseAimPoint(Point) && !IsPointerOverGameplayUI())
+			{
+				DriveSteer = (Point - Ball->GetActorLocation()).GetSafeNormal2D();
+				DriveSteerAt = GetWorld()->GetTimeSeconds();
+			}
+		}
 		// A player's controls arrive only while held: a moment without them is straight on.
 		if (GetWorld()->GetTimeSeconds() - DriveSteerAt > 0.08)
 		{

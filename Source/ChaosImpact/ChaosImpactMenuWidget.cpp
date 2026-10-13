@@ -1,4 +1,5 @@
 #include "ChaosImpactMenuWidget.h"
+#include "ChaosImpactPaint.h"
 
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSfx.h"
@@ -93,6 +94,23 @@ namespace
 			? Cast<AChaosImpactPlayerController>(Widget->GetOwningPlayer()) : nullptr;
 		const bool bUsePendingGamepadMode = Widget
 			&& Widget->GetScreen() == EChaosImpactScreen::ControllerAssignment;
+		// The full-screen pause belongs to P1, but the mouse may belong to P2-P4. Reduced mouse controls must
+		// still be able to close that menu without borrowing P1's controller.
+		if (Controller && Widget && (Widget->GetScreen() == EChaosImpactScreen::Pause
+			|| Widget->GetScreen() == EChaosImpactScreen::Settings
+			|| Widget->GetScreen() == EChaosImpactScreen::TrainingSettings
+			|| Widget->GetScreen() == EChaosImpactScreen::TrainingOverlay))
+		{
+			if (const UGameInstance* Instance = Controller->GetGameInstance())
+			{
+				for (const ULocalPlayer* Local : Instance->GetLocalPlayers())
+				{
+					const AChaosImpactPlayerController* MousePlayer = Local ? Cast<AChaosImpactPlayerController>(Local->GetPlayerController(Controller->GetWorld())) : nullptr;
+					if (MousePlayer && !MousePlayer->IsUsingGamepad()
+						&& ChaosImpactSettings::GetPlayerControlScheme(MousePlayer) != EChaosImpactControlScheme::Normal) { return true; }
+				}
+			}
+		}
 		return !Controller || !Controller->IsTrainingMode()
 			|| !(bUsePendingGamepadMode
 				? Controller->WillPrimaryUseGamepad()
@@ -812,6 +830,7 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 		SettingsScreen->Close();
 	}
 	Screen = NewScreen;
+	bTrainingBallPickerOpen = false;
 	if (Screen == EChaosImpactScreen::Pause && PreviousScreen != EChaosImpactScreen::Pause)
 	{
 		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiOpen);
@@ -1000,6 +1019,23 @@ void UChaosImpactMenuWidget::RefreshEntries()
 	BuildEntries();
 	SelectBlend.SetNumZeroed(Entries.Num());
 	InvalidateLayoutAndVolatility();
+}
+
+void UChaosImpactMenuWidget::OpenTrainingBallPicker()
+{
+	if (Screen != EChaosImpactScreen::TrainingOverlay) { return; }
+	bTrainingBallPickerOpen = true;
+	BuildEntries();
+	const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	SelectedIndex = Owner ? static_cast<int32>(Owner->GetTrainingSummonBallType()) : 0;
+	SelectBlend.Init(0,Entries.Num()); PressedIndex = INDEX_NONE;
+}
+
+void UChaosImpactMenuWidget::CloseTrainingBallPicker()
+{
+	bTrainingBallPickerOpen = false;
+	BuildEntries(); SelectedIndex = 4;
+	SelectBlend.Init(0,Entries.Num()); PressedIndex = INDEX_NONE;
 }
 
 void UChaosImpactMenuWidget::BuildEntries()
@@ -1263,18 +1299,30 @@ void UChaosImpactMenuWidget::BuildEntries()
 	{
 		const AChaosImpactPlayerController* Controller =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		if (bTrainingBallPickerOpen)
+		{
+			for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
+			{
+				const EChaosImpactBallType Type = ChaosImpactBallTypes::FromIndex(Index);
+				const float X = 78 + (Index % 3) * 186, Y = 174 + (Index / 3) * 111;
+				Entries.Add({FSlateRect(X,Y,X + 174,Y + 101),ChaosImpactBallTypes::GetDisplayName(Type),
+					TEXT("ball_type"),FString::FromInt(Index),ChaosImpactBallTypes::GetColor(Type)});
+			}
+			Entries.Add({FSlateRect(78,684,624,742),TEXT("戻る"),TEXT("ball_back"),TEXT(""),Muted});
+			break;
+		}
 		const int32 Players = Controller ? Controller->GetRequestedLocalPlayerCount() : 1;
 		const bool bTargets = !Controller || Controller->AreTrainingTargetsEnabled();
 		const int32 CPUCount = Controller ? Controller->GetTrainingCPUCount() : 0;
 		const bool bArc = Controller
 			&& Controller->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
-		Entries.Add({FSlateRect(78, 174, 624, 232),
+		Entries.Add({FSlateRect(78, 174, 624, 228),
 			bArc ? TEXT("投球軌道：放物線") : TEXT("投球軌道：直線"), TEXT(""), TEXT(""), bArc ? Fire : Ice});
-		Entries.Add({FSlateRect(78, 244, 624, 302),
+		Entries.Add({FSlateRect(78, 238, 624, 292),
 			FString::Printf(TEXT("プレイヤー人数：%d人"), Players), TEXT(""), TEXT(""), Ice});
-		Entries.Add({FSlateRect(78, 314, 624, 372),
+		Entries.Add({FSlateRect(78, 302, 624, 356),
 			bTargets ? TEXT("マト：あり") : TEXT("マト：なし"), TEXT(""), TEXT(""), bTargets ? Gold : Muted});
-		Entries.Add({FSlateRect(78, 384, 624, 442),
+		Entries.Add({FSlateRect(78, 366, 624, 420),
 			FString::Printf(TEXT("CPUプレイヤー：%d体"), CPUCount), TEXT(""), TEXT(""),
 			CPUCount > 0 ? Fire : Muted});
 		const EChaosImpactBallType SummonType = Controller
@@ -1282,12 +1330,14 @@ void UChaosImpactMenuWidget::BuildEntries()
 			const FLinearColor SummonAccent = SummonType == EChaosImpactBallType::Fire ? Fire
 				: SummonType == EChaosImpactBallType::Ice ? Ice
 				: SummonType == EChaosImpactBallType::Normal ? Gold : ChaosImpactBallTypes::GetColor(SummonType);
-			Entries.Add({FSlateRect(78, 454, 624, 512),
-				FString::Printf(TEXT("呼び出すボール：%s"), ChaosImpactBallTypes::GetDisplayName(SummonType)),
+			Entries.Add({FSlateRect(78, 430, 624, 484),
+				FString::Printf(TEXT("ボール一覧：%s"), ChaosImpactBallTypes::GetDisplayName(SummonType)),
 				TEXT(""), TEXT(""), SummonAccent});
-			Entries.Add({FSlateRect(78, 524, 624, 582), TEXT("ボールを呼び出す"), TEXT(""), TEXT(""), SummonAccent});
-			Entries.Add({FSlateRect(78, 608, 624, 666), TEXT("トレーニングをリセット"), TEXT(""), TEXT(""), Fire});
-		Entries.Add({FSlateRect(78, 684, 624, 742), TEXT("閉じる"), TEXT(""), TEXT(""), Muted});
+			Entries.Add({FSlateRect(78, 494, 624, 548), TEXT("ボールを呼び出す"), TEXT(""), TEXT(""), SummonAccent});
+		Entries.Add({FSlateRect(78, 558, 624, 612), Controller && Controller->IsTrainingShoulderCameraEnabled()
+			? TEXT("カメラ：肩越し（試験）") : TEXT("カメラ：見下ろし"), TEXT(""), TEXT(""), Ice});
+		Entries.Add({FSlateRect(78, 622, 624, 676), TEXT("トレーニングをリセット"), TEXT(""), TEXT(""), Fire});
+		Entries.Add({FSlateRect(78, 686, 624, 740), TEXT("閉じる"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
 	case EChaosImpactScreen::MatchRules:
@@ -1504,7 +1554,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		Side.Box(0, 0, 640, 760, FLinearColor(0.008f, 0.014f, 0.027f, 0.93f));
 		Side.Box(0, 0, 10, 760, Ice);
 		Side.Box(630, 0, 10, 760, Fire);
-		P.Text(TEXT("TRAINING"), 66, 60, 44, Paper);
+		P.Text(bTrainingBallPickerOpen ? TEXT("ボールを選ぶ") : TEXT("TRAINING"), 66, 60, 44, Paper);
 		P.Box(68, 122, 150, 8, Fire);
 		P.Box(226, 122, 48, 8, Ice);
 	}
@@ -1935,7 +1985,23 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const float EntryIn = bFrontEnd ? EaseOut((T - 0.12f - 0.05f * Index) / 0.35f) : 1.0f;
 		const FSlateRect Rect = Entry.Rect.OffsetBy(FVector2D((1.0f - EntryIn) * 120.0f, 0.0f));
 		const bool bPressed = PressedIndex == Index;
-		if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::MultiReady
+		if (Screen == EChaosImpactScreen::TrainingOverlay && Entry.Detail == TEXT("ball_type"))
+		{
+			const ChaosImpactPaint::FPainter Tile{DesignGeometry,OutDrawElements,BaseLayer + 4};
+			const ChaosImpactPaint::FPainter TileText{DesignGeometry,OutDrawElements,BaseLayer + 5};
+			const float X = Rect.Left, Y = Rect.Top, W = Rect.GetSize().X, H = Rect.GetSize().Y;
+			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			const bool bCurrent = Owner && static_cast<int32>(Owner->GetTrainingSummonBallType()) == FCString::Atoi(*Entry.Number);
+			Tile.Box(X,Y,W,H,FMath::Lerp(FLinearColor(0.015f,0.023f,0.035f,1),FLinearColor(0.07f,0.11f,0.18f,1),Blend));
+			Tile.Outline(X,Y,W,H,Index == SelectedIndex ? Paper : bCurrent ? Gold : WithAlpha(Paper,0.25f),Index == SelectedIndex || bCurrent ? 3 : 1);
+			const FVector2D At(X + W * 0.5f,Y + 36);
+			Tile.Disc(At + FVector2D(2,3),21,Ink);
+			Tile.Disc(At,21,Entry.Accent); Tile.Ring(At,22,Paper,2);
+			Tile.Disc(At + FVector2D(-6,-7),5,WithAlpha(Paper,0.7f));
+			TileText.Text(Entry.Title,X + W * 0.5f,Y + 67,21,Paper,ChaosImpactPaint::ETextAlign::Center);
+			if (bCurrent) { TileText.Text(TEXT("✓"),X + W - 22,Y + 8,22,Gold,ChaosImpactPaint::ETextAlign::Center); }
+		}
+		else if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::MultiReady
 			|| Screen == EChaosImpactScreen::VSSelect) && Index < 2)
 		{
 			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
@@ -2094,7 +2160,19 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	}
 	const bool bBack = Key == EKeys::Up || Key == EKeys::Left
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Left;
-	if (Screen == EChaosImpactScreen::MatchEnd && Key != EKeys::Tab)
+	if (Screen == EChaosImpactScreen::TrainingOverlay && bTrainingBallPickerOpen && Key != EKeys::Tab)
+	{
+		const int32 Back = ChaosImpactBallTypes::Count;
+		if (SelectedIndex == Back)
+		{
+			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			SelectedIndex = Owner ? static_cast<int32>(Owner->GetTrainingSummonBallType()) : 0;
+		}
+		else if (bLeft || bRight) { SelectedIndex = (SelectedIndex / 3) * 3 + (SelectedIndex % 3 + (bRight ? 1 : 2)) % 3; }
+		else if (bBack) { SelectedIndex = SelectedIndex < 3 ? Back : SelectedIndex - 3; }
+		else { SelectedIndex = SelectedIndex + 3 >= Back ? Back : SelectedIndex + 3; }
+	}
+	else if (Screen == EChaosImpactScreen::MatchEnd && Key != EKeys::Tab)
 	{
 		NavigateResults(Key);
 	}
@@ -2649,6 +2727,11 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		break;
 	case EChaosImpactScreen::TrainingOverlay:
+		if (bTrainingBallPickerOpen)
+		{
+			if (SelectedIndex < ChaosImpactBallTypes::Count) { Controller->SetTrainingSummonBallType(ChaosImpactBallTypes::FromIndex(SelectedIndex)); }
+			CloseTrainingBallPicker(); break;
+		}
 		if (SelectedIndex == 0)
 		{
 			Controller->ToggleBallFlightMode();
@@ -2671,14 +2754,18 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else if (SelectedIndex == 4)
 		{
-			Controller->CycleTrainingSummonBallType();
-			BuildEntries();
+			OpenTrainingBallPicker();
 		}
 		else if (SelectedIndex == 5)
 		{
 			Controller->SummonTrainingBall();
 		}
 		else if (SelectedIndex == 6)
+		{
+			Controller->ToggleTrainingShoulderCamera();
+			BuildEntries();
+		}
+		else if (SelectedIndex == 7)
 		{
 			Controller->RetryTraining();
 		}
@@ -2694,6 +2781,8 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 
 void UChaosImpactMenuWidget::GoBack()
 {
+	if (Screen == EChaosImpactScreen::TrainingOverlay && bTrainingBallPickerOpen)
+	{ CloseTrainingBallPicker(); ChaosImpactSfx::Play2D(this,EChaosImpactSfx::UiBack); return; }
 	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
 	{
 		if (Screen != EChaosImpactScreen::Title)

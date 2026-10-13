@@ -1,4 +1,5 @@
 #include "ChaosImpactSettingsScreen.h"
+#include "ChaosImpactControlPreview.h"
 #include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
@@ -6,6 +7,9 @@
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "Input/Events.h"
+#include "MediaPlayer.h"
+#include "MediaTexture.h"
+#include "Misc/Paths.h"
 
 namespace
 {
@@ -27,6 +31,11 @@ namespace
 	constexpr float CellWidth = 290.0f;
 	constexpr float CellGap = 20.0f;
 	const FBox2D BackButton(FVector2D(120.0f, 806.0f), FVector2D(360.0f, 860.0f));
+	const FBox2D ApplyControlButton(FVector2D(1120,806),FVector2D(1480,860));
+	FBox2D ControlCard(int32 Index)
+	{
+		return FBox2D(FVector2D(100,196 + Index * 138),FVector2D(662,320 + Index * 138));
+	}
 
 
 	FString OnOff(const bool bOn)
@@ -56,6 +65,7 @@ void UChaosImpactSettingsScreen::Open(AChaosImpactPlayerController* InController
 {
 	Controller = InController;
 	bOpen = true;
+	bControlStylePickerOpen = false;
 	bWaitingForKey = false;
 	bDeleteArmed = false;
 	NameEntry.Close();
@@ -73,7 +83,10 @@ void UChaosImpactSettingsScreen::Open(AChaosImpactPlayerController* InController
 
 void UChaosImpactSettingsScreen::Close()
 {
+	if (ControlVideoPlayer) { ControlVideoPlayer->Close(); }
+	OpenVideoId = INDEX_NONE;
 	bOpen = false;
+	bControlStylePickerOpen = false;
 	bWaitingForKey = false;
 	NameEntry.Close();
 }
@@ -85,6 +98,7 @@ void UChaosImpactSettingsScreen::SetTab(const ETab NewTab)
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiTab);
 	}
 	Tab = static_cast<ETab>(Wrap(static_cast<int32>(NewTab), static_cast<int32>(ETab::Count)));
+	bControlStylePickerOpen = false;
 	TabChangedAt = FPlatformTime::Seconds();
 	bDeleteArmed = false;
 	BuildRows();
@@ -99,9 +113,129 @@ void UChaosImpactSettingsScreen::SetTab(const ETab NewTab)
 
 void UChaosImpactSettingsScreen::EditControls(const int32 Profile, const EChaosImpactDevice Device)
 {
+	bControlStylePickerOpen = false;
 	EditedProfile = FMath::Clamp(Profile, 0, ChaosImpactSettings::GetProfileCount() - 1);
 	EditedDevice = Device;
 	BuildRows();
+}
+
+void UChaosImpactSettingsScreen::OpenControlStylePicker()
+{
+	if (!bOpen || Tab != ETab::Controls) { return; }
+	bControlStylePickerOpen = true;
+	PreviewControlScheme = ChaosImpactSettings::GetControlScheme(EditedProfile,EditedDevice);
+	PreviewStartedAt = FPlatformTime::Seconds();
+	UpdateControlVideo();
+	ChaosImpactSfx::Play2D(Controller.Get(),EChaosImpactSfx::UiOpen);
+}
+
+void UChaosImpactSettingsScreen::MoveControlPreview(int32 Direction)
+{
+	if (!Direction) { return; }
+	PreviewControlScheme = static_cast<EChaosImpactControlScheme>(Wrap(static_cast<int32>(PreviewControlScheme)
+		+ (Direction < 0 ? -1 : 1),EditedDevice == EChaosImpactDevice::KeyboardMouse ? 4 : 2));
+	PreviewStartedAt = FPlatformTime::Seconds();
+	UpdateControlVideo();
+	ChaosImpactSfx::Play2D(Controller.Get(),EChaosImpactSfx::UiMove);
+}
+
+void UChaosImpactSettingsScreen::BeginDestroy()
+{
+	if (ControlVideoPlayer) { ControlVideoPlayer->Close(); }
+	Super::BeginDestroy();
+}
+
+bool UChaosImpactSettingsScreen::IsControlVideoPlaying() const
+{
+	const int32 Desired = EditedDevice == EChaosImpactDevice::KeyboardMouse
+		? static_cast<int32>(PreviewControlScheme) : 4 + static_cast<int32>(PreviewControlScheme);
+	return bControlStylePickerOpen && OpenVideoId == Desired && ControlVideoPlayer && ControlVideoPlayer->IsPlaying();
+}
+
+double UChaosImpactSettingsScreen::GetControlVideoTime() const
+{
+	return ControlVideoPlayer ? ControlVideoPlayer->GetTime().GetTotalSeconds() : 0;
+}
+
+void UChaosImpactSettingsScreen::UpdateControlVideo()
+{
+	if (!bOpen || !bControlStylePickerOpen)
+	{
+		if (OpenVideoId != INDEX_NONE && ControlVideoPlayer) { ControlVideoPlayer->Close(); }
+		OpenVideoId = INDEX_NONE;
+		return;
+	}
+	const bool bPad = EditedDevice != EChaosImpactDevice::KeyboardMouse;
+	const int32 Id = bPad ? 4 + static_cast<int32>(PreviewControlScheme) : static_cast<int32>(PreviewControlScheme);
+	if (OpenVideoId == Id) { return; }
+	// A stick tap or crossing several cards must not open/close multiple asynchronous WMF topologies at once.
+	if (FPlatformTime::Seconds() - PreviewStartedAt < 0.18) { return; }
+	if (!ControlVideoPlayer)
+	{
+		ControlVideoPlayer = NewObject<UMediaPlayer>(this);
+		ControlVideoPlayer->PlayOnOpen = true;
+		ControlVideoTexture = NewObject<UMediaTexture>(this);
+		ControlVideoTexture->SetMediaPlayer(ControlVideoPlayer);
+		ControlVideoTexture->UpdateResource();
+		ControlVideoBrush.SetResourceObject(ControlVideoTexture);
+		ControlVideoBrush.DrawAs = ESlateBrushDrawType::Image;
+		ControlVideoBrush.ImageSize = FVector2D(1280,720);
+	}
+	ControlVideoPlayer->Close();
+	OpenVideoId = Id;
+	ControlVideoPlayer->SetLooping(true);
+	const TCHAR* const Names[] = {TEXT("Normal"),TEXT("Simple"),TEXT("MouseClick"),TEXT("MouseHold"),TEXT("PadNormal"),TEXT("PadSimple")};
+	const FString File = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectContentDir(),TEXT("Movies/Controls"),FString(Names[Id]) + TEXT(".mp4")));
+	bVideoOpenFailed = !ControlVideoPlayer->OpenFile(File);
+}
+
+void UChaosImpactSettingsScreen::ApplyControlPreview()
+{
+	ChaosImpactSettings::SetControlScheme(EditedProfile,EditedDevice,PreviewControlScheme);
+	bControlStylePickerOpen = false;
+	BuildRows();
+	ShowMessage(TEXT("操作スタイルを変更しました"));
+	ChaosImpactSfx::Play2D(Controller.Get(),EChaosImpactSfx::UiConfirm);
+}
+
+int32 UChaosImpactSettingsScreen::PaintControlStylePicker(const FGeometry& Design,FSlateWindowElementList& Elements,int32 Layer) const
+{
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactSettings;
+	const FPainter P{Design,Elements,Layer}, Words{Design,Elements,Layer + 1};
+	P.Box(0,0,1600,900,Ink);
+	Words.Text(TEXT("操作スタイル"),100,52,45,Paper);
+	Words.Text(GetProfile(EditedProfile).Name + TEXT("  /  ") + GetDeviceName(EditedDevice),102,120,23,Muted);
+	P.Box(100,167,562,4,Ice);
+	const bool bPad = EditedDevice != EChaosImpactDevice::KeyboardMouse;
+	const int32 Count = bPad ? 2 : 4;
+	const TCHAR* const Descriptions[] = {bPad ? TEXT("左右のスティックで移動と照準を分ける") : TEXT("移動・投球などを自分のキー設定で操作"),
+		bPad ? TEXT("左スティックと3つのボタンで遊ぶ") : TEXT("WASD＋左右クリック＋Eで遊ぶ"),
+		TEXT("右クリックした目的地まで自動で歩く"),TEXT("右を押している間、カーソル方向へ歩く")};
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const FBox2D R = ControlCard(Index);
+		const bool bPreview = Index == static_cast<int32>(PreviewControlScheme);
+		const bool bActive = Index == static_cast<int32>(GetControlScheme(EditedProfile,EditedDevice));
+		P.Box(R.Min.X,R.Min.Y,R.GetSize().X,R.GetSize().Y,bPreview ? FLinearColor(0.025f,0.1f,0.16f,1) : FLinearColor(0.025f,0.03f,0.045f,1));
+		P.Outline(R.Min.X,R.Min.Y,R.GetSize().X,R.GetSize().Y,bPreview ? Ice : WithAlpha(Paper,0.25f),bPreview ? 3 : 1);
+		Words.Text(GetControlSchemeName(static_cast<EChaosImpactControlScheme>(Index)),R.Min.X + 25,R.Min.Y + 18,29,Paper);
+		Words.Text(Descriptions[Index],R.Min.X + 25,R.Min.Y + 72,21,Paper);
+		if (bActive)
+		{
+			P.Box(R.Max.X - 92,R.Min.Y + 20,72,28,Paper);
+			Words.Text(TEXT("使用中"),R.Max.X - 56,R.Min.Y + 21,18,Ink,ETextAlign::Center);
+		}
+	}
+	ChaosImpactControlPreview::Paint(Design,Elements,Layer + 2,EditedProfile,EditedDevice,PreviewControlScheme,
+		GetControlVideoTime(),IsControlVideoPlaying() ? &ControlVideoBrush : nullptr,
+		bVideoOpenFailed || (ControlVideoPlayer && ControlVideoPlayer->HasError()));
+	P.Outline(120,806,240,54,Paper,2);
+	Words.Text(TEXT("戻る"),240,817,25,Paper,ETextAlign::Center);
+	P.Box(1120,806,360,54,Paper);
+	Words.Text(TEXT("この操作にする"),1300,817,25,Ink,ETextAlign::Center);
+	Words.Text(bLastInputPad ? TEXT("十字キーで比較・決定で選択") : TEXT("重ねて映像を見る・クリックで選択"),100,759,20,Paper);
+	return Layer + 6;
 }
 
 int32 UChaosImpactSettingsScreen::FindRow(const int32 Id) const
@@ -173,6 +307,8 @@ void UChaosImpactSettingsScreen::BuildControlRows()
 	const FChaosImpactProfile& Profile = GetProfile(EditedProfile);
 	const bool bGuest = EditedProfile == 0;
 	const bool bPad = EditedDevice != EChaosImpactDevice::KeyboardMouse;
+	Rows.Add(MakeRow(ERowKind::Button, RowControlPreview, TEXT("操作スタイルを選ぶ・図で見る"),
+		GetControlSchemeName(GetControlScheme(EditedProfile,EditedDevice))));
 	Rows.Add(MakeRow(ERowKind::Value, RowProfile, TEXT("ニックネーム"), Profile.Name));
 	Rows.Add(MakeRow(ERowKind::Button, RowNewProfile, TEXT("＋ ニックネームを作る"),
 		FString::Printf(TEXT("%d / %d"), GetProfileCount() - 1, MaxProfiles - 1), GetProfileCount() >= MaxProfiles));
@@ -181,12 +317,49 @@ void UChaosImpactSettingsScreen::BuildControlRows()
 		bDeleteArmed ? TEXT("もう一度おすと消します") : TEXT("このニックネームを消す"), FString(), bGuest));
 	Rows.Add(MakeRow(ERowKind::Heading, 0, FString::Printf(TEXT("%s の操作"), *Profile.Name)));
 	Rows.Add(MakeRow(ERowKind::Value, RowDevice, TEXT("設定するデバイス"), GetDeviceName(EditedDevice)));
-	Rows.Add(MakeRow(ERowKind::Value, RowPadChoice, TEXT("使うコントローラーの種類"), GetPadChoiceName(Profile.Pad)));
+	const EChaosImpactControlScheme Scheme = GetControlScheme(EditedProfile, EditedDevice);
+	Rows.Add(MakeRow(ERowKind::Value, RowControlScheme, TEXT("操作スタイル"), GetControlSchemeName(Scheme)));
+	Rows.Add(MakeRow(ERowKind::Value, RowShoulderSensitivityX,
+		bPad ? TEXT("肩越し：横感度") : TEXT("肩越し：マウス感度"),
+		FString::Printf(TEXT("%d%%"), GetShoulderSensitivity(EditedProfile, EditedDevice))));
 	if (bPad)
+	{
+		Rows.Add(MakeRow(ERowKind::Value, RowShoulderSensitivityY, TEXT("肩越し：縦感度"),
+			FString::Printf(TEXT("%d%%"), GetShoulderSensitivity(EditedProfile, EditedDevice, true))));
+	}
+	Rows.Add(MakeRow(ERowKind::Button, RowResetShoulderSensitivity, TEXT("肩越しの感度を戻す"), TEXT("100%")));
+	if (Scheme == EChaosImpactControlScheme::MouseOnly)
+	{
+		Rows.Add(MakeRow(ERowKind::Value, RowMouseDash, TEXT("ダッシュ操作"),
+			Profile.bMouseDoubleClickDash ? TEXT("右ダブルクリック / ホイール押し") : TEXT("ホイール押し")));
+	}
+	Rows.Add(MakeRow(ERowKind::Value, RowPadChoice, TEXT("使うコントローラーの種類"), GetPadChoiceName(Profile.Pad)));
+	if (bPad && Scheme == EChaosImpactControlScheme::Normal)
 	{
 		Rows.Add(MakeRow(ERowKind::Value, RowSwapSticks, TEXT("スティックの左右を入れ替え"), OnOff(Profile.bSwapSticks)));
 	}
 	Rows.Add(MakeRow(ERowKind::Value, RowAimAssist, TEXT("エイムアシスト"), OnOff(Profile.bAimAssist)));
+	if (Scheme != EChaosImpactControlScheme::Normal)
+	{
+		Rows.Add(MakeRow(ERowKind::Heading, 99, TEXT("このスタイルの操作")));
+		Rows.Add(MakeRow(ERowKind::Info, 5000, bPad ? TEXT("左スティック：移動・方向 / ドライブ操縦")
+			: Scheme == EChaosImpactControlScheme::MouseHold ? TEXT("右長押し：カーソル方向へ移動 / 段差は自動ジャンプ")
+			: Scheme == EChaosImpactControlScheme::MouseOnly ? TEXT("右クリック：移動 / マウス：照準・ドライブ操縦")
+			: TEXT("WASD：移動 / マウス：照準 / ドライブはWASD")));
+		Rows.Add(MakeRow(ERowKind::Info, 5001, FString::Printf(TEXT("%s：投球（長押しでチャージ）"),
+			*GetKeyName(GetActiveKey(EditedProfile, EditedDevice, EChaosImpactAction::Throw, 0), EditedDevice))));
+		Rows.Add(MakeRow(ERowKind::Info, 5002, FString::Printf(TEXT("%s：ダッシュ"),
+			*GetKeyName(GetActiveKey(EditedProfile, EditedDevice, EChaosImpactAction::Dash, 0), EditedDevice))));
+		Rows.Add(MakeRow(ERowKind::Info, 5003, IsMouseOnlyScheme(Scheme)
+			? TEXT("ホイール：持ち替え / ボール枠を右長押し：ドロップ")
+			: FString::Printf(TEXT("%s：持ち替え / 0.7秒長押し：ドロップ"),
+				*GetKeyName(GetActiveKey(EditedProfile, EditedDevice, EChaosImpactAction::SwapBall, 0), EditedDevice))));
+		if (Scheme == EChaosImpactControlScheme::MouseHold)
+		{
+			Rows.Add(MakeRow(ERowKind::Info, 5004, TEXT("離すと停止 / ドライブはマウスで自由に操縦")));
+		}
+		return; // Presets never overwrite the normal bindings; switch back to edit those.
+	}
 	Rows.Add(MakeRow(ERowKind::Heading, 1, bPad ? TEXT("ボタン（ひとつの操作に2つまで）") : TEXT("キー（ひとつの操作に2つまで）")));
 	for (int32 Action = 0; Action < FChaosImpactProfile::ActionCount; ++Action)
 	{
@@ -243,6 +416,7 @@ void UChaosImpactSettingsScreen::SelectRow(const int32 Row, const int32 Cell)
 
 void UChaosImpactSettingsScreen::MoveSelection(const int32 Direction)
 {
+	if (bControlStylePickerOpen) { MoveControlPreview(Direction); return; }
 	if (Rows.IsEmpty())
 	{
 		return;
@@ -277,6 +451,7 @@ void UChaosImpactSettingsScreen::KeepSelectionVisible()
 
 void UChaosImpactSettingsScreen::HandleWheel(const float Delta)
 {
+	if (bControlStylePickerOpen) { MoveControlPreview(Delta > 0 ? -1 : 1); return; }
 	if (NameEntry.IsOpen() || bWaitingForKey)
 	{
 		return;
@@ -286,6 +461,7 @@ void UChaosImpactSettingsScreen::HandleWheel(const float Delta)
 
 void UChaosImpactSettingsScreen::Adjust(const int32 Direction)
 {
+	if (bControlStylePickerOpen) { MoveControlPreview(Direction); return; }
 	if (!IsSelectable(SelectedRow) || Direction == 0)
 	{
 		return;
@@ -366,6 +542,22 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 		EditedDevice = static_cast<EChaosImpactDevice>(Wrap(static_cast<int32>(EditedDevice) + Step,
 			static_cast<int32>(EChaosImpactDevice::Count)));
 	}
+	else if (Id == RowControlScheme)
+	{
+		SetControlScheme(EditedProfile, EditedDevice, static_cast<EChaosImpactControlScheme>(
+			Wrap(static_cast<int32>(GetControlScheme(EditedProfile, EditedDevice)) + Step,
+				EditedDevice == EChaosImpactDevice::KeyboardMouse ? 4 : 2)));
+	}
+	else if (Id == RowShoulderSensitivityX || Id == RowShoulderSensitivityY)
+	{
+		const bool bVertical = Id == RowShoulderSensitivityY;
+		SetShoulderSensitivity(EditedProfile, EditedDevice, bVertical,
+			GetShoulderSensitivity(EditedProfile, EditedDevice, bVertical) + Step * 10);
+	}
+	else if (Id == RowMouseDash)
+	{
+		SetMouseDoubleClickDash(EditedProfile, !GetProfile(EditedProfile).bMouseDoubleClickDash);
+	}
 	else if (Id == RowPadChoice)
 	{
 		SetPadChoice(EditedProfile, static_cast<EChaosImpactPadChoice>(Wrap(static_cast<int32>(GetProfile(EditedProfile).Pad) + Step,
@@ -404,12 +596,14 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 void UChaosImpactSettingsScreen::Activate()
 {
 	using namespace ChaosImpactSettings;
+	if (bControlStylePickerOpen) { ApplyControlPreview(); return; }
 	if (!IsSelectable(SelectedRow) || Rows[SelectedRow].bDisabled)
 	{
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiDeny);
 		return;
 	}
 	const FRow& Row = Rows[SelectedRow];
+	if (Row.Id == RowControlScheme || Row.Id == RowControlPreview) { OpenControlStylePicker(); return; }
 	if (Row.Kind == ERowKind::Value)
 	{
 		ChangeValue(Row, 1);
@@ -451,6 +645,10 @@ void UChaosImpactSettingsScreen::Activate()
 		{
 			Loading->ShowArcade();
 		}
+		break;
+	case RowResetShoulderSensitivity:
+		ResetShoulderSensitivity(EditedProfile, EditedDevice);
+		ShowMessage(TEXT("肩越しの感度を100%に戻しました"));
 		break;
 	case RowResetDevice:
 		ResetDevice(EditedProfile, EditedDevice);
@@ -517,6 +715,7 @@ void UChaosImpactSettingsScreen::ShowMessage(const FString& Text)
 void UChaosImpactSettingsScreen::Leave()
 {
 	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
+	if (bControlStylePickerOpen) { bControlStylePickerOpen = false; return; }
 	bWaitingForKey = false;
 	if (AChaosImpactPlayerController* Owner = Controller.Get())
 	{
@@ -566,6 +765,7 @@ void UChaosImpactSettingsScreen::FinishNameEntry()
 
 void UChaosImpactSettingsScreen::Tick(const float DeltaSeconds)
 {
+	UpdateControlVideo();
 	if (!bOpen)
 	{
 		return;
@@ -603,6 +803,14 @@ bool UChaosImpactSettingsScreen::HandleKeyDown(const FKeyEvent& Event)
 		bLastInputPad = false;
 	}
 	const FKey Key = ChaosImpactSettings::ToMenuKey(RawKey, DeviceId);
+	if (bControlStylePickerOpen)
+	{
+		if (Key == EKeys::Up || Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Left) { MoveControlPreview(-1); }
+		else if (Key == EKeys::Down || Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_DPad_Right) { MoveControlPreview(1); }
+		else if (!Event.IsRepeat() && (Key == EKeys::Enter || Key == EKeys::SpaceBar || Key == EKeys::Gamepad_FaceButton_Bottom)) { ApplyControlPreview(); }
+		else if (!Event.IsRepeat() && (Key == EKeys::Escape || Key == EKeys::BackSpace || Key == EKeys::Gamepad_FaceButton_Right)) { Leave(); }
+		return true;
+	}
 	if (NameEntry.IsOpen())
 	{
 		NameEntry.HandleKey(Key, Event.IsRepeat());
@@ -737,6 +945,23 @@ bool UChaosImpactSettingsScreen::HandleMouseDown(const FVector2D& DesignPoint, c
 		return false;
 	}
 	bLastInputPad = false;
+	if (bControlStylePickerOpen)
+	{
+		if (Button == EKeys::RightMouseButton || (Button == EKeys::LeftMouseButton && BackButton.IsInside(DesignPoint))) { Leave(); }
+		else if (Button == EKeys::LeftMouseButton)
+		{
+			const int32 Count = EditedDevice == EChaosImpactDevice::KeyboardMouse ? 4 : 2;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				if (ControlCard(Index).IsInside(DesignPoint))
+				{
+					PreviewControlScheme = static_cast<EChaosImpactControlScheme>(Index); ApplyControlPreview(); return true;
+				}
+			}
+			if (ApplyControlButton.IsInside(DesignPoint)) { ApplyControlPreview(); }
+		}
+		return true;
+	}
 	if (NameEntry.IsOpen())
 	{
 		if (Button == EKeys::LeftMouseButton)
@@ -780,6 +1005,7 @@ bool UChaosImpactSettingsScreen::HandleMouseDown(const FVector2D& DesignPoint, c
 			continue;
 		}
 		const FRow& Clicked = Rows[Row];
+		if (Clicked.Id == RowControlScheme || Clicked.Id == RowControlPreview) { SelectRow(Row); OpenControlStylePicker(); return true; }
 		if (Clicked.Kind == ERowKind::Binding)
 		{
 			const int32 Cell = CellRect(Row, 1).IsInside(DesignPoint) ? 1 : CellRect(Row, 0).IsInside(DesignPoint) ? 0 : -1;
@@ -810,6 +1036,16 @@ bool UChaosImpactSettingsScreen::HandleMouseDown(const FVector2D& DesignPoint, c
 
 void UChaosImpactSettingsScreen::HandleMouseMove(const FVector2D& DesignPoint)
 {
+	if (bControlStylePickerOpen)
+	{
+		const int32 Count = EditedDevice == EChaosImpactDevice::KeyboardMouse ? 4 : 2;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (ControlCard(Index).IsInside(DesignPoint) && Index != static_cast<int32>(PreviewControlScheme))
+			{ PreviewControlScheme = static_cast<EChaosImpactControlScheme>(Index); PreviewStartedAt = FPlatformTime::Seconds(); UpdateControlVideo(); }
+		}
+		return;
+	}
 	if (!bOpen || bWaitingForKey)
 	{
 		return;
@@ -858,6 +1094,7 @@ int32 UChaosImpactSettingsScreen::Paint(const FGeometry& Design, FSlateWindowEle
 	{
 		return Layer;
 	}
+	if (bControlStylePickerOpen) { return PaintControlStylePicker(Design,Elements,Layer); }
 	const double Now = FPlatformTime::Seconds();
 	const float In = ChaosImpactPaint::EaseOut(static_cast<float>(Now - OpenedAt) / 0.3f);
 	const ChaosImpactPaint::FPainter P{Design, Elements, Layer, In};

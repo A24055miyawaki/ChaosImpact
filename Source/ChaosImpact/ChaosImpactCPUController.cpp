@@ -2608,8 +2608,7 @@ void AChaosImpactCPUController::UpdateNovaPerfect(AChaosImpactCharacter* Self, A
 	{
 		return;
 	}
-	const float Flight = static_cast<float>(FVector::Dist2D(Self->GetActorLocation(), Landing)) / ChaosImpactBallTypes::NovaThrowSpeed
-		+ Self->GetThrowReleaseDelay();
+	const float Flight = ChaosImpactBallTypes::NovaFlightSeconds + AChaosImpactHazardZone::NovaExplodeAfter + Self->GetThrowReleaseDelay();
 	const FVector There = PredictTargetAt(Target, Flight);
 	const float Need = Radius + Target->GetCapsuleComponent()->GetScaledCapsuleRadius() - static_cast<float>(FVector::Dist2D(Landing, There));
 	const float Reach = Target->GetCharacterMovement()->MaxWalkSpeed * FMath::Max(0.0f, Flight - SureShotReactionSeconds)
@@ -2662,6 +2661,10 @@ float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, 
 			break;
 		case EChaosImpactBallType::Ice:
 			Danger += Distance < Reach ? 0.6f : 0.0f;
+			break;
+		case EChaosImpactBallType::Nova:
+			// Spinning, then a ball of fire as wide as the blast: get well clear until it has shrunk away.
+			Danger += Zone->GetAge() < AChaosImpactHazardZone::NovaFireGoneAfter && Distance < Reach + 150.0f ? 8.0f : 0.0f;
 			break;
 		default:
 			break;
@@ -2767,6 +2770,10 @@ void AChaosImpactCPUController::CollectActiveBurns(const AChaosImpactCharacter* 
 		else if (Zone->GetZoneType() == EChaosImpactBallType::Black)
 		{
 			ActiveBurns.Add(FVector4(Where.X, Where.Y, Where.Z, AChaosImpactHazardZone::BlackHoleBurnRadius + 40.0f));
+		}
+		else if (Zone->GetZoneType() == EChaosImpactBallType::Nova && Zone->GetAge() < AChaosImpactHazardZone::NovaFireGoneAfter)
+		{
+			ActiveBurns.Add(FVector4(Where.X, Where.Y, Where.Z, Zone->GetRadius() + 120.0f));
 		}
 	}
 }

@@ -93,8 +93,17 @@ namespace
 		GConfig->SetInt(*Section, TEXT("Pad"), static_cast<int32>(Profile.Pad), GGameUserSettingsIni);
 		GConfig->SetBool(*Section, TEXT("SwapSticks"), Profile.bSwapSticks, GGameUserSettingsIni);
 		GConfig->SetBool(*Section, TEXT("AimAssist"), Profile.bAimAssist, GGameUserSettingsIni);
+		GConfig->SetBool(*Section, TEXT("MouseDoubleClickDash"), Profile.bMouseDoubleClickDash, GGameUserSettingsIni);
 		for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
 		{
+			GConfig->SetInt(*Section, *FString::Printf(TEXT("%s_ControlScheme"), DeviceTag(static_cast<EDevice>(Device))),
+				static_cast<int32>(Profile.Schemes[Device]), GGameUserSettingsIni);
+			for (int32 Axis = 0; Axis < 2; ++Axis)
+			{
+				GConfig->SetInt(*Section, *FString::Printf(TEXT("%s_ShoulderSensitivity%s"),
+					DeviceTag(static_cast<EDevice>(Device)), Axis ? TEXT("Y") : TEXT("X")),
+					Profile.ShoulderSensitivity[Device][Axis], GGameUserSettingsIni);
+			}
 			for (int32 Action = 0; Action < FChaosImpactProfile::ActionCount; ++Action)
 			{
 				const FKey* Keys = Profile.Keys[Device][Action];
@@ -179,8 +188,22 @@ namespace
 			Profile.Pad = static_cast<EChaosImpactPadChoice>(FMath::Clamp(Pad, 0, static_cast<int32>(EChaosImpactPadChoice::Count) - 1));
 			GConfig->GetBool(*Section, TEXT("SwapSticks"), Profile.bSwapSticks, GGameUserSettingsIni);
 			GConfig->GetBool(*Section, TEXT("AimAssist"), Profile.bAimAssist, GGameUserSettingsIni);
+			GConfig->GetBool(*Section, TEXT("MouseDoubleClickDash"), Profile.bMouseDoubleClickDash, GGameUserSettingsIni);
 			for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
 			{
+				int32 Scheme = 0;
+				GConfig->GetInt(*Section, *FString::Printf(TEXT("%s_ControlScheme"), DeviceTag(static_cast<EDevice>(Device))),
+					Scheme, GGameUserSettingsIni);
+				Profile.Schemes[Device] = static_cast<EChaosImpactControlScheme>(FMath::Clamp(Scheme, 0,
+					Device == 0 ? static_cast<int32>(EChaosImpactControlScheme::MouseHold) : 1));
+				for (int32 Axis = 0; Axis < 2; ++Axis)
+				{
+					int32& Sensitivity = Profile.ShoulderSensitivity[Device][Axis];
+					GConfig->GetInt(*Section, *FString::Printf(TEXT("%s_ShoulderSensitivity%s"),
+						DeviceTag(static_cast<EDevice>(Device)), Axis ? TEXT("Y") : TEXT("X")), Sensitivity, GGameUserSettingsIni);
+					Sensitivity = FMath::Clamp(Sensitivity, 10, 300);
+				}
+				if (Device == 0) { Profile.ShoulderSensitivity[0][1] = Profile.ShoulderSensitivity[0][0]; }
 				for (int32 Action = 0; Action < FChaosImpactProfile::ActionCount; ++Action)
 				{
 					FString Value;
@@ -398,6 +421,117 @@ void ChaosImpactSettings::SetAimAssist(const int32 Profile, const bool bOn)
 		S.Profiles[Profile].bAimAssist = bOn;
 		SaveProfile(Profile);
 		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+}
+
+int32 ChaosImpactSettings::GetShoulderSensitivity(const int32 Profile, const EChaosImpactDevice Device, const bool bVertical)
+{
+	const auto& S = Store();
+	const int32 D = static_cast<int32>(Device);
+	if (!S.Profiles.IsValidIndex(Profile) || D < 0 || D >= FChaosImpactProfile::DeviceCount) { return 100; }
+	return S.Profiles[Profile].ShoulderSensitivity[D][bVertical ? 1 : 0];
+}
+
+void ChaosImpactSettings::SetShoulderSensitivity(const int32 Profile, const EChaosImpactDevice Device,
+	const bool bVertical, const int32 Percent)
+{
+	auto& S = Store();
+	const int32 D = static_cast<int32>(Device);
+	if (!S.Profiles.IsValidIndex(Profile) || D < 0 || D >= FChaosImpactProfile::DeviceCount) { return; }
+	const int32 Value = FMath::Clamp(Percent, 10, 300);
+	S.Profiles[Profile].ShoulderSensitivity[D][bVertical ? 1 : 0] = Value;
+	if (Device == EChaosImpactDevice::KeyboardMouse)
+	{
+		S.Profiles[Profile].ShoulderSensitivity[D][0] = Value;
+		S.Profiles[Profile].ShoulderSensitivity[D][1] = Value;
+	}
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ChaosImpactSettings::ResetShoulderSensitivity(const int32 Profile, const EChaosImpactDevice Device)
+{
+	SetShoulderSensitivity(Profile, Device, false, 100);
+	SetShoulderSensitivity(Profile, Device, true, 100);
+}
+
+void ChaosImpactSettings::SetControlScheme(const int32 Profile, const EChaosImpactDevice Device, EChaosImpactControlScheme Scheme)
+{
+	FSettingsStore& S = Store();
+	const int32 D = static_cast<int32>(Device);
+	if (!S.Profiles.IsValidIndex(Profile) || D < 0 || D >= FChaosImpactProfile::DeviceCount) { return; }
+	Scheme = static_cast<EChaosImpactControlScheme>(FMath::Clamp(static_cast<int32>(Scheme), 0,
+		D == 0 ? static_cast<int32>(EChaosImpactControlScheme::MouseHold) : 1));
+	S.Profiles[Profile].Schemes[D] = Scheme;
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+EChaosImpactControlScheme ChaosImpactSettings::GetControlScheme(const int32 Profile, const EChaosImpactDevice Device)
+{
+	return GetProfile(Profile).Schemes[FMath::Clamp(static_cast<int32>(Device), 0, FChaosImpactProfile::DeviceCount - 1)];
+}
+
+EChaosImpactControlScheme ChaosImpactSettings::GetPlayerControlScheme(const APlayerController* Player)
+{
+	return GetControlScheme(GetPlayerProfile(Player), GetPlayerDevice(Player));
+}
+
+FString ChaosImpactSettings::GetControlSchemeName(const EChaosImpactControlScheme Scheme)
+{
+	return Scheme == EChaosImpactControlScheme::Simple ? TEXT("簡単操作")
+		: Scheme == EChaosImpactControlScheme::MouseOnly ? TEXT("マウスのみ")
+		: Scheme == EChaosImpactControlScheme::MouseHold ? TEXT("マウスのみ（長押し）") : TEXT("通常操作");
+}
+
+void ChaosImpactSettings::SetMouseDoubleClickDash(const int32 Profile, const bool bOn)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].bMouseDoubleClickDash = bOn;
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+FKey ChaosImpactSettings::GetActiveKey(const int32 Profile, const EChaosImpactDevice Device,
+	const EChaosImpactAction Action, const int32 Slot)
+{
+	return GetSchemeKey(Profile,Device,GetControlScheme(Profile,Device),Action,Slot);
+}
+
+FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDevice Device,
+	const EChaosImpactControlScheme Scheme,const EChaosImpactAction Action,const int32 Slot)
+{
+	if (Scheme == EChaosImpactControlScheme::Normal) { return GetKey(Profile, Device, Action, Slot); }
+	if (Slot != 0) { return FKey(); }
+	const bool bMouse = IsMouseOnlyScheme(Scheme);
+	if (Device == EChaosImpactDevice::KeyboardMouse)
+	{
+		switch (Action)
+		{
+		case EChaosImpactAction::Throw: return EKeys::LeftMouseButton;
+		case EChaosImpactAction::Dash: return bMouse ? EKeys::MiddleMouseButton : EKeys::RightMouseButton;
+		case EChaosImpactAction::SwapBall: return bMouse ? FKey() : EKeys::E;
+		case EChaosImpactAction::MoveUp: return bMouse ? FKey() : EKeys::W;
+		case EChaosImpactAction::MoveDown: return bMouse ? FKey() : EKeys::S;
+		case EChaosImpactAction::MoveLeft: return bMouse ? FKey() : EKeys::A;
+		case EChaosImpactAction::MoveRight: return bMouse ? FKey() : EKeys::D;
+		case EChaosImpactAction::Pause: return bMouse ? FKey() : EKeys::P;
+		case EChaosImpactAction::TrainingMenu: return bMouse ? FKey() : EKeys::T;
+		case EChaosImpactAction::LobbyReady: return GetKey(Profile, Device, Action, Slot);
+		case EChaosImpactAction::LobbySpectate: return GetKey(Profile, Device, Action, Slot);
+		default: return FKey();
+		}
+	}
+	switch (Action)
+	{
+	case EChaosImpactAction::Throw: return EKeys::Gamepad_FaceButton_Bottom;
+	case EChaosImpactAction::Dash: return EKeys::Gamepad_FaceButton_Right;
+	case EChaosImpactAction::SwapBall: return EKeys::Gamepad_FaceButton_Left;
+	case EChaosImpactAction::Pause: return EKeys::Gamepad_Special_Right;
+	case EChaosImpactAction::TrainingMenu: return EKeys::Gamepad_Special_Left;
+	case EChaosImpactAction::LobbyReady: case EChaosImpactAction::LobbySpectate: return GetKey(Profile, Device, Action, Slot);
+	default: return FKey();
 	}
 }
 
@@ -767,7 +901,7 @@ bool ChaosImpactSettings::IsActionDown(const APlayerController* Player, const EC
 	const EDevice Device = GetPlayerDevice(Player);
 	for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
 	{
-		const FKey Key = GetKey(Profile, Device, Action, Slot);
+		const FKey Key = GetActiveKey(Profile, Device, Action, Slot);
 		if (!Key.IsValid())
 		{
 			continue;
@@ -796,7 +930,7 @@ bool ChaosImpactSettings::WasActionJustPressed(const APlayerController* Player, 
 	const EDevice Device = GetPlayerDevice(Player);
 	for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
 	{
-		const FKey Key = GetKey(Profile, Device, Action, Slot);
+		const FKey Key = GetActiveKey(Profile, Device, Action, Slot);
 		if (Key.IsValid() && Player->WasInputKeyJustPressed(Key))
 		{
 			return true;
@@ -815,7 +949,7 @@ bool ChaosImpactSettings::IsActionKey(const APlayerController* Player, const ECh
 	const EDevice Device = Key.IsGamepadKey()
 		? (GetPlayerDevice(Player) == EDevice::KeyboardMouse ? DetectPadDevice(Player) : GetPlayerDevice(Player))
 		: EDevice::KeyboardMouse;
-	return GetKey(Profile, Device, Action, 0) == Key || GetKey(Profile, Device, Action, 1) == Key;
+	return GetActiveKey(Profile, Device, Action, 0) == Key || GetActiveKey(Profile, Device, Action, 1) == Key;
 }
 
 FVector2D ChaosImpactSettings::GetMoveInput(const APlayerController* Player, bool& bOutStick)
@@ -830,7 +964,8 @@ FVector2D ChaosImpactSettings::GetMoveInput(const APlayerController* Player, boo
 	{
 		return Digital;
 	}
-	const bool bSwap = GetProfile(GetPlayerProfile(Player)).bSwapSticks;
+	const bool bSwap = GetPlayerControlScheme(Player) == EChaosImpactControlScheme::Normal
+		&& GetProfile(GetPlayerProfile(Player)).bSwapSticks;
 	const FVector2D Stick(Player->GetInputAnalogKeyState(bSwap ? EKeys::Gamepad_RightX : EKeys::Gamepad_LeftX),
 		Player->GetInputAnalogKeyState(bSwap ? EKeys::Gamepad_RightY : EKeys::Gamepad_LeftY));
 	if (!Digital.IsNearlyZero())
@@ -844,6 +979,7 @@ FVector2D ChaosImpactSettings::GetMoveInput(const APlayerController* Player, boo
 
 FVector2D ChaosImpactSettings::GetAimStick(const APlayerController* Player)
 {
+	if (Player && GetPlayerControlScheme(Player) != EChaosImpactControlScheme::Normal) { return FVector2D::ZeroVector; }
 	if (!Player)
 	{
 		return FVector2D::ZeroVector;
@@ -865,7 +1001,7 @@ FString ChaosImpactSettings::DescribeAction(const APlayerController* Player, con
 	TArray<FString> Names;
 	for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
 	{
-		const FKey Key = GetKey(Profile, Device, Action, Slot);
+		const FKey Key = GetActiveKey(Profile, Device, Action, Slot);
 		if (Key.IsValid())
 		{
 			Names.Add(GetKeyName(Key, Device));

@@ -147,8 +147,10 @@ bool FChaosImpactBallChancesTest::RunTest(const FString& Parameters)
 		Sum += Defaults->GetChance(static_cast<EChaosImpactBallType>(Index));
 	}
 	TestEqual(TEXT("The chances add up to one"), Sum, 1.0f, 0.001f);
-	TestEqual(TEXT("Normal balls as often as before by default"), Defaults->GetChance(EChaosImpactBallType::Normal), 0.185f, 0.001f);
-	TestEqual(TEXT("A fire ball now and then"), Defaults->GetChance(EChaosImpactBallType::Fire), 0.11f, 0.001f);
+	// The weights as before, less the nova's (a nova is put together from its parts now, never from a pad).
+	TestEqual(TEXT("Normal balls as often as before by default"), Defaults->GetChance(EChaosImpactBallType::Normal), 0.185f / 0.975f, 0.001f);
+	TestEqual(TEXT("A fire ball now and then"), Defaults->GetChance(EChaosImpactBallType::Fire), 0.11f / 0.975f, 0.001f);
+	TestEqual(TEXT("Never a nova from a pad"), Defaults->GetChance(EChaosImpactBallType::Nova), 0.0f);
 
 	AChaosImpactBallSpawner* Pad = NewObject<AChaosImpactBallSpawner>(GetTransientPackage());
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)

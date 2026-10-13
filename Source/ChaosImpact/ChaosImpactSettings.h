@@ -48,6 +48,9 @@ enum class EChaosImpactPadChoice : uint8
 };
 
 /** One nickname's controls ("ゲスト" is the first, always there, for players who have not picked one). */
+// Append values: the numeric IDs are persisted in existing user profiles.
+enum class EChaosImpactControlScheme : uint8 { Normal, Simple, MouseOnly, MouseHold };
+
 struct FChaosImpactProfile
 {
 	static constexpr int32 DeviceCount = static_cast<int32>(EChaosImpactDevice::Count);
@@ -61,6 +64,10 @@ struct FChaosImpactProfile
 	bool bSwapSticks = false;
 	/** Controller: throws are pulled a little toward someone just off the aim. */
 	bool bAimAssist = true;
+	EChaosImpactControlScheme Schemes[DeviceCount] = {};
+	bool bMouseDoubleClickDash = true;
+	/** Shoulder-camera multipliers: per device, [horizontal, vertical]. Old saves keep 100%. */
+	int32 ShoulderSensitivity[DeviceCount][2] = {{100,100}, {100,100}, {100,100}, {100,100}};
 };
 
 /**
@@ -70,6 +77,10 @@ struct FChaosImpactProfile
  */
 namespace ChaosImpactSettings
 {
+	constexpr bool IsMouseOnlyScheme(EChaosImpactControlScheme Scheme)
+	{
+		return Scheme == EChaosImpactControlScheme::MouseOnly || Scheme == EChaosImpactControlScheme::MouseHold;
+	}
 	constexpr int32 MaxProfiles = 12;
 	constexpr int32 MaxNameLength = 8;
 	CHAOSIMPACT_API const FString& GetGuestName();
@@ -87,6 +98,20 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API void SetPadChoice(int32 Profile, EChaosImpactPadChoice Choice);
 	CHAOSIMPACT_API void SetSwapSticks(int32 Profile, bool bSwap);
 	CHAOSIMPACT_API void SetAimAssist(int32 Profile, bool bOn);
+	CHAOSIMPACT_API void SetControlScheme(int32 Profile, EChaosImpactDevice Device, EChaosImpactControlScheme Scheme);
+	CHAOSIMPACT_API EChaosImpactControlScheme GetControlScheme(int32 Profile, EChaosImpactDevice Device);
+	CHAOSIMPACT_API EChaosImpactControlScheme GetPlayerControlScheme(const APlayerController* Player);
+	CHAOSIMPACT_API FString GetControlSchemeName(EChaosImpactControlScheme Scheme);
+	CHAOSIMPACT_API void SetMouseDoubleClickDash(int32 Profile, bool bOn);
+	/** 10-300%, saved per nickname/device. Mouse has one sensitivity for both axes. */
+	CHAOSIMPACT_API int32 GetShoulderSensitivity(int32 Profile, EChaosImpactDevice Device, bool bVertical = false);
+	CHAOSIMPACT_API void SetShoulderSensitivity(int32 Profile, EChaosImpactDevice Device, bool bVertical, int32 Percent);
+	CHAOSIMPACT_API void ResetShoulderSensitivity(int32 Profile, EChaosImpactDevice Device);
+	/** Active preset key; GetKey remains the user's untouched normal binding. */
+	CHAOSIMPACT_API FKey GetActiveKey(int32 Profile, EChaosImpactDevice Device, EChaosImpactAction Action, int32 Slot);
+	/** Explicit style lookup for non-mutating menu previews. */
+	CHAOSIMPACT_API FKey GetSchemeKey(int32 Profile, EChaosImpactDevice Device, EChaosImpactControlScheme Scheme,
+		EChaosImpactAction Action, int32 Slot);
 
 	// --- Controls ---
 	CHAOSIMPACT_API FKey GetKey(int32 Profile, EChaosImpactDevice Device, EChaosImpactAction Action, int32 Slot);

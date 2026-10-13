@@ -187,6 +187,8 @@ namespace
 			case 1:
 			{
 				const double Charged = Now - ChargeBegan;
+				UE_LOG(LogTemp, Display, TEXT("NOVA thrower %.0f from where the charge began (shot %d, CPU %.0f away)"),
+					FVector::Dist2D(Player->GetActorLocation(), ChargeFrom), Shots, CPU ? FVector::Dist2D(CPU->GetActorLocation(), Player->GetActorLocation()) : -1.0f);
 				if (Shots == 0)
 				{
 					Test->TestEqual(TEXT("Charging a nova roots its thrower"), Player->GetCharacterMovement()->MaxWalkSpeed, 0.0f);
@@ -247,7 +249,12 @@ namespace
 				Test->TestNotNull(TEXT("The nova is thrown"), Nova);
 				if (Nova)
 				{
-					Test->TestTrue(TEXT("As big as it was charged"), FMath::IsNearlyEqual(Nova->GetSnowScale(), ChaosImpactBallTypes::NovaMaxScale, 0.1f));
+					Test->TestTrue(TEXT("Its reach as it was charged"), FMath::IsNearlyEqual(Nova->GetSnowScale(), ChaosImpactBallTypes::NovaMaxScale, 0.1f));
+					Test->TestTrue(TEXT("The ball itself still small"), FMath::IsNearlyEqual(Nova->GetHitRadius(), 24.0f * ChaosImpactBallTypes::NovaShownScale, 1.0f));
+					UE_LOG(LogTemp, Display, TEXT("NOVA thrown: %.0f over where it went up from, %.0f across from it"),
+						Nova->GetActorLocation().Z - ChargeFrom.Z, FVector::Dist2D(Nova->GetActorLocation(), ChargeFrom));
+					Test->TestTrue(TEXT("Thrown straight up"), FVector::Dist2D(Nova->GetActorLocation(), ChargeFrom) < 120.0f
+						&& Nova->GetActorLocation().Z > ChargeFrom.Z + 600.0f);
 				}
 				Test->TestFalse(TEXT("No longer rooted once thrown"), Player->IsChargingNova());
 				CaptureNova(TEXT("NV-04-Thrown.png"));
@@ -275,7 +282,8 @@ namespace
 					FVector::Dist2D(Blast->GetActorLocation(), PredictedLanding), CPUHealth, CPU->GetHealth());
 				// Right where it was shown, even with the CPU under its way.
 				Test->TestTrue(TEXT("It lands where it was shown to"), FVector::Dist2D(Blast->GetActorLocation(), PredictedLanding) < 40.0f);
-				Test->TestTrue(TEXT("A nova always knocks out a player it catches"), CPU->IsEliminated());
+				// It spins first: no one is out yet (its fire reaches them once it goes off, checked at stage 20).
+				Test->TestFalse(TEXT("Nothing yet as it lands"), CPU->IsEliminated());
 				Stage = 5;
 				Shots = 0;
 				NextAt = Now + 0.12;
@@ -295,6 +303,8 @@ namespace
 				return false;
 			}
 			case 20:
+				// Its ball of fire has grown over the CPU by now.
+				Test->TestTrue(TEXT("A nova always knocks out a player it catches"), CPU->IsEliminated() || CPU->GetHealth() <= 0.0f);
 				// Well after the blast the camera is back where it was.
 				UE_LOG(LogTemp, Display, TEXT("NOVA camera after the throw %.0f (normal %.0f)"), Player->GetCameraBoom()->TargetArmLength, NormalArm);
 				Test->TestTrue(TEXT("The camera comes back after a nova"), FMath::Abs(Player->GetCameraBoom()->TargetArmLength - NormalArm) < 40.0f);

@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Engine/NetSerialization.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactNovaRig.h"
 #include "ChaosImpactHazardZone.generated.h"
 
 class AChaosImpactCharacter;
@@ -70,6 +71,8 @@ public:
 	APawn* GetSourcePawn() const { return SourcePawn; }
 	float GetRadius() const;
 	float GetActiveSeconds() const;
+	/** Nova: how far its ball of fire reaches now (0 before it goes off and once it is gone). */
+	float GetNovaFireRadius() const;
 	/** Seconds since it burst. */
 	float GetAge() const;
 
@@ -101,11 +104,21 @@ public:
 	/** A beam fading out at the end of its range, and a snowball bursting: only a moment to show. */
 	static constexpr float BeamFadeSeconds = 0.35f;
 	static constexpr float SnowBurstSeconds = 1.1f;
-	/** Nova: how long its dome of light stands before it thins away. */
-	static constexpr float NovaBlastSeconds = 1.6f;
+	/**
+	 * Nova: from landing to lying in pieces (its model's own animation: spinning, the ball of fire growing, holding,
+	 * shrinking, a shudder and falling apart). It hurts only while the ball of fire is out (see GetNovaFireRadius).
+	 */
+	static constexpr float NovaBlastSeconds = ChaosImpactNova::FireEnd - ChaosImpactNova::FireStart;
+	/** Nova: seconds after landing that its ball of fire starts to grow / is gone again. */
+	static constexpr float NovaExplodeAfter = ChaosImpactNova::FireExplodeAt - ChaosImpactNova::FireStart;
+	static constexpr float NovaFireGoneAfter = ChaosImpactNova::FireGoneAt - ChaosImpactNova::FireStart;
 	static constexpr float FadeSeconds = 0.6f;
 	/** Flames and mist are allowed to die out after the zone stops. */
 	static constexpr float EffectTailSeconds = 2.0f;
+	/** How long the nova's pieces take to fade to nothing once it has fallen apart (inside the tail above). */
+	static constexpr float NovaPieceFadeSeconds = 1.6f;
+	/** The landed nova's size (its radius), as any ball's however much it was charged: only its blast grows with that. */
+	static constexpr float NovaModelRadius = 24.0f;
 	static constexpr float ZoneDamage = 1.0f;
 
 protected:
@@ -163,6 +176,14 @@ protected:
 	/** Server: blows someone caught in a nova outward, off their feet. */
 	void ApplyNovaKnockback(AChaosImpactCharacter* Victim) const;
 	void UpdateNovaPresentation(float Age);
+	/** Server, nova: whoever its growing ball of fire reaches (once each). */
+	void TickNova(float Age);
+	/** Nova: the model landing, spinning, exploding and falling apart; its ball of fire. */
+	FChaosImpactNovaRig NovaRig;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> NovaFireMaterial;
+	bool bNovaExploded = false;
+	bool bNovaBroken = false;
 	struct FNovaBurst
 	{
 		FVector Location = FVector::ZeroVector;

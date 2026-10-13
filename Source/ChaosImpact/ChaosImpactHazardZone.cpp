@@ -278,22 +278,21 @@ void ChaosImpactBallTypes::BuildNovaLook(AActor* Owner, USceneComponent* Parent,
 		Part->RegisterComponent();
 		return Part;
 	};
-	// Layers of light round a white-hot core; all but the core are see-through, so the thrower shows through.
+	// The finished nova model, polished, in a faint glow of blue light.
+	if (UStaticMesh* NovaModel = LoadObject<UStaticMesh>(nullptr, *ChaosImpactNova::GetMeshPath(EChaosImpactNovaRig::Nova, 0)))
+	{
+		UStaticMeshComponent* Model = Add(NovaModel, nullptr);
+		UMaterialInstanceDynamic* Metal = ChaosImpactNova::MakeMaterial(Owner, EChaosImpactNovaRig::Nova);
+		for (int32 Slot = 0; Slot < Model->GetNumMaterials(); ++Slot)
+		{
+			Model->SetMaterial(Slot, Metal);
+		}
+		Model->SetCastShadow(true);
+		Out.Model = Model;
+	}
 	UMaterialInstanceDynamic* Halo = MakeAdditive(Owner, FLinearColor(0.15f, 0.45f, 1.0f), 0.3f, 1.0f);
 	Out.Halo = Add(Sphere, Halo);
 	Out.HaloMaterial = Halo;
-	UMaterialInstanceDynamic* Shell = MakeAdditive(Owner, FLinearColor(0.35f, 0.75f, 1.0f), 1.1f, 1.0f);
-	Out.Shell = Add(Sphere, Shell);
-	Out.ShellMaterial = Shell;
-	UMaterialInstanceDynamic* Inner = MakeAdditive(Owner, FLinearColor(0.2f, 0.55f, 1.0f), 0.35f);
-	Out.Inner = Add(Sphere, Inner);
-	Out.InnerMaterial = Inner;
-	Out.Core = Add(Sphere, MakeEmissive(Owner, FLinearColor(0.75f, 0.93f, 1.0f), 4.0f));
-	for (int32 Index = 0; Index < 3; ++Index)
-	{
-		Out.Bands.Add(Add(Cylinder, MakeAdditive(Owner, Index == 1 ? FLinearColor(0.8f, 0.95f, 1.0f)
-			: FLinearColor(0.35f, 0.75f, 1.0f), 1.0f, 1.0f)));
-	}
 	UPointLightComponent* Light = NewObject<UPointLightComponent>(Owner);
 	Light->SetupAttachment(Parent);
 	Light->SetLightColor(FLinearColor(0.5f, 0.84f, 1.0f));
@@ -325,13 +324,24 @@ void ChaosImpactBallTypes::UpdateNovaLook(const FNovaLook& Look, const float Rad
 			Mesh->SetWorldScale3D(FVector(Scale));
 		}
 	};
+	if (UStaticMeshComponent* Model = Look.Model.Get())
+	{
+		// As wide as the nova, turning slowly; its middle (114 up in the model) on the parent.
+		const float Scale = FMath::Max(Radius, 1.0f) / ChaosImpactNova::ModelRadius;
+		Model->SetWorldScale3D(FVector(Scale));
+		Model->SetWorldRotation(FRotator(0.0f, Time * 40.0f, 0.0f));
+		if (const USceneComponent* Parent = Model->GetAttachParent())
+		{
+			Model->SetWorldLocation(Parent->GetComponentLocation() - FVector(0.0f, 0.0f, 114.0f * Scale));
+		}
+	}
 	Size(Look.Core, Across * 0.38f * (1.0f + 0.05f * FMath::Sin(Time * 13.0f)));
 	Size(Look.Inner, Across * 0.8f * (1.0f + 0.05f * FMath::Sin(Time * 7.0f)));
 	Size(Look.Shell, Across * (1.0f + 0.025f * FMath::Sin(Time * 9.0f)));
 	Size(Look.Halo, Across * 1.3f * (1.0f + 0.07f * FMath::Sin(Time * 3.3f)));
 	SetIntensity(Look.InnerMaterial.Get(), Glow * (0.35f + 0.1f * FMath::Sin(Time * 6.0f)));
 	SetIntensity(Look.ShellMaterial.Get(), Glow * (1.1f + 0.3f * FMath::Sin(Time * 11.0f)));
-	SetIntensity(Look.HaloMaterial.Get(), Glow * (0.3f + 0.1f * FMath::Sin(Time * 2.7f)));
+	SetIntensity(Look.HaloMaterial.Get(), Glow * (0.12f + 0.05f * FMath::Sin(Time * 2.7f)));
 	// Bands of energy wrapped round it at different tilts, each turning its own way.
 	for (int32 Index = 0; Index < Look.Bands.Num(); ++Index)
 	{
@@ -356,7 +366,7 @@ void ChaosImpactBallTypes::UpdateNovaLook(const FNovaLook& Look, const float Rad
 
 void ChaosImpactBallTypes::SetNovaLookVisible(const FNovaLook& Look, const bool bVisible)
 {
-	for (const TWeakObjectPtr<UStaticMeshComponent>& Part : {Look.Core, Look.Inner, Look.Shell, Look.Halo})
+	for (const TWeakObjectPtr<UStaticMeshComponent>& Part : {Look.Model, Look.Core, Look.Inner, Look.Shell, Look.Halo})
 	{
 		if (UStaticMeshComponent* Mesh = Part.Get())
 		{
@@ -889,7 +899,7 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 	// A black hole pulls (every machine, continuously) and burns at its centre; nothing happens as it opens.
 	// A trail fire only burns. A beam fading and a snowball bursting are only for show (their hits are their own).
 	if (!World || ZoneType == EChaosImpactBallType::Black || bFireTrail || ZoneType == EChaosImpactBallType::Beam
-		|| ZoneType == EChaosImpactBallType::Snow)
+		|| ZoneType == EChaosImpactBallType::Snow || ZoneType == EChaosImpactBallType::Nova)
 	{
 		return;
 	}
@@ -1102,6 +1112,10 @@ void AChaosImpactHazardZone::Tick(const float DeltaSeconds)
 	else if (HasAuthority() && ZoneType == EChaosImpactBallType::Smoke && Age < ChaosImpactBallTypes::SmokeCloudSeconds)
 	{
 		TickSmoke();
+	}
+	else if (HasAuthority() && ZoneType == EChaosImpactBallType::Nova)
+	{
+		TickNova(Age);
 	}
 	if (bPresentationBuilt)
 	{
@@ -1397,37 +1411,79 @@ void AChaosImpactHazardZone::ApplyNovaKnockback(AChaosImpactCharacter* Victim) c
 	Victim->ApplyBlastKnockback(Out * 750.0f + FVector(0.0f, 0.0f, 620.0f));
 }
 
+float AChaosImpactHazardZone::GetNovaFireRadius() const
+{
+	if (ZoneType != EChaosImpactBallType::Nova)
+	{
+		return 0.0f;
+	}
+	return GetRadius() * ChaosImpactNova::GetExplosionSize(ChaosImpactNova::FireStart + GetAge());
+}
+
+void AChaosImpactHazardZone::TickNova(const float Age)
+{
+	UWorld* World = GetWorld();
+	const float Reach = GetNovaFireRadius();
+	if (!World || Reach <= 1.0f)
+	{
+		return;
+	}
+	// The ball of fire is a dome as tall as it is wide: whoever it reaches as it grows (or walks into it) is knocked out.
+	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+	{
+		AChaosImpactCharacter* Character = *It;
+		if (Character != SourcePawn && !Character->IsEliminated() && !Affected.Contains(Character)
+			&& IsInside(Character, Character->GetCapsuleComponent()->GetScaledCapsuleRadius(), Reach, Reach))
+		{
+			TryApplyLateHit(Character);
+		}
+	}
+	for (TActorIterator<AChaosImpactTrainingTarget> It(World); It; ++It)
+	{
+		if (!It->IsDefeated() && !Affected.Contains(*It) && IsInside(*It, 50.0f, Reach, Reach))
+		{
+			Affected.Add(*It);
+			UGameplayStatics::ApplyDamage(*It, ChaosImpactBallTypes::GetNovaDamage(BurstScale), GetSourceController(), this, nullptr);
+		}
+	}
+}
+
 void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
 {
 	using namespace ChaosImpactBallTypes;
+	// The nova itself, the size of any ball, standing where it landed: it spins, explodes and falls apart
+	// (UpdateNovaPresentation), its ball of fire as wide as the blast (which is what the charge made bigger).
+	NovaRig.Build(this, SceneRoot, EChaosImpactNovaRig::NovaFire);
+	if (USceneComponent* Model = NovaRig.GetRoot())
+	{
+		const float ModelScale = NovaModelRadius / ChaosImpactNova::ModelRadius;
+		Model->SetRelativeScale3D(FVector(ModelScale));
+		// Its lowest point at the ground.
+		Model->SetRelativeLocation(FVector(0.0f, 0.0f, -22.0f * ModelScale));
+	}
+	if (UStaticMeshComponent* Bomb = NovaRig.GetPart(NovaRig.FindNode(TEXT("Bomb"))))
+	{
+		NovaFireMaterial = ChaosImpactNova::MakeExplosionMaterial(this);
+		Bomb->SetMaterial(0, NovaFireMaterial);
+		Bomb->SetUsingAbsoluteScale(true);
+		Bomb->SetCastShadow(false);
+		NovaRig.SetForcedHidden(NovaRig.FindNode(TEXT("Bomb")), true);
+	}
 	const float Blast = GetRadius();
-	const FVector Base = GetActorLocation();
-	const FVector Center = Base + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 60.0f));
-	ZoneLight->SetLightColor(FLinearColor(0.62f, 0.88f, 1.0f));
+	// All in the nova's blue, like its ball of fire.
+	ZoneLight->SetLightColor(FLinearColor(0.3f, 0.6f, 1.0f));
 	ZoneLight->SetAttenuationRadius(Blast * 3.0f + 800.0f);
-	// Shapes, all placed each frame by UpdateNovaPresentation.
-	AddZoneMesh(GroundGlow, false, MakeAdditive(this, FLinearColor(0.2f, 0.55f, 1.0f), 0.0f));
-	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(0.45f, 0.8f, 1.0f), 0.0f, 1.0f));
-	AddZoneMesh(HorizonSphere, true, MakeAdditive(this, FLinearColor(0.15f, 0.45f, 1.0f), 0.0f));
-	AddZoneMesh(HaloSphere, true, MakeAdditive(this, FLinearColor(0.3f, 0.68f, 1.0f), 0.0f, 1.0f));
-	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(0.6f, 0.88f, 1.0f), 0.0f));
-	AddZoneMesh(CoreSphere, true, MakeEmissive(this, FLinearColor(0.8f, 0.95f, 1.0f), 0.0f));
-	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(0.55f, 0.85f, 1.0f), 0.0f);
+	ZoneLight->SetIntensity(0.0f);
+	// Shapes for the moment it goes off, all placed each frame by UpdateNovaPresentation.
+	AddZoneMesh(GroundGlow, false, MakeAdditive(this, FLinearColor(0.1f, 0.38f, 1.0f), 0.0f));
+	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(0.35f, 0.7f, 1.0f), 0.0f, 1.0f));
+	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(0.7f, 0.88f, 1.0f), 0.0f));
+	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(0.3f, 0.65f, 1.0f), 0.0f);
 	RingMaterial = RingLook;
 	RingMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
-
-	// The explosion itself, dust thrown up from the ground and a shower of sparks, all as big as the blast.
+	// Explosions going off all over inside the ball of fire as it grows, from the centre outward.
+	const FVector Base = GetActorLocation();
 	const float Size = Blast / 300.0f;
-	const auto Burst = [this](const TCHAR* Path, const FVector& Where, const float Scale) -> UNiagaraComponent*
-	{
-		UNiagaraSystem* System = LoadEffect(Path);
-		return System ? UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, System, Where, FRotator::ZeroRotator,
-			FVector(Scale), true, true, ENCPoolMethod::None, true) : nullptr;
-	};
-	Burst(Effects::BigExplosion, Center, Size * 1.2f);
-	Burst(Effects::DirtBurstLarge, Base + FVector(0.0f, 0.0f, 20.0f), Size);
-	Burst(Effects::SparkBurst, Center, Size * 2.5f);
-	// Then explosions go off all over inside it, from the centre outward.
 	const int32 BurstCount = FMath::Clamp(FMath::RoundToInt(Blast / 110.0f), 3, 12);
 	for (int32 Index = 0; Index < BurstCount; ++Index)
 	{
@@ -1435,96 +1491,151 @@ void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
 		const float Angle = Stream.FRandRange(0.0f, UE_TWO_PI);
 		FNovaBurst& Later = NovaBursts.AddDefaulted_GetRef();
 		Later.Location = Base + FVector(FMath::Cos(Angle) * Reach, FMath::Sin(Angle) * Reach, 40.0f);
-		Later.At = 0.06f + 0.5f * Reach / Blast + Stream.FRandRange(0.0f, 0.12f);
+		Later.At = 0.1f + 1.2f * Reach / Blast + Stream.FRandRange(0.0f, 0.15f);
 		Later.Scale = Stream.FRandRange(0.9f, 1.6f) * FMath::Clamp(Size, 0.6f, 1.8f);
 	}
-	// Every player nearby feels it.
-	if (UWorld* World = GetWorld())
-	{
-		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
-		{
-			const APlayerController* Player = It->Get();
-			AChaosImpactCharacter* Character = Player && Player->IsLocalController()
-				? Cast<AChaosImpactCharacter>(Player->GetPawn()) : nullptr;
-			if (Character)
-			{
-				const float Distance = static_cast<float>(FVector::Dist(Character->GetActorLocation(), Base));
-				const float Strength = FMath::Clamp(1.0f - Distance / (Blast * 3.5f + 1500.0f), 0.0f, 1.0f)
-					* FMath::Clamp(Blast / 800.0f, 0.35f, 1.4f);
-				Character->AddCameraShake(Strength, 1.2f);
-			}
-		}
-	}
+	// It lands spinning up.
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, Base, 0.8f, 1.4f);
 }
 
 void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 {
+	using namespace ChaosImpactBallTypes;
+	const float AnimTime = ChaosImpactNova::FireStart + Age;
 	const float Blast = GetRadius();
-	const float NovaCoreRadius = 24.0f * BurstScale;
 	const FVector Base = GetActorLocation();
-	const FVector Center = Base + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 60.0f));
-	// A blinding flash the size of the nova, swelling and gone in half a second.
-	const float FlashT = Age / 0.5f;
-	const float FlashSize = FlashT < 1.0f ? 2.0f * (NovaCoreRadius * 1.1f + Blast * 0.45f * HazardEaseOut(FlashT)) : 0.0f;
-	PlaceZoneShape(FlashSphere, Center, FlashSize, FlashSize, FRotator::ZeroRotator,
-		1.6f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
-	// The white-hot heart shrinks away.
-	const float CoreT = FMath::Clamp(Age / 0.8f, 0.0f, 1.0f);
-	const float CoreSize = CoreT < 1.0f ? 2.0f * NovaCoreRadius * 0.7f * (1.0f - 0.7f * CoreT) : 0.0f;
-	PlaceZoneShape(CoreSphere, Center, CoreSize, CoreSize, FRotator::ZeroRotator, 5.0f * (1.0f - CoreT));
-	// A dome of light races out to the edge of the blast, stands trembling, then thins away.
-	const float Grow = HazardEaseOut(Age / 0.45f);
-	const float DomeFade = FMath::Clamp((NovaBlastSeconds - 0.3f - Age) / 0.8f, 0.0f, 1.0f);
-	const float Dome = 2.0f * Blast * (0.12f + 0.88f * Grow) * (1.0f + 0.015f * FMath::Sin(Age * 38.0f));
-	PlaceZoneShape(HaloSphere, Base, DomeFade > 0.0f ? Dome : 0.0f, Dome * 0.8f, FRotator::ZeroRotator, 1.3f * DomeFade);
-	PlaceZoneShape(HorizonSphere, Base, DomeFade > 0.0f ? Dome * 0.95f : 0.0f, Dome * 0.74f, FRotator::ZeroRotator,
-		0.2f * DomeFade * DomeFade);
-	// A pillar of light up into the sky.
-	const float PillarT = FMath::Clamp(Age / 1.3f, 0.0f, 1.0f);
-	if (DiskRings.Num() > 0)
+	const float ModelScale = NovaModelRadius / ChaosImpactNova::ModelRadius;
+	const FVector Center = Base + FVector(0.0f, 0.0f, (113.9f - 22.0f) * ModelScale);
+
+	// The model: its own animation, but its gears and rings spin up as soon as it lands (until the spinning set takes
+	// over as the ball of fire shrinks).
+	const float Spin = Age < ChaosImpactNova::FireShrinkAt - ChaosImpactNova::FireStart
+		? -720.0f * (Age - 0.4f * (1.0f - FMath::Exp(-Age / 0.4f))) : 0.0f;
+	NovaRig.SetExtraRotation(NovaRig.FindNode(TEXT("polySurface25")), FVector3f(0.0f, Spin, 0.0f));
+	NovaRig.SetExtraRotation(NovaRig.FindNode(TEXT("polySurface29")), FVector3f(0.0f, 0.0f, Spin * 0.8f));
+	NovaRig.SetExtraRotation(NovaRig.FindNode(TEXT("polySurface30")), FVector3f(0.0f, Spin * 1.2f, 0.0f));
+	// Once fallen apart, the pieces lie where they flew and turn see-through until gone (they keep their size).
+	NovaRig.SetFade(1.0f - FMath::Clamp((Age - NovaBlastSeconds) / NovaPieceFadeSeconds, 0.0f, 1.0f));
+	NovaRig.Pose(FMath::Min(AnimTime, ChaosImpactNova::FireEnd));
+
+	// The ball of fire: grows, holds, shrinks away (its edge is where it hurts: GetNovaFireRadius).
+	const float FireSize = ChaosImpactNova::GetExplosionSize(AnimTime);
+	if (UStaticMeshComponent* Bomb = NovaRig.GetPart(NovaRig.FindNode(TEXT("Bomb"))))
 	{
-		const float PillarWidth = PillarT < 1.0f
-			? Blast * 0.5f * (0.35f + 0.65f * HazardEaseOut(Age / 0.2f)) * (1.0f - 0.6f * PillarT) : 0.0f;
-		PlaceZoneShape(DiskRings[0], Base + FVector(0.0f, 0.0f, 2500.0f), PillarWidth, 5000.0f, FRotator::ZeroRotator,
-			1.5f * FMath::Square(1.0f - PillarT));
-	}
-	// The ground under it lit up, glowing on after.
-	const float GroundLight = FMath::Exp(-Age * 1.2f);
-	PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 3.0f), GroundLight > 0.02f ? 2.0f * Blast * 1.1f * (0.3f + 0.7f * Grow) : 0.0f,
-		2.0f, FRotator::ZeroRotator, 0.35f * GroundLight);
-	// Shock waves along the ground, past the edge of the blast.
-	if (UProceduralMeshComponent* Ring = RingMesh.Get())
-	{
-		ChaosImpactIceMeshes::FMeshBuffers Rings;
-		float Glow = 0.0f;
-		for (int32 Wave = 0; Wave < 2; ++Wave)
+		const bool bFire = FireSize > 0.002f;
+		if (Bomb->IsVisible() != bFire)
 		{
-			const float WaveT = (Age - Wave * 0.18f) / (0.7f + Wave * 0.3f);
-			if (WaveT > 0.0f && WaveT < 1.0f)
-			{
-				ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 10.0f + Wave * 4.0f),
-					60.0f + Blast * (1.6f - Wave * 0.35f) * HazardEaseOut(WaveT), 45.0f * (1.0f - WaveT) + 6.0f, 128);
-				Glow = FMath::Max(Glow, 2.5f * (1.0f - WaveT));
-			}
+			Bomb->SetVisibility(bFire);
 		}
-		ChaosImpactLightning::SetMesh(Ring, Rings);
-		SetIntensity(RingMaterial.Get(), Glow);
-	}
-	// Explosions going off all over inside it.
-	for (FNovaBurst& Later : NovaBursts)
-	{
-		if (!Later.bPlayed && Age >= Later.At)
+		if (bFire)
 		{
-			Later.bPlayed = true;
-			if (UNiagaraSystem* System = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::MediumExplosion))
+			Bomb->SetWorldLocation(Center);
+			Bomb->SetWorldScale3D(FVector(Blast * FireSize * (1.0f + 0.012f * FMath::Sin(Age * 31.0f))));
+			if (UMaterialInstanceDynamic* Fire = NovaFireMaterial.Get())
 			{
-				UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, System, Later.Location, FRotator::ZeroRotator,
-					FVector(Later.Scale), true, true, ENCPoolMethod::None, true);
+				// Yellow-hot at the heart as it bursts, deepening to orange and red (and smoke) as it shrinks and fades.
+				const float SinceBurst = Age - NovaExplodeAfter;
+				Fire->SetScalarParameterValue(TEXT("Heat"), FMath::Clamp(0.75f - SinceBurst * 0.1f, 0.1f, 0.75f));
+				Fire->SetScalarParameterValue(TEXT("Glow"), 3.5f);
+				Fire->SetScalarParameterValue(TEXT("Fade"), AnimTime < ChaosImpactNova::FireShrinkAt ? 1.0f : FMath::Sqrt(FireSize));
 			}
 		}
 	}
-	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, NovaCoreRadius + 250.0f));
-	ZoneLight->SetIntensity(400000.0f * FMath::Exp(-Age * 3.0f) + 30000.0f * DomeFade);
+
+	// The moment it goes off: a flash, the ground lit up, shock waves, explosions all over inside, the camera shaking.
+	const float Burst = Age - NovaExplodeAfter;
+	if (Burst >= 0.0f && !bNovaExploded)
+	{
+		bNovaExploded = true;
+		const float Size = Blast / 300.0f;
+		const auto Play = [this](const TCHAR* Path, const FVector& Where, const float Scale)
+		{
+			if (UNiagaraSystem* System = LoadEffect(Path))
+			{
+				UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, System, Where, FRotator::ZeroRotator, FVector(Scale), true, true,
+					ENCPoolMethod::None, true);
+			}
+		};
+		Play(Effects::BigExplosion, Center, Size * 1.2f);
+		Play(Effects::DirtBurstLarge, Base + FVector(0.0f, 0.0f, 20.0f), Size);
+		Play(Effects::SparkBurst, Center, Size * 2.5f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBlast, Center);
+		if (UWorld* World = GetWorld())
+		{
+			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+			{
+				const APlayerController* Player = It->Get();
+				AChaosImpactCharacter* Character = Player && Player->IsLocalController()
+					? Cast<AChaosImpactCharacter>(Player->GetPawn()) : nullptr;
+				if (Character)
+				{
+					const float Distance = static_cast<float>(FVector::Dist(Character->GetActorLocation(), Base));
+					const float Strength = FMath::Clamp(1.0f - Distance / (Blast * 3.5f + 1500.0f), 0.0f, 1.0f)
+						* FMath::Clamp(Blast / 800.0f, 0.35f, 1.4f);
+					Character->AddCameraShake(Strength, 1.6f);
+				}
+			}
+		}
+	}
+	if (Burst >= 0.0f)
+	{
+		// A blinding flash, gone in half a second.
+		const float FlashT = Burst / 0.5f;
+		const float FlashSize = FlashT < 1.0f ? 2.0f * Blast * 0.35f * HazardEaseOut(FlashT) : 0.0f;
+		PlaceZoneShape(FlashSphere, Center, FlashSize, FlashSize, FRotator::ZeroRotator,
+			1.4f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
+		// A pillar of fire up into the sky.
+		const float PillarT = FMath::Clamp(Burst / 1.6f, 0.0f, 1.0f);
+		if (DiskRings.Num() > 0)
+		{
+			const float PillarWidth = PillarT < 1.0f
+				? Blast * 0.45f * (0.35f + 0.65f * HazardEaseOut(Burst / 0.25f)) * (1.0f - 0.6f * PillarT) : 0.0f;
+			PlaceZoneShape(DiskRings[0], Base + FVector(0.0f, 0.0f, 2500.0f), PillarWidth, 5000.0f, FRotator::ZeroRotator,
+				1.2f * FMath::Square(1.0f - PillarT));
+		}
+		// The ground under it glows as long as the fire is out.
+		PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 3.0f), FireSize > 0.01f ? 2.0f * Blast * 1.05f * FireSize : 0.0f, 2.0f,
+			FRotator::ZeroRotator, 0.45f * FireSize);
+		// Shock waves along the ground, out past the edge.
+		if (UProceduralMeshComponent* Ring = RingMesh.Get())
+		{
+			ChaosImpactIceMeshes::FMeshBuffers Rings;
+			float Glow = 0.0f;
+			for (int32 Wave = 0; Wave < 2; ++Wave)
+			{
+				const float WaveT = (Burst - Wave * 0.25f) / (1.0f + Wave * 0.4f);
+				if (WaveT > 0.0f && WaveT < 1.0f)
+				{
+					ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 10.0f + Wave * 4.0f),
+						60.0f + Blast * (1.6f - Wave * 0.35f) * HazardEaseOut(WaveT), 45.0f * (1.0f - WaveT) + 6.0f, 128);
+					Glow = FMath::Max(Glow, 2.5f * (1.0f - WaveT));
+				}
+			}
+			ChaosImpactLightning::SetMesh(Ring, Rings);
+			SetIntensity(RingMaterial.Get(), Glow);
+		}
+		for (FNovaBurst& Later : NovaBursts)
+		{
+			if (!Later.bPlayed && Burst >= Later.At)
+			{
+				Later.bPlayed = true;
+				if (UNiagaraSystem* System = LoadEffect(Effects::MediumExplosion))
+				{
+					UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, System, Later.Location, FRotator::ZeroRotator,
+						FVector(Later.Scale), true, true, ENCPoolMethod::None, true);
+				}
+			}
+		}
+	}
+	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, (113.9f - 22.0f) * ModelScale + 150.0f));
+	ZoneLight->SetIntensity(Burst >= 0.0f ? 300000.0f * FMath::Exp(-Burst * 3.0f) + 60000.0f * FireSize : 0.0f);
+
+	// It falls apart with a clatter (no smoke: the pieces are seen flying).
+	if (AnimTime >= ChaosImpactNova::FireBreakAt && !bNovaBroken)
+	{
+		bNovaBroken = true;
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharIceShatter, Center, 1.0f, 0.6f);
+	}
 }
 
 void AChaosImpactHazardZone::UpdateSnowChunks(const float Age)

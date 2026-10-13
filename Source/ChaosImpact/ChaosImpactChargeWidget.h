@@ -41,12 +41,17 @@ public:
 	bool IsAimGuideVisible() const;
 	/** The two ball slots trade places after the player swaps hands. */
 	void PlayBallSwap();
+	/** Same geometry as drawing: 1 pause, 2 training, 3 dash, 10/11 ball slots, 0 world. */
+	int32 GetGameplayPointerHit() const;
+	void PaintGameplayPointer(const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer) const;
 	/** A spectator's HUD: no HP or ball stock, a 観戦中 bar, and the standings seen from the followed player. */
 	void SetSpectatorView(bool bSpectator) { bSpectatorView = bSpectator; }
 	/** Smoke over this player's view, 0-1 (a smoke ball caught them). */
 	void SetBlindAmount(float Amount);
 	/** How far each carried snowball has grown (0-1), shown on its icon. */
 	void SetSnowGrowth(const float Right, const float Left) { SnowGrowth[0] = Right; SnowGrowth[1] = Left; }
+	/** The nova parts carried (ChaosImpactNovaParts bits), shown over the ball stock. */
+	void SetNovaParts(const uint8 Parts) { NovaParts = Parts; }
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -55,6 +60,7 @@ protected:
 
 private:
 	void RefreshSplitScreenDividers();
+	uint8 NovaParts = 0;
 	void RefreshPersonalAimGuide();
 	void RefreshBallPickupAnimation();
 
@@ -128,6 +134,8 @@ private:
 	TObjectPtr<UBorder> HorizontalDividerAccent;
 
 	float Health = 3.0f;
+	float PointerChargeAlpha = 0.0f;
+	bool bPointerCharging = false;
 	bool bHealthKnown = false;
 	double HitAt = -100.0;
 

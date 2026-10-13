@@ -127,16 +127,34 @@ namespace ChaosImpactBallTypes
 	}
 
 	/**
-	 * Nova: a full charge takes this long, during which its thrower cannot move. Its size (to a normal ball's) grows
-	 * from the first to the second over the charge, faster toward the end.
+	 * Nova: a full charge takes this long, during which its thrower cannot move. Its charge ("scale", to a normal ball's)
+	 * grows from the first to the second over the charge, faster toward the end: that is how far its blast reaches. The
+	 * ball itself stays small (NovaShownScale) however it is charged.
 	 */
 	constexpr float NovaChargeSeconds = 4.0f;
 	constexpr float NovaMinScale = 1.2f;
 	constexpr float NovaMaxScale = 33.0f;
-	/** Hurled slowly from over the head, a little upward, falling gently (a fraction of normal gravity). */
+	/** How big a nova is shown (held up, flying, lying), to a normal ball's, however it was charged. */
+	constexpr float NovaShownScale = 1.2f;
+	/**
+	 * Where a nova comes down when no spot was picked for it (a CPU's): where it would land hurled slowly from over the
+	 * head, a little upward, falling gently (a fraction of normal gravity, which its flight keeps).
+	 */
 	constexpr float NovaThrowSpeed = 1250.0f;
 	constexpr float NovaThrowUpSpeed = 220.0f;
 	constexpr float NovaGravityScale = 0.45f;
+	/**
+	 * Its flight: thrown straight up out of sight, it comes straight down onto the spot. Up at this speed for this long,
+	 * then from this high over the spot down at this speed. While higher than NovaHiddenAbove over where it was let go it
+	 * is not shown (gone up, or not yet come down).
+	 */
+	constexpr float NovaRiseSpeed = 3200.0f;
+	constexpr float NovaRiseSeconds = 0.6f;
+	constexpr float NovaDropHeight = 2200.0f;
+	constexpr float NovaDropSpeed = 2400.0f;
+	constexpr float NovaHiddenAbove = 1300.0f;
+	/** About how long from letting go until it lands. */
+	constexpr float NovaFlightSeconds = 1.45f;
 	/** Gap between the top of the thrower's head and the bottom of the ball held up. */
 	constexpr float NovaHoldGap = 35.0f;
 	inline float GetNovaScale(const float Charge)
@@ -269,11 +287,12 @@ namespace ChaosImpactBallTypes
 	CHAOSIMPACT_API void PlayBeamBurst(UObject* WorldContext, const FVector& Location, float Scale);
 
 	/**
-	 * How a nova looks, held up or flying: a white-hot core inside layers of blue light with bands of energy turning
-	 * round it, sparks and its own light. Built on a parent it follows; UpdateNovaLook sizes it every frame.
+	 * How a nova looks, held up or flying: the finished nova model (polished metal, turning) in a faint blue glow,
+	 * sparks and its own light. Built on a parent it follows; UpdateNovaLook sizes it every frame.
 	 */
 	struct FNovaLook
 	{
+		TWeakObjectPtr<UStaticMeshComponent> Model;
 		TWeakObjectPtr<UStaticMeshComponent> Core;
 		TWeakObjectPtr<UStaticMeshComponent> Inner;
 		TWeakObjectPtr<UStaticMeshComponent> Shell;
@@ -284,7 +303,7 @@ namespace ChaosImpactBallTypes
 		TWeakObjectPtr<UMaterialInstanceDynamic> HaloMaterial;
 		TWeakObjectPtr<UPointLightComponent> Light;
 		TWeakObjectPtr<UNiagaraComponent> Sparks;
-		bool IsBuilt() const { return Core.IsValid(); }
+		bool IsBuilt() const { return Model.IsValid() || Core.IsValid(); }
 	};
 	CHAOSIMPACT_API void BuildNovaLook(AActor* Owner, USceneComponent* Parent, FNovaLook& Out);
 	/** Radius in centimetres; Glow scales how bright it all is. */

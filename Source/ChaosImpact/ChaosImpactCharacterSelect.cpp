@@ -405,12 +405,17 @@ void UChaosImpactCharacterSelect::PressConfirm(const int32 Player)
 		}
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiSelect);
 		Slot.Character = Slot.Cursor;
-		SetStep(Player, EStep::Colour);
+		const bool bVariants = ChaosImpactRoster::Get(Slot.Character).bColourVariants;
+		SetStep(Player, bVariants ? EStep::Colour : EStep::Done);
 		// The row opens on a colour nobody else has on this character.
 		Slot.Colour = FindFreeColour(Player, Slot.Character, Slot.Colour, 1);
 		Slot.ChangedAt = Slot.StepAt;
 		RefreshPreview(Player);
 		Commit(Player);
+		if (!bVariants && Previews.IsValidIndex(Player) && IsValid(Previews[Player]))
+		{
+			Previews[Player]->PlayReady();
+		}
 	}
 	else if (Slot.Step == EStep::Colour)
 	{
@@ -434,7 +439,7 @@ void UChaosImpactCharacterSelect::PressBack(const int32 Player)
 	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
 	if (Slot.Step == EStep::Done)
 	{
-		SetStep(Player, EStep::Colour);
+		SetStep(Player, ChaosImpactRoster::Get(Slot.Character).bColourVariants ? EStep::Colour : EStep::Character);
 		return;
 	}
 	if (Slot.Step == EStep::Colour)
@@ -774,7 +779,8 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter F{IconSpace, Elements, IconLayer + 3, In};
 		const FPainter Tags{IconSpace, Elements, IconLayer + 4, In};
 		const FPainter TagText{IconSpace, Elements, IconLayer + 5, In};
-		const float TagY = -(6.0f + (Here.Num() - 1) * 9.0f) - 38.0f;
+		// Lower-row tags sit inside the icon rather than covering the previous row's character names.
+		const float TagY = Tile >= GridColumns ? 8.0f : -(6.0f + (Here.Num() - 1) * 9.0f) - 38.0f;
 		for (int32 Order = 0; Order < Here.Num(); ++Order)
 		{
 			const int32 Player = Here[Order];
@@ -844,6 +850,8 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		float X = 90.0f;
 		for (const FGuide& Guide : Guides)
 		{
+			if (FCString::Strcmp(Guide.Label,TEXT("カラー")) == 0
+				&& !Slots.ContainsByPredicate([](const FSlot& S) { return S.Step == EStep::Colour; })) { continue; }
 			float KeyWidth = 22.0f;
 			for (const TCHAR* Char = Guide.Key; *Char; ++Char)
 			{
@@ -953,7 +961,7 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	}
 
 	// Colour row: opens when the character is chosen; the chosen colour is ringed, colours in use are crossed out.
-	if (Slot.Step != EStep::Character)
+	if (Slot.Step != EStep::Character && Info.bColourVariants)
 	{
 		const float Open = EaseOut(StepAge / 0.2f);
 		const float Changed = static_cast<float>(Now - Slot.ChangedAt);
@@ -999,7 +1007,7 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		RoundFrame(C, 0.0f, 0.0f, W, H, 30.0f, Accent, 6.0f);
 		const float Stamp = 1.0f + 0.45f * FMath::Exp(-16.0f * StepAge);
 		const float StampX = bWide ? W - 230.0f : W * 0.5f - 110.0f;
-		const float StampY = bWide ? 30.0f : PictureY + PictureH * 0.32f;
+		const float StampY = !Info.bColourVariants ? H - 100.0f : bWide ? 30.0f : PictureY + PictureH * 0.32f;
 		const FGeometry StampSpace = MakeSkewed(Space, StampX, StampY, 220.0f, 100.0f, -0.18f, Stamp);
 		const FPainter S{StampSpace, Elements, Layer + 4, In * FMath::Clamp(StepAge / 0.06f, 0.0f, 1.0f)};
 		RoundBox(S, 0.0f, 14.0f, 220.0f, 72.0f, 22.0f, Accent);

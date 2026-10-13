@@ -4,9 +4,12 @@
 #include "UObject/Object.h"
 #include "ChaosImpactNameEntry.h"
 #include "ChaosImpactSettings.h"
+#include "Styling/SlateBrush.h"
 #include "ChaosImpactSettingsScreen.generated.h"
 
 class AChaosImpactPlayerController;
+class UMediaPlayer;
+class UMediaTexture;
 class FSlateWindowElementList;
 struct FAnalogInputEvent;
 struct FGeometry;
@@ -44,7 +47,8 @@ public:
 		Value,
 		Button,
 		Binding,
-		Heading
+		Heading,
+		Info
 	};
 
 	struct FRow
@@ -99,6 +103,12 @@ public:
 	EChaosImpactDevice GetEditedDevice() const { return EditedDevice; }
 	/** Picks which nickname and device the controls tab shows. */
 	void EditControls(int32 Profile, EChaosImpactDevice Device);
+	void OpenControlStylePicker();
+	bool IsControlStylePickerOpen() const { return bControlStylePickerOpen; }
+	EChaosImpactControlScheme GetPreviewControlScheme() const { return PreviewControlScheme; }
+	bool IsControlVideoPlaying() const;
+	double GetControlVideoTime() const;
+	virtual void BeginDestroy() override;
 
 	// Row ids, for the tests and the cpp.
 	enum ERowId : int32
@@ -120,6 +130,12 @@ public:
 		RowSwapSticks,
 		RowAimAssist,
 		RowResetDevice,
+		RowControlScheme,
+		RowMouseDash,
+		RowControlPreview,
+		RowShoulderSensitivityX,
+		RowShoulderSensitivityY,
+		RowResetShoulderSensitivity,
 		RowVolume = 300,
 		RowRumble,
 		RowShake,
@@ -145,6 +161,10 @@ private:
 	FBox2D TabRect(int32 Index) const;
 	/** The key and controller names the hint line uses (from the last device pressed). */
 	FString HintText() const;
+	void MoveControlPreview(int32 Direction);
+	void ApplyControlPreview();
+	void UpdateControlVideo();
+	int32 PaintControlStylePicker(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 
 	TWeakObjectPtr<AChaosImpactPlayerController> Controller;
 	TArray<FRow> Rows;
@@ -171,4 +191,12 @@ private:
 	bool bLastInputPad = false;
 	EChaosImpactDevice LastPadDevice = EChaosImpactDevice::Xbox;
 	bool bOpen = false;
+	bool bControlStylePickerOpen = false;
+	EChaosImpactControlScheme PreviewControlScheme = EChaosImpactControlScheme::Normal;
+	double PreviewStartedAt = 0;
+	UPROPERTY(Transient) TObjectPtr<UMediaPlayer> ControlVideoPlayer;
+	UPROPERTY(Transient) TObjectPtr<UMediaTexture> ControlVideoTexture;
+	FSlateBrush ControlVideoBrush;
+	int32 OpenVideoId = INDEX_NONE;
+	bool bVideoOpenFailed = false;
 };

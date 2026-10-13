@@ -370,6 +370,12 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 {
 	const int32 Clamped = FMath::Clamp(Index, 0, ChaosImpactRoster::ColourCount - 1);
+	if (!ChaosImpactRoster::Get(CharacterIndex).bColourVariants)
+	{
+		// The team's HUD colour is independent of this character's original, fixed texture.
+		ColourIndex = Clamped;
+		return;
+	}
 	if (bRigid || bSkinned)
 	{
 		if (Clamped != ColourIndex && Material)

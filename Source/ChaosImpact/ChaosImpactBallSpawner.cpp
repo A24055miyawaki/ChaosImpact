@@ -61,7 +61,6 @@ float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Smoke: return &SmokeBallChance;
 	case EChaosImpactBallType::Beam: return &BeamBallChance;
 	case EChaosImpactBallType::Snow: return &SnowBallChance;
-	case EChaosImpactBallType::Nova: return &NovaBallChance;
 	case EChaosImpactBallType::Simae: return &SimaeBallChance;
 	case EChaosImpactBallType::Drive: return &DriveBallChance;
 	default: return nullptr;
@@ -121,6 +120,7 @@ void AChaosImpactBallSpawner::BeginPlay()
 		SetActorEnableCollision(false);
 		return;
 	}
+	bInPlay = true;
 	// Balls are replicated actors, so only the server (or a standalone game) spawns them.
 	if (HasAuthority())
 	{
@@ -151,7 +151,8 @@ void AChaosImpactBallSpawner::TrySpawnBall()
 	{
 		ActiveBall.Reset();
 	}
-	if (!GetWorld() || !HasAuthority() || !BallClass || ActiveBall.IsValid())
+	// A nova part on the pad stays until it is taken.
+	if (!GetWorld() || !HasAuthority() || !BallClass || ActiveBall.IsValid() || ActiveNovaPart.IsValid())
 	{
 		return;
 	}
@@ -172,4 +173,27 @@ void AChaosImpactBallSpawner::TrySpawnBall()
 	SpawnLight->SetLightColor(Type == EChaosImpactBallType::Normal
 		? FLinearColor(0.0f, 0.55f, 1.0f) : ChaosImpactBallTypes::GetColor(Type));
 	SpawnLight->SetIntensity(Type == EChaosImpactBallType::Normal ? 1800.0f : 4200.0f);
+}
+
+bool AChaosImpactBallSpawner::PutOutNovaPart(const EChaosImpactNovaPart Part)
+{
+	UWorld* World = GetWorld();
+	if (!World || !HasAuthority() || !bInPlay || ActiveNovaPart.IsValid())
+	{
+		return false;
+	}
+	// Its ball (still lying here) makes way for it.
+	if (AChaosImpactBall* Ball = ActiveBall.Get(); Ball && !Ball->HasLeftSpawnPoint() && Ball->IsPickupAvailable())
+	{
+		Ball->Destroy();
+	}
+	ActiveBall.Reset();
+	ActiveNovaPart = AChaosImpactNovaPart::Spawn(World, Part, GetActorLocation() + FVector::UpVector * ChaosImpactNovaParts::PartHoverHeight);
+	if (!ActiveNovaPart.IsValid())
+	{
+		return false;
+	}
+	SpawnLight->SetLightColor(ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Nova));
+	SpawnLight->SetIntensity(5200.0f);
+	return true;
 }

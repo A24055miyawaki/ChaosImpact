@@ -503,6 +503,21 @@ bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 	{
 		return true;
 	}
+	if (IsGameplayActive() && !IsUsingGamepad())
+	{
+		if (AChaosImpactCharacter* InputCharacter = Cast<AChaosImpactCharacter>(GetPawn());
+			InputCharacter && InputCharacter->HandleEasyPointerKey(Params.Key, Params.Event))
+		{
+			if (Params.Event == IE_Released || (Params.Key == EKeys::RightMouseButton
+				&& ChaosImpactSettings::GetPlayerControlScheme(this) == EChaosImpactControlScheme::MouseHold))
+			{
+				// Releases must clear PlayerInput even if the pointer moved over UI while holding a gameplay button.
+				// Hold-mode RMB presses also need recording for release/focus-loss handling (no bound action uses RMB).
+				Super::InputKey(Params);
+			}
+			return true;
+		}
+	}
 	const bool bHandledByBase = Super::InputKey(Params);
 	// The player's throw keys act at once (the character also reads them every frame, for whatever this misses).
 	if (IsGameplayActive() && ChaosImpactSettings::IsActionKey(this, EChaosImpactAction::Throw, Params.Key))
@@ -683,7 +698,7 @@ void AChaosImpactPlayerController::HandleThrowPressed()
 	{
 		if (AChaosImpactCharacter* PlayerCharacter = Cast<AChaosImpactCharacter>(GetPawn()))
 		{
-			PlayerCharacter->BeginThrowInput();
+			PlayerCharacter->BeginBoundThrowInput();
 		}
 	}
 }
@@ -744,6 +759,7 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 		if (!bPlaying)
 		{
 			PlayerCharacter->CancelChargingThrow();
+			PlayerCharacter->ResetEasyControls();
 		}
 	}
 	if (PlayerInput)
@@ -754,6 +770,22 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 	bEnableClickEvents = bShowMouseCursor;
 	bEnableMouseOverEvents = bShowMouseCursor;
 	DefaultMouseCursor = bPlaying ? EMouseCursor::Crosshairs : EMouseCursor::Default;
+	if (!bPlaying && IsPrimaryLocalPlayerController() && GetGameInstance())
+	{
+		for (ULocalPlayer* Local : GetGameInstance()->GetLocalPlayers())
+		{
+			AChaosImpactPlayerController* LocalController = Local ? Cast<AChaosImpactPlayerController>(Local->GetPlayerController(GetWorld())) : nullptr;
+			if (!LocalController) { continue; }
+			if (!LocalController->IsUsingGamepad()
+				&& ChaosImpactSettings::GetPlayerControlScheme(LocalController) != EChaosImpactControlScheme::Normal)
+			{ bShowMouseCursor = true; bEnableClickEvents = true; bEnableMouseOverEvents = true; }
+			if (LocalController != this)
+			{
+				if (AChaosImpactCharacter* LocalCharacter = Cast<AChaosImpactCharacter>(LocalController->GetPawn()))
+				{ LocalCharacter->RequestCancelThrow(); LocalCharacter->ResetEasyControls(); }
+			}
+		}
+	}
 	CurrentMouseCursor = DefaultMouseCursor;
 	// The training panel deliberately leaves world time and ball physics alive.
 	// Pausing an online room would freeze every member, so menus there never pause the world.
@@ -773,6 +805,10 @@ void AChaosImpactPlayerController::ApplyScreenInput()
 		// Do not sacrifice the first throw click when the viewport captures the mouse again.
 		GameInputMode.SetConsumeCaptureMouseDown(false);
 		SetInputMode(GameInputMode);
+		if (const auto* CameraCharacter = Cast<AChaosImpactCharacter>(GetPawn()))
+		{
+			RefreshGameplayMouseCapture(CameraCharacter->IsShoulderViewActive());
+		}
 		// SetInputMode only focuses the viewport for P1's Slate user. Pads owned by
 		// P2-P4 are routed through their own Slate users, and a user without viewport
 		// focus drops every button/stick event before UGameViewportClient::InputKey.
@@ -961,6 +997,35 @@ void AChaosImpactPlayerController::ResumeGameplay()
 	CurrentScreen = EChaosImpactScreen::Playing;
 	MenuWidget->ShowScreen(CurrentScreen);
 	ApplyScreenInput();
+}
+
+bool AChaosImpactPlayerController::IsTrainingShoulderCameraEnabled() const
+{
+	if (!ShowsTrainingPauseEntries() || GetNetMode() != NM_Standalone) { return false; }
+	const auto* Primary = GetWorld() ? Cast<AChaosImpactPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr;
+	return Primary && Primary->bTrainingShoulderCamera;
+}
+
+void AChaosImpactPlayerController::ToggleTrainingShoulderCamera()
+{
+	if (IsPrimaryLocalPlayerController() && ShowsTrainingPauseEntries() && GetNetMode() == NM_Standalone)
+	{
+		bTrainingShoulderCamera = !bTrainingShoulderCamera;
+	}
+}
+
+void AChaosImpactPlayerController::RefreshGameplayMouseCapture(bool bShoulder)
+{
+	// A pad player must not steal the one shared mouse's capture from another local player.
+	if (!IsGameplayActive() || IsUsingGamepad()) { return; }
+	const bool bWantCursor = !bShoulder;
+	if (bShowMouseCursor == bWantCursor) { return; }
+	bShowMouseCursor = bWantCursor;
+	bEnableClickEvents = bWantCursor;
+	bEnableMouseOverEvents = bWantCursor;
+	FInputModeGameOnly Mode;
+	Mode.SetConsumeCaptureMouseDown(false);
+	SetInputMode(Mode);
 }
 
 void AChaosImpactPlayerController::ToggleTrainingOverlay()
@@ -1350,6 +1415,12 @@ void AChaosImpactPlayerController::CycleTrainingSummonBallType()
 {
 	TrainingSummonBallType = ChaosImpactBallTypes::FromIndex(
 		(static_cast<int32>(TrainingSummonBallType) + 1) % ChaosImpactBallTypes::Count);
+}
+
+void AChaosImpactPlayerController::SetTrainingSummonBallType(const EChaosImpactBallType Type)
+{
+	if (bTrainingMode && !bTravelPending && static_cast<int32>(Type) < ChaosImpactBallTypes::Count)
+	{ TrainingSummonBallType = Type; }
 }
 
 void AChaosImpactPlayerController::SummonTrainingBall()

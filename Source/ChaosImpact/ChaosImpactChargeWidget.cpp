@@ -6,6 +6,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactShoulderCameraComponent.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPaint.h"
@@ -554,6 +555,7 @@ void UChaosImpactChargeWidget::RefreshPersonalAimGuide()
 	AChaosImpactCharacter* Character = PlayerController
 		? Cast<AChaosImpactCharacter>(PlayerController->GetPawn()) : nullptr;
 	const bool bShouldShow = Character && Character->IsChargingThrow()
+		&& !Character->IsShoulderViewActive()
 		&& !Character->IsEliminated() && PersonalAimGuideBars.Num() >= 3;
 	for (UBorder* Bar : PersonalAimGuideBars)
 	{
@@ -674,6 +676,7 @@ void UChaosImpactChargeWidget::RefreshSplitScreenDividers()
 
 void UChaosImpactChargeWidget::SetChargeAlpha(const float ChargeAlpha)
 {
+	PointerChargeAlpha = FMath::Clamp(ChargeAlpha, 0.0f, 1.0f);
 	if (!ChargeBar)
 	{
 		return;
@@ -698,6 +701,7 @@ void UChaosImpactChargeWidget::SetChargeAlpha(const float ChargeAlpha)
 
 void UChaosImpactChargeWidget::SetCharging(const bool bCharging)
 {
+	bPointerCharging = bCharging;
 	if (ChargeFrame)
 	{
 		ChargeFrame->SetVisibility(bCharging ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
@@ -939,6 +943,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		PaintVitals(AllottedGeometry, OutDrawElements, HudLayer);
 		PaintBallInventory(AllottedGeometry, OutDrawElements, HudLayer);
 	}
+	PaintGameplayPointer(AllottedGeometry, OutDrawElements, HudLayer + 18);
 	const double Clock = FPlatformTime::Seconds();
 	const UGameInstance* GameInstance = GetGameInstance();
 	const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
@@ -1075,7 +1080,144 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	}
 	PaintVersusMatch(AllottedGeometry, OutDrawElements, BaseLayer + 6);
 	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
-	return BaseLayer + 10;
+	return FMath::Max(BaseLayer + 10, HudLayer + 18);
+}
+
+namespace
+{
+	FBox2D EasyButtonRect(const FVector2D& Size, const float S, const int32 Hit)
+	{
+		const FVector2D Position = Hit == 1 ? FVector2D(Size.X - 140.0f * S, 18.0f * S)
+			: Hit == 2 ? FVector2D(Size.X - 300.0f * S, 18.0f * S)
+			: Hit >= 4 ? FVector2D(Size.X - 140.0f * S, (70.0f + (Hit - 4) * 52.0f) * S)
+			: FVector2D(Size.X - 150.0f * S, Size.Y - 188.0f * S);
+		return FBox2D(Position, Position + FVector2D(Hit == 2 ? 148.0f : 120.0f, 44.0f) * S);
+	}
+}
+
+int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
+{
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const auto* Character = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+	if (Character && Character->IsShoulderViewActive()) { return 0; }
+	if (!PC || !PC->IsGameplayActive() || PC->IsUsingGamepad()
+		|| ChaosImpactSettings::GetPlayerControlScheme(PC) == EChaosImpactControlScheme::Normal
+		|| !FSlateApplication::IsInitialized()) { return 0; }
+	const FGeometry& Geometry = GetCachedGeometry();
+	const FVector2D Size = Geometry.GetLocalSize();
+	const FVector2D Pointer = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+	const float S = GetHudScale(Size.X, Size.Y);
+	if (Size.X < 1 || Size.Y < 1 || !FBox2D(FVector2D::ZeroVector, Size).IsInside(Pointer)) { return 0; }
+	for (int32 Hit = 1; Hit <= 5; ++Hit)
+	{
+		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController())) { continue; }
+		if (Hit == 4 && !PC->CanToggleReady()) { continue; }
+		if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
+		if (EasyButtonRect(Size, S, Hit).IsInside(Pointer)) { return Hit; }
+	}
+	// The inventory remains UI while the ball icons animate; never let these clicks leak into throwing.
+	if (!bVitalsHidden && !bSpectatorView)
+	{
+		const FVector2D Homes[] = {FVector2D(-250.0f, -80.0f), FVector2D(-174.0f, -86.0f)};
+		for (int32 BallIndex = 0; BallIndex < 2; ++BallIndex)
+		{
+			if (FVector2D::DistSquared(Pointer, Size + Homes[BallIndex] * S) <= FMath::Square((BallIndex == 0 ? 38.0f : 30.0f) * S))
+			{ return 10 + BallIndex; }
+		}
+		// Empty sockets and the count are still HUD, not places to throw a ball through.
+		if (FBox2D(Size + FVector2D(-332.0f, -130.0f) * S, Size + FVector2D(-28.0f, -36.0f) * S).IsInside(Pointer))
+		{ return 12; }
+	}
+	return 0;
+}
+
+void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
+	FSlateWindowElementList& Elements, const int32 Layer) const
+{
+	using namespace ChaosImpactPaint;
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (!PC || !PC->IsGameplayActive()) { return; }
+	const FVector2D Size = Geometry.GetLocalSize();
+	const float S = GetHudScale(Size.X, Size.Y);
+	const auto* ShoulderCharacter = Cast<AChaosImpactCharacter>(PC->GetPawn());
+	if (ShoulderCharacter && ShoulderCharacter->IsShoulderViewActive())
+	{
+		const FPainter Paint{Geometry, Elements, Layer};
+		// A near wall hit + shoulder offset produced huge lateral parallax. Character aim also
+		// belongs to a different tick than the rendered camera. Use the actual rendered view,
+		// fixed depth and flat throw plane for a stable direction marker, not a hit guarantee.
+		FVector ViewLocation; FRotator ViewRotation;
+		PC->GetPlayerViewPoint(ViewLocation,ViewRotation);
+		const FVector End = UChaosImpactShoulderCameraComponent::MakeReticleAnchor(
+			ViewLocation,ViewRotation,ShoulderCharacter->GetActorLocation().Z + 54);
+		FVector2D At;
+		if (UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(),End,At,true))
+		{
+			At.X = Size.X * .5;
+			At.Y = FMath::Clamp(At.Y, 24.0, Size.Y - 24.0);
+			Paint.Ring(At, 8 * S, Ink, 5 * S);
+			Paint.Ring(At, 8 * S, Paper, 2 * S);
+			Paint.Line(At - FVector2D(13 * S,0), At + FVector2D(13 * S,0), Ink, 5 * S);
+			Paint.Line(At - FVector2D(13 * S,0), At + FVector2D(13 * S,0), Paper, 2 * S);
+			if (bPointerCharging) { Paint.Arc(At, 13 * S,-90,-90 + 360 * PointerChargeAlpha, Gold, 3 * S); }
+		}
+		// A separate ground marker previews first stage contact, not a false pitch-directed crosshair.
+		FVector Ground; float Radius = 0;
+		if (ShoulderCharacter->IsChargingThrow() && ShoulderCharacter->PredictThrowLanding(ShoulderCharacter->GetThrowChargeAlpha(),Ground,Radius)
+			&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(),Ground + FVector(0,0,4),At,true)
+			&& FBox2D(FVector2D::ZeroVector,Size).IsInside(At))
+		{
+			Paint.Ring(At, 6 * S, Ink, 5 * S); Paint.Ring(At, 6 * S, Gold, 2 * S);
+		}
+		return;
+	}
+	if (PC->IsUsingGamepad() || !FSlateApplication::IsInitialized()) { return; }
+	const FVector2D Pointer = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+	const bool bEasy = ChaosImpactSettings::GetPlayerControlScheme(PC) != EChaosImpactControlScheme::Normal;
+	const int32 Hover = GetGameplayPointerHit();
+	const FPainter Paint{Geometry, Elements, Layer};
+	if (bEasy)
+	{
+		for (int32 Hit = 1; Hit <= 5; ++Hit)
+		{
+			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController())) { continue; }
+			if (Hit == 4 && !PC->CanToggleReady()) { continue; }
+			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
+			const FBox2D R = EasyButtonRect(Size, S, Hit);
+			const FVector2D Extent = R.GetSize();
+			Paint.Box(R.Min.X, R.Min.Y, Extent.X, Extent.Y, WithAlpha(Ink, 0.92f));
+			Paint.Outline(R.Min.X, R.Min.Y, Extent.X, Extent.Y, Hover == Hit ? Gold : Paper, 2.0f * S);
+			Paint.Text(Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦") : TEXT("ダッシュ"),
+				(R.Min.X + R.Max.X) * 0.5f, R.Min.Y + 10.0f * S, 18.0f * S,
+				Paper, ETextAlign::Center);
+		}
+	}
+	const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(PC->GetPawn());
+	if (Character && Character->HasClickMoveGoal())
+	{
+		FVector2D ViewportPosition;
+		if (PC->ProjectWorldLocationToScreen(Character->GetClickMoveGoal()
+			- FVector::UpVector * (Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() - 8.0f), ViewportPosition))
+		{
+			const FVector2D At = Geometry.AbsoluteToLocal(UWidgetLayoutLibrary::GetViewportWidgetGeometry(this).LocalToAbsolute(
+				ViewportPosition / UWidgetLayoutLibrary::GetViewportScale(this)));
+			Paint.Ring(At, 14.0f * S, Ink, 6.0f * S);
+			Paint.Ring(At, 14.0f * S, Ice, 2.5f * S);
+		}
+	}
+	if (!FBox2D(FVector2D::ZeroVector, Size).IsInside(Pointer)) { return; }
+	const float Radius = FMath::Clamp(15.0f * S, 11.0f, 22.0f);
+	const FLinearColor Color = Hover != 0 ? Gold : Character && Character->WasClickMoveRejected() ? Fire : Paper;
+	// White + black outline stays legible on both bright tiles and dark effects. The tiny system crosshair stays inside.
+	Paint.Ring(Pointer, Radius, Ink, 6.0f);
+	Paint.Ring(Pointer, Radius, Color, 2.5f);
+	for (int32 Axis = 0; Axis < 4; ++Axis)
+	{
+		const FVector2D Direction(FMath::Cos(Axis * UE_HALF_PI), FMath::Sin(Axis * UE_HALF_PI));
+		Paint.Line(Pointer + Direction * (Radius + 3), Pointer + Direction * (Radius + 9), Ink, 6.0f);
+		Paint.Line(Pointer + Direction * (Radius + 3), Pointer + Direction * (Radius + 9), Color, 2.0f);
+	}
+	if (bPointerCharging) { Paint.Arc(Pointer, Radius + 5, -90, -90 + 360.0f * PointerChargeAlpha, Gold, 3.0f); }
 }
 
 float UChaosImpactChargeWidget::GetHudScale(const double Width, const double Height) const
@@ -1395,6 +1537,21 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	}
 	Labels.Text(TEXT("×"), PlateRight - 58.0f, PlateTop + 30.0f, 18.0f, WithAlpha(Paper, 0.7f), ETextAlign::Right, TEXT("Bold"));
 	Labels.Text(TEXT("BALL"), PlateRight - 18.0f, PlateTop + 60.0f, 10.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	// The nova's parts carried so far: three marks over the plate, lit as each is picked up.
+	if (NovaParts != 0)
+	{
+		const FLinearColor NovaColor = ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Nova);
+		const TCHAR* PartNames[] = {TEXT("ギア"), TEXT("コア"), TEXT("リング")};
+		const float RowY = PlateTop - 30.0f;
+		Labels.Text(TEXT("NOVA"), PlateRight - 262.0f, RowY - 6.0f, 15.0f, NovaColor, ETextAlign::Left, TEXT("BlackItalic"), 2.0f, Ink);
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			const bool bHave = (NovaParts & (1 << Index)) != 0;
+			const float X = PlateRight - 196.0f + Index * 62.0f;
+			Labels.Disc(FVector2D(X, RowY + 4.0f), 7.0f, bHave ? NovaColor : WithAlpha(Muted, 0.45f));
+			Labels.Text(PartNames[Index], X + 11.0f, RowY - 4.0f, 12.0f, bHave ? Paper : Muted, ETextAlign::Left, TEXT("Bold"), 2.0f, Ink);
+		}
+	}
 
 	// Pickup ripple and swap flash.
 	if (PickupAge < BallPickupSeconds && BallGainedSlot >= 0 && BallGainedSlot < 2)

@@ -31,6 +31,8 @@ struct FChaosImpactCharacterInfo
 	 * (which the material applies to the red parts of the texture).
 	 */
 	EChaosImpactModelKind Kind = EChaosImpactModelKind::Limbs;
+	/** False: preserve the supplied texture and skip the colour selection step. HUD/team identity still has a colour. */
+	bool bColourVariants = true;
 };
 
 namespace ChaosImpactRoster
@@ -45,10 +47,13 @@ namespace ChaosImpactRoster
 	{
 		{TEXT("スマイリー"), TEXT("/Game/ChaosImpact/Character"), TEXT("Player")},
 		{TEXT("シマエナガ"), TEXT("/Game/ChaosImpact/Simae"), TEXT("Simae"), EChaosImpactModelKind::Skinned},
+		{TEXT("ドッジ妖精"), TEXT("/Game/ChaosImpact/Fairy"), TEXT("Fairy"), EChaosImpactModelKind::Skinned, false},
+		{TEXT("ウッドウーマン"), TEXT("/Game/ChaosImpact/Wood"), TEXT("Wood"), EChaosImpactModelKind::Skinned, false},
+		{TEXT("アントキッズ"), TEXT("/Game/ChaosImpact/Ant"), TEXT("Ant"), EChaosImpactModelKind::Skinned, false},
 	};
 
 	/** Tiles on the select screen; the ones past the roster show as locked, so it reads as a roster that grows. */
-	inline constexpr int32 TileCount = 4;
+	inline constexpr int32 TileCount = ((UE_ARRAY_COUNT(Characters) + 3) / 4) * 4;
 
 	inline int32 Num()
 	{

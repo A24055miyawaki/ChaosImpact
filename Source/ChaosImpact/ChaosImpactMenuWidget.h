@@ -37,6 +37,8 @@ public:
 	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
 	UChaosImpactSettingsScreen* GetSettingsScreen() const { return SettingsScreen; }
+	void OpenTrainingBallPicker();
+	bool IsTrainingBallPickerOpen() const { return bTrainingBallPickerOpen; }
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -92,6 +94,8 @@ private:
 	float AnimationSeconds = 0.0f;
 	double LastAnalogNavigationAt = 0.0;
 	void BuildEntries();
+	void CloseTrainingBallPicker();
+	bool bTrainingBallPickerOpen = false;
 	int32 HitTestEntry(const FGeometry& Geometry, const FVector2D& ScreenPosition) const;
 
 	UFUNCTION()

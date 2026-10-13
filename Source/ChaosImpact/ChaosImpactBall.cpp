@@ -1156,6 +1156,7 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 			}
 		}
 		FlightSeconds += DeltaSeconds;
+		UpdateNovaDrop();
 		const float Flight = BallType == EChaosImpactBallType::Thunder ? ChaosImpactBallTypes::ThunderFlightSeconds
 			: BallType == EChaosImpactBallType::Beam ? ChaosImpactBallTypes::BeamRange / ChaosImpactBallTypes::BeamSpeed
 			// Its steering time decides its end; this only catches one never steered.
@@ -1340,6 +1341,59 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	UpdateNetState();
 }
 
+void AChaosImpactBall::LaunchNovaDrop(const FVector& GroundTarget)
+{
+	// Straight up (nothing to its sides), out of sight; UpdateNovaDrop brings it down on the spot.
+	Launch(FVector::ZeroVector, 0.0f, EChaosImpactBallFlightMode::Arc, ChaosImpactBallTypes::NovaRiseSpeed);
+	if (BallType != EChaosImpactBallType::Nova || IsHidden())
+	{
+		return;
+	}
+	bNovaDrop = true;
+	bNovaDropping = false;
+	NovaDropTarget = GroundTarget;
+	NovaLaunchZ = static_cast<float>(GetActorLocation().Z);
+	bNovaLaunchZKnown = true;
+	// On its way up it meets nothing (a roof or a beam over the thrower): it only lands on the way down.
+	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+
+void AChaosImpactBall::UpdateNovaDrop()
+{
+	if (!bNovaDrop || bNovaDropping || FlightSeconds < ChaosImpactBallTypes::NovaRiseSeconds || GetAttachParentActor())
+	{
+		return;
+	}
+	// Gone up out of sight: now high over the spot, coming straight down onto it (onto the stage only, as before).
+	bNovaDropping = true;
+	SetActorLocation(NovaDropTarget + FVector(0.0f, 0.0f, ChaosImpactBallTypes::NovaDropHeight), false, nullptr,
+		ETeleportType::TeleportPhysics);
+	ProjectileMovement->Velocity = FVector(0.0f, 0.0f, -ChaosImpactBallTypes::NovaDropSpeed);
+	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	UE_LOG(LogChaosImpact, Log, TEXT("Nova coming down on %s"), *NovaDropTarget.ToCompactString());
+}
+
+void AChaosImpactBall::UpdateNovaHeightVisibility()
+{
+	const bool bFlying = !bIsPickup && !GetAttachParentActor() && !bDetonated;
+	if (!bFlying || !bNovaLaunchZKnown)
+	{
+		// Held (or lying, or first seen here already flying): where it goes up from.
+		NovaLaunchZ = static_cast<float>(GetActorLocation().Z);
+		bNovaLaunchZKnown = true;
+	}
+	const bool bHigh = bFlying && GetActorLocation().Z > NovaLaunchZ + ChaosImpactBallTypes::NovaHiddenAbove;
+	if (bHigh != bNovaHiddenHigh)
+	{
+		bNovaHiddenHigh = bHigh;
+		ChaosImpactBallTypes::SetNovaLookVisible(NovaLook, !bHigh);
+		if (BallMesh)
+		{
+			BallMesh->SetVisibility(!bHigh, false);
+		}
+	}
+}
+
 void AChaosImpactBall::PrepareForAnimatedThrow(USceneComponent* HandParent,
 	const FName HandSocket, const FVector& RelativeLocation, const FRotator& RelativeRotation)
 {
@@ -1405,7 +1459,8 @@ void AChaosImpactBall::MakeRollingPickup(const FVector& ImpactVelocity)
 	bIsPickup = true;
 	bIsRolling = true;
 	bPickupConsumed = false;
-	LandedPickupExpiresAt = GetServerNow() + LandedPickupLifetimeSeconds;
+	// A nova (one a match) lies there until taken.
+	LandedPickupExpiresAt = BallType == EChaosImpactBallType::Nova ? 0.0 : GetServerNow() + LandedPickupLifetimeSeconds;
 	PickupAvailableAtSeconds = GetWorld()
 		? GetWorld()->GetTimeSeconds() + HitPickupLockoutSeconds : 0.0f;
 	PickupAnimationTime = 0.0f;
@@ -1843,6 +1898,8 @@ void AChaosImpactBall::OnRep_BallType()
 	{
 		ApplyBallTypePresentation();
 	}
+	// Its size depends on the kind too (a nova stays small), whichever of the two arrived first.
+	ApplySnowScale();
 }
 
 void AChaosImpactBall::OnRep_Detonated()
@@ -2104,7 +2161,7 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		// The ball itself is only a faint glow; the layers of light round a white-hot core are the nova.
 		BallMesh->SetMaterial(0, MakeAdditive(this, FLinearColor(0.25f, 0.6f, 1.0f), 0.12f));
 		BuildNovaLook(this, BallMesh, NovaLook);
-		UpdateNovaLook(NovaLook, 24.0f * SnowScale, 0.0f);
+		UpdateNovaLook(NovaLook, 24.0f * NovaShownScale, 0.0f);
 		LightIntensity = 0.0f;
 	}
 	else if (BallType == EChaosImpactBallType::Simae)
@@ -2196,7 +2253,8 @@ void AChaosImpactBall::UpdateBallTypePresentation(const float DeltaSeconds)
 	const bool bFlying = IsFlyingForPresentation() && !IsHidden() && !bDetonated;
 	if (NovaLook.IsBuilt())
 	{
-		ChaosImpactBallTypes::UpdateNovaLook(NovaLook, 24.0f * SnowScale, T);
+		ChaosImpactBallTypes::UpdateNovaLook(NovaLook, 24.0f * ChaosImpactBallTypes::NovaShownScale, T);
+		UpdateNovaHeightVisibility();
 	}
 	if (SimaeLook.IsBuilt())
 	{
@@ -2370,20 +2428,21 @@ void AChaosImpactBall::OnRep_SnowScale()
 
 void AChaosImpactBall::ApplySnowScale()
 {
-	// The ball as drawn and as it hits: both grow with the snow.
-	BallMeshBaseScale = FVector(0.48f * SnowScale);
+	// The ball as drawn and as it hits: both grow with the snow. A nova stays small: its charge is its blast's reach.
+	const float Shown = BallType == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaShownScale : SnowScale;
+	BallMeshBaseScale = FVector(0.48f * Shown);
 	if (BallMesh)
 	{
 		BallMesh->SetRelativeScale3D(BallMeshBaseScale * ExpiryScale);
 	}
 	if (CollisionSphere)
 	{
-		CollisionSphere->SetSphereRadius(24.0f * SnowScale);
+		CollisionSphere->SetSphereRadius(24.0f * Shown);
 	}
 	if (NovaLook.IsBuilt())
 	{
 		// Also while held up before the release, when the ball does not tick.
-		ChaosImpactBallTypes::UpdateNovaLook(NovaLook, 24.0f * SnowScale, TypeFxTime);
+		ChaosImpactBallTypes::UpdateNovaLook(NovaLook, 24.0f * Shown, TypeFxTime);
 	}
 }
 

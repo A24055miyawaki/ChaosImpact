@@ -78,8 +78,14 @@ public:
 	void ToggleBallFlightMode();
 	/** Training panel: the ball type ボールを呼び出す places in front of this player. */
 	void CycleTrainingSummonBallType();
+	void SetTrainingSummonBallType(EChaosImpactBallType Type);
 	void SummonTrainingBall();
 	EChaosImpactBallType GetTrainingSummonBallType() const { return TrainingSummonBallType; }
+	/** Session-only experiment. Mouse-only players keep their top-down view. */
+	bool IsTrainingShoulderCameraEnabled() const;
+	void ToggleTrainingShoulderCamera();
+	/** Changes capture without flushing pressed keys (e.g. while holding a nova charge). */
+	void RefreshGameplayMouseCapture(bool bShoulder);
 	void TogglePauseMenu();
 	/** Every key press: pause, the training menu and the lobby's 準備OK / 観戦, by the player's own controls. */
 	void HandleBoundKeyPressed(FKey Key);
@@ -319,6 +325,7 @@ protected:
 	bool bTravelPending = false;
 	bool bSpectateTimeStopped = false;
 	bool bTrainingMode = false;
+	bool bTrainingShoulderCamera = false;
 	int32 RequestedLocalPlayerCount = 1;
 	bool bTrainingTargetsEnabled = true;
 	int32 TrainingCPUCount = 0;

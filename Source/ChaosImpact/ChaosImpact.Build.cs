@@ -31,11 +31,14 @@ public class ChaosImpact : ModuleRules
 			"ProceduralMeshComponent",
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils",
-			"MoviePlayer"
+			"MoviePlayer",
+			"MediaAssets"
 		});
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.
 		RuntimeDependencies.Add("$(ProjectDir)/Content/UI/TitleLogoTransparent.png", StagedFileType.UFS);
+		// Recorded tutorials are loose movies so Windows Media Foundation can open them.
+		RuntimeDependencies.Add("$(ProjectDir)/Content/Movies/Controls/*.mp4", StagedFileType.NonUFS);
 
 		PublicIncludePaths.AddRange(new string[] {
 			"ChaosImpact",

@@ -3,9 +3,11 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactNovaParts.h"
 #include "ChaosImpactBallSpawner.generated.h"
 
 class AChaosImpactBall;
+class AChaosImpactNovaPart;
 class UPointLightComponent;
 class USceneComponent;
 class UStaticMeshComponent;
@@ -13,7 +15,8 @@ class UStaticMeshComponent;
 /**
  * A pickup point that puts out a new ball a few seconds after the last one is taken. Placed in a level it works in
  * training and in solo mode (or anywhere, with Always Active on); VS stages and the title make their own.
- * Which kind of ball comes out is set per pad under "Ball Chances".
+ * Which kind of ball comes out is set per pad under "Ball Chances". The nova's parts come out of pads too
+ * (PutOutNovaPart, from UChaosImpactNovaDirector).
  */
 UCLASS(Blueprintable, meta=(DisplayName="Chaos Impact Ball Spawn Point"))
 class AChaosImpactBallSpawner : public AActor
@@ -26,6 +29,11 @@ public:
 	AChaosImpactBall* GetActiveBall() const { return ActiveBall.Get(); }
 	/** Set before FinishSpawning: VS stage pads spawn balls outside the training arena too. */
 	void SetAlwaysActive(const bool bActive) { bAlwaysActive = bActive; }
+	/** Putting out balls in this game (placed for the mode being played, or made for it). */
+	bool IsInPlay() const { return bInPlay; }
+	/** Server: a nova part out on this pad now, in place of its ball; no ball comes out until it is taken. */
+	bool PutOutNovaPart(EChaosImpactNovaPart Part);
+	AChaosImpactNovaPart* GetNovaPart() const { return ActiveNovaPart.Get(); }
 
 	/** How likely (0-1) a new ball from this pad is of this kind, from the weights. */
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball Chances")
@@ -100,9 +108,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Snow (スノー)"))
 	float SnowBallChance = 0.08f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Nova (ノヴァ)"))
-	float NovaBallChance = 0.025f;
-
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Simae (シマエナガ)"))
 	float SimaeBallChance = 0.05f;
 
@@ -114,5 +119,7 @@ protected:
 	FString ChanceSummary;
 
 	TWeakObjectPtr<AChaosImpactBall> ActiveBall;
+	TWeakObjectPtr<AChaosImpactNovaPart> ActiveNovaPart;
 	FTimerHandle SpawnTimer;
+	bool bInPlay = false;
 };

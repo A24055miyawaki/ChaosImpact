@@ -8,10 +8,13 @@
 #include "Logging/LogMacros.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactMatchTypes.h"
+#include "ChaosImpactEasyControls.h"
+#include "InputCoreTypes.h"
 #include "ChaosImpactCharacter.generated.h"
 
 class USpringArmComponent;
 class UCameraComponent;
+class UChaosImpactShoulderCameraComponent;
 class UStaticMeshComponent;
 class UStaticMesh;
 class UPointLightComponent;
@@ -24,6 +27,7 @@ class UNiagaraComponent;
 class UProceduralMeshComponent;
 class UAudioComponent;
 class AChaosImpactBall;
+enum class EChaosImpactNovaPart : uint8;
 class AChaosImpactTornado;
 class UChaosImpactPuppetComponent;
 enum class EChaosImpactBallFlightMode : uint8;
@@ -50,6 +54,9 @@ class AChaosImpactCharacter : public ACharacter
 	/** Follow camera */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* FollowCamera;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))
+	UChaosImpactShoulderCameraComponent* ShoulderCamera;
 	
 protected:
 
@@ -73,10 +80,20 @@ public:
 
 	/** Constructor */
 	AChaosImpactCharacter();
+	bool IsShoulderViewActive() const;
+	UChaosImpactShoulderCameraComponent* GetShoulderCamera() const { return ShoulderCamera; }
 	void SetGameplayUIVisible(bool bVisible);
 	void CancelChargingThrow();
 	void BeginThrowInput();
+	/** Hardware input only: synchronizes the polling fallback without changing the scripted/CPU API. */
+	void BeginBoundThrowInput();
 	void EndThrowInput();
+	bool HandleEasyPointerKey(const FKey& Key, EInputEvent Event);
+	bool IsPointerOverGameplayUI() const;
+	void ResetEasyControls();
+	bool HasClickMoveGoal() const { return bClickMoveActive; }
+	FVector GetClickMoveGoal() const { return ClickMoveGoal; }
+	bool WasClickMoveRejected() const { return bClickMoveRejected; }
 	void RecoverStaminaFromBallHit();
 	/** Called on the eliminating character so its own HUD can play the KO banner. */
 	void NotifyOpponentEliminated(const FString& VictimName);
@@ -313,6 +330,14 @@ public:
 	/** Server: puts this character at a match start point with full health and no balls. */
 	void ResetForOnlineMatch(const FVector& Location, const FRotator& Rotation);
 
+	/** The nova parts carried (ChaosImpactNovaParts bits: gear, core, ring). */
+	uint8 GetNovaParts() const { return NovaParts; }
+	/**
+	 * Server: a nova part picked up. With all three the nova is finished and goes into a ball slot (as soon as one is
+	 * free); knocked out, the parts (and a finished nova) are dropped, never lost.
+	 */
+	void AddNovaPart(EChaosImpactNovaPart Part);
+
 protected:
 	// Online play: inputs are predicted locally and resolved by the server.
 	UFUNCTION(Server, Reliable)
@@ -335,6 +360,13 @@ protected:
 	void ServerCancelDrive();
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayThrowAnimation();
+	/** Every screen: a part picked up (Finished: the nova put together), with a flash and a sound. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastNovaPart(bool bFinished);
+	/** Server: the nova put together once all three parts are carried and a ball slot is free. */
+	void TryFinishNova();
+	UPROPERTY(Replicated)
+	uint8 NovaParts = 0;
 	UFUNCTION(Client, Reliable)
 	void ClientShowRespawn(const FString& DefeatedBy, float Seconds, APawn* KillerPawn);
 	UFUNCTION(Client, Reliable)
@@ -601,8 +633,6 @@ protected:
 	void UpdateNovaTargeting(float DeltaSeconds);
 	bool ResolveNovaTargetPoint(const FVector& Candidate, FVector& OutTarget) const;
 	void GetNovaStageView(FVector& OutCenter, FVector2D& OutHalfExtent) const;
-	bool CalculateNovaLaunchToTarget(const FVector& LaunchLocation, const FVector& GroundTarget, float BallRadius,
-		FVector& OutDirection, float& OutHorizontalSpeed, float& OutUpSpeed) const;
 	ChaosImpactBallTypes::FNovaLook HeldNovaLook;
 
 	UPROPERTY(Transient)
@@ -1102,6 +1132,24 @@ protected:
 	bool BoundActionHeld[16] = {};
 	/** Reads the player's own controls (the settings screen's) and acts on them; every frame for a local player. */
 	void UpdateBoundControls();
+	void UpdateClickMovement();
+	void UpdateHeldMouseMovement();
+	void RequestDirectionalDash(const FVector& Direction);
+	ChaosImpactEasyControls::FManageGesture BallManageGesture;
+	ChaosImpactEasyControls::FManageGesture PointerDropGesture;
+	ChaosImpactEasyControls::FMoveClicks MoveClickGesture;
+	uint8 LastControlScheme = 255;
+	bool bSuppressPointerThrow = false;
+	bool bWaitForThrowRelease = false;
+	bool bPointerDropActive = false;
+	bool bPointerMoveHeld = false;
+	bool bClickMoveActive = false;
+	bool bClickMoveRejected = false;
+	FVector ClickMoveGoal = FVector::ZeroVector;
+	TArray<FVector> ClickMovePath;
+	int32 ClickMoveWaypoint = 0;
+	FVector ClickLastProgress = FVector::ZeroVector;
+	double ClickProgressAt = 0.0;
 	bool bTrainingMenuFrozen = false;
 	bool bTrainingMenuCameraActive = false;
 	uint8 SavedTrainingMenuMovementMode = 1;

@@ -93,6 +93,11 @@ namespace
 				{
 					return false;
 				}
+				for (int32 I = 0; I < 4; ++I)
+				{
+					OriginalLoadouts.Add(UChaosImpactLoadoutSubsystem::Get(PC)->GetLoadout(I));
+					UChaosImpactLoadoutSubsystem::Get(PC)->SetLoadout(I,{0,I});
+				}
 				PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 				PC->BeginVersusLocal();
 				PC->PrepareTrainingControllerAssignment(3);
@@ -114,14 +119,24 @@ namespace
 				// 3P's cursor goes onto a COMING SOON icon: nothing can be picked there.
 				SelectPadKey(EKeys::Gamepad_DPad_Right, 202, 2);
 				Test->TestEqual(TEXT("The D-pad moves 3P's cursor"), Select->GetCursorTile(2), 1);
-				SelectPadKey(EKeys::Gamepad_DPad_Right, 202, 2);
-				Test->TestEqual(TEXT("3P's cursor reaches the first locked icon"), Select->GetCursorTile(2), ChaosImpactRoster::Num());
+				const int32 LockedTile = ChaosImpactRoster::Num();
+				while (Select->GetCursorTile(2) % Select->GridColumns != LockedTile % Select->GridColumns)
+				{
+					SelectPadKey(Select->GetCursorTile(2) % Select->GridColumns < LockedTile % Select->GridColumns
+						? EKeys::Gamepad_DPad_Right : EKeys::Gamepad_DPad_Left,202,2);
+				}
+				while (Select->GetCursorTile(2) / Select->GridColumns < LockedTile / Select->GridColumns)
+				{
+					SelectPadKey(EKeys::Gamepad_DPad_Down,202,2);
+				}
+				Test->TestEqual(TEXT("3P's cursor reaches the first locked icon"), Select->GetCursorTile(2), LockedTile);
 				Test->TestEqual(TEXT("Other cursors stay"), Select->GetCursorTile(0), 0);
 				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
 				Test->TestTrue(TEXT("A locked icon cannot be picked"), Select->GetStep(2) == EStep::Character);
 				SelectPadKey(EKeys::Gamepad_DPad_Down, 202, 2);
 				Test->TestEqual(TEXT("The cursor moves between rows"), Select->GetCursorTile(2), ChaosImpactRoster::Num() + 4);
 				SelectPadKey(EKeys::Gamepad_DPad_Up, 202, 2);
+				for (int32 Row = 0; Row < Select->GridRows; ++Row) { SelectPadKey(EKeys::Gamepad_DPad_Up,202,2); }
 				for (int32 Step = 0; Step <= ChaosImpactRoster::Num(); ++Step)
 				{
 					SelectPadKey(EKeys::Gamepad_DPad_Left, 202, 2);
@@ -250,11 +265,21 @@ namespace
 				SelectShot(TEXT("CS-05-InMatch.png"));
 				return Next(0.8);
 			default:
+				RestoreLoadouts();
 				return true;
 			}
 		}
 
 	private:
+		void RestoreLoadouts()
+		{
+			if (auto* PC = FindSelectTestController())
+			{
+				for (int32 I = 0; I < OriginalLoadouts.Num(); ++I)
+				{ UChaosImpactLoadoutSubsystem::Get(PC)->SetLoadout(I,OriginalLoadouts[I]); }
+			}
+			OriginalLoadouts.Reset();
+		}
 		bool Waited(const double Now, const TCHAR* Error)
 		{
 			if (Now - StartedAt < 180.0)
@@ -262,6 +287,7 @@ namespace
 				return false;
 			}
 			Test->AddError(Error);
+			RestoreLoadouts();
 			return true;
 		}
 
@@ -292,6 +318,7 @@ namespace
 		double NextAt = 0.0;
 		int32 Stage = 0;
 		int32 Picks[3] = {0, 1, 2};
+		TArray<FChaosImpactLoadout> OriginalLoadouts;
 	};
 }
 

@@ -149,13 +149,22 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	const double ServerNow = Match->GetServerWorldTimeSeconds();
 	const bool bTeams = Match->IsTeamBattle();
 
-	// A word scaled about the screen centre: it lands slightly large and settles.
+	// A word scaled about the screen centre: it lands slightly large and settles, standing out like the logo's letters.
+	// The big moments (Ready?, GO!, FINISH) burst out of a jagged blast of ice or fire behind it.
 	const auto PaintCallout = [&](const FString& Word, const float TextSize, const float Scale, const float Alpha,
-		const FLinearColor& Color, const int32 Layer)
+		const FLinearColor& Color, const int32 Layer, const FHudFill* Blast = nullptr)
 	{
-		const FGeometry Space = MakeSkewed(Center, -800.0f, -TextSize * 0.8f, 1600.0f, TextSize * 1.6f, 0.0f, Scale);
-		const FPainter Callout{Space, OutDrawElements, Layer, Alpha};
-		Callout.Text(Word, 800.0f, 0.0f, TextSize, Color, ETextAlign::Center, TEXT("Black"), 5.0f, Ink);
+		if (Blast)
+		{
+			const float Open = FMath::Clamp(Alpha * 1.3f, 0.0f, 1.0f) * Scale;
+			const float Outer = TextSize * 1.05f * Open;
+			const float HalfWidth = (HudMeasure(Word, TextSize, TEXT("BlackItalic")) * 0.5f + TextSize * 0.6f) * Open;
+			HudBurst(FPainter{Center, OutDrawElements, Layer, Alpha}, FVector2D(0.0, -TextSize * 0.1f), TextSize * 0.62f * Open, Outer, 18,
+				*Blast, -6.0f, FVector2D(HalfWidth / FMath::Max(Outer, 1.0f), 0.85), 6.0f, FVector2D(9.0, 10.0), TextSize);
+		}
+		const FGeometry Space = MakeSkewed(Center, -800.0f, -TextSize * 0.8f, 1600.0f, TextSize * 1.6f, -0.12f, Scale);
+		HudText3D(FPainter{Space, OutDrawElements, Layer + 3, Alpha}, Word, 800.0f, 0.0f, TextSize, Color, ETextAlign::Center,
+			TEXT("BlackItalic"), TextSize * 0.07f);
 	};
 
 	if (bStarting)
@@ -197,7 +206,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		if (Match->ReadyStartedAt > 0.0)
 		{
 			const float T = static_cast<float>(ServerNow - Match->ReadyStartedAt);
-			PaintCallout(TEXT("Ready?"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * T), EaseOut(T / 0.12f), Paper, BaseLayer + 2);
+			PaintCallout(TEXT("Ready?"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * T), EaseOut(T / 0.12f), Paper, BaseLayer + 2, &IceFill);
 		}
 		else if (Match->bOnlineRoom
 			&& Match->GetIntroElapsedSeconds() > ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds + 0.3f)
@@ -208,7 +217,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			Waiting.Text(TEXT("ほかのプレイヤーを待っています"), 0.0f, 60.0f, 20.0f, Paper, ETextAlign::Center,
 				TEXT("Regular"), 2.0f, Ink);
 		}
-		return BaseLayer + 3;
+		return BaseLayer + 7;
 	}
 
 	if (Match->Phase == EChaosImpactOnlinePhase::Match)
@@ -220,29 +229,60 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		// One minute left: a banner across the middle, and the clock turns gold for a moment.
 		const float MinuteLeftAge = 60.0f - Remaining;
 		const bool bMinuteCall = Elapsed + Remaining > 61.0f && MinuteLeftAge >= 0.0f && MinuteLeftAge < 1.8f;
-		const FPainter Clock{TopCenter, OutDrawElements, BaseLayer + 1};
-		Clock.Box(-60.0f, 10.0f, 120.0f, 40.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f));
-		Clock.Text(FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 0.0f, 12.0f, 28.0f,
-			Remaining <= 10.0f ? Fire : bMinuteCall ? Gold : Paper, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
+		// The clock: a broken-edged slab at the top with the time standing out on it, a blade under it of the time left,
+		// and two loose shards bobbing beside it. The last ten seconds it turns red-hot, a fire blast flaring behind it
+		// and the whole of it jolting on every second.
+		const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
+		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
+		const float Total = FMath::Max(Elapsed + Remaining, 1.0f);
+		const bool bHurry = Remaining <= 10.0f;
+		const float Beat = bHurry ? 1.0f - FMath::Frac(Remaining) : 0.0f;
+		const float Kick = Beat * Beat;
+		const float Shake = bHurry ? FMath::Sin(Beat * 40.0f) * Kick * 6.0f : 0.0f;
+		const FPainter ClockBase{TopCenter, OutDrawElements, BaseLayer + 1};
+		if (bHurry)
+		{
+			HudBurst(ClockBase, At(Shake, 40.0f), 60.0f * (1.0f + 0.3f * Kick), 96.0f * (1.0f + 0.3f * Kick), 14, FireFill, Time * 40.0f,
+				FVector2D(1.9, 0.62), 3.0f, FVector2D::ZeroVector, 2.0f);
+		}
+		const FPainter Slab = HudAbove(ClockBase);
+		HudShard(Slab, {At(-122.0f + Shake, 4.0f), At(124.0f + Shake, 4.0f), At(142.0f + Shake, 32.0f), At(110.0f + Shake, 78.0f),
+			At(-106.0f + Shake, 80.0f), At(-140.0f + Shake, 36.0f)}, bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f),
+			FLinearColor(0.12f, 0.01f, 0.02f, 0.96f)) : NightFill, 4.0f, FVector2D(7.0, 8.0));
+		const FPainter OnSlab = HudAbove(Slab);
+		HudStroke(OnSlab, {At(-119.0f + Shake, 8.0f), At(122.0f + Shake, 8.0f), At(137.0f + Shake, 32.0f)}, bHurry ? FireFill.Top : IceFill.Middle, 3.0f);
+		const TArray<FVector2D> Blade{At(-86.0f + Shake, 62.0f), At(80.0f + Shake, 62.0f), At(94.0f + Shake, 66.0f), At(80.0f + Shake, 70.0f),
+			At(-90.0f + Shake, 70.0f)};
+		HudPoly(OnSlab, HudInflate(Blade, 2.0f), SolidFill(Navy), 1);
+		HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + Shake + 184.0f * FMath::Clamp(Remaining / Total, 0.0f, 1.0f), false, true),
+			bHurry ? FireFill : IceFill, 2);
+		const float Bob = FMath::Sin(Time * 2.2f) * 3.0f;
+		HudShard(OnSlab, {At(-170.0f, 14.0f + Bob), At(-150.0f, 20.0f + Bob), At(-160.0f, 40.0f + Bob)}, bHurry ? FireFill : IceFill, 2.0f,
+			FVector2D(3.0, 4.0));
+		HudShard(OnSlab, {At(156.0f, 44.0f - Bob), At(176.0f, 34.0f - Bob), At(170.0f, 58.0f - Bob)}, FireFill, 2.0f, FVector2D(3.0, 4.0));
+		const FPainter Digits{MakeSkewed(TopCenter, -120.0f + Shake, 2.0f, 240.0f, 66.0f, -0.12f, 1.0f + 0.25f * Kick), OutDrawElements,
+			BaseLayer + 9};
+		HudText3D(Digits, FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 120.0f, -6.0f, 46.0f,
+			bHurry ? FireFill.Top : bMinuteCall ? Gold : Paper, ETextAlign::Center);
 		if (bMinuteCall)
 		{
 			// Like Ready?: the words alone, no band over the play field, and gone quickly.
 			const float Alpha = EaseOut(MinuteLeftAge / 0.12f) * (1.0f - FMath::Clamp((MinuteLeftAge - 1.4f) / 0.4f, 0.0f, 1.0f));
-			PaintCallout(TEXT("あと1分！"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * MinuteLeftAge), Alpha, Gold, BaseLayer + 2);
+			PaintCallout(TEXT("あと1分！"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * MinuteLeftAge), Alpha, Gold, BaseLayer + 12);
 		}
 
 		if (Elapsed < 1.1f)
 		{
 			PaintCallout(TEXT("GO!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Elapsed / 0.18f)),
-				1.0f - FMath::Clamp((Elapsed - 0.7f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 2);
+				1.0f - FMath::Clamp((Elapsed - 0.7f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 12, &FireFill);
 		}
 		if (Remaining > 0.0f && Remaining <= 5.0f)
 		{
 			const float Local = static_cast<float>(Seconds) - Remaining;
 			PaintCallout(FString::FromInt(Seconds), 120.0f, 1.0f + 0.5f * FMath::Exp(-8.0f * Local),
-				0.7f * (1.0f - 0.6f * Local), Paper, BaseLayer + 2);
+				0.7f * (1.0f - 0.6f * Local), Paper, BaseLayer + 12);
 		}
-		return BaseLayer + 3;
+		return BaseLayer + 18;
 	}
 
 	if (Match->Phase != EChaosImpactOnlinePhase::Results)
@@ -258,7 +298,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		// The whistle moment: a flash, then FINISH slams in over the frozen field.
 		Full.Box(0.0f, 0.0f, Size.X, Size.Y, WithAlpha(Paper, 0.45f * FMath::Clamp(1.0f - Elapsed / 0.25f, 0.0f, 1.0f)));
 		PaintCallout(TEXT("FINISH"), 120.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Elapsed / 0.2f)),
-			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 3);
+			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 3, &FireFill);
 	}
-	return BaseLayer + 4;
+	return BaseLayer + 8;
 }

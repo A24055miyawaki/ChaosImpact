@@ -1094,17 +1094,22 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		Hint.Text(FString::Printf(TEXT("ボール化中　%s で解除"),*Key),0,7,20,Paper,ETextAlign::Center);
 	}
 	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
-	return FMath::Max(BaseLayer + 10, HudLayer + 18);
+	return FMath::Max(BaseLayer + 22, HudLayer + 26);
 }
 
 namespace
 {
+	/** The ball holder: where each ball sits (from the bottom-right corner) and its pedestal's radius. */
+	const FVector2f BallHolderHomes[] = {FVector2f(-122.0f, -104.0f), FVector2f(-218.0f, -72.0f)};
+	constexpr float BallHolderRings[] = {50.0f, 32.0f};
+	constexpr float BallHolderBalls[] = {33.0f, 21.0f};
+
 	FBox2D EasyButtonRect(const FVector2D& Size, const float S, const int32 Hit)
 	{
 		const FVector2D Position = Hit == 1 ? FVector2D(Size.X - 140.0f * S, 18.0f * S)
 			: Hit == 2 ? FVector2D(Size.X - 300.0f * S, 18.0f * S)
 			: Hit >= 4 ? FVector2D(Size.X - 140.0f * S, (70.0f + (Hit - 4) * 52.0f) * S)
-			: FVector2D(Size.X - 150.0f * S, Size.Y - 188.0f * S);
+			: FVector2D(Size.X - 150.0f * S, Size.Y - 290.0f * S);
 		return FBox2D(Position, Position + FVector2D(Hit == 2 ? 148.0f : 120.0f, 44.0f) * S);
 	}
 }
@@ -1133,14 +1138,14 @@ int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
 	// The inventory remains UI while the ball icons animate; never let these clicks leak into throwing.
 	if (!bVitalsHidden && !bSpectatorView)
 	{
-		const FVector2D Homes[] = {FVector2D(-250.0f, -80.0f), FVector2D(-174.0f, -86.0f)};
+		const FVector2D Homes[] = {FVector2D(BallHolderHomes[0]), FVector2D(BallHolderHomes[1])};
 		for (int32 BallIndex = 0; BallIndex < 2; ++BallIndex)
 		{
-			if (FVector2D::DistSquared(Pointer, Size + Homes[BallIndex] * S) <= FMath::Square((BallIndex == 0 ? 38.0f : 30.0f) * S))
+			if (FVector2D::DistSquared(Pointer, Size + Homes[BallIndex] * S) <= FMath::Square(BallHolderRings[BallIndex] * S))
 			{ return 10 + BallIndex; }
 		}
-		// Empty sockets and the count are still HUD, not places to throw a ball through.
-		if (FBox2D(Size + FVector2D(-332.0f, -130.0f) * S, Size + FVector2D(-28.0f, -36.0f) * S).IsInside(Pointer))
+		// Empty pedestals and the count are still HUD, not places to throw a ball through.
+		if (FBox2D(Size + FVector2D(-262.0f, -176.0f) * S, Size + FVector2D(-40.0f, -36.0f) * S).IsInside(Pointer))
 		{ return 12; }
 	}
 	return 0;
@@ -1190,7 +1195,8 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 	const FVector2D Pointer = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
 	const bool bEasy = ChaosImpactSettings::GetPlayerControlScheme(PC) != EChaosImpactControlScheme::Normal;
 	const int32 Hover = GetGameplayPointerHit();
-	const FPainter Paint{Geometry, Elements, Layer};
+	// The pointer and its marks above the buttons (each a three-layer shard with its label on it).
+	const FPainter Paint{Geometry, Elements, Layer + 5};
 	if (bEasy)
 	{
 		for (int32 Hit = 1; Hit <= 6; ++Hit)
@@ -1200,13 +1206,19 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
 			if (Hit == 6 && (!ShoulderCharacter || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
 			const FBox2D R = EasyButtonRect(Size, S, Hit);
-			const FVector2D Extent = R.GetSize();
-			Paint.Box(R.Min.X, R.Min.Y, Extent.X, Extent.Y, WithAlpha(Ink, 0.92f));
-			Paint.Outline(R.Min.X, R.Min.Y, Extent.X, Extent.Y, Hover == Hit ? Gold : Paper, 2.0f * S);
-			Paint.Text(Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦")
+			const bool bHover = Hover == Hit;
+			const FPainter Button{Geometry, Elements, Layer};
+			HudShard(Button, {FVector2D(R.Min.X + 10.0f * S, R.Min.Y), FVector2D(R.Max.X, R.Min.Y), FVector2D(R.Max.X - 10.0f * S, R.Max.Y),
+				FVector2D(R.Min.X, R.Max.Y)}, bHover ? FireFill : NightFill, 2.5f * S, FVector2D(3.0f * S, 4.0f * S));
+			if (!bHover)
+			{
+				HudStroke(HudAbove(Button), {FVector2D(R.Min.X + 12.0f * S, R.Min.Y + 3.0f * S), FVector2D(R.Max.X - 3.0f * S, R.Min.Y + 3.0f * S)},
+					IceFill.Middle, 2.0f * S);
+			}
+			HudAbove(Button).Text(Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦")
 				: Hit == 6 ? (ShoulderCharacter->IsInBallForm() ? TEXT("元に戻る") : TEXT("ボール化")) : TEXT("ダッシュ"),
 				(R.Min.X + R.Max.X) * 0.5f, R.Min.Y + 10.0f * S, 18.0f * S,
-				Paper, ETextAlign::Center);
+				bHover ? Navy : Paper, ETextAlign::Center, TEXT("Black"));
 		}
 	}
 	const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(PC->GetPawn());
@@ -1270,23 +1282,40 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	const FLinearColor Accent = PlayerAccents[PlayerIndex % 4];
 	const FGeometry Corner = MakeAnchor(AllottedGeometry, Size.X, Size.Y, S);
 
-	// A slanted plate mirroring the vitals panel: the player's colour on the right edge, a hairline fading left.
-	constexpr float PlateWidth = 276.0f;
-	constexpr float PlateHeight = 80.0f;
-	constexpr float PlateRight = -40.0f;
-	constexpr float PlateTop = -124.0f;
-	const float PlateLeft = PlateRight - PlateWidth;
-	const FGeometry PlateSpace = MakeSkewed(Corner, PlateLeft, PlateTop, PlateWidth, PlateHeight, -0.22f);
-	const FPainter Plate{PlateSpace, OutDrawElements, BaseLayer};
-	Plate.Box(0.0f, 0.0f, PlateWidth, PlateHeight, FLinearColor(0.0f, 0.0f, 0.0f, 0.34f));
-	Plate.Box(0.0f, PlateHeight * 0.5f, PlateWidth, PlateHeight * 0.5f, FLinearColor(0.0f, 0.0f, 0.0f, 0.18f));
-	Plate.Box(PlateWidth - 4.0f, 0.0f, 4.0f, PlateHeight, Accent);
-	Plate.Box(PlateWidth * 0.4f, 0.0f, PlateWidth * 0.6f - 4.0f, 1.0f, WithAlpha(Accent, 0.7f));
-	Plate.Box(PlateWidth * 0.1f, 0.0f, PlateWidth * 0.3f, 1.0f, WithAlpha(Accent, 0.25f));
-	for (int32 Tick = 0; Tick < 5; ++Tick)
+	// The holder: no plate, two round pedestals. The ball thrown next sits large on the front one, with a jagged blast
+	// round it (fire while it holds a ball) and a ring of its ball's colour turning slowly; the other ball sits smaller
+	// behind. The count is a fire diamond on the front pedestal's shoulder.
+	const auto PaintPedestal = [&](const FVector2D& Center, const float Radius, const FLinearColor& RingColor, const bool bFront)
 	{
-		Plate.Box(PlateWidth - 70.0f + Tick * 9.0f, PlateHeight - 7.0f, 5.0f, 2.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.12f));
-	}
+		const FPainter Back{Corner, OutDrawElements, BaseLayer};
+		if (bFront)
+		{
+			HudBurst(Back, Center, Radius + 2.0f, Radius + 17.0f, 10, CarriedBalls > 0 ? FireFill : NightFill, Time * 12.0f,
+				FVector2D(1.0, 1.0), 3.5f, FVector2D(6.0, 7.0), 9.0f);
+		}
+		const FPainter Plinth{Corner, OutDrawElements, BaseLayer + 3};
+		Plinth.Disc(Center + FVector2D(4.0, 5.0), Radius + 4.0f, Extrude);
+		const FPainter Rim{Corner, OutDrawElements, BaseLayer + 4};
+		Rim.Disc(Center, Radius + 4.0f, Navy);
+		const FPainter Face{Corner, OutDrawElements, BaseLayer + 5};
+		Face.Disc(Center, Radius, FLinearColor(0.08f, 0.12f, 0.27f, 1.0f));
+		Face.Disc(Center + FVector2D(0.0, 3.0), Radius - 9.0f, FLinearColor(0.015f, 0.025f, 0.07f, 1.0f));
+		const FPainter Ring{Corner, OutDrawElements, BaseLayer + 6};
+		const float Turn = bFront ? Time * 40.0f : -Time * 25.0f;
+		const int32 Pieces = bFront ? 8 : 6;
+		for (int32 Piece = 0; Piece < Pieces; ++Piece)
+		{
+			const float From = Turn + 360.0f * Piece / Pieces;
+			Ring.Arc(Center, Radius - 4.0f, From, From + 360.0f / Pieces - 9.0f, RingColor, bFront ? 5.0f : 4.0f);
+		}
+	};
+	const auto SlotColor = [&](const int32 SlotIndex)
+	{
+		return SlotIndex < CarriedBalls ? ChaosImpactBallTypes::GetColor(ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, SlotIndex))
+			: FLinearColor(0.35f, 0.42f, 0.55f, 0.7f);
+	};
+	PaintPedestal(FVector2D(BallHolderHomes[1]), BallHolderRings[1], SlotColor(1), false);
+	PaintPedestal(FVector2D(BallHolderHomes[0]), BallHolderRings[0], SlotColor(0), true);
 
 	// One ball, shaded like a sphere, marked by its type.
 	const auto PaintBall = [Time](const FPainter& Paint, const FVector2D& Center, const float Radius, const bool bFilled,
@@ -1484,8 +1513,8 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	};
 
 	// DrawSlot 0 (thrown next) sits large at the front, slot 1 smaller behind it; a swap flies each to the other's place.
-	const FVector2D Homes[] = {FVector2D(PlateLeft + 66.0f, PlateTop + 44.0f), FVector2D(PlateLeft + 142.0f, PlateTop + 38.0f)};
-	constexpr float Radii[] = {30.0f, 22.0f};
+	const FVector2D Homes[] = {FVector2D(BallHolderHomes[0]), FVector2D(BallHolderHomes[1])};
+	const float Radii[] = {BallHolderBalls[0], BallHolderBalls[1]};
 	const float PickupAge = static_cast<float>(Clock - BallGainedAt);
 	const float Kick = PickupAge < BallPickupSeconds ? 1.0f - EaseOut(PickupAge / BallPickupSeconds) : 0.0f;
 	const float SwapT = FMath::Clamp(static_cast<float>(Clock - BallSwappedAt) / BallSwapSeconds, 0.0f, 1.0f);
@@ -1493,7 +1522,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	const float SwapLift = bSwapping ? FMath::Sin(SwapT * UE_PI) : 0.0f;
 	FVector2D Centers[2];
 	float DrawnRadii[2];
-	const FPainter Balls{Corner, OutDrawElements, BaseLayer + 1};
+	const FPainter Balls{Corner, OutDrawElements, BaseLayer + 7};
 	for (int32 DrawSlot = 1; DrawSlot >= 0; --DrawSlot)
 	{
 		FVector2D Center = Homes[DrawSlot];
@@ -1513,11 +1542,15 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		Centers[DrawSlot] = Center;
 		DrawnRadii[DrawSlot] = Radius;
 		const bool bFilled = DrawSlot < CarriedBalls;
+		if (!bFilled)
+		{
+			continue;
+		}
 		PaintBall(Balls, Center, Radius, bFilled, bFilled ? ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, DrawSlot)
 			: EChaosImpactBallType::Normal, SnowGrowth[DrawSlot]);
 	}
 
-	const FPainter Labels{Corner, OutDrawElements, BaseLayer + 2};
+	const FPainter Labels{Corner, OutDrawElements, BaseLayer + 8};
 	const auto* BuddyOwner = GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr;
 	for (int32 DrawSlot = 0; DrawSlot < FMath::Min(CarriedBalls, 2); ++DrawSlot)
 	{
@@ -1531,7 +1564,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		const FVector2D Under = Centers[DrawSlot] + FVector2D(0.0f, DrawnRadii[DrawSlot] + 3.0f);
 		const FGeometry TagSpace = MakeSkewed(Corner, static_cast<float>(Under.X) - 30.0f, static_cast<float>(Under.Y),
 			60.0f, 17.0f, -0.22f);
-		const FPainter Tag{TagSpace, OutDrawElements, BaseLayer + 2};
+		const FPainter Tag{TagSpace, OutDrawElements, BaseLayer + 8};
 		Tag.Box(0.0f, 0.0f, 60.0f, 17.0f, WithAlpha(Ink, 0.88f));
 		Tag.Box(0.0f, 15.0f, 60.0f, 2.0f, ChaosImpactBallTypes::GetColor(Type));
 		Labels.Text(Buddy ? TEXT("味方") : ChaosImpactBallTypes::GetDisplayName(Type), static_cast<float>(Under.X), static_cast<float>(Under.Y) - 1.0f,
@@ -1546,29 +1579,41 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	// The count: a large number in the colour of the next ball.
 	const FLinearColor CountColor = CarriedBalls > 0
 		? ChaosImpactBallTypes::GetColor(ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, 0)) : Muted;
-	Labels.Text(FString::FromInt(CarriedBalls), PlateRight - 18.0f, PlateTop + 10.0f, 38.0f, CountColor,
-		ETextAlign::Right, TEXT("Black"), 2.0f, Ink);
-	if (Kick > 0.0f)
-	{
-		const FPainter Flash{Corner, OutDrawElements, BaseLayer + 3, Kick};
-		Flash.Text(FString::FromInt(CarriedBalls), PlateRight - 18.0f, PlateTop + 10.0f, 38.0f, Paper,
-			ETextAlign::Right, TEXT("Black"));
-	}
-	Labels.Text(TEXT("×"), PlateRight - 58.0f, PlateTop + 30.0f, 18.0f, WithAlpha(Paper, 0.7f), ETextAlign::Right, TEXT("Bold"));
-	Labels.Text(TEXT("BALL"), PlateRight - 18.0f, PlateTop + 60.0f, 10.0f, Muted, ETextAlign::Right, TEXT("Bold"));
-	// The nova's parts carried so far: three marks over the plate, lit as each is picked up.
+	(void)CountColor;
+	const FVector2D Badge = FVector2D(BallHolderHomes[0]) + FVector2D(48.0, -40.0);
+	const float BadgeSize = 21.0f * (1.0f + 0.35f * Kick);
+	HudShard(FPainter{Corner, OutDrawElements, BaseLayer + 10}, {Badge + FVector2D(4.0, -BadgeSize), Badge + FVector2D(BadgeSize, 0.0),
+		Badge + FVector2D(-4.0, BadgeSize), Badge + FVector2D(-BadgeSize, 0.0)}, CarriedBalls > 0 ? FireFill
+		: MakeFill(FLinearColor(0.5f, 0.55f, 0.65f), FLinearColor(0.2f, 0.23f, 0.3f)), 3.0f, FVector2D(3.0, 4.0));
+	HudText3D(FPainter{Corner, OutDrawElements, BaseLayer + 13}, FString::FromInt(CarriedBalls), static_cast<float>(Badge.X),
+		static_cast<float>(Badge.Y) - 16.0f, 24.0f, Paper, ETextAlign::Center);
+	// The nova's parts carried so far: a row of their own over the holder, NOVA and a diamond per part (lit in the
+	// nova's ice as each is picked up), its name under it, joined by a thin line that fills as they come.
 	if (NovaParts != 0)
 	{
-		const FLinearColor NovaColor = ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Nova);
 		const TCHAR* PartNames[] = {TEXT("ギア"), TEXT("コア"), TEXT("リング")};
-		const float RowY = PlateTop - 30.0f;
-		Labels.Text(TEXT("NOVA"), PlateRight - 262.0f, RowY - 6.0f, 15.0f, NovaColor, ETextAlign::Left, TEXT("BlackItalic"), 2.0f, Ink);
+		constexpr float RowY = -214.0f;
+		constexpr float FirstX = -222.0f;
+		constexpr float Step = 62.0f;
+		const FPainter Row{Corner, OutDrawElements, BaseLayer + 10};
+		HudText3D(FPainter{Corner, OutDrawElements, BaseLayer + 13}, TEXT("NOVA"), FirstX - 34.0f, RowY - 15.0f, 20.0f, IceFill.Top,
+			ETextAlign::Right);
+		HudPoly(Row, HudInflate({FVector2D(FirstX, RowY - 2.0), FVector2D(FirstX + Step * 2.0f, RowY - 2.0),
+			FVector2D(FirstX + Step * 2.0f, RowY + 2.0), FVector2D(FirstX, RowY + 2.0)}, 2.0f), SolidFill(Navy), 1);
 		for (int32 Index = 0; Index < 3; ++Index)
 		{
 			const bool bHave = (NovaParts & (1 << Index)) != 0;
-			const float X = PlateRight - 196.0f + Index * 62.0f;
-			Labels.Disc(FVector2D(X, RowY + 4.0f), 7.0f, bHave ? NovaColor : WithAlpha(Muted, 0.45f));
-			Labels.Text(PartNames[Index], X + 11.0f, RowY - 4.0f, 12.0f, bHave ? Paper : Muted, ETextAlign::Left, TEXT("Bold"), 2.0f, Ink);
+			const FVector2D Gem(FirstX + Index * Step, RowY);
+			if (bHave && Index < 2 && (NovaParts & (1 << (Index + 1))) != 0)
+			{
+				HudPoly(FPainter{Corner, OutDrawElements, BaseLayer + 11}, {Gem + FVector2D(0.0, -2.0), Gem + FVector2D(Step, -2.0),
+					Gem + FVector2D(Step, 2.0), Gem + FVector2D(0.0, 2.0)}, SolidFill(IceFill.Middle), 1);
+			}
+			HudShard(FPainter{Corner, OutDrawElements, BaseLayer + 12}, {Gem + FVector2D(3.0, -16.0), Gem + FVector2D(15.0, 0.0),
+				Gem + FVector2D(-3.0, 16.0), Gem + FVector2D(-15.0, 0.0)}, bHave ? IceFill : SolidFill(FLinearColor(0.04f, 0.06f, 0.15f, 0.95f)),
+				2.5f, FVector2D(3.0, 4.0));
+			HudText3D(FPainter{Corner, OutDrawElements, BaseLayer + 15}, PartNames[Index], static_cast<float>(Gem.X), RowY + 16.0f, 12.0f,
+				bHave ? Paper : FLinearColor(0.5f, 0.56f, 0.68f), ETextAlign::Center, TEXT("Black"));
 		}
 	}
 
@@ -1576,7 +1621,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	if (PickupAge < BallPickupSeconds && BallGainedSlot >= 0 && BallGainedSlot < 2)
 	{
 		const float T = PickupAge / BallPickupSeconds;
-		const FPainter Ripple{Corner, OutDrawElements, BaseLayer + 2, 1.0f - T};
+		const FPainter Ripple{Corner, OutDrawElements, BaseLayer + 8, 1.0f - T};
 		Ripple.Ring(Centers[BallGainedSlot], DrawnRadii[BallGainedSlot] + 6.0f + 26.0f * EaseOut(T),
 			FLinearColor(0.6f, 0.93f, 1.0f, 1.0f), 2.0f + 4.0f * (1.0f - T));
 	}
@@ -1585,7 +1630,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	if (SwapAge < SwapFlashSeconds && CarriedBalls >= 2)
 	{
 		const float T = SwapAge / SwapFlashSeconds;
-		const FPainter Flash{Corner, OutDrawElements, BaseLayer + 2, 1.0f - T};
+		const FPainter Flash{Corner, OutDrawElements, BaseLayer + 8, 1.0f - T};
 		for (int32 DrawSlot = 0; DrawSlot < 2; ++DrawSlot)
 		{
 			Flash.Ring(Centers[DrawSlot], DrawnRadii[DrawSlot] + 6.0f + 16.0f * EaseOut(T), WithAlpha(Gold, 0.9f), 1.5f + 3.5f * (1.0f - T));
@@ -1604,15 +1649,16 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 			KeyWidth += Letter > 0x2000 ? 13.0f : 8.0f;
 		}
 		KeyWidth = FMath::Max(KeyWidth, 24.0f);
-		const float KeyRight = PlateRight - 14.0f;
-		const float KeyTop = PlateTop - 30.0f;
-		const FPainter Hint{Corner, OutDrawElements, BaseLayer + 2};
-		Hint.Box(KeyRight - KeyWidth, KeyTop + 2.0f, KeyWidth, 22.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
-		Hint.Box(KeyRight - KeyWidth, KeyTop, KeyWidth, 20.0f, WithAlpha(Paper, 0.92f));
-		Hint.Text(SwapKeys, KeyRight - KeyWidth * 0.5f, KeyTop + 1.0f, 13.0f, Ink,
+		// Left of the ball behind: a keycap shard of ice with the key on it, the word beside it.
+		const float KeyRight = BallHolderHomes[1].X - BallHolderRings[1] - 14.0f;
+		const float KeyTop = BallHolderHomes[1].Y - 12.0f;
+		const float KeyLeft = KeyRight - KeyWidth - 6.0f;
+		HudShard(FPainter{Corner, OutDrawElements, BaseLayer + 10}, {FVector2D(KeyLeft + 5.0f, KeyTop), FVector2D(KeyRight, KeyTop),
+			FVector2D(KeyRight - 5.0f, KeyTop + 24.0f), FVector2D(KeyLeft, KeyTop + 24.0f)}, IceFill, 2.5f, FVector2D(3.0, 4.0));
+		FPainter{Corner, OutDrawElements, BaseLayer + 13}.Text(SwapKeys, (KeyLeft + KeyRight) * 0.5f, KeyTop + 3.0f, 13.0f, Navy,
 			ETextAlign::Center, TEXT("Black"));
-		Hint.Text(TEXT("持ち替え"), KeyRight - KeyWidth - 8.0f, KeyTop + 1.0f, 13.0f, Paper, ETextAlign::Right,
-			TEXT("Bold"), 2.0f, Ink);
+		HudText3D(FPainter{Corner, OutDrawElements, BaseLayer + 13}, TEXT("持ち替え"), KeyLeft - 8.0f, KeyTop + 1.0f, 14.0f, Paper,
+			ETextAlign::Right, TEXT("Black"));
 	}
 }
 
@@ -1628,128 +1674,130 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	}
 	const float S = GetHudScale(Size.X, Size.Y);
 	const double Clock = FPlatformTime::Seconds();
+	const float Time = static_cast<float>(FMath::Fmod(Clock, 3600.0));
 	const UGameInstance* OwningGameInstance = GetGameInstance();
 	const ULocalPlayer* OwningLocalPlayer = GetOwningLocalPlayer();
 	const int32 PlayerIndex = OwningGameInstance && OwningLocalPlayer
 		? FMath::Max(0, OwningGameInstance->GetLocalPlayers().IndexOfByKey(OwningLocalPlayer)) : 0;
-	const FLinearColor Accent = PlayerAccents[PlayerIndex % 4];
 	const FGeometry Corner = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
-	const FPainter Panel{Corner, OutDrawElements, BaseLayer};
+	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
+	// No panel: the pieces stand on the game as they are, each outlined like the logo's letters.
+	const FPainter Low{Corner, OutDrawElements, BaseLayer};
+	const FPainter High{Corner, OutDrawElements, BaseLayer + 3};
+	const FPainter Top{Corner, OutDrawElements, BaseLayer + 6};
 
-	// Two segmented rows in the spot the old stamina bar used: HP cells above, stamina cells below.
-	constexpr float Left = 40.0f;
-	constexpr float LabelWidth = 36.0f;
-	constexpr float BarWidth = 268.0f;
-	constexpr float ValueWidth = 40.0f;
-	constexpr float CellGap = 4.0f;
-	constexpr float PanelTop = -124.0f;
-	constexpr float PanelHeight = 80.0f;
-	const float BarLeft = Left + LabelWidth;
-	const float PanelWidth = LabelWidth + BarWidth + ValueWidth + 20.0f;
-
-	// Panel: darker towards the bottom, a player-colour edge on the left and a fading hairline on top.
-	Panel.Box(Left - 10.0f, PanelTop, PanelWidth, PanelHeight, FLinearColor(0.0f, 0.0f, 0.0f, 0.3f));
-	Panel.Box(Left - 10.0f, PanelTop + PanelHeight * 0.5f, PanelWidth, PanelHeight * 0.5f, FLinearColor(0.0f, 0.0f, 0.0f, 0.18f));
-	Panel.Box(Left - 10.0f, PanelTop, 4.0f, PanelHeight, Accent);
-	Panel.Box(Left - 6.0f, PanelTop, PanelWidth * 0.6f, 1.0f, WithAlpha(Accent, 0.7f));
-	Panel.Box(Left - 6.0f + PanelWidth * 0.6f, PanelTop, PanelWidth * 0.3f, 1.0f, WithAlpha(Accent, 0.25f));
-
-	// A cell with a light top band and a dark lower edge, so it reads as a small raised block.
-	const auto PaintCell = [&Panel](const float X, const float Y, const float W, const float H, const FLinearColor& Color)
+	// The player's number and name over it all.
+	FString Name;
+	if (const AChaosImpactCharacter* Me = Cast<AChaosImpactCharacter>(GetOwningPlayerPawn()))
 	{
-		if (W <= 0.0f)
-		{
-			return;
-		}
-		Panel.Box(X, Y, W, H, Color);
-		Panel.Box(X, Y, W, H * 0.38f, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f * Color.A));
-		Panel.Box(X, Y + H - 2.0f, W, 2.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.35f * Color.A));
-	};
+		Name = Me->GetOverheadDisplayName();
+	}
+	if (Name.IsEmpty() && GetOwningPlayer() && GetOwningPlayer()->PlayerState)
+	{
+		Name = GetOwningPlayer()->PlayerState->GetPlayerName();
+	}
+	const FString Number = FString::Printf(TEXT("P%d"), PlayerIndex + 1);
+	HudText3D(Top, Number, 44.0f, -160.0f, 18.0f, FireFill.Top, ETextAlign::Left);
+	HudText3D(Top, Name, 50.0f + HudMeasure(Number, 18.0f, TEXT("BlackItalic")), -158.0f, 16.0f, Paper, ETextAlign::Left, TEXT("Black"));
 
-	// HP: large cells. On the last point they glow and pulse red; a lost cell flashes and grows out.
+	// HP: a diamond of fire with the number in it (it jolts when hit; on the last point it flares and pulses), then a
+	// chevron of ice per point, pointing on. A lost point breaks apart.
 	const int32 HealthCells = FMath::Clamp(FMath::RoundToInt(MaxHealthValue), 1, 6);
 	const int32 HealthLeft = FMath::Max(0, FMath::CeilToInt(Health - KINDA_SMALL_NUMBER));
 	const bool bLastPoint = HealthLeft <= 1;
-	const float Pulse = bLastPoint ? 0.6f + 0.4f * FMath::Sin(static_cast<float>(Clock) * 7.0f) : 1.0f;
+	const float Pulse = bLastPoint ? 0.5f + 0.5f * FMath::Sin(Time * 8.0f) : 0.0f;
 	const float HitAge = static_cast<float>(Clock - HitAt);
-	constexpr float HealthY = -112.0f;
-	constexpr float HealthHeight = 28.0f;
-	const float HealthCell = (BarWidth - CellGap * (HealthCells - 1)) / HealthCells;
-	const FLinearColor HealthColor = bLastPoint ? Fire : Paper;
-	Panel.Text(TEXT("HP"), Left, HealthY + 4.0f, 16.0f, HealthColor, ETextAlign::Left, TEXT("Bold"));
+	const float Shake = HitAge < 0.3f ? FMath::Sin(HitAge * 90.0f) * (0.3f - HitAge) * 18.0f : 0.0f;
+	const FHudFill Burning = bLastPoint ? MakeFill(FMath::Lerp(FireFill.Top, FLinearColor::White, Pulse * 0.6f), FireFill.Bottom) : FireFill;
+	const FVector2D Gem(92.0f + Shake, -86.0f);
+	HudShard(Low, {Gem + At(8.0f, -50.0f), Gem + At(50.0f, -2.0f), Gem + At(-8.0f, 48.0f), Gem + At(-50.0f, 2.0f)}, Burning, 3.5f,
+		FVector2D(6.0, 7.0));
+	HudStroke(High, {Gem + At(-38.0f, -2.0f), Gem + At(6.0f, -40.0f)}, FLinearColor(1.0f, 1.0f, 0.9f, 0.7f), 2.5f);
+	const float Jolt = 1.0f + 0.4f * FMath::Exp(-10.0f * FMath::Max(HitAge, 0.0f));
+	const FPainter GemNumber{MakeSkewed(Corner, static_cast<float>(Gem.X) - 50.0f, static_cast<float>(Gem.Y) - 42.0f, 100.0f, 84.0f, -0.12f, Jolt),
+		OutDrawElements, BaseLayer + 6};
+	HudText3D(GemNumber, FString::FromInt(HealthLeft), 50.0f, 0.0f, 50.0f, Paper, ETextAlign::Center);
+
+	constexpr float RowLeft = 152.0f;
+	constexpr float ChevronWidth = 56.0f;
+	constexpr float ChevronGap = 5.0f;
+	constexpr float Tip = 15.0f;
+	constexpr float RowTop = -120.0f;
+	constexpr float RowBottom = -84.0f;
+	constexpr float RowMiddle = (RowTop + RowBottom) * 0.5f;
 	for (int32 Cell = 0; Cell < HealthCells; ++Cell)
 	{
-		const float X = BarLeft + Cell * (HealthCell + CellGap);
-		if (Cell < HealthLeft)
+		const float L = RowLeft + Cell * (ChevronWidth + ChevronGap);
+		const float R = L + ChevronWidth;
+		const bool bHave = Cell < HealthLeft;
+		const FHudFill Lit = !bHave ? SolidFill(FLinearColor(0.03f, 0.05f, 0.13f, 0.9f))
+			: bLastPoint ? MakeFill(FMath::Lerp(FireFill.Top, FLinearColor::White, Pulse * 0.5f), FireFill.Bottom) : IceFill;
+		// A chevron in two halves (each convex), sharing one gradient.
+		HudShard(High, {At(L, RowTop), At(R - Tip, RowTop), At(R, RowMiddle), At(L + Tip, RowMiddle)}, Lit, 2.5f,
+			bHave ? FVector2D(3.0, 4.0) : FVector2D::ZeroVector, Navy, RowTop, RowBottom);
+		HudShard(High, {At(L + Tip, RowMiddle), At(R, RowMiddle), At(R - Tip, RowBottom), At(L, RowBottom)}, Lit, 2.5f,
+			bHave ? FVector2D(3.0, 4.0) : FVector2D::ZeroVector, Navy, RowTop, RowBottom);
+		if (bHave)
 		{
-			if (bLastPoint)
-			{
-				Panel.Box(X - 3.0f, HealthY - 3.0f, HealthCell + 6.0f, HealthHeight + 6.0f, WithAlpha(Fire, 0.28f * Pulse));
-			}
-			PaintCell(X, HealthY, HealthCell, HealthHeight, WithAlpha(HealthColor, bLastPoint ? Pulse : 0.95f));
+			HudStroke(Top, {At(L + 4.0f, RowTop + 4.0f), At(R - Tip - 2.0f, RowTop + 4.0f)}, FLinearColor(1.0f, 1.0f, 1.0f, 0.8f), 2.0f);
 		}
-		else
+		if (Cell == LostHealthSegment && HitAge < 0.7f)
 		{
-			Panel.Box(X, HealthY, HealthCell, HealthHeight, FLinearColor(1.0f, 1.0f, 1.0f, 0.1f));
-		}
-		if (Cell == LostHealthSegment && HitAge < 0.5f)
-		{
-			const float T = HitAge / 0.5f;
-			const float Grow = 8.0f * EaseOut(T);
-			const FPainter Burst{Corner, OutDrawElements, BaseLayer + 1, 1.0f - T};
-			Burst.Box(X, HealthY, HealthCell, HealthHeight, WithAlpha(Fire, 0.85f));
-			Burst.Outline(X - Grow, HealthY - Grow, HealthCell + Grow * 2.0f, HealthHeight + Grow * 2.0f, Fire, 2.0f);
+			HudShatter(FPainter{Corner, OutDrawElements, BaseLayer + 8}, At((L + R) * 0.5f, RowMiddle), HitAge / 0.7f, 16.0f,
+				bLastPoint ? FireFill : IceFill, 7, static_cast<float>(Cell));
 		}
 	}
-	Panel.Text(FString::FromInt(HealthLeft), BarLeft + BarWidth + ValueWidth, HealthY + 1.0f, 22.0f, HealthColor,
-		ETextAlign::Right, TEXT("Black"), 2.0f, Ink);
 
-	// Stamina: thinner cells in the player's colour. The one recovering shows a bright leading edge, a full
-	// bar catches a sheen now and then, it all greys out while a dash is not possible, and a dash's cell flashes.
+	// Each row says what it is at its end: HP in ice after the chevrons, ST in fire before the stamina at the blade's tip.
+	HudText3D(Top, TEXT("HP"), RowLeft + HealthCells * (ChevronWidth + ChevronGap) + 4.0f, RowTop + 3.0f, 20.0f, IceFill.Top, ETextAlign::Left);
+
+	// Stamina: a thin blade under the chevrons that fills with fire, a notch per dash. A dash's notch flashes, a full
+	// blade glints now and then, and it all goes grey while a dash is not possible.
 	const int32 StaminaCells = FMath::Clamp(FMath::RoundToInt(MaxStaminaValue), 1, 10);
 	const bool bCanDash = StaminaValue >= 1.0f - KINDA_SMALL_NUMBER;
 	const bool bFull = DisplayedStamina >= MaxStaminaValue - 0.01f;
 	const float SpentAge = static_cast<float>(Clock - StaminaSpentAt);
-	constexpr float StaminaY = -72.0f;
-	constexpr float StaminaHeight = 18.0f;
-	const float StaminaCell = (BarWidth - CellGap * (StaminaCells - 1)) / StaminaCells;
-	Panel.Text(TEXT("ST"), Left, StaminaY - 1.0f, 16.0f, bCanDash ? Paper : Muted, ETextAlign::Left, TEXT("Bold"));
-	for (int32 Cell = 0; Cell < StaminaCells; ++Cell)
+	const float BladeRight = RowLeft + FMath::Max(HealthCells * (ChevronWidth + ChevronGap) - ChevronGap + 6.0f, 200.0f);
+	constexpr float BladeTop = -72.0f;
+	constexpr float BladeBottom = -61.0f;
+	const TArray<FVector2D> Blade{At(RowLeft - 4.0f, BladeTop), At(BladeRight - 16.0f, BladeTop), At(BladeRight, (BladeTop + BladeBottom) * 0.5f),
+		At(BladeRight - 16.0f, BladeBottom), At(RowLeft - 10.0f, BladeBottom)};
+	HudShard(Low, Blade, SolidFill(FLinearColor(0.03f, 0.05f, 0.13f, 0.9f)), 2.5f, FVector2D(3.0, 4.0));
+	const float Ratio = FMath::Clamp(DisplayedStamina / FMath::Max(MaxStaminaValue, 0.01f), 0.0f, 1.0f);
+	if (Ratio > 0.0f)
 	{
-		const float X = BarLeft + Cell * (StaminaCell + CellGap);
-		Panel.Box(X, StaminaY, StaminaCell, StaminaHeight, FLinearColor(1.0f, 1.0f, 1.0f, 0.1f));
-		const float Fill = FMath::Clamp(DisplayedStamina - Cell, 0.0f, 1.0f);
-		if (Fill > 0.0f)
+		const FHudFill Energy = bCanDash ? FireFill : MakeFill(FLinearColor(0.55f, 0.6f, 0.7f), FLinearColor(0.25f, 0.28f, 0.36f));
+		const float FillX = RowLeft - 10.0f + (BladeRight - RowLeft + 10.0f) * Ratio;
+		HudPoly(High, HudClip(Blade, FillX, false, true), Energy, 3);
+		if (Ratio < 1.0f && bCanDash)
 		{
-			const FLinearColor Color = !bCanDash ? Muted : Fill >= 1.0f ? Accent : WithAlpha(Accent, 0.5f);
-			PaintCell(X, StaminaY, StaminaCell * Fill, StaminaHeight, Color);
-			if (Fill < 1.0f && bCanDash)
-			{
-				Panel.Box(X + StaminaCell * Fill - 2.0f, StaminaY, 2.0f, StaminaHeight, WithAlpha(Paper, 0.85f));
-			}
+			HudStroke(Top, {At(FillX + 1.0f, BladeTop - 2.0f), At(FillX - 2.0f, BladeBottom + 2.0f)}, Paper, 2.5f);
 		}
-		if (Cell == SpentStaminaSegment && SpentAge < 0.35f)
-		{
-			const FPainter Flash{Corner, OutDrawElements, BaseLayer + 1, 1.0f - SpentAge / 0.35f};
-			Flash.Box(X, StaminaY, StaminaCell, StaminaHeight, Paper);
-		}
+	}
+	for (int32 Cell = 1; Cell < StaminaCells; ++Cell)
+	{
+		const float X = RowLeft - 10.0f + (BladeRight - RowLeft + 10.0f) * Cell / StaminaCells;
+		HudStroke(Top, {At(X + 2.0f, BladeTop), At(X - 1.0f, BladeBottom)}, Navy, 2.5f);
+	}
+	if (SpentStaminaSegment >= 0 && SpentAge < 0.35f)
+	{
+		const float L = RowLeft - 10.0f + (BladeRight - RowLeft + 10.0f) * SpentStaminaSegment / StaminaCells;
+		const float R = RowLeft - 10.0f + (BladeRight - RowLeft + 10.0f) * (SpentStaminaSegment + 1) / StaminaCells;
+		HudPoly(FPainter{Corner, OutDrawElements, BaseLayer + 7, 1.0f - SpentAge / 0.35f}, HudClip(HudClip(Blade, L, true, true), R, false, true),
+			SolidFill(Paper), 1);
 	}
 	if (bFull)
 	{
-		// A narrow light band crosses the full bar every few seconds, clipped to the bar.
-		constexpr float SheenWidth = 26.0f;
-		const float Travel = FMath::Fmod(static_cast<float>(Clock), 3.0f) / 0.8f;
+		const float Travel = FMath::Fmod(Time, 3.0f) / 0.7f;
 		if (Travel < 1.0f)
 		{
-			const float SheenLeft = BarLeft - SheenWidth + (BarWidth + SheenWidth) * Travel;
-			const float ClipLeft = FMath::Max(SheenLeft, BarLeft);
-			const float ClipRight = FMath::Min(SheenLeft + SheenWidth, BarLeft + BarWidth);
-			const FPainter Sheen{Corner, OutDrawElements, BaseLayer + 1};
-			Sheen.Box(ClipLeft, StaminaY, ClipRight - ClipLeft, StaminaHeight, FLinearColor(1.0f, 1.0f, 1.0f, 0.28f));
+			const float X = RowLeft + (BladeRight - RowLeft) * Travel;
+			HudStroke(Top, {At(X + 5.0f, BladeTop + 1.0f), At(X, BladeBottom - 1.0f)}, FLinearColor(1.0f, 1.0f, 0.9f, 0.9f), 6.0f);
 		}
 	}
-	Panel.Text(FString::FromInt(FMath::FloorToInt(StaminaValue + KINDA_SMALL_NUMBER)), BarLeft + BarWidth + ValueWidth,
-		StaminaY - 1.0f, 16.0f, bCanDash ? WithAlpha(Paper, 0.8f) : Muted, ETextAlign::Right, TEXT("Bold"));
+	HudText3D(Top, TEXT("ST"), BladeRight + 8.0f, BladeTop - 7.0f, 16.0f, bCanDash ? FireFill.Top : Muted, ETextAlign::Left);
+	HudText3D(Top, FString::FromInt(FMath::FloorToInt(StaminaValue + KINDA_SMALL_NUMBER)),
+		BladeRight + 14.0f + HudMeasure(TEXT("ST"), 16.0f, TEXT("BlackItalic")), BladeTop - 10.0f, 19.0f, bCanDash ? Paper : Muted, ETextAlign::Left);
 }
 
 void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeometry,
@@ -2055,21 +2103,32 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 		{
 			const FVector2D Screen = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this).GetLocalSize();
 			const float ScreenScale = FMath::Clamp(static_cast<float>(FMath::Min(Screen.X / 1600.0, Screen.Y / 900.0)), 0.42f, 1.4f);
-			RowTop = FMath::Max(16.0f, 56.0f * ScreenScale / S + 4.0f);
+			RowTop = FMath::Max(16.0f, 92.0f * ScreenScale / S + 4.0f);
 		}
 		const auto PaintRow = [&](const int32 Row, const int32 Rank, const FLinearColor& Accent, const FString& Label,
 			const int32 Points, const bool bOwn)
 		{
-			const float Y = RowTop + Row * 30.0f;
-			const FPainter Line{TopLeft, OutDrawElements, BaseLayer};
-			Line.Box(16.0f, Y, 236.0f, 26.0f, FLinearColor(0.0f, 0.0f, 0.0f, bOwn ? 0.5f : 0.3f));
-			Line.Box(16.0f, Y, 3.0f, 26.0f, Accent);
-			if (Rank > 0)
-			{
-				Line.Text(FString::FromInt(Rank), 34.0f, Y + 2.0f, 16.0f, RankColor(Rank), ETextAlign::Center, TEXT("Bold"));
-			}
-			Line.Text(Label, 50.0f, Y + 2.0f, 16.0f, bOwn ? Paper : WithAlpha(Paper, 0.82f), ETextAlign::Left, TEXT("Regular"));
-			Line.Text(FString::FromInt(Points), 244.0f, Y + 1.0f, 17.0f, Paper, ETextAlign::Right, TEXT("Bold"));
+			constexpr float RowLeft = 18.0f;
+			constexpr float RowWidth = 270.0f;
+			constexpr float RowHeight = 28.0f;
+			const float Y = RowTop + Row * 36.0f;
+			const auto At = [](const float X, const float YY) { return FVector2D(X, YY); };
+			const FPainter Strip{TopLeft, OutDrawElements, BaseLayer};
+			// A strip with a torn right end; this player's own glows ice blue.
+			HudShard(Strip, {At(RowLeft + 10.0f, Y), At(RowLeft + RowWidth, Y), At(RowLeft + RowWidth - 8.0f, Y + RowHeight * 0.5f),
+				At(RowLeft + RowWidth - 2.0f, Y + RowHeight), At(RowLeft, Y + RowHeight)}, bOwn ? MakeFill(FLinearColor(0.16f, 0.3f, 0.6f, 0.96f),
+				FLinearColor(0.04f, 0.08f, 0.22f, 0.96f)) : NightFill, 2.5f, FVector2D(4.0, 5.0));
+			const FPainter Front = HudAbove(Strip);
+			HudStroke(Front, {At(RowLeft + 44.0f, Y + RowHeight - 3.0f), At(RowLeft + RowWidth - 6.0f, Y + RowHeight - 3.0f)}, WithAlpha(Accent, 0.9f), 2.0f);
+			// The place in a medal shard of its own.
+			const FHudFill Medal = Rank == 1 ? FireFill : Rank == 2 ? SilverFill : Rank == 3 ? BronzeFill : MakeFill(FLinearColor(0.3f, 0.36f, 0.5f),
+				FLinearColor(0.12f, 0.15f, 0.24f));
+			HudShard(Front, {At(RowLeft - 2.0f, Y - 4.0f), At(RowLeft + 36.0f, Y - 4.0f), At(RowLeft + 30.0f, Y + RowHeight + 4.0f),
+				At(RowLeft - 8.0f, Y + RowHeight + 4.0f)}, Medal, 2.5f, FVector2D(3.0, 4.0));
+			const FPainter Words = HudAbove(Front);
+			HudText3D(Words, Rank > 0 ? FString::FromInt(Rank) : FString(TEXT("-")), RowLeft + 14.0f, Y - 2.0f, 20.0f, Paper, ETextAlign::Center);
+			Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, 15.0f, bOwn ? Paper : WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
+			HudText3D(Words, FString::FromInt(Points), RowLeft + RowWidth - 16.0f, Y - 3.0f, 22.0f, bOwn ? IceFill.Top : Paper, ETextAlign::Right);
 		};
 		int32 OwnRow = INDEX_NONE;
 		if (bTeams)
@@ -2150,41 +2209,54 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			}
 			const float ChangeAge = static_cast<float>(Clock - OwnRankChangedAt);
 			const FLinearColor Place = RankColor(OwnRank);
+			// Over the name: a tag in the medal's colours (gold, silver, bronze; night blue after that) with the place read
+			// as one word, the number large and 位 right after it, out of how many beside. It lands large when it changes.
 			const FGeometry BottomLeft = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
-			constexpr float BadgeLeft = 30.0f;
-			constexpr float BadgeTop = -206.0f;
-			constexpr float BadgeWidth = 188.0f;
-			constexpr float BadgeHeight = 68.0f;
-			const FPainter Plate{MakeSkewed(BottomLeft, BadgeLeft, BadgeTop, BadgeWidth, BadgeHeight, -0.22f), OutDrawElements, BaseLayer};
+			constexpr float BadgeLeft = 40.0f;
+			constexpr float BadgeTop = -236.0f;
+			constexpr float BadgeHeight = 58.0f;
+			const FString RankText = FString::FromInt(OwnRank);
+			const FString OfText = FString::Printf(TEXT("/%d"), Places);
+			const float NumberWidth = HudMeasure(RankText, 46.0f, TEXT("BlackItalic"));
+			const float PlaceWidth = HudMeasure(TEXT("位"), 26.0f, TEXT("Black"));
+			const float BadgeWidth = 26.0f + NumberWidth + 4.0f + PlaceWidth + 8.0f + HudMeasure(OfText, 18.0f, TEXT("BlackItalic")) + 22.0f;
+			const float Pop = 1.0f + 0.5f * FMath::Exp(-9.0f * ChangeAge);
+			const FHudFill Medal = OwnRank == 1 ? FireFill : OwnRank == 2 ? SilverFill : OwnRank == 3 ? BronzeFill : NightFill;
+			const FGeometry BadgeSpace = MakeSkewed(BottomLeft, BadgeLeft, BadgeTop, BadgeWidth, BadgeHeight, 0.0f, Pop);
+			HudShard(FPainter{BadgeSpace, OutDrawElements, BaseLayer}, {FVector2D(14.0, 0.0), FVector2D(BadgeWidth, 0.0),
+				FVector2D(BadgeWidth - 14.0f, BadgeHeight), FVector2D(0.0, BadgeHeight)}, Medal, 3.5f, FVector2D(5.0, 6.0));
 			if (OwnRank == 1)
 			{
-				const float Shine = 0.5f + 0.5f * FMath::Sin(static_cast<float>(FMath::Fmod(Clock, 3600.0)) * 3.0f);
-				Plate.Box(-4.0f, -4.0f, BadgeWidth + 8.0f, BadgeHeight + 8.0f, WithAlpha(Gold, 0.12f + 0.1f * Shine));
+				// A glint running across first place now and then.
+				const float Travel = static_cast<float>(FMath::Fmod(Clock, 2.6)) / 0.6f;
+				if (Travel < 1.0f)
+				{
+					const float X = -10.0f + (BadgeWidth + 20.0f) * Travel;
+					HudStroke(FPainter{BadgeSpace, OutDrawElements, BaseLayer + 3}, {FVector2D(X + 12.0f, 3.0), FVector2D(X, BadgeHeight - 3.0f)},
+						FLinearColor(1.0f, 1.0f, 1.0f, 0.55f), 8.0f);
+				}
 			}
-			Plate.Box(0.0f, 0.0f, BadgeWidth, BadgeHeight, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
-			Plate.Box(0.0f, 0.0f, 6.0f, BadgeHeight, Place);
-			Plate.Box(6.0f, BadgeHeight - 2.0f, BadgeWidth - 6.0f, 2.0f, WithAlpha(Place, 0.6f));
-			if (ChangeAge < 0.5f)
+			if (ChangeAge < 0.6f)
 			{
-				Plate.Box(0.0f, 0.0f, BadgeWidth, BadgeHeight, WithAlpha(Paper, 0.35f * (1.0f - ChangeAge / 0.5f)));
+				HudShatter(FPainter{BottomLeft, OutDrawElements, BaseLayer + 6}, FVector2D(BadgeLeft + BadgeWidth * 0.5f, BadgeTop + BadgeHeight * 0.5f),
+					ChangeAge / 0.6f, 20.0f, Medal, 8, 5.0f);
 			}
-			const FPainter Words{BottomLeft, OutDrawElements, BaseLayer + 1};
-			Words.Text(bTeams ? TEXT("チーム順位") : TEXT("順位"), BadgeLeft + 18.0f, BadgeTop + 4.0f, 11.0f,
-				WithAlpha(Paper, 0.7f), ETextAlign::Left, TEXT("Bold"));
-			// The number lands a little large whenever the place changes.
-			const float Pop = 1.0f + 0.6f * FMath::Exp(-9.0f * ChangeAge);
-			const FPainter Number{MakeSkewed(BottomLeft, BadgeLeft + 16.0f, BadgeTop + 8.0f, 80.0f, 60.0f, 0.0f, Pop),
-				OutDrawElements, BaseLayer + 2};
-			Number.Text(FString::FromInt(OwnRank), 80.0f, -4.0f, 52.0f, Place, ETextAlign::Right, TEXT("Black"), 3.0f, Ink);
-			Words.Text(TEXT("位"), BadgeLeft + 100.0f, BadgeTop + 28.0f, 24.0f, Place, ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
-			Words.Text(FString::Printf(TEXT("/ %d"), Places), BadgeLeft + 142.0f, BadgeTop + 36.0f, 17.0f, Muted,
-				ETextAlign::Left, TEXT("Bold"));
+			const FPainter Words{BadgeSpace, OutDrawElements, BaseLayer + 4};
+			HudText3D(Words, RankText, 22.0f, -4.0f, 46.0f, Paper, ETextAlign::Left);
+			HudText3D(Words, TEXT("位"), 26.0f + NumberWidth, 14.0f, 26.0f, Paper, ETextAlign::Left, TEXT("Black"));
+			HudText3D(Words, OfText, 34.0f + NumberWidth + PlaceWidth, 24.0f, 17.0f, Paper, ETextAlign::Left);
+			if (bTeams)
+			{
+				HudText3D(FPainter{BottomLeft, OutDrawElements, BaseLayer + 4}, TEXT("チーム"), BadgeLeft + 10.0f, BadgeTop - 22.0f, 14.0f,
+					IceFill.Top, ETextAlign::Left, TEXT("Black"));
+			}
+
 			if (OwnRankDelta != 0 && ChangeAge < 1.6f)
 			{
 				const bool bUp = OwnRankDelta > 0;
 				const FPainter Arrow{BottomLeft, OutDrawElements, BaseLayer + 2, 1.0f - FMath::Clamp((ChangeAge - 1.1f) / 0.5f, 0.0f, 1.0f)};
-				Arrow.Text(bUp ? TEXT("▲") : TEXT("▼"), BadgeLeft + BadgeWidth + 6.0f,
-					BadgeTop + 18.0f + (bUp ? -1.0f : 1.0f) * 8.0f * EaseOut(ChangeAge / 0.4f), 22.0f,
+				Arrow.Text(bUp ? TEXT("▲") : TEXT("▼"), BadgeLeft + BadgeWidth + 10.0f,
+					BadgeTop + 12.0f + (bUp ? -1.0f : 1.0f) * 8.0f * EaseOut(ChangeAge / 0.4f), 22.0f,
 					bUp ? FLinearColor(0.2f, 1.0f, 0.45f) : Fire, ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
 			}
 		}
@@ -2193,9 +2265,8 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 		const float GainAge = static_cast<float>(Clock - PointsGainedAt);
 		if (OwnRow != INDEX_NONE && GainAge < 0.9f && PointsGained > 0)
 		{
-			const FPainter Gain{TopLeft, OutDrawElements, BaseLayer + 1, 1.0f - GainAge / 0.9f};
-			Gain.Text(FString::Printf(TEXT("+%d"), PointsGained), 262.0f,
-				RowTop + 1.0f + OwnRow * 30.0f - 10.0f * EaseOut(GainAge / 0.9f), 17.0f, Gold, ETextAlign::Left, TEXT("Bold"), 2.0f, Ink);
+			HudText3D(FPainter{TopLeft, OutDrawElements, BaseLayer + 7, 1.0f - GainAge / 0.9f}, FString::Printf(TEXT("+%d"), PointsGained), 300.0f,
+				RowTop + OwnRow * 36.0f - 12.0f * EaseOut(GainAge / 0.9f), 20.0f, FireFill.Top, ETextAlign::Left);
 		}
 		// GO!, the final countdown, the time and the results are drawn once for the whole screen by
 		// UChaosImpactMatchAnnouncerWidget.

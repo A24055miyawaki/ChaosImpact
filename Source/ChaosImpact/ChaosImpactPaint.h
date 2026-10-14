@@ -168,6 +168,302 @@ namespace ChaosImpactPaint
 		return *Brush;
 	}
 
+	// ---- The battle HUD's look, after the title logo: fire and ice, pieces with broken, shard-like edges, a thick navy
+	// outline and a dark blue extrusion behind each one, numbers in heavy italics standing out the same way.
+	// Shapes take up three layers (extrusion, outline, fill): draw what goes on them three layers up.
+
+	inline const FLinearColor Navy(0.016f, 0.024f, 0.075f, 1.0f);
+	inline const FLinearColor Extrude(0.05f, 0.09f, 0.26f, 1.0f);
+
+	/** A gradient of three colours, top to bottom. */
+	struct FHudFill
+	{
+		FLinearColor Top;
+		FLinearColor Middle;
+		FLinearColor Bottom;
+
+		FLinearColor At(const float T) const
+		{
+			const float C = FMath::Clamp(T, 0.0f, 1.0f);
+			return C < 0.5f ? FMath::Lerp(Top, Middle, C * 2.0f) : FMath::Lerp(Middle, Bottom, C * 2.0f - 1.0f);
+		}
+	};
+	inline const FHudFill FireFill{FLinearColor(1.0f, 0.95f, 0.38f, 1.0f), FLinearColor(1.0f, 0.5f, 0.06f, 1.0f), FLinearColor(0.85f, 0.12f, 0.03f, 1.0f)};
+	inline const FHudFill IceFill{FLinearColor(0.92f, 0.99f, 1.0f, 1.0f), FLinearColor(0.3f, 0.72f, 1.0f, 1.0f), FLinearColor(0.05f, 0.22f, 0.78f, 1.0f)};
+	inline const FHudFill NightFill{FLinearColor(0.11f, 0.16f, 0.34f, 0.95f), FLinearColor(0.05f, 0.08f, 0.2f, 0.95f), FLinearColor(0.02f, 0.03f, 0.09f, 0.95f)};
+	inline const FHudFill SilverFill{FLinearColor(1.0f, 1.0f, 1.0f, 1.0f), FLinearColor(0.72f, 0.8f, 0.92f, 1.0f), FLinearColor(0.4f, 0.48f, 0.62f, 1.0f)};
+	inline const FHudFill BronzeFill{FLinearColor(1.0f, 0.8f, 0.5f, 1.0f), FLinearColor(0.82f, 0.45f, 0.18f, 1.0f), FLinearColor(0.48f, 0.22f, 0.08f, 1.0f)};
+	inline FHudFill SolidFill(const FLinearColor& Color) { return {Color, Color, Color}; }
+	inline FHudFill MakeFill(const FLinearColor& Top, const FLinearColor& Bottom) { return {Top, FMath::Lerp(Top, Bottom, 0.5f), Bottom}; }
+
+	/** A painter for what goes on top of a shape drawn with P (Up layers above it). */
+	inline FPainter HudAbove(const FPainter& P, const int32 Up = 3) { return FPainter{P.Geometry, P.Elements, P.Layer + Up, P.Alpha}; }
+
+	/** Filled triangles: points in the painter's space, a colour per point. */
+	inline void HudTriangles(const FPainter& P, const TArray<FVector2D>& Points, const TArray<FLinearColor>& Colors,
+		const TArray<SlateIndex>& Indexes)
+	{
+		if (Points.Num() < 3 || Indexes.Num() < 3 || P.Alpha <= 0.001f || !FSlateApplication::IsInitialized())
+		{
+			return;
+		}
+		const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*FCoreStyle::Get().GetBrush("WhiteBrush"));
+		const FSlateRenderTransform& Transform = P.Geometry.GetAccumulatedRenderTransform();
+		TArray<FSlateVertex> Verts;
+		Verts.Reserve(Points.Num());
+		for (int32 Index = 0; Index < Points.Num(); ++Index)
+		{
+			Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, FVector2f(Points[Index]), FVector2f(0.5f, 0.5f),
+				WithAlpha(Colors[Index], P.Alpha).ToFColor(true)));
+		}
+		FSlateDrawElement::MakeCustomVerts(P.Elements, P.Layer, Handle, Verts, Indexes, nullptr, 0, 0);
+	}
+
+	/** The part of a convex polygon between two heights (Y0 above Y1), or left of X when bVertical. */
+	inline TArray<FVector2D> HudClip(const TArray<FVector2D>& Poly, const double Limit, const bool bKeepGreater, const bool bVertical = false)
+	{
+		TArray<FVector2D> Out;
+		for (int32 Index = 0; Index < Poly.Num(); ++Index)
+		{
+			const FVector2D& A = Poly[Index];
+			const FVector2D& B = Poly[(Index + 1) % Poly.Num()];
+			const double AV = bVertical ? A.X : A.Y;
+			const double BV = bVertical ? B.X : B.Y;
+			const bool bAIn = bKeepGreater ? AV >= Limit : AV <= Limit;
+			const bool bBIn = bKeepGreater ? BV >= Limit : BV <= Limit;
+			if (bAIn)
+			{
+				Out.Add(A);
+			}
+			if (bAIn != bBIn)
+			{
+				Out.Add(A + (B - A) * ((Limit - AV) / (BV - AV)));
+			}
+		}
+		return Out;
+	}
+
+	/**
+	 * A convex polygon filled with a top-to-bottom gradient, over its own height or (FromY < ToY) over that range, so
+	 * the pieces of one shape share one gradient.
+	 */
+	inline void HudPoly(const FPainter& P, const TArray<FVector2D>& Poly, const FHudFill& Fill, const int32 Bands = 6,
+		const double FromY = 0.0, const double ToY = 0.0)
+	{
+		if (Poly.Num() < 3)
+		{
+			return;
+		}
+		double Top = Poly[0].Y;
+		double Bottom = Poly[0].Y;
+		for (const FVector2D& Point : Poly)
+		{
+			Top = FMath::Min(Top, Point.Y);
+			Bottom = FMath::Max(Bottom, Point.Y);
+		}
+		const double GradientTop = FromY < ToY ? FromY : Top;
+		const double GradientHeight = FromY < ToY ? ToY - FromY : FMath::Max(Bottom - Top, 0.001);
+		const double Height = FMath::Max(Bottom - Top, 0.001);
+		TArray<FVector2D> Points;
+		TArray<FLinearColor> Colors;
+		TArray<SlateIndex> Indexes;
+		for (int32 Band = 0; Band < Bands; ++Band)
+		{
+			const TArray<FVector2D> Piece = HudClip(HudClip(Poly, Top + Height * Band / Bands, true), Top + Height * (Band + 1) / Bands, false);
+			if (Piece.Num() < 3)
+			{
+				continue;
+			}
+			const SlateIndex Base = static_cast<SlateIndex>(Points.Num());
+			for (const FVector2D& Point : Piece)
+			{
+				Points.Add(Point);
+				Colors.Add(Fill.At(static_cast<float>((Point.Y - GradientTop) / GradientHeight)));
+			}
+			for (int32 Index = 1; Index + 1 < Piece.Num(); ++Index)
+			{
+				Indexes.Add(Base);
+				Indexes.Add(Base + Index);
+				Indexes.Add(Base + Index + 1);
+			}
+		}
+		HudTriangles(P, Points, Colors, Indexes);
+	}
+
+	/** A convex polygon grown outward by Amount all round (for its outline). */
+	inline TArray<FVector2D> HudInflate(const TArray<FVector2D>& Poly, const float Amount)
+	{
+		const int32 Count = Poly.Num();
+		if (Count < 3)
+		{
+			return Poly;
+		}
+		double Area = 0.0;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const FVector2D& A = Poly[Index];
+			const FVector2D& B = Poly[(Index + 1) % Count];
+			Area += A.X * B.Y - B.X * A.Y;
+		}
+		const double Side = Area > 0.0 ? 1.0 : -1.0;
+		TArray<FVector2D> Out;
+		Out.Reserve(Count);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const FVector2D& Previous = Poly[(Index + Count - 1) % Count];
+			const FVector2D& Current = Poly[Index];
+			const FVector2D& Next = Poly[(Index + 1) % Count];
+			const FVector2D In = (Current - Previous).GetSafeNormal();
+			const FVector2D Out2 = (Next - Current).GetSafeNormal();
+			const FVector2D NormalA = FVector2D(In.Y, -In.X) * Side;
+			const FVector2D NormalB = FVector2D(Out2.Y, -Out2.X) * Side;
+			const FVector2D Between = (NormalA + NormalB).GetSafeNormal();
+			const double Cos = FMath::Max(FVector2D::DotProduct(Between, NormalA), 0.35);
+			Out.Add(Current + Between * Amount / Cos);
+		}
+		return Out;
+	}
+
+	/** Points of a polygon moved by Offset. */
+	inline TArray<FVector2D> HudMove(TArray<FVector2D> Poly, const FVector2D& Offset)
+	{
+		for (FVector2D& Point : Poly)
+		{
+			Point += Offset;
+		}
+		return Poly;
+	}
+
+	/** A shard: its dark extrusion behind (offset by Drop), a thick navy outline, then its fill (three layers). */
+	inline void HudShard(const FPainter& P, const TArray<FVector2D>& Poly, const FHudFill& Fill, const float Outline = 3.0f,
+		const FVector2D& Drop = FVector2D(5.0, 6.0), const FLinearColor& Edge = Navy, const double FromY = 0.0, const double ToY = 0.0)
+	{
+		const TArray<FVector2D> Outer = HudInflate(Poly, Outline);
+		if (!Drop.IsNearlyZero())
+		{
+			HudPoly(P, HudMove(Outer, Drop), SolidFill(WithAlpha(Extrude, Fill.Bottom.A)), 1);
+		}
+		HudPoly(FPainter{P.Geometry, P.Elements, P.Layer + 1, P.Alpha}, Outer, SolidFill(WithAlpha(Edge, Fill.Bottom.A)), 1);
+		HudPoly(FPainter{P.Geometry, P.Elements, P.Layer + 2, P.Alpha}, Poly, Fill, 6, FromY, ToY);
+	}
+
+	/** A line through several points (not closed). */
+	inline void HudStroke(const FPainter& P, const TArray<FVector2D>& Points, const FLinearColor& Color, const float Width)
+	{
+		if (Points.Num() >= 2 && P.Alpha * Color.A > 0.001f)
+		{
+			FSlateDrawElement::MakeLines(P.Elements, P.Layer, P.Geometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+				WithAlpha(Color, P.Alpha), true, Width);
+		}
+	}
+
+	/**
+	 * The ring of points of a jagged burst round Center: Spikes points out to Outer (each a little different) with the
+	 * dips between at Inner, stretched by Stretch, turned by Spin degrees.
+	 */
+	inline TArray<FVector2D> HudBurstRing(const FVector2D& Center, const float Inner, const float Outer, const int32 Spikes,
+		const float Spin = 0.0f, const FVector2D& Stretch = FVector2D(1.0, 1.0), const float Seed = 0.0f)
+	{
+		TArray<FVector2D> Ring;
+		for (int32 Index = 0; Index < Spikes * 2; ++Index)
+		{
+			const float Angle = FMath::DegreesToRadians(Spin + 180.0f * Index / Spikes);
+			const float Jitter = FMath::Frac(FMath::Sin((Index + Seed * 7.0f) * 12.9898f) * 43758.5453f);
+			const float Radius = Index % 2 == 0 ? Outer * (0.78f + 0.3f * Jitter) : Inner * (0.92f + 0.12f * Jitter);
+			Ring.Add(Center + FVector2D(FMath::Cos(Angle) * Stretch.X, FMath::Sin(Angle) * Stretch.Y) * Radius);
+		}
+		return Ring;
+	}
+
+	/** A star-shaped ring filled from Center (its colours top to bottom). */
+	inline void HudFan(const FPainter& P, const FVector2D& Center, const TArray<FVector2D>& Ring, const FHudFill& Fill)
+	{
+		if (Ring.Num() < 3)
+		{
+			return;
+		}
+		double Top = Center.Y;
+		double Bottom = Center.Y;
+		for (const FVector2D& Point : Ring)
+		{
+			Top = FMath::Min(Top, Point.Y);
+			Bottom = FMath::Max(Bottom, Point.Y);
+		}
+		const double Height = FMath::Max(Bottom - Top, 0.001);
+		TArray<FVector2D> Points{Center};
+		TArray<FLinearColor> Colors{Fill.At(static_cast<float>((Center.Y - Top) / Height))};
+		TArray<SlateIndex> Indexes;
+		for (const FVector2D& Point : Ring)
+		{
+			Points.Add(Point);
+			Colors.Add(Fill.At(static_cast<float>((Point.Y - Top) / Height)));
+		}
+		for (int32 Index = 0; Index < Ring.Num(); ++Index)
+		{
+			Indexes.Add(0);
+			Indexes.Add(static_cast<SlateIndex>(1 + Index));
+			Indexes.Add(static_cast<SlateIndex>(1 + (Index + 1) % Ring.Num()));
+		}
+		HudTriangles(P, Points, Colors, Indexes);
+	}
+
+	/** A jagged burst with its extrusion and outline (three layers). */
+	inline void HudBurst(const FPainter& P, const FVector2D& Center, const float Inner, const float Outer, const int32 Spikes,
+		const FHudFill& Fill, const float Spin = 0.0f, const FVector2D& Stretch = FVector2D(1.0, 1.0), const float Outline = 4.0f,
+		const FVector2D& Drop = FVector2D(6.0, 7.0), const float Seed = 0.0f)
+	{
+		const TArray<FVector2D> Outer2 = HudBurstRing(Center, Inner + Outline, Outer + Outline * 1.6f, Spikes, Spin, Stretch, Seed);
+		if (!Drop.IsNearlyZero())
+		{
+			HudFan(P, Center + Drop, HudMove(Outer2, Drop), SolidFill(Extrude));
+		}
+		HudFan(FPainter{P.Geometry, P.Elements, P.Layer + 1, P.Alpha}, Center, Outer2, SolidFill(Navy));
+		HudFan(FPainter{P.Geometry, P.Elements, P.Layer + 2, P.Alpha}, Center, HudBurstRing(Center, Inner, Outer, Spikes, Spin, Stretch, Seed), Fill);
+	}
+
+	/** Text standing out like the logo's letters: a thick navy outline and a dark blue copy behind it (two layers). */
+	inline void HudText3D(const FPainter& P, const FString& Value, const float X, const float Y, const float Size, const FLinearColor& Color,
+		const ETextAlign Align = ETextAlign::Left, const FName Face = TEXT("BlackItalic"), const float Depth = 0.0f)
+	{
+		const float Outline = FMath::Max(2.0f, Size * 0.07f);
+		const float Push = Depth > 0.0f ? Depth : FMath::Max(2.0f, Size * 0.06f);
+		P.Text(Value, X + Push * 0.8f, Y + Push, Size, WithAlpha(Extrude, Color.A), Align, Face, Outline, WithAlpha(Extrude, Color.A));
+		FPainter{P.Geometry, P.Elements, P.Layer + 1, P.Alpha}.Text(Value, X, Y, Size, Color, Align, Face, Outline, Navy);
+	}
+
+	/** How wide a piece of text is drawn. */
+	inline float HudMeasure(const FString& Value, const float Size, const FName Face = TEXT("Black"))
+	{
+		if (Value.IsEmpty() || !FSlateApplication::IsInitialized())
+		{
+			return 0.0f;
+		}
+		return static_cast<float>(FSlateApplication::Get().GetRenderer()->GetFontMeasureService()
+			->Measure(Value, FCoreStyle::GetDefaultFontStyle(Face, Size)).X);
+	}
+
+	/** A few small pieces flying out from Center as T goes 0 to 1 (a shape breaking). */
+	inline void HudShatter(const FPainter& P, const FVector2D& Center, const float T, const float Size, const FHudFill& Fill,
+		const int32 Pieces = 6, const float Seed = 0.0f)
+	{
+		const float Out = 1.0f - FMath::Pow(1.0f - FMath::Clamp(T, 0.0f, 1.0f), 3.0f);
+		const FPainter Fade{P.Geometry, P.Elements, P.Layer, P.Alpha * (1.0f - FMath::Clamp(T, 0.0f, 1.0f))};
+		for (int32 Piece = 0; Piece < Pieces; ++Piece)
+		{
+			const float R = FMath::Frac(FMath::Sin((Piece + 1) * 78.233f + Seed * 3.1f) * 43758.5453f);
+			const float Angle = FMath::DegreesToRadians(360.0f * Piece / Pieces + 40.0f * R);
+			const FVector2D Way(FMath::Cos(Angle), FMath::Sin(Angle));
+			const FVector2D At = Center + Way * Size * (0.4f + 1.6f * Out) + FVector2D(0.0, Size * 1.2f * Out * Out);
+			const float Spin = Angle + T * (6.0f + 6.0f * R);
+			const float L = Size * (0.35f + 0.3f * R);
+			const TArray<FVector2D> Tri{At + FVector2D(FMath::Cos(Spin), FMath::Sin(Spin)) * L,
+				At + FVector2D(FMath::Cos(Spin + 2.3f), FMath::Sin(Spin + 2.3f)) * L * 0.7f,
+				At + FVector2D(FMath::Cos(Spin + 4.0f), FMath::Sin(Spin + 4.0f)) * L * 0.8f};
+			HudPoly(Fade, HudInflate(Tri, 2.0f), SolidFill(Navy), 1);
+			HudPoly(FPainter{P.Geometry, P.Elements, P.Layer + 1, Fade.Alpha}, Tri, Fill, 2);
+		}
+	}
+
 	/** A filled box with rounded corners. */
 	inline void RoundedBox(const FPainter& P, const float X, const float Y, const float W, const float H, const float Radius,
 		const FLinearColor& Color)

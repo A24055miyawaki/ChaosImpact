@@ -505,7 +505,13 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 	PrepareDrivePose();
 	if (bSkinned)
 	{
+		if (bBallPose)
+		{
+			// The folded component-space body locations must never feed back into the next frame's retarget.
+			for (int32 I = 0; I < Skin->GetNumBones(); ++I) { Skin->ResetBoneTransformByName(Skin->GetBoneName(I)); }
+		}
 		UpdateSkinnedPose();
+		if (bBallPose) { ApplyBallPose(); }
 		if (bPushNow)
 		{
 			Skin->RefreshBoneTransforms();
@@ -600,6 +606,7 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 	};
 	PoseLeg(ChainLegL, LegL);
 	PoseLeg(ChainLegR, LegR);
+	if (bBallPose) { ApplyBallPose(); }
 	if (bPushNow)
 	{
 		for (UPoseableMeshComponent* Limb : {ArmL.Get(), ArmR.Get(), LegL.Get(), LegR.Get()})
@@ -609,6 +616,58 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
 	}
 
 	PlaceHeldBalls();
+}
+
+void UChaosImpactPuppetComponent::SetBallPose(const bool bActive)
+{
+	if (bBallPose == bActive) { return; }
+	bBallPose = bActive;
+	if (Skin)
+	{
+		for (int32 I = 0; I < Skin->GetNumBones(); ++I) { Skin->ResetBoneTransformByName(Skin->GetBoneName(I)); }
+	}
+}
+
+void UChaosImpactPuppetComponent::ApplyBallPose()
+{
+	// Model space faces +Y. Hands hug the shins; feet tuck toward the belly, elbows/knees out.
+	// Solve the actual model's chains instead of forcing the mannequin's long proportions onto it.
+	const FQuat BodyCurl(FVector::ForwardVector,FMath::DegreesToRadians(-38.0f));
+	if (bSkinned && Skin && DrivenBody.Num()>1)
+	{
+		const FVector Hips = Skin->GetBoneLocationByName(DrivenBody[0].Name,EBoneSpaces::ComponentSpace);
+		TArray<FTransform> Before;
+		for (const auto& Bone : DrivenBody) { Before.Add(Skin->GetBoneTransformByName(Bone.Name,EBoneSpaces::ComponentSpace)); }
+		for (int32 I = 1; I < DrivenBody.Num(); ++I)
+		{
+			FTransform Fold = Before[I];
+			Fold.SetLocation(Hips+BodyCurl.RotateVector(Fold.GetLocation()-Hips));
+			Fold.SetRotation(BodyCurl*Fold.GetRotation());
+			Skin->SetBoneTransformByName(DrivenBody[I].Name,Fold,EBoneSpaces::ComponentSpace);
+		}
+	}
+	else if (Body)
+	{
+		Body->SetRelativeLocationAndRotation(BodyPivot-BodyCurl.RotateVector(BodyPivot),BodyCurl);
+	}
+	const auto Curl = [&](FLimbChain& Chain, UPoseableMeshComponent* Mesh, const bool bArm, const float Side)
+	{
+		if (!Mesh || Mesh->GetBoneIndex(Chain.Joints[0]) == INDEX_NONE) { return; }
+		const FVector Root = Mesh->GetBoneTransformByName(Chain.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
+		const float Reach = Chain.UpperLength+Chain.LowerLength;
+		const FVector Target = Root + (bArm ? FVector(-Side*.15f, .28f, -.22f) : FVector(-Side*.03f, .05f, -.1f))*Reach;
+		const FVector Pole = (bArm ? FVector(Side*.7f,.5f,0) : FVector(Side*.1f,.8f,1.0f)).GetSafeNormal();
+		FVector Mid, End;
+		SolveTwoBone(Root, Target, Pole, Chain.UpperLength, Chain.LowerLength, Mid, End);
+		PoseChain(Chain, Mesh, FQuat::Identity, Root, Mid, End, false);
+	};
+	Curl(ChainArmL, bSkinned ? Skin.Get() : ArmL.Get(), true, 1);
+	Curl(ChainArmR, bSkinned ? Skin.Get() : ArmR.Get(), true, -1);
+	if (!bSkinned || bSkinnedLegChains)
+	{
+		Curl(ChainLegL, bSkinned ? Skin.Get() : LegL.Get(), false, 1);
+		Curl(ChainLegR, bSkinned ? Skin.Get() : LegR.Get(), false, -1);
+	}
 }
 
 void UChaosImpactPuppetComponent::UpdateSkinnedPose()

@@ -1,0 +1,54 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/ActorComponent.h"
+#include "ChaosImpactBallFormComponent.generated.h"
+
+class AChaosImpactBuddyBall;
+class AChaosImpactCharacter;
+
+/** Removable, local-training-only experiment. The original pawn keeps its controller and camera. */
+UCLASS(ClassGroup=(ChaosImpact))
+class UChaosImpactBallFormComponent : public UActorComponent
+{
+	GENERATED_BODY()
+public:
+	UChaosImpactBallFormComponent();
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Ball Form")
+	bool bEnabled = true;
+	UPROPERTY(EditAnywhere, Category="Chaos Impact|Ball Form", meta=(ClampMin="0.8"))
+	float HoldSeconds = 1.3f;
+	bool IsAvailable() const;
+	bool IsInBallForm() const { return FormBall.IsValid(); }
+	AChaosImpactBuddyBall* GetFormBall() const { return FormBall.Get(); }
+	AChaosImpactBuddyBall* GetHeldBall(int32 Slot) const;
+	bool CanCollect(const AChaosImpactCharacter* Passenger) const;
+	bool Toggle();
+	void Restore(bool bRelocate = true);
+	/** Returns true while the body must not run ordinary character input. */
+	bool HandleInput();
+	void ResetGesture();
+	void Push(AChaosImpactBuddyBall* Ball, int32 Slot);
+	void Pop();
+	void SwapSlots();
+	void Clear();
+	void Remove(AChaosImpactBuddyBall* Ball);
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction) override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+private:
+	AChaosImpactCharacter* Character() const;
+	TWeakObjectPtr<AChaosImpactBuddyBall> FormBall;
+	TWeakObjectPtr<AChaosImpactBuddyBall> Slots[2];
+	FVector SafeLocation = FVector::ZeroVector;
+	FTransform SavedPuppetTransform;
+	bool bSavedPuppet = false;
+	uint8 SavedCollision = 0;
+	uint8 SavedMovement = 1;
+	uint8 SavedCustomMovement = 0;
+	bool bRestoring = false;
+	bool bHeld = false;
+	bool bTriggered = false;
+	bool bWaitForManageRelease = false;
+	double PressedAt = 0.0;
+	double NextTransformAt = 0.0;
+};

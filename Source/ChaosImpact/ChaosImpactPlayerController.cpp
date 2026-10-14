@@ -108,6 +108,12 @@ void AChaosImpactPlayerController::BeginPlay()
 	}
 	if (bTrainingMode)
 	{
+		bTrainingTeams = GetWorld()->URL.HasOption(TEXT("CITrainingTeams=1"));
+		for (int32 I = 0; I < 4; ++I)
+		{
+			TrainingHumanTeams[I] = FMath::Clamp(FCString::Atoi(GetWorld()->URL.GetOption(*FString::Printf(TEXT("CIHumanTeam%d="), I), TEXT("0"))), 0, 3);
+			TrainingCPUTeams[I] = FMath::Clamp(FCString::Atoi(GetWorld()->URL.GetOption(*FString::Printf(TEXT("CICPUTeam%d="), I), TEXT("1"))), 0, 3);
+		}
 		RequestedLocalPlayerCount = FMath::Clamp(FCString::Atoi(
 			GetWorld()->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))), 1, 4);
 		bTrainingTargetsEnabled = !GetWorld()->URL.HasOption(TEXT("CITargets=0"));
@@ -1365,6 +1371,46 @@ void AChaosImpactPlayerController::CycleTrainingPlayerCount()
 	}
 }
 
+int32 AChaosImpactPlayerController::GetTrainingTeam(const bool bCPU, const int32 Index) const
+{
+	return (bCPU ? TrainingCPUTeams : TrainingHumanTeams)[FMath::Clamp(Index, 0, 3)];
+}
+
+void AChaosImpactPlayerController::ToggleTrainingTeams()
+{
+	if (!ShowsTrainingPauseEntries() || !IsPrimaryLocalPlayerController()) { return; }
+	bTrainingTeams = !bTrainingTeams;
+	ApplyTrainingTeams();
+}
+
+void AChaosImpactPlayerController::CycleTrainingTeam(const bool bCPU, const int32 Index, const int32 Direction)
+{
+	if (!ShowsTrainingPauseEntries() || !IsPrimaryLocalPlayerController() || Index < 0 || Index > 3) { return; }
+	int32& Team = (bCPU ? TrainingCPUTeams : TrainingHumanTeams)[Index];
+	Team = (Team + (Direction >= 0 ? 1 : 3)) % 4;
+	ApplyTrainingTeams();
+}
+
+void AChaosImpactPlayerController::ApplyTrainingTeams()
+{
+	if (!GetWorld() || !ShowsTrainingPauseEntries() || !IsPrimaryLocalPlayerController()) { return; }
+	const UGameInstance* GI = GetGameInstance();
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		int32 Team = INDEX_NONE;
+		if (It->GetCPUNumber() > 0 && It->GetCPUNumber() <= 4)
+		{ Team = bTrainingTeams ? TrainingCPUTeams[It->GetCPUNumber()-1] : INDEX_NONE; }
+		else if (const auto* LocalPC = Cast<APlayerController>(It->GetController()); LocalPC && GI && LocalPC->GetLocalPlayer())
+		{
+			const int32 Slot = GI->GetLocalPlayers().IndexOfByKey(LocalPC->GetLocalPlayer());
+			if (Slot < 0 || Slot > 3) { continue; }
+			Team = bTrainingTeams ? TrainingHumanTeams[Slot] : INDEX_NONE;
+		}
+		else { continue; } // Placed solo enemies keep the editor's own team settings.
+		It->SoloTeam = Team;
+	}
+}
+
 void AChaosImpactPlayerController::ToggleTrainingTargets()
 {
 	if (bTrainingMode)
@@ -1953,6 +1999,12 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode,
 	const bool bOpenWithStraight = bKeepFlightMode
 		&& BallFlightMode == EChaosImpactBallFlightMode::Straight;
 	FString Options = FString::Printf(TEXT("CITraining=1?%s"), *BuildLocalSetupOptions());
+	if (bTrainingTeams && PlayFlow != EChaosImpactPlayFlow::VersusLocal)
+	{
+		Options += TEXT("?CITrainingTeams=1");
+		for (int32 I = 0; I < 4; ++I)
+		{ Options += FString::Printf(TEXT("?CIHumanTeam%d=%d?CICPUTeam%d=%d"), I, TrainingHumanTeams[I], I, TrainingCPUTeams[I]); }
+	}
 	if (!bTrainingTargetsEnabled)
 	{
 		Options += TEXT("?CITargets=0");
@@ -2835,6 +2887,7 @@ void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 I
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+	if (bTrainingTeams) { ApplyTrainingTeams(); }
 	SendLoadout();
 	UpdateMatchScreens();
 	UpdateOnlineVersusCard(DeltaTime);
@@ -3077,9 +3130,10 @@ void AChaosImpactPlayerController::OpenSoloLevel(const int32 StageIndex)
 {
 	CurrentSoloStage = FMath::Max(1, StageIndex);
 
-	// ステージに応じたマップパッケージ指定。ステージ1はソロ部屋のレベル（入ると扉が閉まって雑魚→ボスの部屋）。
-	// それ以外はまだ専用のマップを作る前提の名前（例: /Game/Solo/Lvl_Solo_Stage2）。
-	const FString MapPackage = CurrentSoloStage == 1 ? FString(TEXT("/Game/ChaosImpact/solo/Lvl_SoloRoomTest"))
+	// ステージに応じたマップパッケージ指定。ステージ1は夜のネオン街、ステージ2は夕焼けの空中遺跡（どちらも
+	// 入ると扉が閉まって雑魚→ボスの部屋がある別々のレベル）。それ以降はまだ専用のマップを作る前提の名前。
+	const FString MapPackage = CurrentSoloStage <= 2
+		? FString::Printf(TEXT("/Game/ChaosImpact/solo/Lvl_SoloStage%d"), CurrentSoloStage)
 		: FString::Printf(TEXT("/Game/Solo/Lvl_Solo_Stage%d"), CurrentSoloStage);
 
 	bTravelPending = true;

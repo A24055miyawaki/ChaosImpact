@@ -96,6 +96,7 @@ private:
 	void BuildEntries();
 	void CloseTrainingBallPicker();
 	bool bTrainingBallPickerOpen = false;
+	bool bTrainingTeamsOpen = false;
 	int32 HitTestEntry(const FGeometry& Geometry, const FVector2D& ScreenPosition) const;
 
 	UFUNCTION()

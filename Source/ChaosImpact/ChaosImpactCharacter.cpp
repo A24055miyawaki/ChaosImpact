@@ -1,6 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactBallFormComponent.h"
+#include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactShoulderCameraComponent.h"
 #include "ChaosImpactClickNavigation.h"
 #include "Framework/Application/SlateApplication.h"
@@ -100,6 +102,7 @@ namespace
 
 AChaosImpactCharacter::AChaosImpactCharacter()
 {
+	BallForm = CreateDefaultSubobject<UChaosImpactBallFormComponent>(TEXT("BallForm"));
 	PrimaryActorTick.bCanEverTick = true;
 	// Placed in a level, a character plays as the VS mode's CPU by itself (AutoPossessAI stays PlacedInWorld: characters
 	// the game spawns, players and VS/training CPUs, are not taken over).
@@ -550,6 +553,7 @@ void AChaosImpactCharacter::UpdateBoundControls()
 		|| (IsPointerOverGameplayUI() && !bMouseChargeActive);
 	if (!bPhysicalThrow) { bSuppressPointerThrow = false; }
 	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	if (BallForm->HandleInput()) { return; }
 	if (bPointerDropActive)
 	{
 		const bool bDown = FSlateApplication::IsInitialized()
@@ -623,7 +627,7 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	{
 		RequestCancelThrow();
 	}
-	if (Pressed(EChaosImpactAction::DropBall))
+	if (!BallForm->IsAvailable() && Pressed(EChaosImpactAction::DropBall))
 	{
 		RequestDropBall();
 	}
@@ -654,6 +658,7 @@ void AChaosImpactCharacter::UpdateBoundControls()
 
 void AChaosImpactCharacter::ResetEasyControls()
 {
+	BallForm->ResetGesture();
 	BallManageGesture.Reset(); PointerDropGesture.Reset(); MoveClickGesture.Reset();
 	bPointerDropActive = false; bClickMoveActive = false; bClickMoveRejected = false;
 	bPointerMoveHeld = false;
@@ -695,6 +700,7 @@ bool AChaosImpactCharacter::HandleEasyPointerKey(const FKey& Key, const EInputEv
 			else if (Hit == 3) { StartDash(); }
 			else if (Hit == 4) { PC->ToggleReadyForMatch(); }
 			else if (Hit == 5) { PC->ToggleSpectating(); }
+			else if (Hit == 6) { BallForm->Toggle(); }
 			else if (Hit == 11) { RequestBallSwap(); }
 		}
 		return true;
@@ -867,7 +873,7 @@ void AChaosImpactCharacter::StopAimingWithStick(const FInputActionValue& Value)
 void AChaosImpactCharacter::DoMove(float Right, float Forward)
 {
 	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(GetController());
-	if (bEliminated || bTrainingMenuFrozen || IsIceFrozen() || IsMatchInputLocked() || IsChargingNova()
+	if (IsInBallForm() || bEliminated || bTrainingMenuFrozen || IsIceFrozen() || IsMatchInputLocked() || IsChargingNova()
 		|| (MenuController && !MenuController->IsGameplayActive()))
 	{
 		return;
@@ -957,7 +963,7 @@ void AChaosImpactCharacter::StartChargingThrow()
 		StopDrivenBall();
 		return;
 	}
-	if (bEliminated || bTrainingMenuFrozen || bIsDashing || bIsChargingThrow || bThrowReleasePending
+	if (IsInBallForm() || bEliminated || bTrainingMenuFrozen || bIsDashing || bIsChargingThrow || bThrowReleasePending
 		|| CarriedBallCount <= 0 || !GetWorld() || IsEliminationPredicted() || IsIceFrozen() || IsMatchInputLocked() || IsDriving())
 	{
 		return;
@@ -995,7 +1001,7 @@ void AChaosImpactCharacter::StartDash()
 	{
 		EndDriving(true);
 	}
-	if (!GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
+	if (IsInBallForm() || !GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
 		|| GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds || IsIceFrozen() || IsMatchInputLocked()
 		|| IsChargingNova())
 	{
@@ -1688,9 +1694,11 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 	const FTransform SpawnTransform(AimDirection.Rotation(), SpawnLocation);
 	// An online client spawns a purely cosmetic local ball; only the server's ball has gameplay effect.
 	const bool bCosmeticPrediction = !HasAuthority();
-	AChaosImpactBall* Ball = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(BallClass, SpawnTransform,
-		this, this, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
-	if (Ball)
+	AChaosImpactBall* Ball = BallForm->GetHeldBall(0);
+	const bool bBuddy = Ball != nullptr;
+	if (!Ball) { Ball = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(BallClass, SpawnTransform,
+		this, this, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn); }
+	if (Ball && !bBuddy)
 	{
 		Ball->SetCosmeticPrediction(bCosmeticPrediction);
 		// Slot 0 (the right hand) is thrown first, at whatever size a snowball has grown to.
@@ -1893,8 +1901,8 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		SourcePawn = SourceZone->GetSourcePawn();
 	}
 	// VS: nobody is hurt outside the match itself, and teammates never hurt each other.
-	if (Match && Match->bVersusMatch && (Match->Phase != EChaosImpactOnlinePhase::Match
-		|| AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, this)))
+	if (AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, this)
+		|| (Match && Match->bVersusMatch && Match->Phase != EChaosImpactOnlinePhase::Match))
 	{
 		return 0.0f;
 	}
@@ -1905,6 +1913,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	}
 
 	const float AppliedDamage = FMath::Min(Health, DamageAmount);
+	if (AppliedDamage > 0.0f && IsInBallForm()) { BallForm->Restore(); }
 	Health = FMath::Clamp(Health - AppliedDamage, 0.0f, MaxHealth);
 	LastDamageCauser = DamageCauser;
 	LastDamagedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
@@ -3610,7 +3619,7 @@ void AChaosImpactCharacter::SetAIAimDirection(const FVector& Direction)
 
 bool AChaosImpactCharacter::CanDashNow() const
 {
-	return GetWorld() && !bEliminated && !bTrainingMenuFrozen && !bIsDashing && !IsIceFrozen()
+	return GetWorld() && !IsInBallForm() && !bEliminated && !bTrainingMenuFrozen && !bIsDashing && !IsIceFrozen()
 		&& Stamina + UE_SMALL_NUMBER >= DashCost
 		&& GetWorld()->GetTimeSeconds() >= NextDashAvailableAtSeconds;
 }
@@ -3627,13 +3636,16 @@ void AChaosImpactCharacter::RequestAIDash(const FVector& Direction)
 
 bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 {
-	if (!HasAuthority() || !IsValid(Ball) || !Ball->IsPickupAvailable() || bEliminated
+	if (!HasAuthority() || IsInBallForm() || !IsValid(Ball) || !Ball->IsPickupAvailable() || bEliminated
 		|| CarriedBallCount >= MaximumCarriedBalls)
 	{
 		return false;
 	}
 
+	AChaosImpactBuddyBall* Buddy = Cast<AChaosImpactBuddyBall>(Ball);
+	if (Buddy && !BallForm->CanCollect(Buddy->GetPassenger())) { return false; }
 	PushCarriedBall(Ball->GetBallType());
+	BallForm->Push(Buddy, CarriedBallCount - 1);
 	UpdateBallPresentation();
 	return true;
 }
@@ -3641,7 +3653,15 @@ bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 bool AChaosImpactCharacter::HasVisibleHeldBall() const
 {
 	return (HeldBallMesh && HeldBallMesh->IsVisible())
-		|| (LeftHeldBallMesh && LeftHeldBallMesh->IsVisible());
+		|| (LeftHeldBallMesh && LeftHeldBallMesh->IsVisible()) || BallForm->GetHeldBall(0) || BallForm->GetHeldBall(1);
+}
+
+bool AChaosImpactCharacter::IsInBallForm() const { return BallForm && BallForm->IsInBallForm(); }
+FVector AChaosImpactCharacter::GetBuddyHoldLocation(const int32 Slot) const
+{
+	FVector Palm;
+	if (ToonCharacter && ToonCharacter->GetPalmLocation(Slot == 0, Palm)) { return Palm; }
+	return (Slot == 0 ? HeldBallMesh : LeftHeldBallMesh)->GetComponentLocation();
 }
 
 void AChaosImpactCharacter::UpdateBallPresentation()
@@ -3650,14 +3670,14 @@ void AChaosImpactCharacter::UpdateBallPresentation()
 	{
 		HeldBallMesh->SetRelativeLocation(HeldBallRelativeLocation);
 		HeldBallMesh->SetRelativeRotation(HeldBallRelativeRotation);
-		HeldBallMesh->SetVisibility(CarriedBallCount > 0, true);
+		HeldBallMesh->SetVisibility(CarriedBallCount > 0 && !BallForm->GetHeldBall(0), true);
 		ApplyHeldBallAppearance(HeldBallMesh, GetCarriedBallType(0));
 	}
 	if (LeftHeldBallMesh)
 	{
 		LeftHeldBallMesh->SetRelativeLocation(LeftHeldBallRelativeLocation);
 		LeftHeldBallMesh->SetRelativeRotation(LeftHeldBallRelativeRotation);
-		LeftHeldBallMesh->SetVisibility(CarriedBallCount > 1, true);
+		LeftHeldBallMesh->SetVisibility(CarriedBallCount > 1 && !BallForm->GetHeldBall(1), true);
 		ApplyHeldBallAppearance(LeftHeldBallMesh, GetCarriedBallType(1));
 		// A snowball in the left hand is carried at (up to a hand's worth of) its size; the right one is rolled.
 		const bool bLeftSnow = GetCarriedBallType(1) == EChaosImpactBallType::Snow;
@@ -3695,6 +3715,7 @@ void AChaosImpactCharacter::PushCarriedBall(const EChaosImpactBallType Type)
 
 EChaosImpactBallType AChaosImpactCharacter::PopCarriedBall()
 {
+	BallForm->Pop();
 	const EChaosImpactBallType Type = GetCarriedBallType(0);
 	CarriedBallTypes = static_cast<uint8>(CarriedBallTypes >> ChaosImpactBallTypes::PackedBitsPerSlot);
 	CarriedBallCount = FMath::Max(0, CarriedBallCount - 1);
@@ -3705,6 +3726,7 @@ EChaosImpactBallType AChaosImpactCharacter::PopCarriedBall()
 
 void AChaosImpactCharacter::ClearCarriedBalls()
 {
+	BallForm->Clear();
 	CarriedBallCount = 0;
 	CarriedBallTypes = 0;
 	SetSlotSnowGrowth(0, 0.0f);
@@ -3718,6 +3740,7 @@ void AChaosImpactCharacter::SwapCarriedBalls()
 		return;
 	}
 	const EChaosImpactBallType Swapped[] = {GetCarriedBallType(1), GetCarriedBallType(0)};
+	BallForm->SwapSlots();
 	CarriedBallTypes = ChaosImpactBallTypes::Pack(Swapped);
 	const float Growth[] = {GetSnowGrowth(1), GetSnowGrowth(0)};
 	SetSlotSnowGrowth(0, Growth[0]);
@@ -4072,7 +4095,7 @@ void AChaosImpactCharacter::SnapCameraToCharacter()
 
 bool AChaosImpactCharacter::CanJumpInternal_Implementation() const
 {
-	return !IsMatchInputLocked() && !IsChargingNova() && !IsDriving() && Super::CanJumpInternal_Implementation();
+	return !IsInBallForm() && !IsMatchInputLocked() && !IsChargingNova() && !IsDriving() && Super::CanJumpInternal_Implementation();
 }
 
 double AChaosImpactCharacter::GetSharedServerTime() const
@@ -4449,7 +4472,12 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 	// picked; CPUs take the colours nobody picked, and a player with no pick yet falls back to their slot.
 	int32 Colour = 0;
 	const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
-	if (State && Match && Match->IsTeamBattle() && State->TeamIndex >= 0)
+	const auto* TrainingPC = Cast<AChaosImpactPlayerController>(GetWorld()->GetFirstPlayerController());
+	if (TrainingPC && TrainingPC->ShowsTrainingPauseEntries() && TrainingPC->AreTrainingTeamsEnabled() && SoloTeam >= 0)
+	{
+		Colour = SoloTeam % 4;
+	}
+	else if (State && Match && Match->IsTeamBattle() && State->TeamIndex >= 0)
 	{
 		Colour = State->TeamIndex;
 	}
@@ -4804,6 +4832,7 @@ void AChaosImpactCharacter::DropFrontBall()
 	}
 	const EChaosImpactBallType Type = GetCarriedBallType(0);
 	FVector Forward = GetActorForwardVector().GetSafeNormal2D();
+	if (AChaosImpactBuddyBall* Buddy = BallForm->GetHeldBall(0)) { Buddy->ReleasePassenger(); return; }
 	if (Forward.IsNearlyZero())
 	{
 		Forward = FVector::ForwardVector;
@@ -4832,6 +4861,8 @@ void AChaosImpactCharacter::DropCarriedBalls()
 	const int32 Count = FMath::Clamp(CarriedBallCount, 0, 2);
 	for (int32 Slot = 0; Slot < Count; ++Slot)
 	{
+		// ClearCarriedBalls restores passengers after ordinary pickups have been dropped, keeping slot order stable.
+		if (BallForm->GetHeldBall(Slot)) { continue; }
 		const FVector Out = FRotator(0.0f, FMath::FRandRange(0.0f, 360.0f), 0.0f).Vector();
 		const FTransform SpawnTransform(FRotator::ZeroRotator, GetActorLocation() + Out * 40.0f);
 		AChaosImpactBall* Ball = World->SpawnActorDeferred<AChaosImpactBall>(BallClass, SpawnTransform, nullptr, nullptr,

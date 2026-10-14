@@ -4,6 +4,8 @@
 #include "ChaosImpactStageBase.h"
 #include "ChaosImpactSplashStage.generated.h"
 
+class UBoxComponent;
+class UPostProcessComponent;
 class USceneComponent;
 class UStaticMeshComponent;
 class UMaterialInterface;
@@ -21,7 +23,13 @@ class UStaticMesh;
  *  - in the middle a raised diamond plaza (150) with a slope on each face and a fountain on top
  *  - outside the walls, across the water, a town on piers (Cartoon City Free: buildings, palms, cars,
  *    billboards); billboards on the walls and graffiti on their inner faces; an animated ocean (Water Materials)
+ *  - the look of a working harbour: a wooden deck, poured-concrete decks and ramps, painted steel walls, corrugated
+ *    containers, a gantry crane over the water behind each terrace, boats and buoys, its own colour grading
  * Balls thrown in the default arc fall onto lower ground, so the high places are worth taking.
+ *
+ * Ready for gimmicks to come: the sea (and its bed) hang off TideRoot, so moving that up and down is a tide (the low
+ * ground, the deck at 0, is what it would cover first); each crane hangs off its own root, its trolley and the
+ * container it carries off CraneTrolley, so a crane can turn and its load travel along the arm.
  *
  * Editing: BP_SplashStage (Content/ChaosImpact/Versus) is a Blueprint of this class. Every block is an
  * editable component, meshes can be added there, spawn / ball points are draggable handles in the viewport,
@@ -41,6 +49,12 @@ public:
 	virtual float GetHalfExtent() const override { return SplashHalfExtent; }
 	/** The square's cut corners count too: behind a corner wall is outside. */
 	virtual bool IsOutside(const FVector& Location) const override;
+
+	/** The sea and its bed: move this up or down for a tide (the deck is at 0, the sea's surface at -85). */
+	USceneComponent* GetTideRoot() const { return TideRoot; }
+	/** A quarter's gantry crane (turn it about its feet), and its trolley with the container it carries (slide it along the arm, X). */
+	USceneComponent* GetCraneRoot(const int32 Quarter) const { return CraneRoots.IsValidIndex(Quarter) ? CraneRoots[Quarter] : nullptr; }
+	USceneComponent* GetCraneTrolley(const int32 Quarter) const { return CraneTrolleys.IsValidIndex(Quarter) ? CraneTrolleys[Quarter] : nullptr; }
 
 	/**
 	 * The layout is written at LayoutHalfExtent and spread out by LayoutScale across the ground (heights stay):
@@ -64,24 +78,33 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
 	bool bApplyDefaultColors = true;
 
-	/** One accent colour per quarter: terraces, containers and trims (the four teams' corners). */
+	/** One accent colour per quarter: terraces, containers, the crane and trims (the four corners). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
 	TArray<FLinearColor> InkColors;
 
+	/** The wooden deck (the ground). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
-	FLinearColor FloorColor = FLinearColor(0.2f, 0.21f, 0.26f);
+	FLinearColor FloorColor = FLinearColor(0.42f, 0.27f, 0.16f);
 
+	/** No longer used (the deck has no grid now); kept so Blueprints that set it still load. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
 	FLinearColor FloorGridColor = FLinearColor(0.1f, 0.11f, 0.15f);
 
+	/** Poured concrete: the raised decks and the plaza. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
-	FLinearColor PlazaColor = FLinearColor(0.34f, 0.35f, 0.42f);
+	FLinearColor PlazaColor = FLinearColor(0.36f, 0.355f, 0.34f);
 
+	/** The painted steel harbour walls. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
-	FLinearColor WallColor = FLinearColor(0.035f, 0.04f, 0.1f);
+	FLinearColor WallColor = FLinearColor(0.07f, 0.11f, 0.2f);
 
+	/** Pale concrete: ramps, low walls, the bank walls, lids and trims. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
-	FLinearColor TrimColor = FLinearColor(0.85f, 0.87f, 0.92f);
+	FLinearColor TrimColor = FLinearColor(0.5f, 0.49f, 0.47f);
+
+	/** The safety lines painted on the deck along the walls and at the edges of the drops. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
+	FLinearColor StripeColor = FLinearColor(1.0f, 0.72f, 0.04f);
 
 	/** Emissive trims (tops of the walls, rings on the tower). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
@@ -99,8 +122,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
 	FLinearColor OceanColor = FLinearColor(0.0f, 0.55f, 0.75f);
 
+	/** The warehouses (painted steel). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Splash Stage|Palette")
-	FLinearColor SceneryColor = FLinearColor(0.05f, 0.055f, 0.1f);
+	FLinearColor SceneryColor = FLinearColor(0.17f, 0.22f, 0.3f);
 
 protected:
 	virtual void BeginPlay() override;
@@ -109,7 +133,11 @@ private:
 	/** How a block is painted. Ink slots add the quarter (0-3). */
 	enum EPaint : uint8
 	{
-		Floor, OuterFloor, Plaza, Wall, Trim, Glow, Scenery, Water, Ink, InkDark = Ink + 4, InkGlow = InkDark + 4, InkSplat = InkGlow + 4
+		Floor, OuterFloor, Plaza, Wall, Trim, Glow, Scenery, Water, Ink, InkDark = Ink + 4, InkGlow = InkDark + 4, InkSplat = InkGlow + 4,
+		/** Safety yellow, painted on the deck. */
+		Stripe = InkSplat + 4,
+		/** Dark steel: crane legs, frames, corner fittings. */
+		Steel
 	};
 
 	/** A block with a centred mesh: Location is its middle, Size its full width / depth / height. */
@@ -124,7 +152,18 @@ private:
 	 * A walkable slope: a thick slab whose top runs from Low to High (both on its centre line), Width across.
 	 * The slab reaches down into the ground, so from the side it reads as a solid ramp.
 	 */
-	UStaticMeshComponent* AddRamp(const FString& Name, uint8 Paint, const FVector& Low, const FVector& High, float Width);
+	UStaticMeshComponent* AddRamp(const FString& Name, uint8 Paint, const FVector& Low, const FVector& High, float Width,
+		uint8 EdgePaint = 255);
+	/**
+	 * A part in stage units (not spread), on a parent of its own: Location is its middle, Size its full size (the mesh
+	 * a metre each way about its middle, or SM_Cylinder: a metre across, its base at Location).
+	 */
+	UStaticMeshComponent* AddPartAt(USceneComponent* Parent, const FString& Name, uint8 Paint, UStaticMesh* Mesh,
+		const FVector& Location, const FVector& Size, const FRotator& Rotation = FRotator::ZeroRotator);
+	/** A quarter's gantry crane over the water behind its terrace (see GetCraneRoot). */
+	void BuildCrane(int32 Quarter);
+	/** A shipping container: corrugated, its doors, bars and corner fittings. Location is its middle, Size its full size (layout units). */
+	void AddContainer(const FString& Name, uint8 Paint, uint8 DarkPaint, const FVector& Location, const FVector& Size, float Yaw);
 	/**
 	 * A model from the Cartoon City pack, with its own materials (never repainted by the palette).
 	 * Location is in stage units (not spread by LayoutScale); nothing is added when the mesh is missing.
@@ -142,6 +181,23 @@ private:
 
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TObjectPtr<USceneComponent> SceneRoot;
+
+	/** The sea and its bed hang off this (a tide moves it). */
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TObjectPtr<USceneComponent> TideRoot;
+
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TArray<TObjectPtr<USceneComponent>> CraneRoots;
+
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TArray<TObjectPtr<USceneComponent>> CraneTrolleys;
+
+	/** The stage's own colour grading, wherever the camera is over it. */
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TObjectPtr<UBoxComponent> GradeVolume;
+
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TObjectPtr<UPostProcessComponent> Grade;
 
 	/**
 	 * How a block is painted is kept on the block itself, as a component tag "CIPaint<N>", so it can never go
@@ -188,7 +244,27 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> GlowMaterial;
 
-	/** Stylized Metallic Floor (Fab, Studio94Roots) made into M_StageMetalFloor: the raised decks and plaza. */
+	/** Stylized Metallic Floor (Fab, Studio94Roots) made into M_StageMetalFloor (no longer used here). */
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> MetalFloorMaterial;
+
+	/** The harbour's own materials (Content/ChaosImpact/Versus/Splash, all coloured by "Color"). */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> PlanksMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> ConcreteMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> PanelMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> CorrugatedMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> PaintMaterial;
+
+	/** Letters painted on the deck (the berth numbers). */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> StencilMaterial;
 };

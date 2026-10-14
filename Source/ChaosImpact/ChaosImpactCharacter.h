@@ -27,6 +27,7 @@ class UNiagaraComponent;
 class UProceduralMeshComponent;
 class UAudioComponent;
 class AChaosImpactBall;
+class UChaosImpactBallFormComponent;
 enum class EChaosImpactNovaPart : uint8;
 class AChaosImpactTornado;
 class UChaosImpactPuppetComponent;
@@ -46,6 +47,9 @@ UCLASS(abstract)
 class AChaosImpactCharacter : public ACharacter
 {
 	GENERATED_BODY()
+	friend class UChaosImpactBallFormComponent;
+	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Ball Form")
+	TObjectPtr<UChaosImpactBallFormComponent> BallForm;
 
 	/** Camera boom positioning the camera behind the character */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
@@ -110,6 +114,9 @@ public:
 	void RequestBallSwap();
 	/** Drops the ball in hand (the one thrown next) on the floor in front, where anyone can pick it up (F, D-pad left). */
 	void RequestDropBall();
+	UChaosImpactBallFormComponent* GetBallForm() const { return BallForm; }
+	bool IsInBallForm() const;
+	FVector GetBuddyHoldLocation(int32 Slot) const;
 	/** Snow: how far (0-1) the snowball in Slot has grown as its carrier walked; 0 for any other ball. */
 	float GetSnowGrowth(int32 Slot) const;
 	/** Cancels a throw being charged (right mouse button, ZL / L2); the ball stays in hand. */

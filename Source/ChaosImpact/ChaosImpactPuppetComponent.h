@@ -64,8 +64,12 @@ public:
 	bool GetPalmLocation(bool bRightHand, FVector& OutLocation) const;
 	/** The balls shown in the hands; each frame they are moved into these palms after the pose is solved. */
 	void SetHeldBalls(USceneComponent* RightBall, USceneComponent* LeftBall);
+	/** Tuck the hands and feet toward the belly, retaining the character's face and silhouette. */
+	void SetBallPose(bool bActive);
 
 private:
+	bool bBallPose = false;
+	void ApplyBallPose();
 	struct FLimbChain
 	{
 		/** Joint names in the limb's own skeleton, from its root: shoulder/hip, elbow/knee, hand/ankle. */

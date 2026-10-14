@@ -79,7 +79,7 @@ namespace
 			case 2:
 			{
 				// On to the solo room's level, playing.
-				if (!World->GetMapName().Contains(TEXT("Lvl_SoloRoomTest")) || !PC->IsGameplayActive() || !PC->GetPawn())
+				if (!World->GetMapName().Contains(TEXT("Lvl_SoloStage1")) || !PC->IsGameplayActive() || !PC->GetPawn())
 				{
 					return false;
 				}

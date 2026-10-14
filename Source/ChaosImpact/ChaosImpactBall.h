@@ -61,7 +61,7 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Launches with either the original level flight or a gravity-driven arc. */
-	void Launch(const FVector& Direction, float Speed,
+	virtual void Launch(const FVector& Direction, float Speed,
 		EChaosImpactBallFlightMode FlightMode = EChaosImpactBallFlightMode::Arc,
 		float ArcUpwardSpeed = 650.0f);
 
@@ -77,7 +77,7 @@ public:
 	bool IsPickup() const { return bIsPickup; }
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball")
-	bool IsPickupAvailable() const;
+	virtual bool IsPickupAvailable() const;
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball")
 	bool HasReflected() const { return bHasReflected; }
@@ -99,7 +99,7 @@ public:
 	/** Server: a remote player's client saw this ball hit them. Returns true if it was plausible and applied. */
 	bool AcceptReportedHit(AChaosImpactCharacter* Victim, const FVector& HitLocation);
 	/** Server: gives this pickup to a player (overlap here, or a claim from their own screen). */
-	bool ConsumePickup(AChaosImpactCharacter* Collector);
+	virtual bool ConsumePickup(AChaosImpactCharacter* Collector);
 	/** Client: the server refused this screen's pickup claim; show the ball again. */
 	void CancelLocalPickupClaim();
 	/** Set before BeginPlay on a client-only throw preview: no damage, pickups or replication. */

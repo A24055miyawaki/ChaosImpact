@@ -199,7 +199,14 @@ void AChaosImpactSoloRoom::StartRoom(AChaosImpactCharacter* InPlayer)
 	ReceiveRoomStarted();
 	if (MinionCount <= 0)
 	{
-		SpawnBoss();
+		if (bSpawnBoss)
+		{
+			SpawnBoss();
+		}
+		else
+		{
+			FinishRoom();
+		}
 	}
 }
 
@@ -260,18 +267,30 @@ void AChaosImpactSoloRoom::HandleEnemyDestroyed(AActor* DestroyedActor)
 	++Defeated;
 	if (Phase == EChaosImpactSoloRoomPhase::Minions && Defeated >= MinionCount)
 	{
-		SpawnBoss();
+		if (bSpawnBoss)
+		{
+			SpawnBoss();
+		}
+		else
+		{
+			FinishRoom();
+		}
 	}
 	else if (Phase == EChaosImpactSoloRoomPhase::Boss && (!Boss.IsValid() || Boss.Get() == DestroyedActor))
 	{
-		Phase = EChaosImpactSoloRoomPhase::Cleared;
-		SetDoorsClosed(false);
-		BindPlayer(nullptr);
-		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloClear);
-		UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s cleared"), *GetName());
-		OnRoomCleared.Broadcast(this);
-		ReceiveRoomCleared();
+		FinishRoom();
 	}
+}
+
+void AChaosImpactSoloRoom::FinishRoom()
+{
+	Phase = EChaosImpactSoloRoomPhase::Cleared;
+	SetDoorsClosed(false);
+	BindPlayer(nullptr);
+	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloClear);
+	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s cleared"), *GetName());
+	OnRoomCleared.Broadcast(this);
+	ReceiveRoomCleared();
 }
 
 void AChaosImpactSoloRoom::HandlePlayerEliminated(AChaosImpactCharacter* Character)

@@ -32,7 +32,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChaosImpactSoloRoomEvent, AChaosImp
  *  - Room Area: the room's floor (enemies appear inside it when no spawn points are given);
  *  - Entry Trigger: just inside the doorway. The player crossing it shuts the Door (and any Door Actors);
  *  - Respawn Point: just outside the doorway, where the player comes back after being knocked out in here.
- * Then Minion Count minions appear; when all are down, the boss; when the boss is down, the doors open. Knocked out in
+ * Then Minion Count minions appear; when all are down, the boss (unless Spawn Boss is off); when the boss is down, the
+ * doors open. Knocked out in
  * here, the player comes back at the entrance and the room is as it was (its enemies gone, doors open) to try again.
  */
 UCLASS(Blueprintable, BlueprintType)
@@ -58,6 +59,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Room", meta=(DisplayName="Minion Level (雑魚の強さ)"))
 	EChaosImpactCPULevel MinionLevel = EChaosImpactCPULevel::Normal;
+
+	/** Whether a boss comes on once the minions are down (off: the room is cleared with them). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Room", meta=(DisplayName="Spawn Boss (ボスを出す)"))
+	bool bSpawnBoss = true;
 
 	/** The boss. None: BP_BossEnemy. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Room", meta=(DisplayName="Boss Class (ボス)"))
@@ -173,6 +178,8 @@ private:
 	/** On the floor under a point (where a character stands). */
 	FVector OnFloor(const FVector& Point) const;
 	void SpawnBoss();
+	/** Every enemy down: the doors open for good. */
+	void FinishRoom();
 	void ClearEnemies();
 	void BindPlayer(AChaosImpactCharacter* NewPlayer);
 	/** Fits the stand-in floor and walls to the parts (or hides them). */

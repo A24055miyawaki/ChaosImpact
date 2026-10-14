@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactBall.h"
+#include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactTrainingTarget.h"
@@ -1133,7 +1134,7 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 		if (ProjectileMovement->IsActive() && !GetAttachParentActor())
 		{
 			UpdateDashPassThrough();
-			if (BallType == EChaosImpactBallType::Normal)
+			if (BallType == EChaosImpactBallType::Normal && !IsA<AChaosImpactBuddyBall>())
 			{
 				// The thrower's preview bends the same way, from what its own screen shows.
 				UpdateHoming(DeltaSeconds);
@@ -1637,7 +1638,7 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 		// A dash is untouchable: meeting a ball mid-dash is no hit at all (no flash, and the ball flies on).
 		return;
 	}
-	const bool bHitPawn = OtherActor->IsA<APawn>();
+	const bool bHitPawn = OtherActor->IsA<APawn>() || OtherActor->IsA<AChaosImpactBuddyBall>();
 	const bool bHitTrainingTarget = OtherActor->IsA<AChaosImpactTrainingTarget>();
 	if (const AChaosImpactCharacter* HitCharacter = Cast<AChaosImpactCharacter>(OtherActor);
 		HitCharacter && HitCharacter->IsRemotePlayerOnServer())
@@ -1777,6 +1778,7 @@ void AChaosImpactBall::UpdateDashPassThrough()
 		if (Character == ThrowingPawn.Get() || AChaosImpactGameState::AreTeammates(World, ThrowingPawn.Get(), Character)
 			|| (HasAuthority() && GetNetMode() != NM_Standalone && Character->IsRemotePlayerOnServer()))
 		{
+			CollisionSphere->IgnoreActorWhenMoving(Character, true);
 			continue;
 		}
 		// Both ways: the ball flies on through, and the dash goes on through the ball.
@@ -1795,6 +1797,15 @@ void AChaosImpactBall::UpdateDashPassThrough()
 		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 		{
 			Capsule->IgnoreActorWhenMoving(this, bDashing);
+		}
+	}
+	for (TActorIterator<AChaosImpactBuddyBall> It(World); It; ++It)
+	{
+		if (*It != this)
+		{
+			const bool bAllied = It->GetPassenger() == ThrowingPawn.Get()
+				|| AChaosImpactGameState::AreTeammates(World,ThrowingPawn.Get(),It->GetPassenger());
+			CollisionSphere->IgnoreActorWhenMoving(*It,bAllied);
 		}
 	}
 }

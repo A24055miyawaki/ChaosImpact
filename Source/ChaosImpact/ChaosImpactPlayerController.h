@@ -97,6 +97,12 @@ public:
 	bool AreTrainingTargetsEnabled() const { return bTrainingTargetsEnabled; }
 	bool IsTrainingCPUEnabled() const { return TrainingCPUCount > 0; }
 	int32 GetTrainingCPUCount() const { return TrainingCPUCount; }
+	/** Training has no minimum opposing-team size; even 2v0 is valid. */
+	bool AreTrainingTeamsEnabled() const { return bTrainingTeams; }
+	void ToggleTrainingTeams();
+	int32 GetTrainingTeam(bool bCPU, int32 Index) const;
+	void CycleTrainingTeam(bool bCPU, int32 Index, int32 Direction = 1);
+	void ApplyTrainingTeams();
 	int32 GetJoinedControllerCount() const { return JoinedInputDeviceIds.Num(); }
 	bool IsControllerJoined(int32 InputDeviceId) const
 	{
@@ -329,6 +335,9 @@ protected:
 	int32 RequestedLocalPlayerCount = 1;
 	bool bTrainingTargetsEnabled = true;
 	int32 TrainingCPUCount = 0;
+	bool bTrainingTeams = false;
+	int32 TrainingHumanTeams[4] = {0,0,0,0};
+	int32 TrainingCPUTeams[4] = {1,1,1,1};
 	bool bPrimaryUsesGamepad = false;
 	bool bRequestedPrimaryUsesGamepad = false;
 	/** Active and pending slot occupied by the one local keyboard/mouse pair. */

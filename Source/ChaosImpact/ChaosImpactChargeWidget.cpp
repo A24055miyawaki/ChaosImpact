@@ -1,6 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactBallFormComponent.h"
+#include "ChaosImpactBuddyBall.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactSettings.h"
 #include "Engine/GameInstance.h"
@@ -1079,6 +1081,18 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		}
 	}
 	PaintVersusMatch(AllottedGeometry, OutDrawElements, BaseLayer + 6);
+	if (const auto* P = GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr;
+		P && P->IsInBallForm())
+	{
+		const float Scale = GetHudScale(Size.X,Size.Y);
+		const FGeometry HintSpace = MakeAnchor(AllottedGeometry, Size.X*.5f, Size.Y-160*Scale, Scale);
+		const FPainter Hint{HintSpace,OutDrawElements,BaseLayer+7};
+		Hint.Box(-190,0,380,42,WithAlpha(Ink,.9f));
+		const auto Scheme = ChaosImpactSettings::GetPlayerControlScheme(GetOwningPlayer());
+		const FString Key = ChaosImpactSettings::DescribeAction(GetOwningPlayer(), Scheme == EChaosImpactControlScheme::Simple ? EChaosImpactAction::SwapBall
+			: ChaosImpactSettings::IsMouseOnlyScheme(Scheme) ? EChaosImpactAction::Dash : EChaosImpactAction::DropBall);
+		Hint.Text(FString::Printf(TEXT("ボール化中　%s で解除"),*Key),0,7,20,Paper,ETextAlign::Center);
+	}
 	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
 	return FMath::Max(BaseLayer + 10, HudLayer + 18);
 }
@@ -1108,11 +1122,12 @@ int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
 	const FVector2D Pointer = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
 	const float S = GetHudScale(Size.X, Size.Y);
 	if (Size.X < 1 || Size.Y < 1 || !FBox2D(FVector2D::ZeroVector, Size).IsInside(Pointer)) { return 0; }
-	for (int32 Hit = 1; Hit <= 5; ++Hit)
+	for (int32 Hit = 1; Hit <= 6; ++Hit)
 	{
 		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController())) { continue; }
 		if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 		if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
+		if (Hit == 6 && (!Character || !Character->GetBallForm()->IsAvailable())) { continue; }
 		if (EasyButtonRect(Size, S, Hit).IsInside(Pointer)) { return Hit; }
 	}
 	// The inventory remains UI while the ball icons animate; never let these clicks leak into throwing.
@@ -1178,16 +1193,18 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 	const FPainter Paint{Geometry, Elements, Layer};
 	if (bEasy)
 	{
-		for (int32 Hit = 1; Hit <= 5; ++Hit)
+		for (int32 Hit = 1; Hit <= 6; ++Hit)
 		{
 			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController())) { continue; }
 			if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
+			if (Hit == 6 && (!ShoulderCharacter || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
 			const FBox2D R = EasyButtonRect(Size, S, Hit);
 			const FVector2D Extent = R.GetSize();
 			Paint.Box(R.Min.X, R.Min.Y, Extent.X, Extent.Y, WithAlpha(Ink, 0.92f));
 			Paint.Outline(R.Min.X, R.Min.Y, Extent.X, Extent.Y, Hover == Hit ? Gold : Paper, 2.0f * S);
-			Paint.Text(Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦") : TEXT("ダッシュ"),
+			Paint.Text(Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦")
+				: Hit == 6 ? (ShoulderCharacter->IsInBallForm() ? TEXT("元に戻る") : TEXT("ボール化")) : TEXT("ダッシュ"),
 				(R.Min.X + R.Max.X) * 0.5f, R.Min.Y + 10.0f * S, 18.0f * S,
 				Paper, ETextAlign::Center);
 		}
@@ -1501,10 +1518,12 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	}
 
 	const FPainter Labels{Corner, OutDrawElements, BaseLayer + 2};
+	const auto* BuddyOwner = GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr;
 	for (int32 DrawSlot = 0; DrawSlot < FMath::Min(CarriedBalls, 2); ++DrawSlot)
 	{
 		const EChaosImpactBallType Type = ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, DrawSlot);
-		if (Type == EChaosImpactBallType::Normal)
+		const AChaosImpactBuddyBall* Buddy = BuddyOwner ? BuddyOwner->GetBallForm()->GetHeldBall(DrawSlot) : nullptr;
+		if (Type == EChaosImpactBallType::Normal && !Buddy)
 		{
 			continue;
 		}
@@ -1515,7 +1534,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		const FPainter Tag{TagSpace, OutDrawElements, BaseLayer + 2};
 		Tag.Box(0.0f, 0.0f, 60.0f, 17.0f, WithAlpha(Ink, 0.88f));
 		Tag.Box(0.0f, 15.0f, 60.0f, 2.0f, ChaosImpactBallTypes::GetColor(Type));
-		Labels.Text(ChaosImpactBallTypes::GetDisplayName(Type), static_cast<float>(Under.X), static_cast<float>(Under.Y) - 1.0f,
+		Labels.Text(Buddy ? TEXT("味方") : ChaosImpactBallTypes::GetDisplayName(Type), static_cast<float>(Under.X), static_cast<float>(Under.Y) - 1.0f,
 			11.0f, Paper, ETextAlign::Center, TEXT("Bold"));
 	}
 	if (CarriedBalls > 0)
@@ -1848,7 +1867,13 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 				Color = ChaosImpactMatch::GetTeamColor(CharacterState->TeamIndex);
 			}
 		}
-		const FString Name = Character->GetOverheadDisplayName();
+		FString Name = Character->GetOverheadDisplayName();
+		if (const auto* TrainingPC = Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController());
+			TrainingPC && TrainingPC->ShowsTrainingPauseEntries() && TrainingPC->AreTrainingTeamsEnabled() && Character->SoloTeam >= 0)
+		{
+			Color = ChaosImpactMatch::GetTeamColor(Character->SoloTeam);
+			Name += FString::Printf(TEXT("  T%d"),Character->SoloTeam+1);
+		}
 		const float Shown = Character == ViewerPawn ? 1.0f : OthersShown;
 		if (Shown <= 0.01f)
 		{

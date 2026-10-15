@@ -1,6 +1,8 @@
 #include "ChaosImpactCPUController.h"
 
 #include "ChaosImpactBall.h"
+#include "ChaosImpactBallFormComponent.h"
+#include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
@@ -1254,6 +1256,11 @@ AChaosImpactBall* AChaosImpactCPUController::SelectPickup(const AChaosImpactChar
 		{
 			continue;
 		}
+		if (const AChaosImpactBuddyBall* Buddy = Cast<AChaosImpactBuddyBall>(Ball);
+			Buddy && !Self->GetBallForm()->CanCollect(Buddy->GetPassenger()))
+		{
+			continue;
+		}
 		const FVector BallLocation = Ball->GetActorLocation();
 		const float MyDistance = FVector::Dist2D(Location, BallLocation);
 		float Score = MyDistance + (Ball->IsPickupAvailable() ? 0.0f : 150.0f);
@@ -1305,6 +1312,15 @@ bool AChaosImpactCPUController::TryCollectNearbyBall(AChaosImpactCharacter* Self
 	for (TActorIterator<AChaosImpactBall> It(GetWorld()); It; ++It)
 	{
 		AChaosImpactBall* Ball = *It;
+		if (AChaosImpactBuddyBall* Buddy = Cast<AChaosImpactBuddyBall>(Ball))
+		{
+			if (FVector::Dist2D(Ball->GetActorLocation(), Location) <= PickupReach && Buddy->ConsumePickup(Self))
+			{
+				NextThrowAt = FMath::Max(NextThrowAt, Now + (bPerfect ? 0.0f : FMath::Lerp(0.45f, 0.12f, Skill) * ThrowDelayScale));
+				return true;
+			}
+			continue;
+		}
 		if (Ball->IsPickupAvailable() && FVector::Dist2D(Ball->GetActorLocation(), Location) <= PickupReach
 			&& Self->TryPickupBall(Ball))
 		{

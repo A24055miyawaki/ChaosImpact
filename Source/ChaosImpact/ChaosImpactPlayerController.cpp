@@ -36,6 +36,11 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactSettings.h"
+#include "ChaosImpactSoloStages.h"
+#include "ChaosImpactSoloTitle.h"
+#include "ChaosImpactDemoPlay.h"
+#include "Misc/PackageName.h"
+#include "ChaosImpactWorldMap.h"
 #include "GameFramework/PlayerInput.h"
 #include "GameFramework/InputSettings.h"
 #include "EnhancedInputSubsystems.h"
@@ -67,6 +72,20 @@ void AChaosImpactPlayerController::BeginPlay()
 		CurrentSoloStage = FMath::Max(1, FCString::Atoi(
 			GetWorld()->URL.GetOption(TEXT("CIStage="), TEXT("1"))));
 		// ソロプレイ時はトレーニングモードの共通フラグをオフにする
+		bTrainingMode = false;
+	}
+	// Solo mode's world map (?CIWorldMap=1): walked on straight away, like a stage.
+	if (GetWorld() && GetWorld()->URL.HasOption(TEXT("CIWorldMap=1")))
+	{
+		bSoloWorldMap = true;
+		bTrainingMode = false;
+	}
+	// The title's demo play (?CIDemo=1): a CPUs' VS match watched (AChaosImpactDemoPlay).
+	bDemoPlay = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIDemo=1"));
+	// Solo mode's title (?CISoloTitle=1): its own screen over the dusk temple (AChaosImpactSoloTitle).
+	if (GetWorld() && GetWorld()->URL.HasOption(TEXT("CISoloTitle=1")))
+	{
+		bSoloTitle = true;
 		bTrainingMode = false;
 	}
 
@@ -138,13 +157,24 @@ void AChaosImpactPlayerController::BeginPlay()
 	BallFlightMode = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIBallStraight=1"))
 		? EChaosImpactBallFlightMode::Straight : EChaosImpactBallFlightMode::Arc;
 	// A solo level (?CISolo=1) is played straight away too, like training.
-	CurrentScreen = bTrainingMode || bSoloMode ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
+	// The exploration map (?CIOpenWorld=1, OpenWorld/) is walked on straight away too.
+	const bool bExplorationMap = GetWorld() && GetWorld()->URL.HasOption(TEXT("CIOpenWorld=1"));
+	CurrentScreen = bTrainingMode || bSoloMode || bSoloWorldMap || bSoloTitle || bExplorationMap ? EChaosImpactScreen::Playing : EChaosImpactScreen::Title;
+	if (bSoloTitle && IsPrimaryLocalPlayerController() && GetWorld() && !AChaosImpactSoloTitle::Find(this))
+	{
+		GetWorld()->SpawnActor<AChaosImpactSoloTitle>();
+	}
+	if (bDemoPlay && IsPrimaryLocalPlayerController() && GetWorld() && !AChaosImpactDemoPlay::Find(this))
+	{
+		GetWorld()->SpawnActor<AChaosImpactDemoPlay>();
+	}
+	TitleShownSince = FPlatformTime::Seconds();
 	// The title plays a CPU match behind it, started a moment after the title appears (-CINoTitleDemo: none).
-	bTitleDemoWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && GetNetMode() == NM_Standalone
+	bTitleDemoWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && !bSoloWorldMap && GetNetMode() == NM_Standalone
 		&& GetWorld() && !GetWorld()->URL.HasOption(TEXT("CIVersus=1")) && !FParse::Param(FCommandLine::Get(), TEXT("CINoTitleDemo"));
 	// A local VS level opens dark, behind the VS emblem the card ended on (see UpdateVersusReveal).
 	if (GetNetMode() == NM_Standalone && IsPrimaryLocalPlayerController() && GetWorld()
-		&& GetWorld()->URL.HasOption(TEXT("CIMatch=1")))
+		&& GetWorld()->URL.HasOption(TEXT("CIMatch=1")) && !bDemoPlay)
 	{
 		if (UGameViewportClient* Viewport = GetWorld()->GetGameViewport())
 		{
@@ -949,6 +979,11 @@ void AChaosImpactPlayerController::TogglePauseMenu()
 {
 	// Any active local controller may request pause, but the primary controller
 	// owns the single full-viewport pause widget and applies the world pause.
+	// Solo mode's title takes its own back button; in the demo any button goes back to the title.
+	if (bSoloTitle || bDemoPlay)
+	{
+		return;
+	}
 	if (!IsPrimaryLocalPlayerController())
 	{
 		if (UGameInstance* GameInstance = GetGameInstance();
@@ -2020,6 +2055,10 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode,
 		{
 			Options += TEXT("?CITargets=0?") + ChaosImpactMatch::ToOptions(PendingMatchRules);
 		}
+		if (bDemoTravel)
+		{
+			Options += TEXT("?CIDemo=1");
+		}
 	}
 	if (bOpenWithStraight)
 	{
@@ -2884,9 +2923,74 @@ void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 I
 	}
 }
 
+float AChaosImpactPlayerController::GetDemoIdleSeconds()
+{
+	static const float Seconds = []()
+	{
+		float Value = 30.0f;
+		FParse::Value(FCommandLine::Get(), TEXT("CIDemoIdle="), Value);
+		return Value;
+	}();
+	return Seconds;
+}
+
+void AChaosImpactPlayerController::StartDemoPlay()
+{
+	if (bTravelPending || !bTitleDemoWorld || !IsPrimaryLocalPlayerController())
+	{
+		return;
+	}
+	// A CPUs-only free-for-all to watch, on a stage at random (the characters are picked at random as CPUs join).
+	PlayFlow = EChaosImpactPlayFlow::VersusLocal;
+	bTrainingTargetsEnabled = false;
+	TrainingCPUCount = 0;
+	RequestedLocalPlayerCount = 1;
+	RequestedKeyboardPlayerIndex = 0;
+	JoinedInputDeviceIds.Reset();
+	JoinedLegacyControllerIds.Reset();
+	FChaosImpactMatchRules Rules;
+	Rules.Minutes = 5;
+	Rules.TeamCount = 0;
+	Rules.bSpectate = true;
+	Rules.CPUCount = FMath::RandRange(4, 6);
+	Rules.StageIndex = FMath::RandRange(0, ChaosImpactMatch::StageCount - 1);
+	Rules.CPULevel = 2;
+	PendingMatchRules = ChaosImpactMatch::Sanitize(Rules, 1);
+	bLocalMatchRulesChosen = true;
+	bDemoTravel = true;
+	UE_LOG(LogChaosImpact, Log, TEXT("Title left alone: demo play (stage %d, %d CPUs)"), PendingMatchRules.StageIndex, PendingMatchRules.CPUCount);
+	OpenTrainingLevel(false, false, false);
+}
+
+void AChaosImpactPlayerController::SetDemoIntroCharacter(AChaosImpactCharacter* InCharacter)
+{
+	DemoIntroCharacter = InCharacter;
+}
+
+void AChaosImpactPlayerController::EndDemoPlay()
+{
+	if (bTravelPending)
+	{
+		return;
+	}
+	OpenTitleLevel();
+}
+
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+	// The title left alone a while (no key, button, stick or mouse): its demo play.
+	if (bTitleDemoWorld && CurrentScreen == EChaosImpactScreen::Title && !bTravelPending && IsPrimaryLocalPlayerController()
+		&& FSlateApplication::IsInitialized() && GetDemoIdleSeconds() > 0.0f)
+	{
+		const UChaosImpactFxPreloadSubsystem* Preload = UChaosImpactFxPreloadSubsystem::Get(this);
+		const double Now = FSlateApplication::Get().GetCurrentTime();
+		const double Idle = FMath::Min(Now - FSlateApplication::Get().GetLastUserInteractionTime(), FPlatformTime::Seconds() - TitleShownSince);
+		if ((!Preload || Preload->IsComplete()) && Idle > GetDemoIdleSeconds())
+		{
+			StartDemoPlay();
+		}
+	}
 	if (bTrainingTeams) { ApplyTrainingTeams(); }
 	SendLoadout();
 	UpdateMatchScreens();
@@ -3025,7 +3129,9 @@ void AChaosImpactPlayerController::UpdateMatchScreens()
 void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 {
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	const AChaosImpactCharacter* PlayerCharacter = Cast<AChaosImpactCharacter>(GetPawn());
+	// The demo watches a CPU: the opening plays as that CPU's player would see it.
+	const AChaosImpactCharacter* PlayerCharacter = bDemoPlay && DemoIntroCharacter.IsValid() ? DemoIntroCharacter.Get()
+		: Cast<AChaosImpactCharacter>(GetPawn());
 	const float Elapsed = Match ? Match->GetIntroElapsedSeconds() : 0.0f;
 	const float CameraSeconds = ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds;
 	const bool bActive = IsLocalController() && PlayerCharacter && Match && Match->bVersusMatch
@@ -3059,7 +3165,11 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 	{
 		if (IsValid(IntroCamera))
 		{
-			if (GetViewTarget() == IntroCamera && GetPawn())
+			if (GetViewTarget() == IntroCamera && bDemoPlay && DemoIntroCharacter.IsValid())
+			{
+				SetViewTarget(DemoIntroCharacter.Get());
+			}
+			else if (GetViewTarget() == IntroCamera && GetPawn())
 			{
 				SetViewTarget(GetPawn());
 			}
@@ -3130,11 +3240,13 @@ void AChaosImpactPlayerController::OpenSoloLevel(const int32 StageIndex)
 {
 	CurrentSoloStage = FMath::Max(1, StageIndex);
 
-	// ステージに応じたマップパッケージ指定。ステージ1は夜のネオン街、ステージ2は夕焼けの空中遺跡（どちらも
-	// 入ると扉が閉まって雑魚→ボスの部屋がある別々のレベル）。それ以降はまだ専用のマップを作る前提の名前。
-	const FString MapPackage = CurrentSoloStage <= 2
-		? FString::Printf(TEXT("/Game/ChaosImpact/solo/Lvl_SoloStage%d"), CurrentSoloStage)
-		: FString::Printf(TEXT("/Game/Solo/Lvl_Solo_Stage%d"), CurrentSoloStage);
+	// ステージ番号ごとのレベルはステージ表（ChaosImpactSoloStages.cpp）にある。1は夜のネオン街、15は空中神殿
+	// （夕焼けの空中遺跡のレベル）。まだ作っていないステージは専用のマップを作る前提の名前。
+	FString MapPackage = ChaosImpactSolo::GetLevelPackage(CurrentSoloStage);
+	if (MapPackage.IsEmpty())
+	{
+		MapPackage = FString::Printf(TEXT("/Game/Solo/Lvl_Solo_Stage%d"), CurrentSoloStage);
+	}
 
 	bTravelPending = true;
 	ExitTrainingOverlayPresentation();
@@ -3155,8 +3267,172 @@ void AChaosImpactPlayerController::OpenSoloLevel(const int32 StageIndex)
 		Viewport->SetForceDisableSplitscreen(false);
 	}
 
-	// マップを開く
+	// ロード画面を出してからマップを開く
+	if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::SoloStage);
+	}
 	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true, Options);
+}
+
+void AChaosImpactPlayerController::OpenSoloWorldMap(const int32 Map, const int32 AtNode, const bool bLoadingScreen)
+{
+	GetWorldTimerManager().ClearTimer(SoloReturnTimer);
+	if (bLoadingScreen)
+	{
+		if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+		{
+			Loading->BeginTravel(EChaosImpactLoadingKind::SoloMap);
+		}
+	}
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+	FString Options = FString::Printf(TEXT("CIWorldMap=1?CIMapAt=%d?CITargets=0?CICPUCount=0?%s"), AtNode, *BuildLocalSetupOptions());
+	if (BallFlightMode == EChaosImpactBallFlightMode::Straight)
+	{
+		Options += TEXT("?CIBallStraight=1");
+	}
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+	UGameplayStatics::OpenLevel(this, FName(*ChaosImpactSolo::GetMapPackage(Map)), true, Options);
+}
+
+void AChaosImpactPlayerController::OpenSoloTitle()
+{
+	const TCHAR* Map = TEXT("/Game/ChaosImpact/solo/Title/Lvl_SoloTitle");
+	if (bTravelPending)
+	{
+		return;
+	}
+	if (!FPackageName::DoesPackageExist(Map))
+	{
+		// No title level: straight on with the file last played.
+		StartSoloFile(UChaosImpactSoloProgress::GetActiveSlot());
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(SoloReturnTimer);
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+	if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::SoloTitle);
+	}
+	UGameplayStatics::OpenLevel(this, FName(Map), true, FString::Printf(TEXT("CISoloTitle=1?CITargets=0?CICPUCount=0?%s"), *BuildLocalSetupOptions()));
+}
+
+void AChaosImpactPlayerController::StartSoloFile(const int32 Slot)
+{
+	UChaosImpactSoloProgress::SetActiveSlot(Slot);
+	UChaosImpactSoloProgress* Progress = UChaosImpactSoloProgress::Load();
+	if (!UChaosImpactSoloProgress::DoesSlotExist(Slot))
+	{
+		// A new file: saved at once, so its card shows it begun.
+		Progress->Save();
+	}
+	const int32 Node = Progress ? Progress->LastNode : 1;
+	const FChaosImpactSoloStageInfo* Info = ChaosImpactSolo::FindStage(Node);
+	OpenSoloWorldMap(Info ? Info->Map : 1, Info ? Node : 1);
+}
+
+void AChaosImpactPlayerController::OpenSoloFromMenu()
+{
+	// Solo mode starts on its own title (the files).
+	OpenSoloTitle();
+}
+
+void AChaosImpactPlayerController::NotifySoloStageCleared()
+{
+	const FChaosImpactSoloStageInfo* Info = ChaosImpactSolo::FindStage(CurrentSoloStage);
+	if (!bSoloMode || !Info || GetWorldTimerManager().IsTimerActive(SoloReturnTimer))
+	{
+		return;
+	}
+	UChaosImpactSoloProgress* Progress = UChaosImpactSoloProgress::Load();
+	Progress->MarkCleared(CurrentSoloStage);
+	Progress->LastNode = CurrentSoloStage;
+	Progress->Save();
+	// No clear presentation yet: a few seconds in the opened room, then back to the map (where the way on opens).
+	const int32 Map = Info->Map;
+	const int32 Stage = CurrentSoloStage;
+	GetWorldTimerManager().SetTimer(SoloReturnTimer, FTimerDelegate::CreateWeakLambda(this, [this, Map, Stage]()
+	{
+		if (!bTravelPending)
+		{
+			OpenSoloWorldMap(Map, Stage);
+		}
+	}), 5.0f, false);
+}
+
+bool AChaosImpactPlayerController::OpenExplorationMap()
+{
+	const TCHAR* Map = TEXT("/Game/ChaosImpact/OpenWorld/Lvl_OpenWorld");
+	if (bTravelPending || !FPackageName::DoesPackageExist(Map))
+	{
+		return false;
+	}
+	bTravelPending = true;
+	SetPause(false);
+	bIntroFullScreen = false;
+	UGameplayStatics::OpenLevel(this, FName(Map), true, FString::Printf(TEXT("CIOpenWorld=1?CITargets=0?CICPUCount=0?%s"), *BuildLocalSetupOptions()));
+	return true;
+}
+
+bool AChaosImpactPlayerController::HandleWorldMapPauseChoice(const FString& Choice)
+{
+	if (Choice == TEXT("solo_world_map"))
+	{
+		const FChaosImpactSoloStageInfo* Info = ChaosImpactSolo::FindStage(CurrentSoloStage);
+		OpenSoloWorldMap(Info ? Info->Map : 1, CurrentSoloStage);
+		return true;
+	}
+	if (!bSoloWorldMap)
+	{
+		return false;
+	}
+	if (Choice == TEXT("goto_mode"))
+	{
+		ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+		return true;
+	}
+	if (Choice == TEXT("goto_solo_title"))
+	{
+		OpenSoloTitle();
+		return true;
+	}
+	if (Choice == TEXT("goto_title"))
+	{
+		ShowMenuScreen(EChaosImpactScreen::Title);
+		return true;
+	}
+	if (Choice == TEXT("map_unlock"))
+	{
+		UChaosImpactSoloProgress* Progress = UChaosImpactSoloProgress::Load();
+		Progress->bUnlockAll = !Progress->bUnlockAll;
+		Progress->Save();
+		if (AChaosImpactWorldMap* Map = AChaosImpactWorldMap::Find(this))
+		{
+			Map->RefreshFromProgress();
+		}
+		ResumeGameplay();
+		return true;
+	}
+	if (Choice == TEXT("map_reset"))
+	{
+		UChaosImpactSoloProgress::Load()->ResetAll();
+		OpenSoloWorldMap(1, 1);
+		return true;
+	}
+	return false;
 }
 
 void AChaosImpactPlayerController::RetrySoloLevel()

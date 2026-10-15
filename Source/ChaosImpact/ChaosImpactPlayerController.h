@@ -280,6 +280,44 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
 	int32 GetCurrentSoloStage() const { return CurrentSoloStage; }
 
+	/** Solo mode's world map (1: 占領された世界, 2: デットボール合衆国), the player standing on a node (a stage or a gate). */
+	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
+	/** bLoadingScreen: false for the gate between the two maps (just a warp). */
+	void OpenSoloWorldMap(int32 Map, int32 AtNode, bool bLoadingScreen = true);
+	/** Solo mode's own title (its three files): /Game/ChaosImpact/solo/Title/Lvl_SoloTitle?CISoloTitle=1. */
+	void OpenSoloTitle();
+	/** Plays a file (1-3) from solo mode's title: a new one starts on the first map, one begun goes back where it was. */
+	void StartSoloFile(int32 Slot);
+	/** On solo mode's title (?CISoloTitle=1). */
+	bool IsSoloTitle() const { return bSoloTitle; }
+	/**
+	 * The title's demo play: a local VS match of CPUs only (a stage and characters at random) watched through one CPU's
+	 * camera, opened with ?CIDemo=1 (AChaosImpactDemoPlay runs it). Started when the title is left alone a while.
+	 */
+	void StartDemoPlay();
+	/** Back to the title from the demo. */
+	void EndDemoPlay();
+	bool IsDemoPlay() const { return bDemoPlay; }
+	/** The demo: the CPU whose view the VS opening's camera dives into (as a player's would into theirs). */
+	void SetDemoIntroCharacter(class AChaosImpactCharacter* InCharacter);
+	/** How long the title waits untouched before its demo (seconds; -CIDemoIdle=<seconds> changes it). */
+	static float GetDemoIdleSeconds();
+
+	/** Solo mode from the menus: the world map where the player last was. */
+	void OpenSoloFromMenu();
+
+	/** On a solo world map (?CIWorldMap=1). */
+	bool IsSoloWorldMap() const { return bSoloWorldMap; }
+
+	/** Every solo room in this stage's level is cleared: saved, and back to the world map in a few seconds. */
+	void NotifySoloStageCleared();
+
+	/** The exploration map (OpenWorld/, an experiment that can be removed): its hidden way in from the title. */
+	bool OpenExplorationMap();
+
+	/** A choice from the world map's pause menu (its Detail); false when it is not one. */
+	bool HandleWorldMapPauseChoice(const FString& Choice);
+
 	// 既存の ShowsTrainingPauseEntries を変更（ソロモード中はトレーニングポーズ項目を出さない）
 	bool ShowsTrainingPauseEntries() const { return bTrainingMode && !bSoloMode && !IsVersusMatchWorld(); }
 
@@ -497,5 +535,15 @@ protected:
 
 	/** 現在プレイ中のソロステージ番号 */
 	int32 CurrentSoloStage = 1;
+
+	/** On a solo world map. */
+	bool bSoloWorldMap = false;
+	bool bSoloTitle = false;
+	bool bDemoPlay = false;
+	TWeakObjectPtr<class AChaosImpactCharacter> DemoIntroCharacter;
+	/** Set while travelling to the demo (its options carry ?CIDemo=1). */
+	bool bDemoTravel = false;
+	double TitleShownSince = 0.0;
+	FTimerHandle SoloReturnTimer;
 
 };

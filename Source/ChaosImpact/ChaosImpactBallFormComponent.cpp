@@ -30,8 +30,16 @@ bool UChaosImpactBallFormComponent::IsAvailable() const
 	const UWorld* World = GetWorld();
 	const auto* PC = World ? Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController()) : nullptr;
 	const auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
-	return bEnabled && World && World->GetNetMode() == NM_Standalone && !(Match && Match->bVersusMatch)
-		&& PC && PC->IsTrainingMode() && PC->ShowsTrainingPauseEntries();
+	if (!bEnabled || !World || World->GetNetMode() != NM_Standalone)
+	{
+		return false;
+	}
+	// Local VS team battles while the match runs, and local training (its own teams).
+	if (Match && Match->bVersusMatch)
+	{
+		return Match->IsTeamBattle() && Match->Phase == EChaosImpactOnlinePhase::Match;
+	}
+	return PC && PC->IsTrainingMode() && PC->ShowsTrainingPauseEntries();
 }
 
 bool UChaosImpactBallFormComponent::CanCollect(const AChaosImpactCharacter* Passenger) const
@@ -75,6 +83,11 @@ bool UChaosImpactBallFormComponent::Toggle()
 	P->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	P->ToonCharacter->SetBallPose(true);
 	Ball->InitializePassenger(P);
+	CurlAge = 0.0f;
+	UncurlAge = -1.0f;
+	bCurlCenterKnown = false;
+	CurlCenter = FVector(0.0f, 0.0f, 85.0f);
+	AChaosImpactBuddyBall::PlayPop(this, Ball->GetShellCenter(), Ball->GetTeamColor(), false);
 	return true;
 }
 
@@ -88,6 +101,7 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 	FormBall.Reset();
 	if (Ball)
 	{
+		AChaosImpactBuddyBall::PlayPop(this, Ball->GetShellCenter(), Ball->GetTeamColor(), true);
 		Ball->ForgetPassenger();
 		if (AChaosImpactCharacter* Holder = Ball->GetCarrier()) { Holder->GetBallForm()->Remove(Ball); }
 		// Also remove a held ball released during the throw animation, before its release cue.
@@ -143,6 +157,12 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 		P->bWasMouseDownLastTick = false;
 		P->UpdateBallPresentation();
 	}
+	if (bSavedPuppet && P && !P->IsEliminated())
+	{
+		// Springs back out of the burst shell.
+		UncurlAge = 0.0f;
+	}
+	CurlAge = -1.0f;
 	bSavedPuppet = false;
 	NextTransformAt = GetWorld() ? GetWorld()->GetTimeSeconds()+.5 : 0;
 	bRestoring = false;
@@ -237,12 +257,48 @@ void UChaosImpactBallFormComponent::TickComponent(const float Delta, const ELeve
 		P->SetActorLocation(Center, false, nullptr, ETeleportType::TeleportPhysics);
 		if (P->ToonCharacter)
 		{
-			const float Scale = P->ToonCharacterScale*.55f;
-			const float Spin = FormBall->IsLaunched() ? GetWorld()->GetTimeSeconds()*600.0f : 0.0f;
-			const FQuat Rotation = FQuat(P->GetActorRightVector(), FMath::DegreesToRadians(Spin)) * P->GetMesh()->GetComponentQuat();
+			// Curled up inside the shell, rolling with it; it shrinks into the shell over the first moment.
+			CurlAge += Delta;
+			const float In = FMath::InterpEaseOut(0.0f, 1.0f, FMath::Clamp(CurlAge / 0.22f, 0.0f, 1.0f), 2.0f);
+			const float Scale = P->ToonCharacterScale * FMath::Lerp(1.0f, 0.46f, In);
+			const FQuat Rotation = FormBall->GetRoll() * P->GetMesh()->GetComponentQuat();
+			const FVector Middle = FormBall->GetShellCenter();
 			P->ToonCharacter->SetWorldScale3D(FVector(Scale));
-			P->ToonCharacter->SetWorldLocationAndRotation(Center-Rotation.RotateVector(FVector(0,0,85)*Scale), Rotation);
+			P->ToonCharacter->SetWorldLocationAndRotation(Middle-Rotation.RotateVector(CurlCenter*Scale), Rotation);
 			P->ToonCharacter->UpdatePose(true);
+			if (!bCurlCenterKnown && CurlAge > 0.06f)
+			{
+				// Where the curled body actually is (each model curls differently), so it stays inside the shell.
+				FBox Box(ForceInit);
+				TArray<USceneComponent*> Parts;
+				P->ToonCharacter->GetChildrenComponents(true, Parts);
+				for (USceneComponent* Part : Parts)
+				{
+					if (const UPrimitiveComponent* Shape = Cast<UPrimitiveComponent>(Part); Shape && Shape->IsVisible())
+					{
+						Box += Shape->Bounds.GetBox();
+					}
+				}
+				if (Box.IsValid)
+				{
+					CurlCenter = P->ToonCharacter->GetComponentTransform().InverseTransformPosition(Box.GetCenter());
+					bCurlCenterKnown = true;
+				}
+			}
+		}
+	}
+	else if (UncurlAge >= 0.0f && P->ToonCharacter)
+	{
+		// Out of the ball: a quick stretch up past full size, settling back.
+		UncurlAge += Delta;
+		const float T = UncurlAge / 0.34f;
+		const float Stretch = T >= 1.0f ? 1.0f : T < 0.35f ? FMath::Lerp(0.6f, 1.14f, T / 0.35f)
+			: 1.0f + 0.14f * FMath::Cos((T - 0.35f) / 0.65f * PI * 1.5f) * (1.0f - (T - 0.35f) / 0.65f);
+		P->ToonCharacter->SetRelativeScale3D(SavedPuppetTransform.GetScale3D() * FVector(1.0f / FMath::Sqrt(Stretch), 1.0f / FMath::Sqrt(Stretch), Stretch));
+		if (T >= 1.0f)
+		{
+			P->ToonCharacter->SetRelativeScale3D(SavedPuppetTransform.GetScale3D());
+			UncurlAge = -1.0f;
 		}
 	}
 	for (int32 I = 0; I < 2; ++I) { if (Slots[I].IsValid()) { Slots[I]->FollowHand(); } }

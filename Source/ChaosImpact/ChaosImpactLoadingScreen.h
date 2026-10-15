@@ -22,7 +22,11 @@ enum class EChaosImpactLoadingKind : uint8
 	RoomLeave,
 	Title,
 	/** Not loading at all: the little games played for their own sake (from the settings). */
-	Arcade
+	Arcade,
+	/** Solo mode: to its title (the files), to a world map, to a stage. */
+	SoloTitle,
+	SoloMap,
+	SoloStage
 };
 
 /** The little game a loading screen plays (a different one each time). */

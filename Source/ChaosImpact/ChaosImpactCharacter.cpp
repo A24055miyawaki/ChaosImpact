@@ -520,7 +520,7 @@ void AChaosImpactCharacter::TryCreateChargeWidget()
 		ChargeWidget->SetStamina(Stamina, MaxStamina);
 		ChargeWidget->SetBallInventory(CarriedBallCount, MaximumCarriedBalls, CarriedBallTypes);
 		const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(PlayerController);
-		ChargeWidget->SetVisibility(!MenuController || MenuController->IsGameplayActive()
+		ChargeWidget->SetVisibility((!MenuController || MenuController->IsGameplayActive()) && !bMapWalker
 			? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 		UE_LOG(LogChaosImpact, Log, TEXT("Charge gauge created for %s"), *GetName());
 	}
@@ -545,6 +545,21 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	if (!bGameplay || bEliminated || bTrainingMenuFrozen || IsEliminationPredicted() || IsMatchInputLocked())
 	{
 		ResetEasyControls();
+		return;
+	}
+	if (bMapWalker)
+	{
+		// The world map: walking only (keys or stick); the map itself takes clicks and the confirm button.
+		bool bStick = false;
+		FVector2D Movement = GetMoveInput(PlayerController, bStick);
+		if (bStick)
+		{
+			Movement = ApplyRadialStickDeadZone(Movement, MovementStickDeadZone);
+		}
+		if (!Movement.IsNearlyZero())
+		{
+			DoMove(static_cast<float>(Movement.X), static_cast<float>(Movement.Y));
+		}
 		return;
 	}
 	const bool bPhysicalThrow = IsActionDown(PlayerController, EChaosImpactAction::Throw);
@@ -684,7 +699,7 @@ bool AChaosImpactCharacter::IsPointerOverGameplayUI() const
 bool AChaosImpactCharacter::HandleEasyPointerKey(const FKey& Key, const EInputEvent Event)
 {
 	AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetController());
-	if (!PC || PC->IsUsingGamepad() || !PC->IsGameplayActive()) { return false; }
+	if (!PC || PC->IsUsingGamepad() || !PC->IsGameplayActive() || bMapWalker) { return false; }
 	const auto Scheme = ChaosImpactSettings::GetPlayerControlScheme(PC);
 	if (Scheme == EChaosImpactControlScheme::Normal) { return false; }
 	const int32 Hit = ChargeWidget ? ChargeWidget->GetGameplayPointerHit() : 0;
@@ -2131,7 +2146,7 @@ void AChaosImpactCharacter::ResetAfterElimination()
 void AChaosImpactCharacter::CheckLeftStage()
 {
 	UWorld* World = GetWorld();
-	if (!World || bEliminated || World->GetTimeSeconds() < NextLeftStageCheckAt)
+	if (!World || bEliminated || bExploration || World->GetTimeSeconds() < NextLeftStageCheckAt)
 	{
 		return;
 	}
@@ -3481,7 +3496,21 @@ void AChaosImpactCharacter::SetGameplayUIVisible(const bool bVisible)
 	TryCreateChargeWidget();
 	if (ChargeWidget)
 	{
-		ChargeWidget->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		ChargeWidget->SetVisibility(bVisible && !bMapWalker ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
+void AChaosImpactCharacter::SetMapWalker(const bool bWalker)
+{
+	bMapWalker = bWalker;
+	ResetEasyControls();
+	if (bWalker)
+	{
+		CancelChargingThrow();
+	}
+	if (ChargeWidget)
+	{
+		ChargeWidget->SetVisibility(bWalker ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 	}
 }
 
@@ -4702,7 +4731,7 @@ void AChaosImpactCharacter::UpdateSnowball()
 	{
 		// Charging a nova roots its thrower to the spot.
 		GetCharacterMovement()->MaxWalkSpeed = IsChargingNova() || IsDriving() ? 0.0f
-			: BaseMaxWalkSpeed * (1.0f - ChaosImpactBallTypes::SnowMaxSlowdown * Heaviest);
+			: BaseMaxWalkSpeed * (1.0f - ChaosImpactBallTypes::SnowMaxSlowdown * Heaviest) * ExplorationSpeed;
 	}
 }
 

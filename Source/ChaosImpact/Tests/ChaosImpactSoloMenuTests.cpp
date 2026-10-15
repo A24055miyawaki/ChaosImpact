@@ -3,9 +3,13 @@
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactScreen.h"
 #include "ChaosImpactSoloRoom.h"
+#include "ChaosImpactSoloStages.h"
+#include "ChaosImpactSoloTitle.h"
+#include "ChaosImpactWorldMap.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -17,8 +21,10 @@
 namespace
 {
 	/**
-	 * From the title's menus (run on the title level, /Game/ThirdPerson/Lvl_ThirdPerson): ソロ, then ステージ1, opens the
-	 * solo room level in solo mode, with its room and the player in it. A screenshot goes to Saved/SoloRoomQA.
+	 * From the title's menus (run on the title level, /Game/ThirdPerson/Lvl_ThirdPerson): ソロ opens solo mode's title, file
+	 * 1 (erased first) starts the world map (the player on stage 1's pedestal), and the confirm button there opens the solo
+	 * room level in solo mode, with its room and the player in it. A screenshot goes to Saved/SoloRoomQA. Uses the tests'
+	 * progress slots.
 	 */
 	class FSoloMenuEntryCommand : public IAutomationLatentCommand
 	{
@@ -28,7 +34,7 @@ namespace
 		virtual bool Update() override
 		{
 			const double Now = FPlatformTime::Seconds();
-			if (Now - StartedAt > 90.0)
+			if (Now - StartedAt > 150.0)
 			{
 				Test->AddError(FString::Printf(TEXT("Stuck at step %d."), Step));
 				return true;
@@ -63,19 +69,51 @@ namespace
 					return false;
 				}
 				// The mode select starts on ソロ.
+				UChaosImpactSoloProgress::DeleteSlot(1);
 				PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
 				Press(EKeys::Enter);
+				Step = 10;
+				NextAt = Now + 0.5;
+				return false;
+			case 10:
+			{
+				// Solo mode's title: the files; file 1 (new) started.
+				AChaosImpactSoloTitle* Title = AChaosImpactSoloTitle::Find(World);
+				if (!Title || !PC->IsSoloTitle() || Title->GetAge() < 2.0f)
+				{
+					return false;
+				}
+				Test->TestTrue(TEXT("ソロ opens solo mode's title"), World->GetMapName().Contains(TEXT("Lvl_SoloTitle")));
+				Title->OpenFiles();
+				Step = 11;
+				NextAt = Now + 0.6;
+				return false;
+			}
+			case 11:
+				if (AChaosImpactSoloTitle* Title = AChaosImpactSoloTitle::Find(World))
+				{
+					Test->TestFalse(TEXT("File 1 is empty"), Title->GetFile(0).bExists);
+					Title->StartFile(0);
+				}
 				Step = 1;
 				NextAt = Now + 0.5;
 				return false;
 			case 1:
-				Test->TestEqual(TEXT("ソロ opens the stage select"), static_cast<int32>(PC->GetCurrentScreen()),
-					static_cast<int32>(EChaosImpactScreen::SoloStageSelect));
-				// It starts on ステージ1.
+			{
+				// ソロ: the world map, standing on stage 1 once its fog has cleared.
+				AChaosImpactWorldMap* Map = AChaosImpactWorldMap::Find(World);
+				const UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(PC);
+				if (!Map || !PC->IsSoloWorldMap() || Map->IsRevealing() || Map->GetFocusedNode() != 1 || (Loading && Loading->IsShowing()))
+				{
+					return false;
+				}
+				Test->TestTrue(TEXT("File 1 opens the world map"), World->GetMapName().Contains(TEXT("Lvl_SoloWorldMap1")));
+				Test->TestTrue(TEXT("File 1 saved"), UChaosImpactSoloProgress::DoesSlotExist(1) && UChaosImpactSoloProgress::GetActiveSlot() == 1);
 				Press(EKeys::Enter);
 				Step = 2;
 				NextAt = Now + 0.5;
 				return false;
+			}
 			case 2:
 			{
 				// On to the solo room's level, playing.

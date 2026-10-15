@@ -32,7 +32,11 @@ public class ChaosImpact : ModuleRules
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils",
 			"MoviePlayer",
-			"MediaAssets"
+			"MediaAssets",
+			// The exploration map's terrain builder (OpenWorld/).
+			"MeshDescription",
+			"StaticMeshDescription",
+			"AssetRegistry"
 		});
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.

@@ -7,7 +7,10 @@
 class AChaosImpactBuddyBall;
 class AChaosImpactCharacter;
 
-/** Removable, local-training-only experiment. The original pawn keeps its controller and camera. */
+/**
+ * A player curling up into a ball a teammate can pick up and throw: local training with teams, and local VS team
+ * battles (not online yet). The original pawn keeps its controller and camera.
+ */
 UCLASS(ClassGroup=(ChaosImpact))
 class UChaosImpactBallFormComponent : public UActorComponent
 {
@@ -51,4 +54,10 @@ private:
 	bool bWaitForManageRelease = false;
 	double PressedAt = 0.0;
 	double NextTransformAt = 0.0;
+	/** Seconds since curling up (the body shrinking into the shell), and since uncurling (springing back), or < 0. */
+	float CurlAge = -1.0f;
+	float UncurlAge = -1.0f;
+	/** The curled body's middle, in the body's own space (measured once it has curled), kept at the shell's centre. */
+	FVector CurlCenter = FVector(0.0f, 0.0f, 85.0f);
+	bool bCurlCenterKnown = false;
 };

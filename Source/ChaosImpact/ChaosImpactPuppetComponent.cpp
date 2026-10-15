@@ -632,7 +632,7 @@ void UChaosImpactPuppetComponent::ApplyBallPose()
 {
 	// Model space faces +Y. Hands hug the shins; feet tuck toward the belly, elbows/knees out.
 	// Solve the actual model's chains instead of forcing the mannequin's long proportions onto it.
-	const FQuat BodyCurl(FVector::ForwardVector,FMath::DegreesToRadians(-38.0f));
+	const FQuat BodyCurl(FVector::ForwardVector,FMath::DegreesToRadians(-52.0f));
 	if (bSkinned && Skin && DrivenBody.Num()>1)
 	{
 		const FVector Hips = Skin->GetBoneLocationByName(DrivenBody[0].Name,EBoneSpaces::ComponentSpace);
@@ -655,7 +655,7 @@ void UChaosImpactPuppetComponent::ApplyBallPose()
 		if (!Mesh || Mesh->GetBoneIndex(Chain.Joints[0]) == INDEX_NONE) { return; }
 		const FVector Root = Mesh->GetBoneTransformByName(Chain.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
 		const float Reach = Chain.UpperLength+Chain.LowerLength;
-		const FVector Target = Root + (bArm ? FVector(-Side*.15f, .28f, -.22f) : FVector(-Side*.03f, .05f, -.1f))*Reach;
+		const FVector Target = Root + (bArm ? FVector(-Side*.22f, .3f, -.28f) : FVector(-Side*.03f, .1f, -.12f))*Reach;
 		const FVector Pole = (bArm ? FVector(Side*.7f,.5f,0) : FVector(Side*.1f,.8f,1.0f)).GetSafeNormal();
 		FVector Mid, End;
 		SolveTwoBone(Root, Target, Pole, Chain.UpperLength, Chain.LowerLength, Mid, End);

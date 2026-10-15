@@ -226,6 +226,13 @@ public:
 	/** Freezes only character actions; the world and physics keep ticking. */
 	void SetTrainingMenuFrozen(bool bFrozen);
 	bool IsTrainingMenuFrozen() const { return bTrainingMenuFrozen; }
+	/** On solo mode's world map: the player only walks (the map takes clicks and the confirm button), no battle HUD. */
+	void SetMapWalker(bool bWalker);
+	bool IsMapWalker() const { return bMapWalker; }
+	/** The exploration map (OpenWorld/, removable): no knockout for falling far below the start, walking SpeedScale times as fast. */
+	void SetExplorationMode(bool bOn, float SpeedScale = 1.0f) { bExploration = bOn; ExplorationSpeed = bOn ? SpeedScale : 1.0f; }
+	/** The exploration map's small fry: knocked out by one hit. */
+	void SetExplorationMinion() { MaxHealth = 1.0f; Health = 1.0f; }
 	/** Moves P1 closer and to the side so the live settings panel does not cover them. */
 	void SetTrainingMenuCameraActive(bool bActive);
 	bool IsChargingThrow() const { return bIsChargingThrow; }
@@ -1158,6 +1165,9 @@ protected:
 	FVector ClickLastProgress = FVector::ZeroVector;
 	double ClickProgressAt = 0.0;
 	bool bTrainingMenuFrozen = false;
+	bool bMapWalker = false;
+	bool bExploration = false;
+	float ExplorationSpeed = 1.0f;
 	bool bTrainingMenuCameraActive = false;
 	uint8 SavedTrainingMenuMovementMode = 1;
 	uint8 SavedTrainingMenuCustomMovementMode = 0;

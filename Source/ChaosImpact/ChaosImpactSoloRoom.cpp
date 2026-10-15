@@ -3,6 +3,8 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactPlayerController.h"
+#include "EngineUtils.h"
 #include "Components/ArrowComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -291,6 +293,16 @@ void AChaosImpactSoloRoom::FinishRoom()
 	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s cleared"), *GetName());
 	OnRoomCleared.Broadcast(this);
 	ReceiveRoomCleared();
+	// The stage is cleared once every room in its level is: solo mode saves it and goes back to the world map.
+	bool bAllCleared = true;
+	for (TActorIterator<AChaosImpactSoloRoom> It(GetWorld()); It; ++It)
+	{
+		bAllCleared &= It->GetPhase() == EChaosImpactSoloRoomPhase::Cleared;
+	}
+	if (AChaosImpactPlayerController* PC = bAllCleared ? Cast<AChaosImpactPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr)
+	{
+		PC->NotifySoloStageCleared();
+	}
 }
 
 void AChaosImpactSoloRoom::HandlePlayerEliminated(AChaosImpactCharacter* Character)

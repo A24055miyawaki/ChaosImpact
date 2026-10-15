@@ -23,6 +23,7 @@
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ImageUtils.h"
+#include "ChaosImpactSoloStages.h"
 #include "InputCoreTypes.h"
 #include "Misc/Paths.h"
 #include "Rendering/DrawElements.h"
@@ -1237,6 +1238,23 @@ void UChaosImpactMenuWidget::BuildEntries()
 			break;
 		}
 
+		// Solo mode's world map.
+		if (Controller && Controller->IsSoloWorldMap())
+		{
+			Entries.Add({ FSlateRect(490, 245, 1110, 307), TEXT("ゲームに戻る"), TEXT("resume"), TEXT(""), Ice });
+			Entries.Add({ FSlateRect(490, 325, 1110, 387), TEXT("ファイル選択へ"), TEXT("goto_solo_title"), TEXT(""), Gold });
+			Entries.Add({ FSlateRect(490, 405, 1110, 467), TEXT("モード選択へ"), TEXT("goto_mode"), TEXT(""), Fire });
+			Entries.Add({ FSlateRect(490, 485, 1110, 547), TEXT("タイトル画面へ"), TEXT("goto_title"), TEXT(""), Muted });
+			Entries.Add({ FSlateRect(490, 565, 1110, 627), TEXT("設定"), TEXT("settings"), TEXT(""), Violet });
+#if !UE_BUILD_SHIPPING
+			const UChaosImpactSoloProgress* Progress = UChaosImpactSoloProgress::Load();
+			Entries.Add({ FSlateRect(490, 665, 1110, 727), Progress && Progress->bUnlockAll ? TEXT("（開発用）全部ひらくをやめる")
+				: TEXT("（開発用）マップを全部ひらく"), TEXT("map_unlock"), TEXT(""), Gold });
+			Entries.Add({ FSlateRect(490, 745, 1110, 807), TEXT("（開発用）進行をリセット"), TEXT("map_reset"), TEXT(""), Muted });
+#endif
+			break;
+		}
+
 		// ★ソロモードプレイ中のポーズメニュー（新規追加分岐）
 		if (Controller && Controller->IsSoloMode())
 		{
@@ -1245,7 +1263,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Entries.Add({ FSlateRect(490, 325, 1110, 387),
 				bArc ? TEXT("投球軌道：放物線") : TEXT("投球軌道：直線"), TEXT(""), TEXT(""), bArc ? Fire : Ice });
 			Entries.Add({ FSlateRect(490, 405, 1110, 467), TEXT("ステージをやり直す"), TEXT("solo_retry"), TEXT(""), Gold });
-			Entries.Add({ FSlateRect(490, 485, 1110, 547), TEXT("ステージ選択へ"), TEXT("solo_stage_select"), TEXT(""), Ice });
+			Entries.Add({ FSlateRect(490, 485, 1110, 547), TEXT("ワールドマップへ"), TEXT("solo_world_map"), TEXT(""), Ice });
 			Entries.Add({ FSlateRect(490, 565, 1110, 627), TEXT("モード選択へ"), TEXT(""), TEXT(""), Fire });
 			Entries.Add({ FSlateRect(490, 645, 1110, 707), TEXT("タイトル画面へ"), TEXT(""), TEXT(""), Muted });
 			Entries.Add({ FSlateRect(490, 725, 1110, 787), TEXT("設定"), TEXT("settings"), TEXT(""), Violet });
@@ -2444,8 +2462,8 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 	case EChaosImpactScreen::ModeSelect:
 		if (SelectedIndex == 0)
 		{
-			// COMING SOON 画面 (SoloReady) ではなく「ソロ用ステージ選択画面」を開く
-			Controller->ShowMenuScreen(EChaosImpactScreen::SoloStageSelect);
+			// ソロは専用のタイトル（ファイル選択）から。
+			Controller->OpenSoloFromMenu();
 		}
 		else if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::VSSelect); }
 		else if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
@@ -2645,6 +2663,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			ArmedIndex = SelectedIndex;
 			BuildEntries();
+			break;
+		}
+		if (Controller->HandleWorldMapPauseChoice(Entries[SelectedIndex].Detail))
+		{
 			break;
 		}
 		if (Entries[SelectedIndex].Detail == TEXT("solo_retry"))
@@ -2915,6 +2937,29 @@ void UChaosImpactMenuWidget::GoBack()
 FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
 	const FKey Key = ChaosImpactSettings::ToMenuKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
+	// The exploration map's hidden way in (OpenWorld/, removable): on the title, up up down down left right left right B A
+	// (the arrow keys or the pad's D-pad, then B and A).
+	if (Screen == EChaosImpactScreen::Title && !InKeyEvent.IsRepeat())
+	{
+		static int32 SecretStep = 0;
+		const FKey Raw = InKeyEvent.GetKey();
+		const auto Is = [&Raw](const FKey& A, const FKey& B) { return Raw == A || Raw == B; };
+		const bool Steps[] = {Is(EKeys::Up, EKeys::Gamepad_DPad_Up), Is(EKeys::Up, EKeys::Gamepad_DPad_Up),
+			Is(EKeys::Down, EKeys::Gamepad_DPad_Down), Is(EKeys::Down, EKeys::Gamepad_DPad_Down),
+			Is(EKeys::Left, EKeys::Gamepad_DPad_Left), Is(EKeys::Right, EKeys::Gamepad_DPad_Right),
+			Is(EKeys::Left, EKeys::Gamepad_DPad_Left), Is(EKeys::Right, EKeys::Gamepad_DPad_Right),
+			Is(EKeys::B, EKeys::Gamepad_FaceButton_Right), Is(EKeys::A, EKeys::Gamepad_FaceButton_Bottom)};
+		SecretStep = Steps[SecretStep] ? SecretStep + 1 : (Steps[0] ? 1 : 0);
+		if (SecretStep == UE_ARRAY_COUNT(Steps))
+		{
+			SecretStep = 0;
+			if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+				Controller && Controller->OpenExplorationMap())
+			{
+				return FReply::Handled();
+			}
+		}
+	}
 	if (Screen == EChaosImpactScreen::ControllerAssignment && !Key.IsGamepadKey()
 		&& !InKeyEvent.IsRepeat())
 	{

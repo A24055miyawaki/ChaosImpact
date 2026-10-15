@@ -1531,13 +1531,13 @@ void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 		{
 			Bomb->SetWorldLocation(Center);
 			Bomb->SetWorldScale3D(FVector(Blast * FireSize * (1.0f + 0.012f * FMath::Sin(Age * 31.0f))));
-			if (UMaterialInstanceDynamic* Fire = NovaFireMaterial.Get())
+			if (UMaterialInstanceDynamic* FireLook = NovaFireMaterial.Get())
 			{
 				// Yellow-hot at the heart as it bursts, deepening to orange and red (and smoke) as it shrinks and fades.
 				const float SinceBurst = Age - NovaExplodeAfter;
-				Fire->SetScalarParameterValue(TEXT("Heat"), FMath::Clamp(0.75f - SinceBurst * 0.1f, 0.1f, 0.75f));
-				Fire->SetScalarParameterValue(TEXT("Glow"), 3.5f);
-				Fire->SetScalarParameterValue(TEXT("Fade"), AnimTime < ChaosImpactNova::FireShrinkAt ? 1.0f : FMath::Sqrt(FireSize));
+				FireLook->SetScalarParameterValue(TEXT("Heat"), FMath::Clamp(0.75f - SinceBurst * 0.1f, 0.1f, 0.75f));
+				FireLook->SetScalarParameterValue(TEXT("Glow"), 3.5f);
+				FireLook->SetScalarParameterValue(TEXT("Fade"), AnimTime < ChaosImpactNova::FireShrinkAt ? 1.0f : FMath::Sqrt(FireSize));
 			}
 		}
 	}

@@ -12,6 +12,8 @@ enum class EChaosImpactModelKind : uint8
 	Rigid,
 	/** SK_<Prefix>, one skinned mesh on a HumanIK skeleton (Character1_*) that follows the game's animation. */
 	Skinned,
+	/** A non-humanoid skeletal mesh with its own authored action clips. */
+	Authored,
 };
 
 /** One playable character: what the menus call it and where its model lives. */
@@ -50,6 +52,7 @@ namespace ChaosImpactRoster
 		{TEXT("ドッジ妖精"), TEXT("/Game/ChaosImpact/Fairy"), TEXT("Fairy"), EChaosImpactModelKind::Skinned, false},
 		{TEXT("ウッドウーマン"), TEXT("/Game/ChaosImpact/Wood"), TEXT("Wood"), EChaosImpactModelKind::Skinned, false},
 		{TEXT("アントキッズ"), TEXT("/Game/ChaosImpact/Ant"), TEXT("Ant"), EChaosImpactModelKind::Skinned, false},
+		{TEXT("マグロ"), TEXT("/Game/ChaosImpact/Fish"), TEXT("Fish"), EChaosImpactModelKind::Authored, false},
 	};
 
 	/** Tiles on the select screen; the ones past the roster show as locked, so it reads as a roster that grows. */

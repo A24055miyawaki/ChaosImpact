@@ -195,6 +195,18 @@ void AChaosImpactCharacterPreview::RebuildModel(const int32 CharacterIndex)
 		Model = nullptr;
 	}
 	ModelCharacter = CharacterIndex;
+	if (Model && Model->HasAuthoredAnimations())
+	{
+		Model->SetRelativeRotation(FRotator(0.0f, 65.0f, 0.0f));
+		Camera->FOVAngle = 36.0f;
+		Model->PlaySelectionAppeal();
+	}
+	else
+	{
+		Camera->SetRelativeLocation(FVector(0.0f, 380.0f, 104.0f));
+		Camera->SetWorldRotation(FRotator(-2.0f, -90.0f, 0.0f));
+		Camera->FOVAngle = 30.0f;
+	}
 }
 
 void AChaosImpactCharacterPreview::ShowLoadout(const int32 CharacterIndex, const int32 Colour, const FLinearColor& Accent)
@@ -225,6 +237,12 @@ void AChaosImpactCharacterPreview::ShowLoadout(const int32 CharacterIndex, const
 
 void AChaosImpactCharacterPreview::PlayReady()
 {
+	if (Model && Model->HasAuthoredAnimations())
+	{
+		Model->PlaySelectionAppeal();
+		SpinKick += 40.0f;
+		return;
+	}
 	if (!ReadyAnimation || !GetWorld())
 	{
 		return;
@@ -266,6 +284,23 @@ void AChaosImpactCharacterPreview::Animate(const float DeltaSeconds)
 	Pose->RefreshBoneTransforms();
 	if (Model)
 	{
-		Model->UpdatePose(true);
+		Model->UpdatePose(true, DeltaSeconds);
+		if (USkeletalMeshComponent* Fish = Model->GetAuthoredMesh(); Fish && Picture)
+		{
+			// The appeal lifts and turns the whole fish. Keep it inside the portrait,
+			// including its tail, rather than keeping a human-sized fixed framing.
+			FBox PoseBox(ForceInit);
+			for (int32 Bone = 0; Bone < Fish->GetNumBones(); ++Bone)
+			{
+				PoseBox += Fish->GetSocketLocation(Fish->GetBoneName(Bone));
+			}
+			// Imported animation bounds include every clip's travel and are much
+			// larger than this frame's fish. Frame its current skeleton instead.
+			PoseBox = PoseBox.ExpandBy(18.0f);
+			const FVector Focus = PoseBox.GetCenter();
+			const float Distance = FMath::Max(270.0f, static_cast<float>(PoseBox.GetExtent().Size()) * 3.0f);
+			Camera->SetWorldLocation(Focus + FVector(0.0f, Distance, Distance * 0.14f));
+			Camera->SetWorldRotation((Focus-Camera->GetComponentLocation()).Rotation());
+		}
 	}
 }

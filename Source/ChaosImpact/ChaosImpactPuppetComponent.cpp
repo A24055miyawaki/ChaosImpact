@@ -174,6 +174,11 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	bRigid = Kind == EChaosImpactModelKind::Rigid;
 	bSkinned = Kind == EChaosImpactModelKind::Skinned;
 	ColourIndex = INDEX_NONE;
+	if (Kind == EChaosImpactModelKind::Authored)
+	{
+		USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *AssetPath(CharacterIndex, TEXT("SK"), TEXT("")));
+		return Source && Source->GetSkinnedAsset() && Parent && Mesh && GetOwner() && InitializeAuthored(Mesh);
+	}
 	if (bSkinned)
 	{
 		USkeletalMesh* SkinnedMesh = LoadObject<USkeletalMesh>(nullptr, *AssetPath(CharacterIndex, TEXT("SK"), TEXT("")));
@@ -351,7 +356,7 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 {
 	// The parts belong to the owning actor, so they would outlive this component unless removed with it.
 	bReady = false;
-	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin})
+	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin, AuthoredMesh})
 	{
 		if (IsValid(Part) && !Part->IsBeingDestroyed())
 		{
@@ -359,6 +364,8 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 		}
 	}
 	Skin = nullptr;
+	AuthoredMesh = nullptr;
+	AuthoredClips.Reset();
 	Body = nullptr;
 	ArmL = nullptr;
 	ArmR = nullptr;
@@ -406,7 +413,7 @@ void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 void UChaosImpactPuppetComponent::SetPartsVisible(const bool bShow)
 {
 	SetVisibility(bShow, false);
-	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin})
+	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin, AuthoredMesh})
 	{
 		if (Part)
 		{
@@ -417,7 +424,7 @@ void UChaosImpactPuppetComponent::SetPartsVisible(const bool bShow)
 
 void UChaosImpactPuppetComponent::SetPartsOverlayMaterial(UMaterialInterface* Overlay)
 {
-	for (UMeshComponent* Part : TArray<UMeshComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin})
+	for (UMeshComponent* Part : TArray<UMeshComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin, AuthoredMesh})
 	{
 		if (Part)
 		{
@@ -428,6 +435,19 @@ void UChaosImpactPuppetComponent::SetPartsOverlayMaterial(UMaterialInterface* Ov
 
 bool UChaosImpactPuppetComponent::GetPalmLocation(const bool bRightHand, FVector& OutLocation) const
 {
+	if (AuthoredMesh && bReady)
+	{
+		// There are no fin joints in Fish.fbx. Carry at the side-fin tips,
+		// skinned to joint4 with the same reference-to-current transform as the body.
+		const int32 Bone = AuthoredMesh->GetBoneIndex(TEXT("joint4"));
+		if (Bone == INDEX_NONE) { return false; }
+		const FTransform Reference = FAnimationRuntime::GetComponentSpaceTransformRefPose(
+			AuthoredMesh->GetSkeletalMeshAsset()->GetRefSkeleton(), Bone);
+		const FVector FinInBindPose(bRightHand ? 28.0f : -28.0f, -2.3f, 55.5f);
+		OutLocation = AuthoredMesh->GetSocketTransform(TEXT("joint4"), RTS_World).TransformPosition(
+			Reference.InverseTransformPosition(FinInBindPose));
+		return true;
+	}
 	const FLimbChain& Chain = bRightHand ? ChainArmR : ChainArmL;
 	if (!bReady || !Chain.bSolved)
 	{
@@ -493,16 +513,26 @@ void UChaosImpactPuppetComponent::TickComponent(const float DeltaTime, const ELe
 	FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-	UpdatePose();
+	UpdatePose(false, DeltaTime);
 }
 
-void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow)
+void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow, const float AnimationDeltaSeconds)
 {
 	if (!bReady || !IsValid(Source) || !Source->GetSkinnedAsset() || !IsVisible())
 	{
 		return;
 	}
 	PrepareDrivePose();
+	if (AuthoredMesh)
+	{
+		// Ball form may also ask for a pose in this frame. Never advance the clip twice.
+		const bool bAdvance = AuthoredAdvancedFrame != GFrameCounter;
+		const float Delta = AnimationDeltaSeconds >= 0.0f ? AnimationDeltaSeconds : GetWorld()->GetDeltaSeconds();
+		UpdateAuthoredPose(bAdvance ? Delta : 0.0f);
+		if (bAdvance) { AuthoredAdvancedFrame = GFrameCounter; }
+		PlaceHeldBalls();
+		return;
+	}
 	if (bSkinned)
 	{
 		if (bBallPose)
@@ -879,7 +909,7 @@ void UChaosImpactPuppetComponent::PlaceHeldBalls()
 		FVector Palm;
 		if (Ball && Ball->IsVisible() && GetPalmLocation(bRight, Palm))
 		{
-			if (bRight && DriveHoldWeight > 0.0f && GetWorld())
+			if (bRight && DriveHoldWeight > 0.0f && GetWorld() && !AuthoredMesh)
 			{
 				// A drive ball floats between the cupped hands, bobbing.
 				const float Bob = FMath::Sin(static_cast<float>(GetWorld()->GetTimeSeconds()) * 5.0f) * 2.5f;

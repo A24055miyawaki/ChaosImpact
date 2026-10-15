@@ -1753,7 +1753,14 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		}
 		PendingThrowBall = Ball;
 		bThrowReleasePending = true;
-		if (bOverhead)
+		if (ToonCharacter && ToonCharacter->HasAuthoredAnimations())
+		{
+			Ball->PrepareForAnimatedThrow(ToonCharacter->GetAuthoredMesh(), NAME_None,
+				FVector::ZeroVector, FRotator::ZeroRotator);
+			FVector Fin;
+			if (ToonCharacter->GetPalmLocation(true, Fin)) { Ball->SetActorLocation(Fin); }
+		}
+		else if (bOverhead)
 		{
 			Ball->PrepareForAnimatedThrow(GetRootComponent(), NAME_None,
 				GetOverheadHoldOffset(Ball->GetBallType(), Ball->GetSnowScale()), FRotator::ZeroRotator);
@@ -1820,6 +1827,11 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 	PendingThrowBall.Reset();
 	if (IsValid(Ball))
 	{
+		FVector Mouth;
+		if (ToonCharacter && ToonCharacter->GetAuthoredMouthLocation(Mouth))
+		{
+			Ball->SetActorLocation(Mouth);
+		}
 		if (HasAuthority() && !ThrowOriginOffset.IsNearlyZero())
 		{
 			// Start from where the thrower's own screen had them, not from this slightly older copy.
@@ -1869,6 +1881,11 @@ void AChaosImpactCharacter::PlayThrowAnimation()
 	ThrowAnimationStartedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 	// A drive ball is pushed out with both hands instead (the thrower knows the ball; others, what was charged).
 	const AChaosImpactBall* Thrown = PendingThrowBall.Get();
+	if (ToonCharacter && ToonCharacter->HasAuthoredAnimations())
+	{
+		ToonCharacter->PlayAuthoredThrow((Thrown ? Thrown->GetBallType() : LastChargedType) == EChaosImpactBallType::Nova,
+			ThrowReleaseDelaySeconds);
+	}
 	bDriveThrowAnimation = (Thrown ? Thrown->GetBallType() : LastChargedType) == EChaosImpactBallType::Drive;
 	GetMesh()->PlayAnimation(ThrowAnimation, false);
 	if (UAnimSingleNodeInstance* SingleNode = GetMesh()->GetSingleNodeInstance())
@@ -4749,7 +4766,7 @@ void AChaosImpactCharacter::UpdateSnowRollPresentation()
 	const bool bOverhead = bRightSnow && ChaosImpactBallTypes::IsSnowOverhead(RightScale);
 	float ChargeSeconds = 0.0f;
 	const bool bCharging = bRightSnow && GetPresentedCharge(ChargeSeconds);
-	const bool bInHand = bCharging && !bOverhead;
+	const bool bInHand = (ToonCharacter && ToonCharacter->HasAuthoredAnimations()) || (bCharging && !bOverhead);
 	if (HeldBallMesh && bRightSnow && !bThrowReleasePending && !bEliminated)
 	{
 		HeldBallMesh->SetRelativeScale3D(FVector(0.34f * RightScale));
@@ -5080,6 +5097,11 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 
 FVector AChaosImpactCharacter::GetOverheadHoldOffset(const EChaosImpactBallType Type, const float Scale) const
 {
+	FVector Fin;
+	if (ToonCharacter && ToonCharacter->HasAuthoredAnimations() && ToonCharacter->GetPalmLocation(true, Fin))
+	{
+		return Fin - GetPresentationLocation();
+	}
 	const float HalfHeight = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 96.0f;
 	const float Radius = 24.0f * (Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaShownScale : Scale);
 	return FVector(0.0f, 0.0f, Type == EChaosImpactBallType::Nova

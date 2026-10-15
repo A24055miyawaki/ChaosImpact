@@ -10,6 +10,7 @@ class UPoseableMeshComponent;
 class USkeletalMeshComponent;
 class UStaticMeshComponent;
 class UTexture;
+class UAnimSequenceBase;
 
 /**
  * The player's visible body: the character model from Content/ChaosImpact/Character, built from a static body and
@@ -42,7 +43,14 @@ public:
 	 * Copies the source skeleton's current pose; TickComponent does this every frame. bPushNow sends the limbs' bones
 	 * to the renderer at once, for a caller posing it in a paused world where the limbs do not tick.
 	 */
-	void UpdatePose(bool bPushNow = false);
+	void UpdatePose(bool bPushNow = false, float AnimationDeltaSeconds = -1.0f);
+	/** Non-humanoid characters play their supplied clips rather than copying HumanIK joints. */
+	bool HasAuthoredAnimations() const { return AuthoredMesh != nullptr; }
+	USkeletalMeshComponent* GetAuthoredMesh() const { return AuthoredMesh; }
+	void PlaySelectionAppeal();
+	void PlayAuthoredThrow(bool bNova, float ReleaseDelaySeconds);
+	FName GetAuthoredState() const { return AuthoredState; }
+	bool GetAuthoredMouthLocation(FVector& OutLocation) const;
 
 	/** 0 red, 1 blue, 2 yellow, 3 green: the team colours used everywhere else. */
 	void SetColourIndex(int32 Index);
@@ -68,6 +76,23 @@ public:
 	void SetBallPose(bool bActive);
 
 private:
+	bool InitializeAuthored(USkeletalMesh* Mesh);
+	void UpdateAuthoredPose(float DeltaSeconds);
+	void SetAuthoredState(FName State, bool bRestart = false);
+	UPROPERTY(Transient)
+	TObjectPtr<USkeletalMeshComponent> AuthoredMesh;
+	/** Swim, Appeal, Ball, Nova, Swing. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UAnimSequenceBase>> AuthoredClips;
+	FName AuthoredState = NAME_None;
+	float AuthoredTime = 0.0f;
+	float AuthoredThrowRemaining = 0.0f;
+	float AuthoredAppealRemaining = 0.0f;
+	float AuthoredThrowRate = 1.0f;
+	float AuthoredThrowAge = 0.0f;
+	float AuthoredReleaseDelay = 0.18f;
+	bool bAuthoredNovaThrow = false;
+	uint64 AuthoredAdvancedFrame = MAX_uint64;
 	bool bBallPose = false;
 	void ApplyBallPose();
 	struct FLimbChain

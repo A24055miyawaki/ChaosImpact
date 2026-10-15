@@ -759,7 +759,10 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			if (PortraitBrushes.IsValidIndex(Tile))
 			{
 				FSlateBrush& Face = PortraitBrushes[Tile];
-				Face.SetUVRegion(FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f)));
+				const bool bWholeBody = ChaosImpactRoster::Get(Tile).Kind == EChaosImpactModelKind::Authored;
+				Face.SetUVRegion(bWholeBody
+					? FBox2f(FVector2f(0.03f, 0.2f), FVector2f(0.97f, 0.8f))
+					: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f)));
 				PaintPicture(IFace, Face, 16.0f, 8.0f, IconSize - 32.0f, IconSize - 50.0f);
 			}
 			if (*ChaosImpactRoster::Get(Tile).Name)
@@ -926,7 +929,7 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	{
 		// Crop to the upper body so the character is not tiny in a short window.
 		VisibleHeight = 0.72f;
-		VisibleTop = 0.02f;
+		VisibleTop = ChaosImpactRoster::Get(Slot.Character).Kind == EChaosImpactModelKind::Authored ? 0.14f : 0.02f;
 		PictureW = AreaHeight * 0.75f / VisibleHeight;
 	}
 	else if (PictureW > W - 28.0f)

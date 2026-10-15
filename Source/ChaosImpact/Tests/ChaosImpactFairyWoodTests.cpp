@@ -341,4 +341,8 @@ bool FAntGameplayTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(F
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAntMenuTest,"ChaosImpact.Characters.Ant.Menu",
     EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 bool FAntMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,4,3,TEXT("AntQA"))); return true; }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFishMenuTest,"ChaosImpact.Characters.Maguro.Menu",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FFishMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,5,4,TEXT("FishQA"))); return true; }
 #endif

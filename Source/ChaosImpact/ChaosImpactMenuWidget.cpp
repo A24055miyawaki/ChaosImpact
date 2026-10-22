@@ -1385,8 +1385,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 			for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
 			{
 				const EChaosImpactBallType Type = ChaosImpactBallTypes::FromIndex(Index);
-				const float X = 78 + (Index % 3) * 186, Y = 174 + (Index / 3) * 111;
-				Entries.Add({FSlateRect(X,Y,X + 174,Y + 101),ChaosImpactBallTypes::GetDisplayName(Type),
+				const float X = 78 + (Index % 3) * 186, Y = 174 + (Index / 3) * 94;
+				Entries.Add({FSlateRect(X,Y,X + 174,Y + 84),ChaosImpactBallTypes::GetDisplayName(Type),
 					TEXT("ball_type"),FString::FromInt(Index),ChaosImpactBallTypes::GetColor(Type)});
 			}
 			Entries.Add({FSlateRect(78,684,624,742),TEXT("戻る"),TEXT("ball_back"),TEXT(""),Muted});

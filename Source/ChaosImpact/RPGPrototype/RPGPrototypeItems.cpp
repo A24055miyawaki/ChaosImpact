@@ -81,7 +81,7 @@ TArray<int32> ARPGPrototypeCharacter::GetTuneOffers(int32 Index,int32 Socket) co
 { return Bag.IsValidIndex(Index)?Bag[Index].TuneOfferIndices(Socket):TArray<int32>{}; }
 FRPGPrototypeItem FRPGPrototypeItem::Make(EChaosImpactBallType T,int32 L,ERPGPrototypeRarity R)
 {
-    FRPGPrototypeItem I; if(T==EChaosImpactBallType::Nova) { return I; }
+    FRPGPrototypeItem I; if(T==EChaosImpactBallType::Nova || T==EChaosImpactBallType::Prison) { return I; }
     I.Id=FGuid::NewGuid(); I.Type=T; I.Level=FMath::Clamp(L,1,RPGTuning::MaxLevel); I.Rarity=R;
     // Base power and wait per ball: RPGTuning::BallArchetypes.
     const auto& Base=RPGTuning::BallArchetype(T);

@@ -1,6 +1,8 @@
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactPrisonBall.h"
+#include "ProceduralMeshComponent.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactMatchTypes.h"
@@ -8,6 +10,7 @@
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
+#include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
@@ -101,12 +104,78 @@ void AChaosImpactBuddyBall::InitializePassenger(AChaosImpactCharacter* Character
 	ForceNetUpdate();
 }
 
+void AChaosImpactBuddyBall::InitializeCaptive(AChaosImpactCharacter* Character, AChaosImpactCharacter* Captor)
+{
+	if (!HasAuthority() || !Character || !Captor) { return; }
+	bPrison = true;
+	CaptureDeadline = GetWorld()->GetGameState()->GetServerWorldTimeSeconds() + ChaosImpactBallTypes::PrisonSeconds;
+	InitializePassenger(Character);
+	// Keep the captive on the floor, able to roll gently, instead of hovering like an ordinary pickup.
+	MakeRollingPickup(FVector::ZeroVector);
+	// Shells are server-hit world objects, unlike remote pawns whose hits are owner-reported.
+	CollisionSphere->SetCollisionObjectType(ECC_WorldDynamic);
+	PickupBlockedUntil = GetWorld()->GetTimeSeconds()+.25;
+	CollisionSphere->IgnoreActorWhenMoving(Character,true);
+	ForceNetUpdate();
+}
+
+float AChaosImpactBuddyBall::GetCaptureSecondsLeft() const
+{
+	const auto* State = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	// A newly joined client's clock estimate can lag by a few ms; never show 5.1s or overfill the dial.
+	return bPrison && State ? FMath::Clamp(static_cast<float>(CaptureDeadline-State->GetServerWorldTimeSeconds()),0.f,ChaosImpactBallTypes::PrisonSeconds) : 0.f;
+}
+
+bool AChaosImpactBuddyBall::CanBeCollectedBy(const AChaosImpactCharacter* Collector) const
+{
+	if (!bPrison) { return Collector && Collector->GetBallForm()->CanCollect(Passenger.Get()); }
+	return Collector && Passenger.IsValid() && Collector!=Passenger.Get() && !Collector->IsEliminated()
+		&& !Collector->IsInBallForm() && !Collector->IsTrainingMenuFrozen() && !Collector->IsIceFrozen()
+		&& !Collector->IsChargingThrow() && !Collector->IsThrowReleasePending()
+		&& Collector->GetCarriedBallCount()<Collector->GetMaximumCarriedBalls()
+		&& ChaosImpactBallTypes::IsPrisonMode(GetWorld())
+		&& !AChaosImpactGameState::AreTeammates(GetWorld(),Collector,Passenger.Get());
+}
+
+void AChaosImpactBuddyBall::DropFromCarrier()
+{
+	if (!HasAuthority() || !bPrison || bResolvingPrisonImpact) { return; }
+	auto* Holder = Carrier.Get();
+	const FVector Away = Holder ? Holder->GetActorForwardVector() : FVector::ForwardVector;
+	const FVector At = Holder ? Holder->GetActorLocation()+Away*95-FVector::UpVector*35 : GetActorLocation();
+	if (Holder) { Holder->GetBallForm()->Remove(this); }
+	Carrier.Reset();
+	bLaunched = false;
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	SetActorLocation(At);
+	MakeRollingPickup(Away*340);
+	PickupBlockedUntil = GetWorld()->GetTimeSeconds()+.75;
+	ForceNetUpdate();
+}
+
+void AChaosImpactBuddyBall::ResolvePrisonImpact(AActor* Target)
+{
+	if (!HasAuthority() || !bPrison || !bLaunched || bResolvingPrisonImpact || IsPickup() || Target==Passenger.Get()) { return; }
+	bResolvingPrisonImpact = true;
+	UE_LOG(LogTemp,Log,TEXT("Prison impact: shell=%s target=%s remaining=%.2f position=%s"),*GetName(),*GetNameSafe(Target),GetCaptureSecondsLeft(),*GetActorLocation().ToCompactString());
+	auto* Rider = Passenger.Get();
+	auto* Thrower = Cast<AChaosImpactCharacter>(GetThrowingPawn());
+	auto* Controller = Thrower ? Thrower->GetController() : nullptr;
+	// Cache both recipients before the first TakeDamage restores (and destroys) this shell.
+	const float HitDamage = Target ? UGameplayStatics::ApplyDamage(Target,1.f,Controller,this,nullptr) : 0.f;
+	const float CaptiveDamage = Rider ? UGameplayStatics::ApplyDamage(Rider,1.f,Controller,this,nullptr) : 0.f;
+	if (Thrower && (HitDamage>0 || CaptiveDamage>0)) { Thrower->RecoverStaminaFromBallHit(); }
+	if (Rider && Rider->IsInBallForm()) { Rider->GetBallForm()->Restore(); }
+}
+
 void AChaosImpactBuddyBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactBuddyBall, Passenger);
 	DOREPLIFETIME(AChaosImpactBuddyBall, Carrier);
 	DOREPLIFETIME(AChaosImpactBuddyBall, bLaunched);
+	DOREPLIFETIME(AChaosImpactBuddyBall, bPrison);
+	DOREPLIFETIME(AChaosImpactBuddyBall, CaptureDeadline);
 }
 
 void AChaosImpactBuddyBall::OnRep_Passenger()
@@ -142,6 +211,7 @@ void AChaosImpactBuddyBall::OnRep_Passenger()
 
 FLinearColor AChaosImpactBuddyBall::GetTeamColor() const
 {
+	if (bPrison) { return ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Prison); }
 	const AChaosImpactCharacter* Rider = Passenger.Get();
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	int32 Team = -1;
@@ -179,12 +249,13 @@ FVector AChaosImpactBuddyBall::GetShellCenter() const
 
 bool AChaosImpactBuddyBall::IsPickupAvailable() const
 {
-	return Passenger.IsValid() && !Carrier.IsValid() && !bLaunched && Super::IsPickupAvailable();
+	return Passenger.IsValid() && !Carrier.IsValid() && (!bLaunched || bPrison) && Super::IsPickupAvailable()
+		&& (!bPrison || GetWorld()->GetTimeSeconds()>=PickupBlockedUntil);
 }
 
 bool AChaosImpactBuddyBall::ConsumePickup(AChaosImpactCharacter* Collector)
 {
-	if (!HasAuthority() || !IsPickupAvailable() || !Collector || !Collector->GetBallForm()->CanCollect(Passenger.Get())
+	if (!HasAuthority() || !IsPickupAvailable() || !CanBeCollectedBy(Collector)
 		|| !Collector->TryPickupBall(this)) { return false; }
 	Carrier = Collector;
 	bPickupConsumed = true;
@@ -192,6 +263,12 @@ bool AChaosImpactBuddyBall::ConsumePickup(AChaosImpactCharacter* Collector)
 	SetInstigator(Collector);
 	// Keep the actual passenger ball; never destroy it and replace it with an ordinary pickup.
 	PrepareForAnimatedThrow(Collector->GetRootComponent(), NAME_None, FVector::ZeroVector, FRotator::ZeroRotator);
+	if (bPrison)
+	{
+		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+		CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic,ECR_Block);
+	}
 	SetActorTickEnabled(true);
 	FollowHand();
 	// Unlike a normal pickup this actor survives; the owner must not predict/destroy a replacement ball.
@@ -221,6 +298,8 @@ void AChaosImpactBuddyBall::Launch(const FVector& Direction, const float Speed,
 	const EChaosImpactBallFlightMode Mode, const float UpSpeed)
 {
 	if (!HasAuthority()) { return; }
+	if (bPrison) { UE_LOG(LogTemp,Log,TEXT("Prison launch: remaining=%.2f holder=%s position=%s direction=%s"),GetCaptureSecondsLeft(),*GetNameSafe(Carrier.Get()),*GetActorLocation().ToCompactString(),*Direction.ToCompactString()); }
+	if (bPrison && GetInstigator()) { AdoptThrower(GetInstigator()); }
 	bLaunched = true;
 	LaunchedAt = GetWorld()->GetTimeSeconds();
 	Carrier.Reset();
@@ -243,6 +322,19 @@ void AChaosImpactBuddyBall::UpdateLook(const float DeltaSeconds)
 		for (const auto& Look : GhostLooks) { if (Look) { Look->SetVectorParameterValue(TEXT("Color"), TeamColor); } }
 	}
 	Age += DeltaSeconds;
+	if (bPrison && GetNetMode()!=NM_DedicatedServer)
+	{
+		if (!PrisonCage)
+		{
+			PrisonCage = ChaosImpactPrison::CreateCage(this,RootComponent);
+			if (PrisonCage) { PrisonCage->SetUsingAbsoluteScale(true); PrisonCage->SetUsingAbsoluteRotation(true); }
+		}
+		if (PrisonCage)
+		{
+			PrisonCage->SetWorldLocation(GetShellCenter());
+			ChaosImpactPrison::UpdateCage(PrisonCage,ShellRadius*(Carrier.IsValid() ? .82f : 1.f)*FMath::Min(GetAppear(),1.f),GetCaptureSecondsLeft(),Age,true);
+		}
+	}
 	Flash = FMath::Max(0.0f, Flash - DeltaSeconds * 3.0f);
 	const bool bHeld = Carrier.IsValid();
 	const bool bFlying = bLaunched && !IsPickup();
@@ -262,18 +354,19 @@ void AChaosImpactBuddyBall::UpdateLook(const float DeltaSeconds)
 		Roll = FQuat(FVector::UpVector, FMath::DegreesToRadians(bHeld ? 25.0f : 40.0f) * DeltaSeconds) * Roll;
 	}
 	Roll.Normalize();
-	Bob = bWaiting ? 8.0f + FMath::Sin(Age * 3.2f) * 6.0f : 0.0f;
+	Bob = bWaiting && !bPrison ? 8.0f + FMath::Sin(Age * 3.2f) * 6.0f : 0.0f;
 	const float Size = ShellRadius / 50.0f * GetAppear() * (bHeld ? 0.82f : 1.0f);
 	Shell->SetWorldLocationAndRotation(GetShellCenter(), Roll);
 	Shell->SetWorldScale3D(FVector(FMath::Max(Size, 0.01f)));
 	if (ShellLook)
 	{
 		const float Pulse = bWaiting ? 0.5f + 0.5f * FMath::Sin(Age * 4.0f) : 0.0f;
-		ShellLook->SetScalarParameterValue(TEXT("Glow"), 2.6f + Pulse * 1.4f + Flash * 6.0f + (bFlying ? 1.5f : 0.0f));
+		const float Urgent = bPrison && GetCaptureSecondsLeft()<1.f ? 2.f*(.5f+.5f*FMath::Sin(Age*36)) : 0.f;
+		ShellLook->SetScalarParameterValue(TEXT("Glow"), (bPrison ? 1.2f : 2.6f) + Pulse + Flash*6 + Urgent + (bFlying ? 1.5f : 0.f));
 		ShellLook->SetScalarParameterValue(TEXT("Fill"), 0.14f + Flash * 0.4f);
 	}
 	// Waiting to be picked up: a ring of its colour pulsing on the floor under it.
-	FloorRing->SetVisibility(bWaiting && Age > 0.15f);
+	FloorRing->SetVisibility(!bPrison && bWaiting && Age > 0.15f);
 	if (bWaiting)
 	{
 		const float Pulse = FMath::Sin(Age * 4.0f);
@@ -338,16 +431,27 @@ void AChaosImpactBuddyBall::Tick(const float DeltaSeconds)
 		return;
 	}
 	UpdateLook(DeltaSeconds);
+	if (bPrison && (GetCaptureSecondsLeft()<=0 || !ChaosImpactBallTypes::IsPrisonMode(GetWorld()) || Passenger->IsEliminated()))
+	{
+		ReleasePassenger(); return;
+	}
 	if (Carrier.IsValid())
 	{
 		// Held pickups must not execute the base hover code, which would move them back to the floor.
-		if (Carrier->IsEliminated()) { ReleasePassenger(); return; }
+		if (Carrier->IsEliminated()) { if (bPrison) { DropFromCarrier(); } else { ReleasePassenger(); } return; }
 		const bool bAllied = AChaosImpactGameState::AreTeammates(GetWorld(),Carrier.Get(),Passenger.Get());
-		if (!bAllied) { ReleasePassenger(); return; }
+		if (bPrison ? bAllied : !bAllied) { ReleasePassenger(); return; }
+		if (bPrison)
+		{
+			// A teammate must be able to shoot the prison even while an enemy holds it (or winds up a throw).
+			CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+			CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+			CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic,ECR_Block);
+		}
 		FollowHand();
 		return;
 	}
-	if (bLaunched && (!Steering.IsNearlyZero()) && ProjectileMovement->IsActive()
+	if (bLaunched && !bPrison && (!Steering.IsNearlyZero()) && ProjectileMovement->IsActive()
 		&& GetWorld()->GetTimeSeconds() <= SteeringUntil)
 	{
 		const FVector V = ProjectileMovement->Velocity;
@@ -355,10 +459,16 @@ void AChaosImpactBuddyBall::Tick(const float DeltaSeconds)
 		const FVector Turned = FMath::VInterpNormalRotationTo(V.GetSafeNormal2D(), Steering.GetSafeNormal2D(), DeltaSeconds, 32.0f);
 		ProjectileMovement->Velocity = Turned * Speed + FVector::UpVector * V.Z;
 	}
-	if (bLaunched) { Super::Tick(DeltaSeconds); }
+	if (bLaunched || bPrison) { Super::Tick(DeltaSeconds); }
 	else { UpdateNetState(); }
+	if (bPrison && IsPickup() && CollisionSphere->IsSimulatingPhysics() && GetWorld()->GetTimeSeconds()<=SteeringUntil)
+	{
+		const FVector Velocity=CollisionSphere->GetPhysicsLinearVelocity();
+		const FVector Desired=(Velocity+Steering*420.f*DeltaSeconds).GetClampedToMaxSize2D(165.f);
+		CollisionSphere->SetPhysicsLinearVelocity(FVector(Desired.X,Desired.Y,Velocity.Z));
+	}
 	BallMesh->SetVisibility(false, true);
-	if (bLaunched && (IsPickup() || GetWorld()->GetTimeSeconds() - LaunchedAt > 4.0))
+	if (!bPrison && bLaunched && (IsPickup() || GetWorld()->GetTimeSeconds() - LaunchedAt > 4.0))
 	{
 		ReleasePassenger();
 		return;
@@ -409,6 +519,7 @@ void AChaosImpactBuddyBall::PlayPop(const UObject* WorldContext, const FVector& 
 void AChaosImpactBuddyBall::ReleasePassenger()
 {
 	if (!HasAuthority()) { return; }
+	if (bPrison) { UE_LOG(LogTemp,Log,TEXT("Prison release: remaining=%.2f launched=%d pickup=%d position=%s"),GetCaptureSecondsLeft(),bLaunched,IsPickup(),*GetActorLocation().ToCompactString()); }
 	if (AChaosImpactCharacter* Rider = Passenger.Get()) { Rider->GetBallForm()->Restore(); }
 	else { Destroy(); }
 }
@@ -416,6 +527,14 @@ void AChaosImpactBuddyBall::ReleasePassenger()
 float AChaosImpactBuddyBall::TakeDamage(const float Amount, const FDamageEvent& Event,
 	AController* InstigatorController, AActor* Causer)
 {
+	if (bPrison)
+	{
+		const auto* Ball = Cast<AChaosImpactBall>(Causer);
+		const APawn* Source = Ball ? Ball->GetThrowingPawn() : nullptr;
+		if (HasAuthority() && Amount>0 && Source && Passenger.IsValid() && Source!=Passenger.Get()
+			&& AChaosImpactGameState::AreTeammates(GetWorld(),Source,Passenger.Get())) { ReleasePassenger(); }
+		return 0.f;
+	}
 	return HasAuthority() && Passenger.IsValid() ? Passenger->TakeDamage(Amount, Event, InstigatorController, Causer) : 0.0f;
 }
 

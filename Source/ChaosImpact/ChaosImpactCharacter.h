@@ -632,6 +632,10 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldDriveMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldPrisonMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> HeldPrisonCages[2];
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldSimaeMaterial;

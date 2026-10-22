@@ -22,6 +22,10 @@ public:
 	UPROPERTY(EditAnywhere, Category="Chaos Impact|Ball Form", meta=(ClampMin="0.8"))
 	float HoldSeconds = 1.3f;
 	bool IsAvailable() const;
+	bool IsCaptured() const;
+	bool Capture(AChaosImpactCharacter* Captor);
+	bool IsReleaseProtected() const;
+	bool IsCaptureImmune() const;
 	bool IsInBallForm() const { return FormBall.IsValid(); }
 	AChaosImpactBuddyBall* GetFormBall() const { return FormBall.Get(); }
 	AChaosImpactBuddyBall* GetHeldBall(int32 Slot) const;
@@ -56,8 +60,13 @@ private:
 	TWeakObjectPtr<AChaosImpactBuddyBall> FormBall;
 	UPROPERTY(ReplicatedUsing=OnRep_Slots)
 	TWeakObjectPtr<AChaosImpactBuddyBall> Slots[2];
+	UPROPERTY(Replicated)
+	double CaptureImmuneUntil = 0.0;
+	UPROPERTY(Replicated)
+	double ReleaseProtectedUntil = 0.0;
 	double NextSteerAt = 0.0;
 	FVector SafeLocation = FVector::ZeroVector;
+	FLinearColor SavedFormColor = FLinearColor(.35f,.75f,1.f);
 	FTransform SavedPuppetTransform;
 	bool bSavedPuppet = false;
 	uint8 SavedCollision = 0;

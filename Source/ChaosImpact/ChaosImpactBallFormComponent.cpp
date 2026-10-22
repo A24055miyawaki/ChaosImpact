@@ -27,12 +27,14 @@ void UChaosImpactBallFormComponent::GetLifetimeReplicatedProps(TArray<FLifetimeP
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UChaosImpactBallFormComponent, FormBall);
 	DOREPLIFETIME(UChaosImpactBallFormComponent, Slots);
+	DOREPLIFETIME(UChaosImpactBallFormComponent, CaptureImmuneUntil);
+	DOREPLIFETIME(UChaosImpactBallFormComponent, ReleaseProtectedUntil);
 }
 
 void UChaosImpactBallFormComponent::ServerToggle_Implementation() { Toggle(); }
 void UChaosImpactBallFormComponent::ServerSteer_Implementation(FVector_NetQuantizeNormal Direction)
 {
-	if (IsInBallForm() && IsAvailable() && !Direction.ContainsNaN()) { FormBall->SetSteering(Direction); }
+	if (IsInBallForm() && (IsAvailable() || IsCaptured()) && !Direction.ContainsNaN()) { FormBall->SetSteering(Direction); }
 }
 void UChaosImpactBallFormComponent::Steer(const FVector& Direction)
 {
@@ -60,6 +62,16 @@ void UChaosImpactBallFormComponent::ApplyFormPresentation()
 	if (!P || bSavedPuppet) { return; }
 	// The owning client keeps its own charge/click-move state (it is not replicated back by the pawn).
 	P->CancelChargingThrow();
+	if (FormBall.IsValid() && FormBall->IsPrisonBall())
+	{
+		P->EndDriving(true);
+		if (!P->HasAuthority())
+		{
+			GetWorld()->GetTimerManager().ClearTimer(P->ThrowReleaseTimer);
+			if (auto* Preview=P->PendingThrowBall.Get(); Preview && Preview->GetLocalRole()==ROLE_Authority) { Preview->Destroy(); }
+			P->PendingThrowBall.Reset(); P->PredictedThrowBall.Reset(); P->bThrowReleasePending=false;
+		}
+	}
 	P->bClickMoveActive = false;
 	P->ClickMovePath.Reset();
 	P->bPointerMoveHeld = false;
@@ -114,10 +126,67 @@ bool UChaosImpactBallFormComponent::CanCollect(const AChaosImpactCharacter* Pass
 	return AChaosImpactGameState::AreTeammates(GetWorld(), P, Passenger);
 }
 
+bool UChaosImpactBallFormComponent::IsCaptured() const { return FormBall.IsValid() && FormBall->IsPrisonBall(); }
+bool UChaosImpactBallFormComponent::IsCaptureImmune() const
+{
+	const auto* State = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	return State && State->GetServerWorldTimeSeconds() < CaptureImmuneUntil;
+}
+bool UChaosImpactBallFormComponent::IsReleaseProtected() const
+{
+	const auto* State = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	return State && State->GetServerWorldTimeSeconds() < ReleaseProtectedUntil;
+}
+
+bool UChaosImpactBallFormComponent::Capture(AChaosImpactCharacter* Captor)
+{
+	auto* P = Character();
+	if (!P || !Captor || !P->HasAuthority() || Captor == P || Captor->IsEliminated()
+		|| !ChaosImpactBallTypes::IsPrisonMode(GetWorld()) || P->IsEliminated() || P->IsDashing()
+		|| IsInBallForm() || IsCaptureImmune() || IsReleaseProtected()
+		|| AChaosImpactGameState::AreTeammates(GetWorld(), P, Captor)) { return false; }
+	// Spawn first: allocation failure must not destroy the victim's inventory or interrupt a throw.
+	const FVector At = P->GetActorLocation() - FVector::UpVector * (P->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()-36);
+	FActorSpawnParameters Spawn;
+	Spawn.Owner = P;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	auto* Ball = GetWorld()->SpawnActor<AChaosImpactBuddyBall>(At, FRotator::ZeroRotator, Spawn);
+	if (!Ball) { return false; }
+	P->RequestCancelThrow();
+	P->GetTackle()->ResetAction();
+	if (AChaosImpactBall* Pending=P->PendingThrowBall.Get())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(P->ThrowReleaseTimer);
+		P->PendingThrowBall.Reset(); P->bThrowReleasePending=false;
+		if (auto* Buddy=Cast<AChaosImpactBuddyBall>(Pending))
+		{
+			if (Buddy->IsPrisonBall()) { Buddy->DropFromCarrier(); }
+			else { Buddy->ReleasePassenger(); }
+		}
+		else { Pending->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform); Pending->MakeRollingPickup(FVector::ZeroVector); }
+	}
+	P->DropCarriedBalls();
+	P->EndDriving(true);
+	P->ClearCarriedBalls();
+	SafeLocation = P->GetActorLocation();
+	P->UpdateBallPresentation();
+	FormBall = Ball;
+	// An airborne capture over the void still needs a known respawn fallback.
+	FHitResult Floor;
+	if (!GetWorld()->LineTraceSingleByChannel(Floor,SafeLocation+FVector::UpVector*80,SafeLocation-FVector::UpVector*900,
+		ECC_WorldStatic,FCollisionQueryParams(SCENE_QUERY_STAT(PrisonSafeStart),false,P))) { SafeLocation=P->InitialSpawnLocation; }
+	Ball->InitializeCaptive(P, Captor);
+	ApplyFormPresentation();
+	P->NotifyServerTeleport();
+	P->ClientBallCountReset(P->CarriedBallCount, P->CarriedBallTypes);
+	P->ForceNetUpdate();
+	return true;
+}
+
 bool UChaosImpactBallFormComponent::Toggle()
 {
 	AChaosImpactCharacter* P = Character();
-	if (!P || !IsAvailable() || P->IsEliminated() || P->IsTrainingMenuFrozen() || P->GetTackle()->IsBusy()) { return false; }
+	if (!P || IsCaptured() || !IsAvailable() || P->IsEliminated() || P->IsTrainingMenuFrozen() || P->GetTackle()->IsBusy()) { return false; }
 	if (!P->HasAuthority())
 	{
 		if (!P->IsLocallyControlled()) { return false; }
@@ -157,10 +226,16 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 	bRestoring = true;
 	AChaosImpactCharacter* P = Character();
 	AChaosImpactBuddyBall* Ball = FormBall.Get();
+	if (P && P->HasAuthority() && Ball && Ball->IsPrisonBall())
+	{
+		const double Now = GetWorld()->GetGameState()->GetServerWorldTimeSeconds();
+		CaptureImmuneUntil = Now + ChaosImpactBallTypes::PrisonImmunitySeconds;
+		ReleaseProtectedUntil = Now + ChaosImpactBallTypes::PrisonReleaseProtection;
+	}
 	FVector At = Ball ? Ball->GetActorLocation() : (P ? P->GetActorLocation() : SafeLocation);
 	if (P && !P->HasAuthority() && bSavedPuppet)
 	{
-		AChaosImpactBuddyBall::PlayPop(this, At, Ball ? Ball->GetTeamColor() : FLinearColor(.35f,.75f,1), true);
+		AChaosImpactBuddyBall::PlayPop(this, At, Ball ? Ball->GetTeamColor() : SavedFormColor, true);
 	}
 	FormBall.Reset();
 	if (Ball && P && P->HasAuthority())
@@ -251,7 +326,14 @@ void UChaosImpactBallFormComponent::Clear()
 	if (!GetOwner()->HasAuthority()) { return; }
 	const TWeakObjectPtr<AChaosImpactBuddyBall> Copy[] = {Slots[0], Slots[1]};
 	Slots[0].Reset(); Slots[1].Reset();
-	for (const auto& Ball : Copy) { if (Ball.IsValid()) { Ball->ReleasePassenger(); } }
+	for (const auto& Ball : Copy)
+	{
+		if (Ball.IsValid())
+		{
+			if (Ball->IsPrisonBall()) { Ball->DropFromCarrier(); }
+			else { Ball->ReleasePassenger(); }
+		}
+	}
 	Restore(false);
 }
 void UChaosImpactBallFormComponent::Remove(AChaosImpactBuddyBall* Ball)
@@ -275,7 +357,7 @@ bool UChaosImpactBallFormComponent::HandleInput()
 {
 	AChaosImpactCharacter* P = Character();
 	const APlayerController* PC = P ? Cast<APlayerController>(P->GetController()) : nullptr;
-	if (!IsAvailable() || !PC) { return IsInBallForm(); }
+	if ((!IsAvailable() && !IsCaptured()) || !PC) { return IsInBallForm(); }
 	using namespace ChaosImpactSettings;
 	const bool bSimple = GetPlayerControlScheme(PC) == EChaosImpactControlScheme::Simple;
 	const bool bMouseOnly = IsMouseOnlyScheme(GetPlayerControlScheme(PC));
@@ -325,8 +407,9 @@ void UChaosImpactBallFormComponent::TickComponent(const float Delta, const ELeve
 	if (!P) { return; }
 	if (IsInBallForm())
 	{
-		if (P->HasAuthority() && (!IsAvailable() || P->IsEliminated())) { Restore(false); return; }
+		if (P->HasAuthority() && ((IsCaptured() ? !ChaosImpactBallTypes::IsPrisonMode(GetWorld()) : !IsAvailable()) || P->IsEliminated())) { Restore(false); return; }
 		ApplyFormPresentation();
+		SavedFormColor=FormBall->GetTeamColor();
 		const FVector Center = FormBall->GetActorLocation();
 		P->GetCharacterMovement()->DisableMovement();
 		P->SetActorLocation(Center, false, nullptr, ETeleportType::TeleportPhysics);

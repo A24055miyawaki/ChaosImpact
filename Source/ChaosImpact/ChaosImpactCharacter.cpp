@@ -3,6 +3,7 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
+#include "ChaosImpactPrisonBall.h"
 #include "ChaosImpactTackleComponent.h"
 #include "ChaosImpactShoulderCameraComponent.h"
 #include "ChaosImpactClickNavigation.h"
@@ -1931,6 +1932,9 @@ void AChaosImpactCharacter::RestoreLocomotionAnimation()
 float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageEvent& DamageEvent,
 	AController* EventInstigator, AActor* DamageCauser)
 {
+	const auto* Prison = Cast<AChaosImpactBuddyBall>(DamageCauser);
+	const bool bPrisonImpact = Prison && BallForm->GetFormBall()==Prison && Prison->IsResolvingPrisonImpact();
+	if (!bPrisonImpact && (BallForm->IsReleaseProtected() || BallForm->IsCaptured())) { return 0.f; }
 	if (const AChaosImpactBall* Ball = Cast<AChaosImpactBall>(DamageCauser);
 		Ball && Ball->WasThrownBy(this))
 	{
@@ -2207,6 +2211,7 @@ void AChaosImpactCharacter::CheckLeftStage()
 	{
 		return;
 	}
+	if (BallForm->IsCaptured()) { BallForm->Restore(); return; }
 	UE_LOG(LogChaosImpact, Warning, TEXT("%s left the stage at %s and is knocked out"), *GetName(), *At.ToString());
 	// The usual knockout (the effect, the respawn countdown, back on a free spot), with nobody credited.
 	bKnockedOutLeavingStage = true;
@@ -3711,7 +3716,7 @@ bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 	}
 
 	AChaosImpactBuddyBall* Buddy = Cast<AChaosImpactBuddyBall>(Ball);
-	if (Buddy && !BallForm->CanCollect(Buddy->GetPassenger())) { return false; }
+	if (Buddy && !Buddy->CanBeCollectedBy(this)) { return false; }
 	PushCarriedBall(Ball->GetBallType());
 	BallForm->Push(Buddy, CarriedBallCount - 1);
 	UpdateBallPresentation();
@@ -4005,12 +4010,23 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		}
 		Material = HeldDriveMaterial;
 		break;
+	case EChaosImpactBallType::Prison:
+		if (!HeldPrisonMaterial) { HeldPrisonMaterial=MakeEmissive(this,FLinearColor(.065f,.012f,.007f),1.f); }
+		Material = HeldPrisonMaterial;
+		break;
 	default:
 		// No override for a normal ball: the mesh's own material.
 		break;
 	}
 	HandBall->SetMaterial(0, Material);
 	HandBall->SetMaterial(1, Type == EChaosImpactBallType::Simae ? Material : nullptr);
+	const int32 PrisonHand = HandBall == LeftHeldBallMesh ? 1 : 0;
+	if (Type==EChaosImpactBallType::Prison && !HeldPrisonCages[PrisonHand])
+	{
+		HeldPrisonCages[PrisonHand]=ChaosImpactPrison::CreateCage(this,HandBall);
+		ChaosImpactPrison::UpdateCage(HeldPrisonCages[PrisonHand],60.f,5.f,0.f,false);
+	}
+	if (HeldPrisonCages[PrisonHand]) { HeldPrisonCages[PrisonHand]->SetVisibility(Type==EChaosImpactBallType::Prison && HandBall->IsVisible()); }
 
 	// A carried fire ball keeps burning in the hand, a thunder ball crackles, a black ball smoulders, a smoke ball
 	// leaks wisps of smoke and a beam ball throws off sparks.
@@ -4900,7 +4916,12 @@ void AChaosImpactCharacter::DropFrontBall()
 	}
 	const EChaosImpactBallType Type = GetCarriedBallType(0);
 	FVector Forward = GetActorForwardVector().GetSafeNormal2D();
-	if (AChaosImpactBuddyBall* Buddy = BallForm->GetHeldBall(0)) { Buddy->ReleasePassenger(); return; }
+	if (AChaosImpactBuddyBall* Buddy = BallForm->GetHeldBall(0))
+	{
+		if (Buddy->IsPrisonBall()) { Buddy->DropFromCarrier(); }
+		else { Buddy->ReleasePassenger(); }
+		return;
+	}
 	if (Forward.IsNearlyZero())
 	{
 		Forward = FVector::ForwardVector;

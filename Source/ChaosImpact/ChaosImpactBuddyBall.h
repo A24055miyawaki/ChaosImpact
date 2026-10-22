@@ -23,6 +23,14 @@ class AChaosImpactBuddyBall : public AChaosImpactBall
 public:
 	AChaosImpactBuddyBall();
 	void InitializePassenger(AChaosImpactCharacter* Character);
+	void InitializeCaptive(AChaosImpactCharacter* Character, AChaosImpactCharacter* Captor);
+	bool IsPrisonBall() const { return bPrison; }
+	bool IsResolvingPrisonImpact() const { return bResolvingPrisonImpact; }
+	bool CanBeCollectedBy(const AChaosImpactCharacter* Collector) const;
+	float GetCaptureSecondsLeft() const;
+	void DropFromCarrier();
+	/** Consumes the first thrown impact; never extends the capture deadline. */
+	void ResolvePrisonImpact(AActor* Target);
 	AChaosImpactCharacter* GetPassenger() const { return Passenger.Get(); }
 	AChaosImpactCharacter* GetCarrier() const { return Carrier.Get(); }
 	bool IsLaunched() const { return bLaunched; }
@@ -75,6 +83,10 @@ private:
 	TArray<TObjectPtr<UStaticMeshComponent>> Ghosts;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> GhostLooks;
+	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Prison Ball")
+	TObjectPtr<UProceduralMeshComponent> PrisonCage;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> PrisonGlow;
 	/** Where the shell has been lately (newest first), for the afterimages. */
 	TArray<FVector> Trace;
 	float TraceClock = 0.0f;
@@ -87,6 +99,12 @@ private:
 	double SteeringUntil = 0.0;
 	UPROPERTY(ReplicatedUsing=OnRep_Launched)
 	bool bLaunched = false;
+	UPROPERTY(Replicated)
+	bool bPrison = false;
+	UPROPERTY(Replicated)
+	double CaptureDeadline = 0.0;
+	bool bResolvingPrisonImpact = false;
+	double PickupBlockedUntil = 0.0;
 	double LaunchedAt = 0.0;
 	float Age = 0.0f;
 	float Bob = 0.0f;

@@ -1095,13 +1095,55 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		P && P->IsInBallForm())
 	{
 		const float Scale = GetHudScale(Size.X,Size.Y);
-		const FGeometry HintSpace = MakeAnchor(AllottedGeometry, Size.X*.5f, Size.Y-160*Scale, Scale);
-		const FPainter Hint{HintSpace,OutDrawElements,BaseLayer+7};
-		Hint.Box(-190,0,380,42,WithAlpha(Ink,.9f));
+		const bool bCaptured=P->GetBallForm()->IsCaptured();
+		const float Left=bCaptured ? P->GetBallForm()->GetFormBall()->GetCaptureSecondsLeft() : 0.f;
+		const float Arrival=bCaptured ? EaseOut((ChaosImpactBallTypes::PrisonSeconds-Left)/.22f) : 1.f;
+		const FGeometry HintSpace = MakeAnchor(AllottedGeometry, Size.X*.5f,
+			Size.Y-(bCaptured ? 252 : 160)*Scale+(1-Arrival)*24*Scale, Scale);
+		const FPainter Hint{HintSpace,OutDrawElements,BaseLayer+7,Arrival};
+		if (bCaptured)
+		{
+			// The same bevelled ink outlines, warm gradient and extruded numerals as the HP/stock HUD.
+			const float PrisonClock=GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+			const float Urgency=Left<1.f ? .5f+.5f*FMath::Sin(PrisonClock*23.f) : 0.f;
+			const FLinearColor Color=FMath::Lerp(FireFill.Middle,Paper,Urgency*.7f);
+			const FHudFill Hot=MakeFill(Left<1.f ? FLinearColor(1,.42f,.16f) : FireFill.Top,FireFill.Bottom);
+			HudShard(Hint,{FVector2D(-112,3),FVector2D(180,3),FVector2D(165,78),FVector2D(-112,78)},NightFill,2.5f,FVector2D(4,5));
+			HudShard(HudAbove(Hint),{FVector2D(-86,3),FVector2D(180,3),FVector2D(178,10),FVector2D(-88,10)},Hot,1.f,FVector2D::ZeroVector);
+			const FPainter Front=HudAbove(Hint,5);
+			const FVector2D Dial(-122,41);
+			Front.Disc(Dial+FVector2D(3,4),46,Extrude);
+			Front.Disc(Dial,45,Navy);
+			Front.Disc(Dial,39,Ink);
+			Front.Ring(Dial,43,WithAlpha(Paper,.6f),1.5f);
+			for (int32 I=0;I<40;++I)
+			{
+				const float Angle=-90+I*9.f;
+				const bool Lit=I<Left/ChaosImpactBallTypes::PrisonSeconds*40;
+				Front.Arc(Dial,38,Angle,Angle+6.5f,Lit ? Color : WithAlpha(Paper,.12f),Lit ? 4.f+Urgency : 2.f);
+			}
+			HudText3D(Front,FString::Printf(TEXT("%.1f"),Left),-122,17,32,Paper,ETextAlign::Center,TEXT("BlackItalic"));
+			Front.Text(TEXT("秒"),-122,53,12,Color,ETextAlign::Center,TEXT("Bold"));
+			HudText3D(Front,TEXT("捕獲中"),-67,17,29,Paper,ETextAlign::Left,TEXT("Black"));
+			const FPainter Words=HudAbove(Front,2);
+			Words.Text(TEXT("時間切れ / 味方のボールで解除"),-64,56,12,Paper,ETextAlign::Left,TEXT("Bold"),1.f,Navy);
+			// Five slanted cells echo the stamina blade; the current cell drains continuously.
+			for (int32 I=0;I<5;++I)
+			{
+				const float X=-63+I*43.f, Fill=FMath::Clamp(Left-I,0.f,1.f);
+				const TArray<FVector2D> Cell{FVector2D(X,86),FVector2D(X+38,86),FVector2D(X+33,92),FVector2D(X-5,92)};
+				HudShard(Hint,Cell,SolidFill(Navy),1.f,FVector2D(1,2));
+				if (Fill>0) { HudPoly(HudAbove(Hint,4),{FVector2D(X,86),FVector2D(X+38*Fill,86),FVector2D(X+38*Fill-5,92),FVector2D(X-5,92)},Hot); }
+			}
+		}
 		const auto Scheme = ChaosImpactSettings::GetPlayerControlScheme(GetOwningPlayer());
 		const FString Key = ChaosImpactSettings::DescribeAction(GetOwningPlayer(), Scheme == EChaosImpactControlScheme::Simple ? EChaosImpactAction::SwapBall
 			: ChaosImpactSettings::IsMouseOnlyScheme(Scheme) ? EChaosImpactAction::Dash : EChaosImpactAction::DropBall);
-		Hint.Text(FString::Printf(TEXT("ボール化中　%s で解除"),*Key),0,7,20,Paper,ETextAlign::Center);
+		if (!bCaptured)
+		{
+			Hint.Box(-190,0,380,42,WithAlpha(Ink,.9f));
+			Hint.Text(FString::Printf(TEXT("ボール化中　%s で解除"),*Key),0,7,20,Paper,ETextAlign::Center);
+		}
 	}
 	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
 	return FMath::Max(BaseLayer + 22, HudLayer + 26);
@@ -1142,7 +1184,7 @@ int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
 		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController())) { continue; }
 		if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 		if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
-		if (Hit == 6 && (!Character || !Character->GetBallForm()->IsAvailable())) { continue; }
+		if (Hit == 6 && (!Character || Character->GetBallForm()->IsCaptured() || !Character->GetBallForm()->IsAvailable())) { continue; }
 		if (EasyButtonRect(Size, S, Hit).IsInside(Pointer)) { return Hit; }
 	}
 	// The inventory remains UI while the ball icons animate; never let these clicks leak into throwing.
@@ -1214,7 +1256,7 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController())) { continue; }
 			if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
-			if (Hit == 6 && (!ShoulderCharacter || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
+			if (Hit == 6 && (!ShoulderCharacter || ShoulderCharacter->GetBallForm()->IsCaptured() || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
 			const FBox2D R = EasyButtonRect(Size, S, Hit);
 			const bool bHover = Hover == Hit;
 			const FPainter Button{Geometry, Elements, Layer};
@@ -1356,6 +1398,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		case EChaosImpactBallType::Nova: Body = FLinearColor(0.3f, 0.66f, 1.0f, 1.0f); break;
 		case EChaosImpactBallType::Simae: Body = FLinearColor(0.95f, 0.97f, 1.0f, 1.0f); break;
 		case EChaosImpactBallType::Drive: Body = FLinearColor(1.0f, 0.56f, 0.1f, 1.0f); break;
+		case EChaosImpactBallType::Prison: Body = FLinearColor(.22f,.035f,.018f,1.f); break;
 		default: break;
 		}
 		const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -1412,6 +1455,17 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 				Paint.Arc(Center, Radius * (0.28f + 0.16f * Gust), Start, Start + 150.0f,
 					FLinearColor(0.88f, 1.0f, 0.84f, 0.95f - 0.15f * Gust), 2.5f);
 			}
+			break;
+		}
+		case EChaosImpactBallType::Prison:
+		{
+			Paint.Ring(Center,Radius*.82f,Glow,2.5f);
+			for (int32 I=-1;I<=1;++I)
+			{
+				const float X=I*Radius*.36f;
+				Paint.Line(Center+FVector2D(X,-Radius*.66f),Center+FVector2D(X,Radius*.66f),Paper,2.f);
+			}
+			Paint.Line(Center-FVector2D(Radius*.7f,0),Center+FVector2D(Radius*.7f,0),Glow,2.f);
 			break;
 		}
 		case EChaosImpactBallType::Smoke:
@@ -1556,8 +1610,12 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		{
 			continue;
 		}
-		PaintBall(Balls, Center, Radius, bFilled, bFilled ? ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, DrawSlot)
-			: EChaosImpactBallType::Normal, SnowGrowth[DrawSlot]);
+		EChaosImpactBallType IconType=ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes,DrawSlot);
+		if (const auto* OwnerPawn=GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr)
+		{
+			if (const auto* Shell=OwnerPawn->GetBallForm()->GetHeldBall(DrawSlot); Shell && Shell->IsPrisonBall()) { IconType=EChaosImpactBallType::Prison; }
+		}
+		PaintBall(Balls, Center, Radius, bFilled, IconType, SnowGrowth[DrawSlot]);
 	}
 
 	const FPainter Labels{Corner, OutDrawElements, BaseLayer + 8};
@@ -1576,9 +1634,14 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 			60.0f, 17.0f, -0.22f);
 		const FPainter Tag{TagSpace, OutDrawElements, BaseLayer + 8};
 		Tag.Box(0.0f, 0.0f, 60.0f, 17.0f, WithAlpha(Ink, 0.88f));
-		Tag.Box(0.0f, 15.0f, 60.0f, 2.0f, ChaosImpactBallTypes::GetColor(Type));
-		Labels.Text(Buddy ? TEXT("味方") : ChaosImpactBallTypes::GetDisplayName(Type), static_cast<float>(Under.X), static_cast<float>(Under.Y) - 1.0f,
+		Tag.Box(0.0f, 15.0f, 60.0f, 2.0f, Buddy ? Buddy->GetTeamColor() : ChaosImpactBallTypes::GetColor(Type));
+		Labels.Text(Buddy ? (Buddy->IsPrisonBall() ? TEXT("捕獲") : TEXT("味方")) : ChaosImpactBallTypes::GetDisplayName(Type), static_cast<float>(Under.X), static_cast<float>(Under.Y) - 1.0f,
 			11.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+		if (Buddy && Buddy->IsPrisonBall())
+		{
+			Labels.Arc(Centers[DrawSlot],DrawnRadii[DrawSlot]+5,-90,-90+360*Buddy->GetCaptureSecondsLeft()/ChaosImpactBallTypes::PrisonSeconds,
+				ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Prison),3.f);
+		}
 	}
 	if (CarriedBalls > 0)
 	{

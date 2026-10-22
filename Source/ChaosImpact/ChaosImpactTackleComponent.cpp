@@ -122,7 +122,8 @@ void UChaosImpactTackleComponent::InterruptAndDrop()
     if(auto* Ball=P->PendingThrowBall.Get())
     {
         P->GetWorldTimerManager().ClearTimer(P->ThrowReleaseTimer); P->PendingThrowBall.Reset(); P->bThrowReleasePending=false;
-        if(auto* Buddy=Cast<AChaosImpactBuddyBall>(Ball)) { Buddy->ReleasePassenger(); }
+        if(auto* Buddy=Cast<AChaosImpactBuddyBall>(Ball))
+        { if(Buddy->IsPrisonBall()) { Buddy->DropFromCarrier(); } else { Buddy->ReleasePassenger(); } }
         else { Ball->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform); Ball->MakeRollingPickup(State.Direction*500); }
         bDroppedPending=true;
     }
@@ -152,7 +153,7 @@ void UChaosImpactTackleComponent::CheckContact()
     for(const auto& Hit:Hits)
     {
         auto* Victim=Cast<AChaosImpactCharacter>(Hit.GetActor());
-        if(!Victim || Victim==P || Victim->IsEliminated() || Victim->IsDashing() || Victim->IsTrainingMenuFrozen()
+        if(!Victim || Victim==P || Victim->GetBallForm()->IsCaptured() || Victim->IsEliminated() || Victim->IsDashing() || Victim->IsTrainingMenuFrozen()
             || AChaosImpactGameState::AreTeammates(GetWorld(),P,Victim)) { continue; }
         FHitResult Wall;
         // A trace *channel* named WorldStatic can still hit pawn capsules; restrict object types for walls.

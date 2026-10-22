@@ -2,6 +2,8 @@
 
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBuddyBall.h"
+#include "ChaosImpactBallFormComponent.h"
+#include "ChaosImpactPrisonBall.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactTrainingTarget.h"
@@ -557,7 +559,7 @@ void AChaosImpactBall::TryReportLocalHit(const FVector& From, const FVector& To)
 		AChaosImpactCharacter* LocalCharacter = PlayerController && PlayerController->IsLocalController()
 			? Cast<AChaosImpactCharacter>(PlayerController->GetPawn()) : nullptr;
 		// Dash invulnerability is judged with the owner's own, exact dash timing.
-		if (!LocalCharacter || LocalCharacter->IsEliminated() || LocalCharacter->IsDashing()
+		if (!LocalCharacter || LocalCharacter->GetBallForm()->IsCaptured() || LocalCharacter->IsEliminated() || LocalCharacter->IsDashing()
 			|| WasThrownBy(LocalCharacter)
 			|| AChaosImpactGameState::AreTeammates(GetWorld(), ReplicatedThrower.Get(), LocalCharacter))
 		{
@@ -600,7 +602,7 @@ void AChaosImpactBall::TryReportLocalHit(const FVector& From, const FVector& To)
 
 bool AChaosImpactBall::AcceptReportedHit(AChaosImpactCharacter* Victim, const FVector& HitLocation)
 {
-	if (!HasAuthority() || !IsValid(Victim) || !GetWorld())
+	if (!HasAuthority() || !IsValid(Victim) || Victim->GetBallForm()->IsCaptured() || !GetWorld())
 	{
 		return false;
 	}
@@ -682,6 +684,39 @@ bool AChaosImpactBall::AcceptReportedHit(AChaosImpactCharacter* Victim, const FV
 void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& ImpactPoint,
 	const FVector& ImpactNormal)
 {
+	if (auto* Captive = Cast<AChaosImpactBuddyBall>(this); Captive && Captive->IsPrisonBall())
+	{
+		MulticastContactBurst(ImpactPoint,ImpactNormal.Rotation());
+		Captive->ResolvePrisonImpact(OtherActor);
+		return;
+	}
+	// A rescue is a contact, not an enemy hit, and must not also create an elemental hazard on the captive.
+	if (auto* Shell = Cast<AChaosImpactBuddyBall>(OtherActor); Shell && Shell->IsPrisonBall())
+	{
+		UGameplayStatics::ApplyDamage(Shell,1.f,GetInstigatorController(),this,nullptr);
+		MulticastContactBurst(ImpactPoint,ImpactNormal.Rotation());
+		if (IsSpecialBall())
+		{
+			bDetonated=true;
+			ProjectileMovement->StopMovementImmediately(); ProjectileMovement->Deactivate();
+			CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			SetActorHiddenInGame(true); SetActorTickEnabled(false); SetLifeSpan(1.f); ForceNetUpdate();
+		}
+		else { DropToGroundAsPickup(); }
+		return;
+	}
+	if (BallType == EChaosImpactBallType::Prison)
+	{
+		if (auto* Victim = Cast<AChaosImpactCharacter>(OtherActor))
+		{
+			if (Victim->GetBallForm()->Capture(Cast<AChaosImpactCharacter>(ThrowingPawn.Get())))
+			{
+				if (auto* Thrower = Cast<AChaosImpactCharacter>(ThrowingPawn.Get())) { Thrower->RecoverStaminaFromBallHit(); }
+			}
+		}
+		Detonate(ImpactPoint,nullptr);
+		return;
+	}
 	// A compact contact flash is independent of the target/player elimination burst,
 	// so even non-lethal hits have immediate visual feedback. Special balls burst instead; a beam flashes and flies on.
 	if (!IsSpecialBall())
@@ -1635,6 +1670,7 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 	{
 		return;
 	}
+	if (const auto* Buddy=Cast<AChaosImpactBuddyBall>(this); Buddy && Buddy->GetPassenger()==OtherActor) { return; }
 
 	if (const AChaosImpactCharacter* Dasher = Cast<AChaosImpactCharacter>(OtherActor); Dasher && Dasher->IsDashing())
 	{
@@ -1681,6 +1717,15 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 	{
 		return;
 	}
+	if (auto* Captive = Cast<AChaosImpactBuddyBall>(this); Captive && Captive->IsPrisonBall()
+		&& Captive->IsLaunched() && !IsPickup() && ImpactResult.ImpactNormal.Z < .65f
+		&& (!ImpactResult.GetActor() || !ImpactResult.GetActor()->IsA<AChaosImpactBall>()) && ImpactVelocity.Size2D()>650.f)
+	{
+		UE_LOG(LogTemp,Log,TEXT("Prison wall contact: actor=%s normal=%s velocity=%s"),*GetNameSafe(ImpactResult.GetActor()),*ImpactResult.ImpactNormal.ToCompactString(),*ImpactVelocity.ToCompactString());
+		MulticastContactBurst(ImpactResult.ImpactPoint,ImpactResult.ImpactNormal.Rotation());
+		Captive->ResolvePrisonImpact(nullptr);
+		return;
+	}
 	if (AChaosImpactBall* OtherBall = Cast<AChaosImpactBall>(ImpactResult.GetActor()))
 	{
 		// No ball stops or turns a drive ball: it flies straight on through and knocks the other away.
@@ -1702,7 +1747,7 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 		}
 	}
 	// A thunder ball rebounds like a normal ball until it meets someone or its time runs out.
-	if (IsSpecialBall() && BallType != EChaosImpactBallType::Thunder)
+	if (IsSpecialBall() && BallType != EChaosImpactBallType::Thunder && BallType != EChaosImpactBallType::Prison)
 	{
 		// Wall, floor or anything else: special balls burst on the first contact.
 		if (bCosmeticPrediction)
@@ -1777,8 +1822,9 @@ void AChaosImpactBall::UpdateDashPassThrough()
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
 		AChaosImpactCharacter* Character = *It;
+		const auto* Buddy=Cast<AChaosImpactBuddyBall>(this);
 		// The thrower, their teammates and (online) remote players are passed through for good (ApplyThrowerIgnores).
-		if (Character == ThrowingPawn.Get() || AChaosImpactGameState::AreTeammates(World, ThrowingPawn.Get(), Character)
+		if ((Buddy && Buddy->GetPassenger()==Character) || Character == ThrowingPawn.Get() || AChaosImpactGameState::AreTeammates(World, ThrowingPawn.Get(), Character)
 			|| (HasAuthority() && GetNetMode() != NM_Standalone && Character->IsRemotePlayerOnServer()))
 		{
 			CollisionSphere->IgnoreActorWhenMoving(Character, true);
@@ -1808,7 +1854,7 @@ void AChaosImpactBall::UpdateDashPassThrough()
 		{
 			const bool bAllied = It->GetPassenger() == ThrowingPawn.Get()
 				|| AChaosImpactGameState::AreTeammates(World,ThrowingPawn.Get(),It->GetPassenger());
-			CollisionSphere->IgnoreActorWhenMoving(*It,bAllied);
+			CollisionSphere->IgnoreActorWhenMoving(*It,It->GetCarrier()==ThrowingPawn.Get() || (bAllied && !It->IsPrisonBall()));
 		}
 	}
 }
@@ -1995,7 +2041,12 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SetActorTickEnabled(false);
 	SetActorHiddenInGame(true);
-	if (BallType == EChaosImpactBallType::Simae)
+	if (BallType == EChaosImpactBallType::Prison)
+	{
+		MulticastContactBurst(Location,FRotator::ZeroRotator);
+		DetonationZone = nullptr;
+	}
+	else if (BallType == EChaosImpactBallType::Simae)
 	{
 		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim);
 		DetonationZone = nullptr;
@@ -2204,6 +2255,18 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		BallMesh->SetMaterial(0, MakeEmissive(this, FLinearColor(1.0f, 0.58f, 0.1f), 2.4f));
 		ChaosImpactDrive::BuildLook(this, BallMesh, DriveLook);
 		LightIntensity = 0.0f;
+	}
+	else if (BallType == EChaosImpactBallType::Prison)
+	{
+		BallMesh->SetMaterial(0,MakeEmissive(this,FLinearColor(.065f,.012f,.007f),1.f));
+		TypeVisual = ChaosImpactPrison::CreateCage(this,BallMesh);
+		if (TypeVisual)
+		{
+			TypeVisual->SetUsingAbsoluteScale(true);
+			ChaosImpactPrison::UpdateCage(Cast<UProceduralMeshComponent>(TypeVisual),31.f,5.f,0,false);
+		}
+		LightColor = GetColor(BallType);
+		LightIntensity = 1000.f;
 	}
 	else if (BallType == EChaosImpactBallType::Snow)
 	{

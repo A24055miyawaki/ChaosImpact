@@ -63,15 +63,19 @@ float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Snow: return &SnowBallChance;
 	case EChaosImpactBallType::Simae: return &SimaeBallChance;
 	case EChaosImpactBallType::Drive: return &DriveBallChance;
+	case EChaosImpactBallType::Prison: return &PrisonBallChance;
 	default: return nullptr;
 	}
 }
 
 float AChaosImpactBallSpawner::GetChance(const EChaosImpactBallType Type) const
 {
+	const bool bAllowPrison = !GetWorld() || !GetWorld()->IsGameWorld() || ChaosImpactBallTypes::IsPrisonMode(GetWorld());
+	if (Type==EChaosImpactBallType::Prison && !bAllowPrison) { return 0.f; }
 	float Total = 0.0f;
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
 	{
+		if (Index==static_cast<int32>(EChaosImpactBallType::Prison) && !bAllowPrison) { continue; }
 		const float* Weight = WeightFor(static_cast<EChaosImpactBallType>(Index));
 		Total += Weight ? FMath::Max(0.0f, *Weight) : 0.0f;
 	}

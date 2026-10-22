@@ -388,6 +388,7 @@ bool AChaosImpactCPUController::UpdateTeamBallForm(AChaosImpactCharacter* Self, 
 	if (!HasAuthority()) { return false; }
 	if (Self->IsInBallForm())
 	{
+		if (Form->IsCaptured()) { Form->Steer(FVector::ZeroVector); return true; }
 		if (BallFormStartedAt < 0) { BallFormStartedAt = Now; }
 		auto* Ball = Form->GetFormBall();
 		if (!Ball) { return true; }
@@ -1092,7 +1093,19 @@ AChaosImpactCharacter* AChaosImpactCPUController::SelectTarget(const AChaosImpac
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
 		AChaosImpactCharacter* Candidate = *It;
-		if (Candidate == Self || Candidate->IsEliminated() || AChaosImpactGameState::AreTeammates(GetWorld(), Candidate, Self))
+		if (Candidate!=Self && !Candidate->IsEliminated() && Candidate->GetBallForm()->IsCaptured()
+			&& AChaosImpactGameState::AreTeammates(GetWorld(),Candidate,Self) && Self->GetCarriedBallCount()>0
+			&& !Self->GetBallForm()->GetHeldBall(0)
+			&& Self->GetCarriedBallType(0)!=EChaosImpactBallType::Nova && Self->GetCarriedBallType(0)!=EChaosImpactBallType::Wind
+			&& Self->GetCarriedBallType(0)!=EChaosImpactBallType::Beam
+			&& FVector::DistSquared2D(Location,Candidate->GetActorLocation())<FMath::Square(1200.f))
+		{
+			// A short rescue shot is more useful than attacking another opponent while our teammate is captive.
+			FHitResult Cover;
+			if (!GetWorld()->LineTraceSingleByObjectType(Cover,Location,Candidate->GetActorLocation(),FCollisionObjectQueryParams(ECC_WorldStatic),
+				FCollisionQueryParams(SCENE_QUERY_STAT(PrisonRescueSight),false,Self))) { return Candidate; }
+		}
+		if (Candidate == Self || Candidate->GetBallForm()->IsCaptured() || Candidate->IsEliminated() || AChaosImpactGameState::AreTeammates(GetWorld(), Candidate, Self))
 		{
 			continue;
 		}
@@ -1436,7 +1449,7 @@ AChaosImpactBall* AChaosImpactCPUController::SelectPickup(const AChaosImpactChar
 			continue;
 		}
 		if (const AChaosImpactBuddyBall* Buddy = Cast<AChaosImpactBuddyBall>(Ball);
-			Buddy && !Self->GetBallForm()->CanCollect(Buddy->GetPassenger()))
+			Buddy && !Buddy->CanBeCollectedBy(Self))
 		{
 			continue;
 		}
@@ -2039,6 +2052,7 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Nova: return 1.8f;
 	case EChaosImpactBallType::Simae: return 1.7f;
 	case EChaosImpactBallType::Drive: return 1.9f;
+	case EChaosImpactBallType::Prison: return 2.1f;
 	case EChaosImpactBallType::Wind: return 1.6f;
 	case EChaosImpactBallType::Snow: return 1.5f;
 	default: return 1.0f;

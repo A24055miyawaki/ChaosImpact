@@ -48,12 +48,19 @@ enum class EChaosImpactBallType : uint8
 	 * Steered after the throw: its thrower stands rooted, the camera follows it, and the movement controls turn it for
 	 * a few seconds. A charged throw flies faster but turns wider. It bursts on the first opponent it meets.
 	 */
-	Drive UMETA(DisplayName="Drive")
+	Drive UMETA(DisplayName="Drive"),
+	/** VS/training only: traps an opponent in a throwable shell, without initial damage. */
+	Prison UMETA(DisplayName="Prison")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 12;
+	constexpr int32 Count = 13;
+	constexpr float PrisonSeconds = 5.0f;
+	constexpr float PrisonImmunitySeconds = 3.0f;
+	constexpr float PrisonReleaseProtection = 0.65f;
+	/** False in solo/RPG, even when a map was opened directly with training options. */
+	bool IsPrisonMode(const UWorld* World);
 
 	/** Simae flock: twelve tightly turning birds; each enemy can be pecked twice and dash out between hits. */
 	constexpr int32 SimaeBirdCount = 12;
@@ -190,6 +197,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Nova: return FLinearColor(0.45f, 0.86f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Simae: return FLinearColor(0.96f, 0.97f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Drive: return FLinearColor(1.0f, 0.62f, 0.12f, 1.0f);
+		case EChaosImpactBallType::Prison: return FLinearColor(1.0f, 0.25f, 0.07f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -209,6 +217,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Nova: return TEXT("ノヴァ");
 		case EChaosImpactBallType::Simae: return TEXT("シマエナガ");
 		case EChaosImpactBallType::Drive: return TEXT("ドライブ");
+		case EChaosImpactBallType::Prison: return TEXT("プリズン");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -229,6 +238,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Nova: return TEXT("Nova");
 		case EChaosImpactBallType::Simae: return TEXT("Simae");
 		case EChaosImpactBallType::Drive: return TEXT("Drive");
+		case EChaosImpactBallType::Prison: return TEXT("Prison");
 		default: return TEXT("Normal");
 		}
 	}

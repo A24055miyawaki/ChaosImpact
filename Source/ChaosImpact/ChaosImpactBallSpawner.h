@@ -113,6 +113,8 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Drive (ドライブ)"))
 	float DriveBallChance = 0.04f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Prison (プリズン・VS/トレーニング限定)"))
+	float PrisonBallChance = 0.06f;
 
 	/** What the weights come to, in percent (follows them as they change). */
 	UPROPERTY(VisibleAnywhere, Transient, Category="Chaos Impact|Ball Chances", meta=(DisplayName="確率の内訳 (%)", MultiLine="true"))

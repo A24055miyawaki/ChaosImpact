@@ -2,6 +2,7 @@
 
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactTackleComponent.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactTitleDemo.h"
 #include "ChaosImpactVersusCard.h"
@@ -539,13 +540,18 @@ bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 	{
 		return true;
 	}
+	if (IsGameplayActive())
+	{
+		if (auto* P=Cast<AChaosImpactCharacter>(GetPawn()); P && P->GetTackle()->HandleKey(Params.Key,Params.Event))
+		{ Super::InputKey(Params); return true; }
+	}
 	if (IsGameplayActive() && !IsUsingGamepad())
 	{
 		if (AChaosImpactCharacter* InputCharacter = Cast<AChaosImpactCharacter>(GetPawn());
 			InputCharacter && InputCharacter->HandleEasyPointerKey(Params.Key, Params.Event))
 		{
 			if (Params.Event == IE_Released || (Params.Key == EKeys::RightMouseButton
-				&& ChaosImpactSettings::GetPlayerControlScheme(this) == EChaosImpactControlScheme::MouseHold))
+				&& ChaosImpactSettings::IsMouseOnlyScheme(ChaosImpactSettings::GetPlayerControlScheme(this))))
 			{
 				// Releases must clear PlayerInput even if the pointer moved over UI while holding a gameplay button.
 				// Hold-mode RMB presses also need recording for release/focus-loss handling (no bound action uses RMB).
@@ -1189,11 +1195,34 @@ void AChaosImpactPlayerController::PrepareTrainingControllerAssignment(const int
 	ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
 }
 
+void AChaosImpactPlayerController::PrepareRPGControllerAssignment(const int32 LocalPlayerCount)
+{
+	if (bTravelPending)
+	{
+		return;
+	}
+	PlayFlow = EChaosImpactPlayFlow::RPGAdventure;
+	RequestedLocalPlayerCount = FMath::Clamp(LocalPlayerCount, 1, 4);
+	ResetControllerJoinSequence();
+	bControllerAssignmentKeepsFlightMode = false;
+	bRPGAssignmentConfirmed = false;
+	ControllerAssignmentReturnScreen = EChaosImpactScreen::Playing;
+	ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
+}
+
 void AChaosImpactPlayerController::ConfirmControllerAssignments()
 {
 	if (CurrentScreen != EChaosImpactScreen::ControllerAssignment || bTravelPending
 		|| !AreControllerAssignmentsComplete())
 	{
+		return;
+	}
+	if (PlayFlow == EChaosImpactPlayFlow::RPGAdventure)
+	{
+		// The RPG title takes it from here (each player then picks their own hero).
+		RPGAssignmentOptions = BuildLocalSetupOptions();
+		bRPGAssignmentConfirmed = true;
+		ShowMenuScreen(EChaosImpactScreen::Playing);
 		return;
 	}
 	// The players and their devices are known now, so each can pick a character with their own device.
@@ -2022,7 +2051,16 @@ void AChaosImpactPlayerController::OpenTitleLevel()
 
 void AChaosImpactPlayerController::OpenTrainingLevel(const bool bKeepFlightMode, const bool bOnlineSearch, const bool bLoadingScreen)
 {
-	const FString MapPackage = TrainingLevel.GetLongPackageName();
+	FString MapPackage = TrainingLevel.GetLongPackageName();
+	// A local VS match goes to its stage's own level (the training level raises a stage only while that is missing).
+	if (PlayFlow == EChaosImpactPlayFlow::VersusLocal && bLocalMatchRulesChosen && !bOnlineSearch)
+	{
+		const FString StageLevel = ChaosImpactMatch::GetStageLevel(PendingMatchRules.StageIndex);
+		if (FPackageName::DoesPackageExist(StageLevel))
+		{
+			MapPackage = StageLevel;
+		}
+	}
 	if (MapPackage.IsEmpty())
 	{
 		UE_LOG(LogChaosImpact, Error, TEXT("TrainingLevel must reference a map."));
@@ -2503,6 +2541,18 @@ void AChaosImpactPlayerController::ConfirmMatchRules()
 	const bool bNewLocalEntry = MatchRulesReturnScreen == EChaosImpactScreen::ControllerAssignment
 		|| MatchRulesReturnScreen == EChaosImpactScreen::CharacterSelect
 		|| MatchRulesReturnScreen == EChaosImpactScreen::TrainingSetup;
+	if (GameMode && !IsOnlineRoomHost() && IsVersusMatchWorld() && !bNewLocalEntry && PlayFlow == EChaosImpactPlayFlow::VersusLocal)
+	{
+		// A rematch on another stage: over to that stage's own level (the same stage restarts in place below).
+		const FString StageLevel = ChaosImpactMatch::GetStageLevel(PendingMatchRules.StageIndex);
+		if (FPackageName::DoesPackageExist(StageLevel)
+			&& UWorld::RemovePIEPrefix(GetWorld()->GetOutermost()->GetName()) != StageLevel)
+		{
+			bLocalMatchRulesChosen = true;
+			OpenTrainingLevel(false);
+			return;
+		}
+	}
 	if (GameMode && (IsOnlineRoomHost() || (IsVersusMatchWorld() && !bNewLocalEntry)))
 	{
 		// Players are already here: the match (re)starts in place.
@@ -3373,9 +3423,14 @@ void AChaosImpactPlayerController::NotifySoloStageCleared()
 	}), 5.0f, false);
 }
 
-bool AChaosImpactPlayerController::OpenExplorationMap()
+bool AChaosImpactPlayerController::OpenExplorationMap(const FString& ExtraOptions)
 {
 	const TCHAR* Map = TEXT("/Game/ChaosImpact/OpenWorld/Lvl_OpenWorld");
+	// Removable RPG prototype: a package-only hook, with the original exploration map as fallback.
+	const bool bRPGPrototype = FPackageName::DoesPackageExist(TEXT("/Game/ChaosImpact/RPGPrototype/Lvl_RPGVSStage1"));
+	if (bRPGPrototype) { Map = TEXT("/Game/ChaosImpact/RPGPrototype/Lvl_RPGVSStage1"); }
+	if (bRPGPrototype && FPackageName::DoesPackageExist(TEXT("/Game/ChaosImpact/RPGPrototype/Adventure/Lvl_RPGColonyFrontier")))
+	{ Map = TEXT("/Game/ChaosImpact/RPGPrototype/Adventure/Lvl_RPGColonyFrontier"); }
 	if (bTravelPending || !FPackageName::DoesPackageExist(Map))
 	{
 		return false;
@@ -3383,7 +3438,8 @@ bool AChaosImpactPlayerController::OpenExplorationMap()
 	bTravelPending = true;
 	SetPause(false);
 	bIntroFullScreen = false;
-	UGameplayStatics::OpenLevel(this, FName(Map), true, FString::Printf(TEXT("CIOpenWorld=1?CITargets=0?CICPUCount=0?%s"), *BuildLocalSetupOptions()));
+	UGameplayStatics::OpenLevel(this, FName(Map), true, FString::Printf(TEXT("CIOpenWorld=1?CITargets=0?CICPUCount=0?%s%s%s"),
+		*BuildLocalSetupOptions(), bRPGPrototype ? TEXT("?CIRPGPrototype=1") : TEXT(""), bRPGPrototype ? *ExtraOptions : TEXT("")));
 	return true;
 }
 

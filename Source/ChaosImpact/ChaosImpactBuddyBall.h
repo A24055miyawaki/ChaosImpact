@@ -26,11 +26,12 @@ public:
 	AChaosImpactCharacter* GetPassenger() const { return Passenger.Get(); }
 	AChaosImpactCharacter* GetCarrier() const { return Carrier.Get(); }
 	bool IsLaunched() const { return bLaunched; }
-	void SetSteering(const FVector& Input) { Steering = Input.GetClampedToMaxSize(1.0f); }
+	void SetSteering(const FVector& Input);
 	virtual bool ConsumePickup(AChaosImpactCharacter* Collector) override;
 	virtual bool IsPickupAvailable() const override;
 	virtual void Launch(const FVector& Direction, float Speed, EChaosImpactBallFlightMode FlightMode, float ArcUpwardSpeed) override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float TakeDamage(float Amount, const FDamageEvent& Event, AController* InstigatorController, AActor* Causer) override;
 	void ReleasePassenger();
 	void ForgetPassenger() { Passenger.Reset(); }
@@ -52,6 +53,10 @@ public:
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 private:
+	UFUNCTION()
+	void OnRep_Passenger();
+	UFUNCTION()
+	void OnRep_Launched();
 	void UpdateLook(float DeltaSeconds);
 
 	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Buddy Ball")
@@ -62,6 +67,7 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> ShellLook;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> RingLook;
+	FLinearColor TeamLookColor = FLinearColor::Transparent;
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> Trail;
 	/** Afterimages of the shell behind it in flight, in the team's colour (nearest first). */
@@ -73,9 +79,13 @@ private:
 	TArray<FVector> Trace;
 	float TraceClock = 0.0f;
 
+	UPROPERTY(ReplicatedUsing=OnRep_Passenger)
 	TWeakObjectPtr<AChaosImpactCharacter> Passenger;
+	UPROPERTY(Replicated)
 	TWeakObjectPtr<AChaosImpactCharacter> Carrier;
 	FVector Steering = FVector::ZeroVector;
+	double SteeringUntil = 0.0;
+	UPROPERTY(ReplicatedUsing=OnRep_Launched)
 	bool bLaunched = false;
 	double LaunchedAt = 0.0;
 	float Age = 0.0f;

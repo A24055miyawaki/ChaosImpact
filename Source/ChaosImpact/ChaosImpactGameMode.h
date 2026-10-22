@@ -188,6 +188,9 @@ private:
 	 */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
 	TSubclassOf<AChaosImpactStageBase> SplashStageClass;
+	/** ステージ3 (the sky temple), raised in a room's lobby level; a local match travels to its own level instead. */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
+	TSubclassOf<AChaosImpactStageBase> TempleStageClass;
 
 	/** Where that stage is spawned. X/Y as set; Z follows the players' floor. Far from the training arena. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))

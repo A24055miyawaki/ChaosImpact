@@ -77,6 +77,8 @@ private:
 	double SlotJoinedAt[4] = {};
 	EChaosImpactScreen Screen = EChaosImpactScreen::Title;
 	int32 SelectedIndex = 0;
+	/** Stage select: the card the cursor came down from (going back up returns to it). */
+	int32 LastStageCard = 0;
 	/** What the cursor was on last frame (a move to another entry clicks). */
 	EChaosImpactScreen SoundScreen = EChaosImpactScreen::Title;
 	int32 SoundSelectedIndex = INDEX_NONE;

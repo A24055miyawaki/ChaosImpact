@@ -9,15 +9,20 @@
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "InputKeyEventArgs.h"
 
+TFunction<bool(const FInputKeyEventArgs&)> UChaosImpactGameViewportClient::UnownedGamepadHandler;
+
 bool UChaosImpactGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
 	// F11 and Alt+Enter go through the settings, so the settings screen shows (and saves) the same window mode.
 	// The editor keeps F11 for its own use.
-	if (!GIsEditor && EventArgs.Event == IE_Pressed
+	if (!GIsEditor && (EventArgs.Event == IE_Pressed || EventArgs.Event == IE_Repeat)
 		&& (EventArgs.Key == EKeys::F11 || (EventArgs.Key == EKeys::Enter && FSlateApplication::IsInitialized()
 			&& FSlateApplication::Get().GetModifierKeys().IsAltDown())))
 	{
-		ChaosImpactSettings::ToggleFullscreen();
+		if (EventArgs.Event == IE_Pressed)
+		{
+			ChaosImpactSettings::ToggleFullscreen();
+		}
 		return true;
 	}
 	// The normal viewport route only sends a pad to a LocalPlayer that already owns it.
@@ -40,6 +45,10 @@ bool UChaosImpactGameViewportClient::InputKey(const FInputKeyEventArgs& EventArg
 	if (EventArgs.Event == IE_Pressed && EventArgs.Key.IsGamepadKey() && GEngine && GetWorld()
 		&& !GEngine->GetLocalPlayerFromInputDevice(this, EventArgs.InputDevice))
 	{
+		if (UnownedGamepadHandler && UnownedGamepadHandler(EventArgs))
+		{
+			return true;
+		}
 		const AChaosImpactPlayerController* Primary =
 			Cast<AChaosImpactPlayerController>(GetWorld()->GetFirstPlayerController());
 		if (Primary && Primary->IsGameplayActive())

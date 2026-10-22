@@ -28,6 +28,7 @@ class UProceduralMeshComponent;
 class UAudioComponent;
 class AChaosImpactBall;
 class UChaosImpactBallFormComponent;
+class UChaosImpactTackleComponent;
 enum class EChaosImpactNovaPart : uint8;
 class AChaosImpactTornado;
 class UChaosImpactPuppetComponent;
@@ -48,8 +49,12 @@ class AChaosImpactCharacter : public ACharacter
 {
 	GENERATED_BODY()
 	friend class UChaosImpactBallFormComponent;
+	friend class UChaosImpactTackleComponent;
+	friend class AChaosImpactBuddyBall;
 	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Ball Form")
 	TObjectPtr<UChaosImpactBallFormComponent> BallForm;
+	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Tackle")
+	TObjectPtr<UChaosImpactTackleComponent> Tackle;
 
 	/** Camera boom positioning the camera behind the character */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
@@ -84,16 +89,23 @@ public:
 
 	/** Constructor */
 	AChaosImpactCharacter();
+	/** Speeds up take-off and landing without reducing the authored jump height. 1 restores the old arc. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Jump", meta=(ClampMin="1.0", ClampMax="2.5"))
+	float JumpTempo = 1.7f;
+	/** Converts a pre-tempo vertical launch impulse; horizontal impulses stay unchanged. */
+	float GetVerticalImpulseTempo() const { return AppliedJumpTempo; }
 	bool IsShoulderViewActive() const;
 	UChaosImpactShoulderCameraComponent* GetShoulderCamera() const { return ShoulderCamera; }
 	void SetGameplayUIVisible(bool bVisible);
 	void CancelChargingThrow();
+	/** Server: knocked loose: every ball carried falls and rolls away (a charge is called off). */
+	virtual void LoseCarriedBalls();
 	void BeginThrowInput();
 	/** Hardware input only: synchronizes the polling fallback without changing the scripted/CPU API. */
 	void BeginBoundThrowInput();
 	void EndThrowInput();
-	bool HandleEasyPointerKey(const FKey& Key, EInputEvent Event);
-	bool IsPointerOverGameplayUI() const;
+	virtual bool HandleEasyPointerKey(const FKey& Key, EInputEvent Event);
+	virtual bool IsPointerOverGameplayUI() const;
 	void ResetEasyControls();
 	bool HasClickMoveGoal() const { return bClickMoveActive; }
 	FVector GetClickMoveGoal() const { return ClickMoveGoal; }
@@ -111,11 +123,12 @@ public:
 	}
 	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
 	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
-	void RequestBallSwap();
+	virtual void RequestBallSwap();
 	/** Drops the ball in hand (the one thrown next) on the floor in front, where anyone can pick it up (F, D-pad left). */
-	void RequestDropBall();
+	virtual void RequestDropBall();
 	UChaosImpactBallFormComponent* GetBallForm() const { return BallForm; }
 	bool IsInBallForm() const;
+	UChaosImpactTackleComponent* GetTackle() const { return Tackle; }
 	FVector GetBuddyHoldLocation(int32 Slot) const;
 	/** Snow: how far (0-1) the snowball in Slot has grown as its carrier walked; 0 for any other ball. */
 	float GetSnowGrowth(int32 Slot) const;
@@ -253,9 +266,10 @@ public:
 	void ServerReportTornadoHit(AChaosImpactTornado* Tornado);
 	/**
 	 * Blown away by a tornado: moved along Velocity (horizontal), easing out over Seconds. Takes effect where this
-	 * character is moved (its owner, the host, a CPU), like a black hole's pull.
+	 * character is moved (its owner, the host, a CPU), like a black hole's pull. bLift: blown off the ground a little too
+	 * (off: pushed along the ground, feet down).
 	 */
-	void StartWindKnockback(const FVector& Velocity, float Seconds);
+	void StartWindKnockback(const FVector& Velocity, float Seconds, bool bLift = true);
 	/**
 	 * Caught by a tornado: drawn in and whirled round it, lifted off the ground, for WindCarrySeconds, then thrown
 	 * out. Called where the catch is judged (and on the server for everyone); the position moves where this character
@@ -278,7 +292,7 @@ public:
 	/** This player's round trip to the host in seconds; 0 for the host's own player and CPUs. */
 	float GetNetworkRoundTripSeconds() const;
 	/** VS team select, opening (until GO) and results: no moving, throwing, dashing or jumping. */
-	bool IsMatchInputLocked() const;
+	virtual bool IsMatchInputLocked() const;
 	/** Server: moves this character instantly (warp pads), on its own screen too when online, with the camera snapping along. */
 	void WarpTo(const FVector& Location);
 
@@ -426,6 +440,7 @@ protected:
 	void ShowRespawnLocally(const FString& DefeatedBy, float Seconds, APawn* KillerPawn);
 	void ApplyEliminatedPresentation(bool bNowEliminated);
 	virtual void BeginPlay() override;
+	float AppliedJumpTempo = 1.0f;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual bool CanJumpInternal_Implementation() const override;
@@ -969,6 +984,9 @@ protected:
 	 */
 	UPROPERTY(EditAnywhere, Category="Chaos Impact|Appearance")
 	bool bUseToonCharacter = true;
+
+	/** Off: walking over balls never picks them up (a boss that fights with its own moves leaves them to the player). */
+	bool bCanCollectBalls = true;
 
 	/** Size of that model against its source file; 1.45 makes it about as tall as the template mannequin. */
 	UPROPERTY(EditAnywhere, Category="Chaos Impact|Appearance", meta=(ClampMin="0.5", ClampMax="3.0"))

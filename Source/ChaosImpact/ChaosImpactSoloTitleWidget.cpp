@@ -4,6 +4,11 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSoloTitle.h"
 
+void UChaosImpactSoloTitleWidget::SetTitle(AChaosImpactSoloTitle* InTitle)
+{
+	Title = InTitle;
+}
+
 namespace
 {
 	constexpr float PlanW = 1600.0f;

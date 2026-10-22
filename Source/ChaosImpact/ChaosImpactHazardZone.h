@@ -64,6 +64,20 @@ public:
 	static FVector GetBlackHolePullOffset(const UWorld* World, AActor* Character, float DeltaSeconds);
 	/** Server: a remote player's screen saw the ball hit them just before it detonated elsewhere here. */
 	bool TryApplyLateHit(AChaosImpactCharacter* Victim);
+	/**
+	 * Any machine, look only (the RPG mode's own balls): the same burst and field as a VS zone of Type, drawn Radius
+	 * across and lasting Seconds (<= 0: the type's own time). It hurts, freezes, pulls, slides and blinds nobody,
+	 * and is not replicated. Scale is the snowball's size, as in Detonate.
+	 */
+	static AChaosImpactHazardZone* SpawnVisual(UWorld* World, EChaosImpactBallType Type, const FVector& Location,
+		float Radius, float Seconds = -1.0f, APawn* Source = nullptr, float Scale = 1.0f);
+	/** Look only: its time is up now (it fades out as a zone does at the end of its time). */
+	void EndVisual();
+	bool IsVisualOnly() const { return bVisualOnly; }
+	/** Drawn size against the VS zone of the same type (1 for every VS zone). */
+	float GetVisualScale() const;
+	/** A VS zone's own reach. */
+	static float GetTypeRadius(EChaosImpactBallType Type, bool bTrail, float Scale);
 
 	EChaosImpactBallType GetZoneType() const { return ZoneType; }
 	/** One small fire of a fire ball's trail (SpawnFireTrail). */
@@ -159,6 +173,11 @@ protected:
 	/** How big the burst looks (Detonate's Scale). */
 	UPROPERTY(Replicated)
 	float BurstScale = 1.0f;
+
+	/** SpawnVisual: no gameplay at all, and its own size and time. */
+	bool bVisualOnly = false;
+	float VisualRadius = -1.0f;
+	float VisualSeconds = -1.0f;
 
 	/** Server, smoke: blinds opponents inside the cloud while it hangs. */
 	void TickSmoke();

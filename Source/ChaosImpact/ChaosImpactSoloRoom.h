@@ -71,6 +71,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Room", meta=(DisplayName="Boss Level (ボスの強さ)"))
 	EChaosImpactCPULevel BossLevel = EChaosImpactCPULevel::Strongest;
 
+	/**
+	 * The boss stands in the room from the moment the level starts instead of appearing later. A shima-enaga boss
+	 * waits asleep (and cannot be hurt) until the fight begins: when the room starts, or, with minions, once they are
+	 * down. Knocked out in here, the player finds it back in its place, fresh.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Room", meta=(DisplayName="Boss Waits From Start (ボスを最初から置く)"))
+	bool bBossWaitsFromStart = false;
+
 	/** Where the minions appear (Target Points or any actors), in turn. None: anywhere in the Room Area. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Solo Room", meta=(DisplayName="Spawn Points (雑魚の出現位置)"))
 	TArray<TObjectPtr<AActor>> SpawnPoints;
@@ -178,9 +186,12 @@ private:
 	/** On the floor under a point (where a character stands). */
 	FVector OnFloor(const FVector& Point) const;
 	void SpawnBoss();
+	/** Boss Waits From Start: the boss put in its place, waiting. */
+	void SpawnWaitingBoss();
 	/** Every enemy down: the doors open for good. */
 	void FinishRoom();
-	void ClearEnemies();
+	/** bKeepBoss: a boss waiting in its place stays. */
+	void ClearEnemies(bool bKeepBoss = false);
 	void BindPlayer(AChaosImpactCharacter* NewPlayer);
 	/** Fits the stand-in floor and walls to the parts (or hides them). */
 	void LayoutPlaceholder();

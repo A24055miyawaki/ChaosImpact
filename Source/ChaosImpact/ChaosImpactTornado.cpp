@@ -141,10 +141,46 @@ AChaosImpactTornado* AChaosImpactTornado::Release(UWorld* World, const FVector& 
 	return Tornado;
 }
 
+AChaosImpactTornado* AChaosImpactTornado::SpawnVisual(UWorld* World, const FVector& At, const float Seconds, const float Scale)
+{
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		return nullptr;
+	}
+	const FTransform Where(FRotator::ZeroRotator, At, FVector(FMath::Clamp(Scale, 0.3f, 3.0f)));
+	AChaosImpactTornado* Tornado = World->SpawnActorDeferred<AChaosImpactTornado>(StaticClass(), Where, nullptr, nullptr,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!Tornado)
+	{
+		return nullptr;
+	}
+	Tornado->SetReplicates(false);
+	Tornado->bVisualOnly = true;
+	Tornado->VisualSeconds = FMath::Max(Seconds, 0.2f);
+	Tornado->VisualStartedAt = World->GetTimeSeconds();
+	Tornado->VisualCenter = At;
+	Tornado->Origin = At;
+	Tornado->Seed = FMath::Rand();
+	Tornado->FinishSpawning(Where);
+	return Tornado;
+}
+
+void AChaosImpactTornado::EndVisual()
+{
+	if (bVisualOnly && GetWorld())
+	{
+		VisualSeconds = FMath::Min(VisualSeconds, FMath::Max(0.05f, static_cast<float>(GetWorld()->GetTimeSeconds() - VisualStartedAt)));
+	}
+}
+
 void AChaosImpactTornado::BeginPlay()
 {
 	Super::BeginPlay();
-	if (HasAuthority())
+	if (bVisualOnly)
+	{
+		SetLifeSpan(VisualSeconds + CollapseSeconds + 1.5f);
+	}
+	else if (HasAuthority())
 	{
 		SetLifeSpan(ActiveSeconds + CollapseSeconds + 1.5f);
 	}
@@ -158,7 +194,7 @@ void AChaosImpactTornado::BeginPlay()
 
 void AChaosImpactTornado::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (HasAuthority())
+	if (HasAuthority() && !bVisualOnly)
 	{
 		ReleaseCarriedBalls();
 	}
@@ -431,6 +467,23 @@ bool AChaosImpactTornado::TryApplyReportedHit(AChaosImpactCharacter* Victim)
 void AChaosImpactTornado::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bVisualOnly && GetWorld())
+	{
+		// Look only: it stands where it is put and catches nothing.
+		const float Age = static_cast<float>(GetWorld()->GetTimeSeconds() - VisualStartedAt);
+		Center = VisualCenter;
+		SetActorLocation(Center);
+		bActive = Age < VisualSeconds;
+		if (bPresentationBuilt)
+		{
+			UpdatePresentation(Age, DeltaSeconds);
+		}
+		if (Age > VisualSeconds + CollapseSeconds + 0.5f)
+		{
+			Destroy();
+		}
+		return;
+	}
 	if (!GetWorld() || StartServerTime <= 0.0)
 	{
 		return;
@@ -594,7 +647,7 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 	PresentationAge += Delta;
 	// Grows up out of the ground, whirls, then collapses into itself.
 	const float Form = TornadoEaseOut(Age / 0.35f);
-	const float CollapseT = FMath::Clamp((Age - ActiveSeconds) / CollapseSeconds, 0.0f, 1.0f);
+	const float CollapseT = FMath::Clamp((Age - GetWhirlSeconds()) / CollapseSeconds, 0.0f, 1.0f);
 	const float Size = Form * (1.0f - CollapseT * CollapseT);
 	const bool bVisible = Size > 0.01f;
 	const float Spin = PresentationAge * 7.5f;
@@ -710,7 +763,7 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 		Glow->SetIntensity(Size * (7000.0f + 2500.0f * FMath::Sin(PresentationAge * 11.0f)) + 40000.0f * FMath::Exp(-Age * 8.0f));
 	}
 
-	const bool bLooping = Age < ActiveSeconds;
+	const bool bLooping = Age < GetWhirlSeconds();
 	for (const TWeakObjectPtr<UNiagaraComponent>& Effect : {BaseDust, Sparks})
 	{
 		if (UNiagaraComponent* System = Effect.Get(); System && !bLooping && System->IsActive())

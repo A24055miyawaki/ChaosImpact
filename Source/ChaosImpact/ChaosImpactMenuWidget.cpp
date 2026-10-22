@@ -406,7 +406,7 @@ namespace
 		// Follows the card's lean at this height and its lift when selected.
 		const FVector2D Center((Rect.Left + Rect.Right) * 0.5f + 12.0f, Rect.Top + 150.0f - 12.0f * B);
 		const FMenuPainter P{Design, Elements, Layer, Alpha};
-		const float S = Half / (StageIndex == 1 ? 3400.0f : 3000.0f);
+		const float S = Half / (StageIndex == 1 ? 3400.0f : StageIndex == 2 ? 3500.0f : 3000.0f);
 		// World X is up the map and world Y to the right.
 		const auto ToMap = [&Center, S](const float X, const float Y) { return Center + FVector2D(Y, -X) * S; };
 		const auto Block = [&P, &ToMap, S](const float X, const float Y, const float SizeX, const float SizeY, const FLinearColor& Color)
@@ -419,6 +419,47 @@ namespace
 		P.Box(Center.X - Half - 16.0f, Center.Y - Half - 16.0f, Half * 2.0f + 32.0f, Half * 2.0f + 32.0f,
 			FLinearColor(0.0f, 0.0f, 0.0f, 0.35f));
 
+		if (StageIndex == 2)
+		{
+			// Sky temple: nine islands on bridges; the altar in the middle, a seal on each side island, a portal gate on
+			// each corner island (the two pairs in their colours).
+			const auto Disc = [&](const float X, const float Y, const float Radius, const FLinearColor& Color)
+			{
+				constexpr int32 Strips = 14;
+				for (int32 Strip = 0; Strip < Strips; ++Strip)
+				{
+					const float Middle = -Radius + (Strip + 0.5f) * 2.0f * Radius / Strips;
+					Block(X + Middle, Y, 2.0f * Radius / Strips, 2.0f * FMath::Sqrt(FMath::Max(0.0f, Radius * Radius - Middle * Middle)), Color);
+				}
+			};
+			const FVector2D Sides[] = {{2700.0f, 0.0f}, {0.0f, 2700.0f}, {-2700.0f, 0.0f}, {0.0f, -2700.0f}};
+			const FVector2D Corners[] = {{2350.0f, 2350.0f}, {-2350.0f, 2350.0f}, {-2350.0f, -2350.0f}, {2350.0f, -2350.0f}};
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				P.Line(ToMap(0.0f, 0.0f), ToMap(Sides[Index].X, Sides[Index].Y), Ground, 700.0f * S);
+				P.Line(ToMap(Sides[Index].X, Sides[Index].Y), ToMap(Corners[Index].X, Corners[Index].Y), Ground, 420.0f * S);
+				P.Line(ToMap(Sides[(Index + 1) % 4].X, Sides[(Index + 1) % 4].Y), ToMap(Corners[Index].X, Corners[Index].Y), Ground, 420.0f * S);
+			}
+			Disc(0.0f, 0.0f, 1550.0f, Ground);
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				Disc(Sides[Index].X, Sides[Index].Y, 800.0f, Ground);
+				Disc(Corners[Index].X, Corners[Index].Y, 620.0f, Ground);
+				Disc(Sides[Index].X, Sides[Index].Y, 380.0f, WithAlpha(Ice, 0.75f));
+				const FVector2D Facing = -Corners[Index].GetSafeNormal();
+				const FVector2D Gate = Corners[Index] - Facing * 200.0f;
+				const FVector2D Across(-Facing.Y, Facing.X);
+				P.Line(ToMap(Gate.X - Across.X * 290.0f, Gate.Y - Across.Y * 290.0f), ToMap(Gate.X + Across.X * 290.0f, Gate.Y + Across.Y * 290.0f),
+					Index % 2 ? Fire : Ice, 4.0f);
+			}
+			Disc(0.0f, 0.0f, 700.0f, WithAlpha(Gold, 0.85f));
+			for (int32 Index = 0; Index < 8; ++Index)
+			{
+				const float Angle = FMath::DegreesToRadians(22.5f + Index * 45.0f);
+				Block(FMath::Cos(Angle) * 1200.0f, FMath::Sin(Angle) * 1200.0f, 180.0f, 180.0f, Paper);
+			}
+			return;
+		}
 		if (StageIndex != 1)
 		{
 			// Square arena: a low centre deck, bank walls round it, pillars, L-shelters and low cover.
@@ -744,10 +785,14 @@ void UChaosImpactMenuWidget::NativeDestruct()
 bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 {
 	// F11 / Alt+Enter in menus and in play alike (this sees every key first), kept the same as the settings screen.
-	if (!GIsEditor && !InKeyEvent.IsRepeat()
+	if (!GIsEditor
 		&& (InKeyEvent.GetKey() == EKeys::F11 || (InKeyEvent.GetKey() == EKeys::Enter && InKeyEvent.IsAltDown())))
 	{
-		ChaosImpactSettings::ToggleFullscreen();
+		if (!InKeyEvent.IsRepeat())
+		{
+			ChaosImpactSettings::ToggleFullscreen();
+		}
+		// Consume repeats too: never let the engine's own fullscreen shortcut run after ours.
 		return true;
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
@@ -1404,8 +1449,9 @@ void UChaosImpactMenuWidget::BuildEntries()
 	}
 	case EChaosImpactScreen::StageSelect:
 		// One card per stage (StageIndex order), side by side above a back button. Picking a card starts.
-		Entries.Add({FSlateRect(190, 198, 770, 702), ChaosImpactMatch::GetStageLabel(0), TEXT(""), TEXT("STAGE 1"), Gold});
-		Entries.Add({FSlateRect(830, 198, 1410, 702), ChaosImpactMatch::GetStageLabel(1), TEXT(""), TEXT("STAGE 2"), Ice});
+		Entries.Add({FSlateRect(110, 198, 560, 702), ChaosImpactMatch::GetStageLabel(0), TEXT(""), TEXT("STAGE 1"), Gold});
+		Entries.Add({FSlateRect(575, 198, 1025, 702), ChaosImpactMatch::GetStageLabel(1), TEXT(""), TEXT("STAGE 2"), Ice});
+		Entries.Add({FSlateRect(1040, 198, 1490, 702), ChaosImpactMatch::GetStageLabel(2), TEXT(""), TEXT("STAGE 3"), Violet});
 		Entries.Add({FSlateRect(146, 736, 470, 800), TEXT("ルールへ戻る"), TEXT(""), TEXT(""), Muted});
 		break;
 	case EChaosImpactScreen::TeamSelect:
@@ -2260,8 +2306,24 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		const int32 Vertical[] = {3, 2, 1, 0};
 		SelectedIndex = bHorizontal ? Horizontal[SelectedIndex] : Vertical[SelectedIndex];
 	}
-	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::StageSelect
-		|| Screen == EChaosImpactScreen::SoloStageSelect) && Key != EKeys::Tab)
+	else if (Screen == EChaosImpactScreen::StageSelect && Key != EKeys::Tab)
+	{
+		// The stages side by side (left and right go round them), the back button below.
+		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
+			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		const int32 Stages = ChaosImpactMatch::StageCount;
+		if (bHorizontal)
+		{
+			const bool bToLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
+			SelectedIndex = SelectedIndex >= Stages ? Stages : (SelectedIndex + (bToLeft ? Stages - 1 : 1)) % Stages;
+		}
+		else
+		{
+			if (SelectedIndex < Stages) { LastStageCard = SelectedIndex; }
+			SelectedIndex = SelectedIndex >= Stages ? FMath::Clamp(LastStageCard, 0, Stages - 1) : Stages;
+		}
+	}
+	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::SoloStageSelect) && Key != EKeys::Tab)
 	{
 		// 左右でステージ1と2を行き来し、下入力で戻るボタンへ移動
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
@@ -2954,7 +3016,7 @@ FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
 		{
 			SecretStep = 0;
 			if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-				Controller && Controller->OpenExplorationMap())
+				Controller && Controller->OpenExplorationMap(TEXT("?CIRPGTitle=1")))
 			{
 				return FReply::Handled();
 			}

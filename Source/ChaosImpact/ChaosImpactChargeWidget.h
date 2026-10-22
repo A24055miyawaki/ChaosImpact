@@ -4,9 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "ChaosImpactCombatHealth.h"
 #include "ChaosImpactChargeWidget.generated.h"
 
 class APlayerState;
+class AChaosImpactCharacter;
 class UProgressBar;
 class UTextBlock;
 class UBorder;
@@ -52,6 +54,9 @@ public:
 	void SetSnowGrowth(const float Right, const float Left) { SnowGrowth[0] = Right; SnowGrowth[1] = Left; }
 	/** The nova parts carried (ChaosImpactNovaParts bits), shown over the ball stock. */
 	void SetNovaParts(const uint8 Parts) { NovaParts = Parts; }
+	/** Per-view combat readout, also usable by UI automation without accessing gameplay internals. */
+	bool GetCombatHealthPresentation(const AChaosImpactCharacter* Character, ChaosImpactCombatHealth::FPresentation& Out) const;
+	bool IsLastHealthWarningActive() const;
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -59,6 +64,11 @@ protected:
 		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
 private:
+	bool SupportsCombatHealth() const;
+	void UpdateCombatHealth();
+	void PaintCombatHealth(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer) const;
+	void PaintLastHealthWarning(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer) const;
+	TMap<TWeakObjectPtr<const AChaosImpactCharacter>,ChaosImpactCombatHealth::FState> CombatHealth;
 	void RefreshSplitScreenDividers();
 	uint8 NovaParts = 0;
 	void RefreshPersonalAimGuide();

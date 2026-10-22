@@ -17,7 +17,7 @@ class CHAOSIMPACT_API UChaosImpactSoloTitleWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	void SetTitle(AChaosImpactSoloTitle* InTitle) { Title = InTitle; }
+	void SetTitle(AChaosImpactSoloTitle* InTitle);
 
 	/** The plan's scale and its top-left corner on a screen this size. */
 	static float PlanScale(const FVector2D& Size);

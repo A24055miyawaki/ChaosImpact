@@ -12,4 +12,6 @@ class UChaosImpactGameViewportClient : public UGameViewportClient
 
 public:
 	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
+	/** Optional: a pad press that no local player owns (the RPG prototype shows "join" for it). True when used. */
+	static TFunction<bool(const FInputKeyEventArgs&)> UnownedGamepadHandler;
 };

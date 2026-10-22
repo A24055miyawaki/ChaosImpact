@@ -4,6 +4,7 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSimaeBoss.h"
 #include "EngineUtils.h"
 #include "Components/ArrowComponent.h"
 #include "Components/BoxComponent.h"
@@ -144,6 +145,10 @@ void AChaosImpactSoloRoom::BeginPlay()
 	DoorRaise = 0.0f;
 	Door->SetRelativeLocation(DoorUpLocation - FVector(0.0f, 0.0f, SoloRoomDoorSink));
 	Door->SetVisibility(false);
+	if (bBossWaitsFromStart && bSpawnBoss)
+	{
+		SpawnWaitingBoss();
+	}
 }
 
 void AChaosImpactSoloRoom::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -184,7 +189,7 @@ void AChaosImpactSoloRoom::StartRoom(AChaosImpactCharacter* InPlayer)
 		return;
 	}
 	BindPlayer(InPlayer);
-	ClearEnemies();
+	ClearEnemies(bBossWaitsFromStart);
 	Defeated = 0;
 	Phase = EChaosImpactSoloRoomPhase::Minions;
 	SetDoorsClosed(true);
@@ -219,6 +224,10 @@ void AChaosImpactSoloRoom::ResetRoom()
 	Phase = EChaosImpactSoloRoomPhase::Waiting;
 	SetDoorsClosed(false);
 	BindPlayer(nullptr);
+	if (bBossWaitsFromStart && bSpawnBoss)
+	{
+		SpawnWaitingBoss();
+	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s reset"), *GetName());
 	OnRoomReset.Broadcast(this);
 	ReceiveRoomReset();
@@ -382,8 +391,42 @@ FVector AChaosImpactSoloRoom::OnFloor(const FVector& Point) const
 	return Point;
 }
 
+void AChaosImpactSoloRoom::SpawnWaitingBoss()
+{
+	if (Boss.IsValid() || !GetWorld())
+	{
+		return;
+	}
+	const FVector Where = IsValid(BossSpawnPoint) ? OnFloor(BossSpawnPoint->GetActorLocation()) : OnFloor(RoomArea->GetComponentLocation());
+	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel);
+	Boss = NewBoss;
+	if (NewBoss)
+	{
+		Enemies.Add(NewBoss);
+		if (AChaosImpactSimaeBoss* Simae = Cast<AChaosImpactSimaeBoss>(NewBoss))
+		{
+			Simae->SetDormant(true);
+		}
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: boss %s waiting"), *GetName(), *GetNameSafe(NewBoss));
+}
+
 void AChaosImpactSoloRoom::SpawnBoss()
 {
+	if (AChaosImpactCharacter* Waiting = Boss.Get(); Waiting && bBossWaitsFromStart)
+	{
+		// It was there all along: it wakes and the fight is on.
+		Phase = EChaosImpactSoloRoomPhase::Boss;
+		if (AChaosImpactSimaeBoss* Simae = Cast<AChaosImpactSimaeBoss>(Waiting))
+		{
+			Simae->SetDormant(false);
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: boss %s wakes"), *GetName(), *GetNameSafe(Waiting));
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloBoss);
+		OnBossSpawned.Broadcast(this);
+		ReceiveBossSpawned(Waiting);
+		return;
+	}
 	Phase = EChaosImpactSoloRoomPhase::Boss;
 	const FVector Where = IsValid(BossSpawnPoint) ? OnFloor(BossSpawnPoint->GetActorLocation()) : OnFloor(RoomArea->GetComponentLocation());
 	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel);
@@ -409,11 +452,13 @@ void AChaosImpactSoloRoom::SpawnBoss()
 	}
 }
 
-void AChaosImpactSoloRoom::ClearEnemies()
+void AChaosImpactSoloRoom::ClearEnemies(const bool bKeepBoss)
 {
 	// Gone at once, not knocked out: none of this counts.
 	bClearing = true;
-	const TArray<TWeakObjectPtr<AChaosImpactCharacter>> Leaving = Enemies;
+	const TWeakObjectPtr<AChaosImpactCharacter> Kept = bKeepBoss ? Boss : nullptr;
+	const TArray<TWeakObjectPtr<AChaosImpactCharacter>> Leaving = Enemies.FilterByPredicate(
+		[&Kept](const TWeakObjectPtr<AChaosImpactCharacter>& Enemy) { return !Kept.IsValid() || Enemy != Kept; });
 	for (const TWeakObjectPtr<AChaosImpactCharacter>& Enemy : Leaving)
 	{
 		if (AChaosImpactCharacter* Character = Enemy.Get())
@@ -427,7 +472,11 @@ void AChaosImpactSoloRoom::ClearEnemies()
 		}
 	}
 	Enemies.Reset();
-	Boss.Reset();
+	Boss = Kept;
+	if (Kept.IsValid())
+	{
+		Enemies.Add(Kept);
+	}
 	bClearing = false;
 }
 

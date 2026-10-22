@@ -8,8 +8,8 @@ class AChaosImpactBuddyBall;
 class AChaosImpactCharacter;
 
 /**
- * A player curling up into a ball a teammate can pick up and throw: local training with teams, and local VS team
- * battles (not online yet). The original pawn keeps its controller and camera.
+ * Server-authoritative teammate ball, in training and local/online VS team battles.
+ * The original pawn keeps its controller and camera.
  */
 UCLASS(ClassGroup=(ChaosImpact))
 class UChaosImpactBallFormComponent : public UActorComponent
@@ -31,6 +31,8 @@ public:
 	/** Returns true while the body must not run ordinary character input. */
 	bool HandleInput();
 	void ResetGesture();
+	/** Owner input only. Remote steering is rate-limited and validated by the server. */
+	void Steer(const FVector& Direction);
 	void Push(AChaosImpactBuddyBall* Ball, int32 Slot);
 	void Pop();
 	void SwapSlots();
@@ -38,10 +40,23 @@ public:
 	void Remove(AChaosImpactBuddyBall* Ball);
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction) override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 private:
+	UFUNCTION(Server, Reliable)
+	void ServerToggle();
+	UFUNCTION(Server, Unreliable)
+	void ServerSteer(FVector_NetQuantizeNormal Direction);
+	UFUNCTION()
+	void OnRep_FormBall();
+	UFUNCTION()
+	void OnRep_Slots();
+	void ApplyFormPresentation();
 	AChaosImpactCharacter* Character() const;
+	UPROPERTY(ReplicatedUsing=OnRep_FormBall)
 	TWeakObjectPtr<AChaosImpactBuddyBall> FormBall;
+	UPROPERTY(ReplicatedUsing=OnRep_Slots)
 	TWeakObjectPtr<AChaosImpactBuddyBall> Slots[2];
+	double NextSteerAt = 0.0;
 	FVector SafeLocation = FVector::ZeroVector;
 	FTransform SavedPuppetTransform;
 	bool bSavedPuppet = false;

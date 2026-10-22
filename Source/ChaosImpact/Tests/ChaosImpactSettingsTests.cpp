@@ -12,6 +12,7 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSettingsScreen.h"
+#include "GameFramework/GameUserSettings.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -141,7 +142,7 @@ namespace
 				return Next(0.2);
 			case 3:
 			{
-				static const TCHAR* const Modes[] = {TEXT("フルスクリーン"), TEXT("ボーダーレス"), TEXT("ウィンドウ")};
+				static const TCHAR* const Modes[] = {TEXT("フルスクリーン"), TEXT("フルスクリーン"), TEXT("ウィンドウ")};
 				const int32 Row = Settings->FindRow(FScreen::RowWindowMode);
 				Test->TestTrue(TEXT("The settings show F11's window mode"),
 					Settings->GetRows().IsValidIndex(Row) && Settings->GetRows()[Row].Value == Modes[GetWindowMode()]);
@@ -519,6 +520,57 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactRebindTest, "ChaosImpact.Training.R
 bool FChaosImpactRebindTest::RunTest(const FString& Parameters)
 {
 	ADD_LATENT_AUTOMATION_COMMAND(FRebindCommand(this));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactFullscreenSafetyTest, "ChaosImpact.Display.FullscreenSafety",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactFullscreenSafetyTest::RunTest(const FString& Parameters)
+{
+	using namespace ChaosImpactSettings;
+	UGameUserSettings* Settings = GEngine ? GEngine->GetGameUserSettings() : nullptr;
+	AChaosImpactPlayerController* PC = FindSettingsTestController();
+	UChaosImpactMenuWidget* Menu = PC ? PC->GetMenuWidget() : nullptr;
+	if (!Settings || !Menu || !GEngine->GameViewport)
+	{
+		AddError(TEXT("Run this test in a game world with the title menu."));
+		return false;
+	}
+	const int32 OriginalMode = GetWindowMode();
+	const FIntPoint OriginalResolution = GetResolution();
+	SetWindowMode(0);
+	TestEqual(TEXT("Legacy exclusive requests migrate to borderless"), GetWindowMode(), 1);
+	TestTrue(TEXT("No DXGI exclusive mode requested"), Settings->GetFullscreenMode() == EWindowMode::WindowedFullscreen);
+	const FIntPoint FullscreenResolution = Settings->GetScreenResolution();
+	SetWindowMode(1);
+	TestEqual(TEXT("Reapplying fullscreen keeps its resolution"), Settings->GetScreenResolution(), FullscreenResolution);
+	TestEqual(TEXT("Fullscreen uses monitor pixels"), FullscreenResolution, GetMonitorResolution());
+	SetWindowMode(2);
+	if (!GIsEditor)
+	{
+		const FKeyEvent Press(EKeys::F11, FModifierKeysState(), 0, false, 0, 0);
+		const FKeyEvent Repeat(EKeys::F11, FModifierKeysState(), 0, true, 0, 0);
+		TestTrue(TEXT("Global fullscreen shortcut is consumed"), Menu->HandleAnyUserKeyDown(Press));
+		TestEqual(TEXT("F11 enters borderless"), GetWindowMode(), 1);
+		for (int32 Index = 0; Index < 20; ++Index)
+		{
+			TestTrue(TEXT("Held F11 is consumed"), Menu->HandleAnyUserKeyDown(Repeat));
+			GEngine->GameViewport->InputKey(FInputKeyEventArgs(
+				GEngine->GameViewport->Viewport, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice(),
+				EKeys::F11, IE_Repeat, FPlatformTime::Cycles64()));
+		}
+		TestEqual(TEXT("Holding F11 never toggles again"), GetWindowMode(), 1);
+		Menu->HandleAnyUserKeyDown(Press);
+		TestEqual(TEXT("A new F11 press returns to windowed"), GetWindowMode(), 2);
+		const FModifierKeysState Alt(false, false, false, false, true, false, false, false, false);
+		Menu->HandleAnyUserKeyDown(FKeyEvent(EKeys::Enter, Alt, 0, false, 0, 0));
+		TestEqual(TEXT("Alt+Enter also enters borderless"), GetWindowMode(), 1);
+		Menu->HandleAnyUserKeyDown(FKeyEvent(EKeys::Enter, Alt, 0, true, 0, 0));
+		TestEqual(TEXT("Held Alt+Enter never toggles again"), GetWindowMode(), 1);
+	}
+	SetWindowMode(OriginalMode);
+	SetResolution(OriginalResolution);
 	return true;
 }
 

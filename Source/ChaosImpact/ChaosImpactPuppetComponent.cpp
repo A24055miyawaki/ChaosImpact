@@ -597,6 +597,13 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow, const float An
 		const FVector Outward = FVector(Shoulder.X - BodyCentre.X, Shoulder.Y - BodyCentre.Y, 0.0f).GetSafeNormal();
 		RaiseArm(Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		DriveArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		// Guard the chest, elbows out, while leading with the shoulder. Model forward is +Y.
+		if(TackleWeight>0)
+		{
+			const float Reach=Chain.UpperLength+Chain.LowerLength;
+			Target=FMath::Lerp(Target,Shoulder+FVector(bRight?-.12f:.12f,.36f,-.18f)*Reach,TackleWeight);
+			Pole=FMath::Lerp(Pole,FVector(bRight?-1.f:1.f,-.4f,-.3f),TackleWeight);
+		}
 		FVector Mid;
 		FVector End;
 		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);
@@ -807,6 +814,12 @@ void UChaosImpactPuppetComponent::UpdateSkinnedPose()
 		const FVector Outward = FVector(Shoulder.X - OtherShoulder.X, Shoulder.Y - OtherShoulder.Y, 0.0f).GetSafeNormal();
 		RaiseArm(Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		DriveArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		if(TackleWeight>0)
+		{
+			const float Reach=Chain.UpperLength+Chain.LowerLength;
+			Target=FMath::Lerp(Target,Shoulder+FVector(bRight?-.12f:.12f,.36f,-.18f)*Reach,TackleWeight);
+			Pole=FMath::Lerp(Pole,FVector(bRight?-1.f:1.f,-.4f,-.3f),TackleWeight);
+		}
 		FVector Mid;
 		FVector End;
 		SolveTwoBone(Shoulder, Target, Pole.GetSafeNormal(), Chain.UpperLength, Chain.LowerLength, Mid, End);

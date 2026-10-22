@@ -43,6 +43,12 @@ public:
 	void PrepareTrainingControllerAssignment(int32 LocalPlayerCount);
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
 	void ConfirmControllerAssignments();
+	/** Controller assignment for the RPG title: 戻る returns to play (the RPG title), confirming sets the flag below. */
+	void PrepareRPGControllerAssignment(int32 LocalPlayerCount);
+	/** True once after the RPG flow's assignment was confirmed. */
+	bool ConsumeRPGAssignmentConfirmed() { const bool bWas = bRPGAssignmentConfirmed; bRPGAssignmentConfirmed = false; return bWas; }
+	/** The confirmed RPG assignment ("CILocalPlayers=..?CIKeyboardPlayer=..?CIPadDevice0=.."), applied live by the RPG. */
+	const FString& GetRPGAssignmentOptions() const { return RPGAssignmentOptions; }
 	/** Character select, right after controller assignment: every local player picks a character and a colour. */
 	void OpenCharacterSelect();
 	/** Everyone is ready: on to wherever the assignment was leading (training, the rules, the room choice). */
@@ -313,7 +319,7 @@ public:
 	void NotifySoloStageCleared();
 
 	/** The exploration map (OpenWorld/, an experiment that can be removed): its hidden way in from the title. */
-	bool OpenExplorationMap();
+	bool OpenExplorationMap(const FString& ExtraOptions = FString());
 
 	/** A choice from the world map's pause menu (its Detail); false when it is not one. */
 	bool HandleWorldMapPauseChoice(const FString& Choice);
@@ -367,6 +373,8 @@ protected:
 	FSoftObjectPath TrainingLevel = FSoftObjectPath(TEXT("/Game/ThirdPerson/Lvl_ThirdPerson.Lvl_ThirdPerson"));
 
 	bool bTravelPending = false;
+	bool bRPGAssignmentConfirmed = false;
+	FString RPGAssignmentOptions;
 	bool bSpectateTimeStopped = false;
 	bool bTrainingMode = false;
 	bool bTrainingShoulderCamera = false;

@@ -74,6 +74,7 @@ public:
 	void SetHeldBalls(USceneComponent* RightBall, USceneComponent* LeftBall);
 	/** Tuck the hands and feet toward the belly, retaining the character's face and silhouette. */
 	void SetBallPose(bool bActive);
+	void SetTacklePose(float Weight) { TackleWeight=FMath::Clamp(Weight,0.f,1.f); }
 
 private:
 	bool InitializeAuthored(USkeletalMesh* Mesh);
@@ -94,6 +95,7 @@ private:
 	bool bAuthoredNovaThrow = false;
 	uint64 AuthoredAdvancedFrame = MAX_uint64;
 	bool bBallPose = false;
+	float TackleWeight = 0;
 	void ApplyBallPose();
 	struct FLimbChain
 	{

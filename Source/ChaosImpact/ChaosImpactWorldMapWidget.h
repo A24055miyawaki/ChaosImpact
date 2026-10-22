@@ -17,7 +17,7 @@ class CHAOSIMPACT_API UChaosImpactWorldMapWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	void SetMap(AChaosImpactWorldMap* InMap) { Map = InMap; }
+	void SetMap(AChaosImpactWorldMap* InMap);
 	void SetCardNode(const int32 Node) { CardNode = Node; }
 
 protected:

@@ -51,7 +51,7 @@ namespace ChaosImpactMatch
 	inline constexpr int32 MaxTeams = 4;
 
 	/** Stages offered on the stage select screen, in StageIndex order. */
-	inline constexpr int32 StageCount = 2;
+	inline constexpr int32 StageCount = 3;
 
 	inline int32 SanitizeStage(const int32 StageIndex)
 	{
@@ -62,6 +62,19 @@ namespace ChaosImpactMatch
 	inline FString GetStageLabel(const int32 StageIndex)
 	{
 		return FString::Printf(TEXT("ステージ%d"), SanitizeStage(StageIndex) + 1);
+	}
+
+	/**
+	 * Each stage's own level (a local match travels to it; an online room still raises the stage inside its lobby
+	 * level). Content/ChaosImpact/Versus/Levels.
+	 */
+	inline FString GetStageLevel(const int32 StageIndex)
+	{
+		static const TCHAR* Levels[StageCount] = {
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage1"),
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage2"),
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage3")};
+		return Levels[SanitizeStage(StageIndex)];
 	}
 
 	/** CPU strengths offered on the rules screen, in CPULevel order. */

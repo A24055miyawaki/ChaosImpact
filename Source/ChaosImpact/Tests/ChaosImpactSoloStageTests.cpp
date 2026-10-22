@@ -182,9 +182,12 @@ namespace
 				NextAt = Now + 0.4;
 				return false;
 			case 11:
-				Test->TestEqual(TEXT("Going in starts the room"), Room->GetPhase(), EChaosImpactSoloRoomPhase::Minions);
+				// A room with no minions (its boss waiting from the start) goes straight to the boss.
+				Test->TestEqual(TEXT("Going in starts the room"), Room->GetPhase(),
+					Room->MinionCount > 0 ? EChaosImpactSoloRoomPhase::Minions : EChaosImpactSoloRoomPhase::Boss);
 				Test->TestTrue(TEXT("The door shuts"), Room->AreDoorsClosed());
-				Test->TestEqual(TEXT("Its minions"), Room->GetAliveEnemyCount(), Room->MinionCount);
+				// (A boss waiting there from the start counts among them.)
+				Test->TestEqual(TEXT("Its minions"), Room->GetAliveEnemyCount(), Room->MinionCount + (Room->bBossWaitsFromStart ? 1 : 0));
 				Enemies(false);
 				// A few steps in, to see them.
 				Place(FMath::Lerp(Room->EntryTrigger->GetComponentLocation(), Room->RoomArea->GetComponentLocation(), 0.55f));
@@ -227,6 +230,9 @@ namespace
 			case 17:
 				if (Room->GetPhase() != EChaosImpactSoloRoomPhase::Cleared)
 				{
+					// A boss that shrugs off a blow (the shima-enaga powers up at half health) takes another.
+					Enemies(true);
+					NextAt = Now + 0.5;
 					return false;
 				}
 				Test->TestFalse(TEXT("Cleared: the door opens"), Room->AreDoorsClosed());

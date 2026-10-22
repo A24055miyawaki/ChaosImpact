@@ -53,5 +53,7 @@ enum class EChaosImpactPlayFlow : uint8
 {
 	Training,
 	VersusLocal,
-	VersusOnline
+	VersusOnline,
+	/** The removable RPG prototype's own title (RPGPrototype/RPGTitle): assignment leads back to it. */
+	RPGAdventure
 };

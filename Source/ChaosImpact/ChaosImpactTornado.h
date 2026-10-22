@@ -39,6 +39,15 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	/**
+	 * Any machine, look only (the RPG mode's wind ball): the same funnel, standing wherever SetVisualCenter puts it,
+	 * for Seconds. It catches no one and no ball, and is not replicated. Scale sizes the whole funnel.
+	 */
+	static AChaosImpactTornado* SpawnVisual(UWorld* World, const FVector& At, float Seconds, float Scale = 1.0f);
+	void SetVisualCenter(const FVector& At) { VisualCenter = At; }
+	/** Look only: collapses now. */
+	void EndVisual();
+	bool IsVisualOnly() const { return bVisualOnly; }
 	/** Server: a remote player's screen saw this tornado catch them. True when it counted. */
 	bool TryApplyReportedHit(AChaosImpactCharacter* Victim);
 
@@ -74,6 +83,12 @@ private:
 
 	void BuildPresentation();
 	void UpdatePresentation(float Age, float DeltaSeconds);
+	/** How long it whirls (ActiveSeconds, or a look-only funnel's own time). */
+	float GetWhirlSeconds() const { return bVisualOnly ? VisualSeconds : ActiveSeconds; }
+	bool bVisualOnly = false;
+	float VisualSeconds = 0.0f;
+	double VisualStartedAt = 0.0;
+	FVector VisualCenter = FVector::ZeroVector;
 	UStaticMeshComponent* AddShape(UStaticMesh* Mesh, UMaterialInstanceDynamic* Material);
 
 	UPROPERTY(Replicated)

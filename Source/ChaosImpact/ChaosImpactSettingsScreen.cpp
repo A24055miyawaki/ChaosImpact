@@ -259,7 +259,7 @@ void UChaosImpactSettingsScreen::BuildRows()
 void UChaosImpactSettingsScreen::BuildDisplayRows()
 {
 	using namespace ChaosImpactSettings;
-	static const TCHAR* const Modes[] = {TEXT("フルスクリーン"), TEXT("ボーダーレス"), TEXT("ウィンドウ")};
+	static const TCHAR* const Modes[] = {TEXT("フルスクリーン"), TEXT("フルスクリーン"), TEXT("ウィンドウ")};
 	const int32 Mode = GetWindowMode();
 	Rows.Add(MakeRow(ERowKind::Value, RowWindowMode, TEXT("画面モード（F11でも切り替え）"), Modes[Mode]));
 	const FIntPoint Resolution = GetResolution();
@@ -358,6 +358,9 @@ void UChaosImpactSettingsScreen::BuildControlRows()
 		{
 			Rows.Add(MakeRow(ERowKind::Info, 5004, TEXT("離すと停止 / ドライブはマウスで自由に操縦")));
 		}
+		Rows.Add(MakeRow(ERowKind::Info,5005,IsMouseOnlyScheme(Scheme)
+			? TEXT("左右クリック同時押し：タックル（投球・移動と排他）")
+			: TEXT("回避＋投球ボタン同時押し：タックル")));
 		return; // Presets never overwrite the normal bindings; switch back to edit those.
 	}
 	Rows.Add(MakeRow(ERowKind::Heading, 1, bPad ? TEXT("ボタン（ひとつの操作に2つまで）") : TEXT("キー（ひとつの操作に2つまで）")));
@@ -486,7 +489,7 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 	if (Id == RowWindowMode)
 	{
-		SetWindowMode(Wrap(GetWindowMode() + Step, 3));
+		SetWindowMode(GetWindowMode() == 2 ? 1 : 2);
 	}
 	else if (Id == RowResolution)
 	{
@@ -777,7 +780,7 @@ void UChaosImpactSettingsScreen::Tick(const float DeltaSeconds)
 	// F11 changes the window mode behind this screen: show what it is now.
 	if (Tab == ETab::Display && IsSelectable(FindRow(RowWindowMode)))
 	{
-		static const TCHAR* const Modes[] = {TEXT("フルスクリーン"), TEXT("ボーダーレス"), TEXT("ウィンドウ")};
+		static const TCHAR* const Modes[] = {TEXT("フルスクリーン"), TEXT("フルスクリーン"), TEXT("ウィンドウ")};
 		if (Rows[FindRow(RowWindowMode)].Value != Modes[ChaosImpactSettings::GetWindowMode()])
 		{
 			BuildRows();

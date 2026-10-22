@@ -7,6 +7,11 @@
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "GameFramework/Pawn.h"
 
+void UChaosImpactWorldMapWidget::SetMap(AChaosImpactWorldMap* InMap)
+{
+	Map = InMap;
+}
+
 int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 	FSlateWindowElementList& OutDrawElements, const int32 LayerId, const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
 {

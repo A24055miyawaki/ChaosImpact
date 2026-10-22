@@ -15,6 +15,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Net/UnrealNetwork.h"
 
 namespace
 {
@@ -89,17 +90,34 @@ AChaosImpactBuddyBall::AChaosImpactBuddyBall()
 
 void AChaosImpactBuddyBall::InitializePassenger(AChaosImpactCharacter* Character)
 {
+	if (!HasAuthority()) { return; }
 	Passenger = Character;
 	MakePickup();
 	CollisionSphere->SetSphereRadius(35.0f);
 	CollisionSphere->SetCollisionObjectType(ECC_Pawn);
 	CollisionSphere->IgnoreActorWhenMoving(Character, true);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+	OnRep_Passenger();
+	ForceNetUpdate();
+}
+
+void AChaosImpactBuddyBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AChaosImpactBuddyBall, Passenger);
+	DOREPLIFETIME(AChaosImpactBuddyBall, Carrier);
+	DOREPLIFETIME(AChaosImpactBuddyBall, bLaunched);
+}
+
+void AChaosImpactBuddyBall::OnRep_Passenger()
+{
+	if (!Passenger.IsValid()) { return; }
 	BallMesh->SetVisibility(false, true);
 	Age = 0.0f;
 	ShellLook = Shell->CreateDynamicMaterialInstance(0);
 	RingLook = FloorRing->CreateDynamicMaterialInstance(0);
 	const FLinearColor Color = GetTeamColor();
+	TeamLookColor = Color;
 	if (ShellLook)
 	{
 		ShellLook->SetVectorParameterValue(TEXT("Color"), Color);
@@ -141,6 +159,14 @@ FLinearColor AChaosImpactBuddyBall::GetTeamColor() const
 	return Team >= 0 ? ChaosImpactMatch::GetTeamColor(Team) : FLinearColor(0.35f, 0.75f, 1.0f);
 }
 
+void AChaosImpactBuddyBall::SetSteering(const FVector& Input)
+{
+	if (!HasAuthority() || Input.ContainsNaN()) { return; }
+	Steering = Input.GetClampedToMaxSize(1.0f);
+	// Retain the input between 20 Hz owner updates, but never turn forever after a lost connection.
+	SteeringUntil = GetWorld() ? GetWorld()->GetTimeSeconds() + .15 : 0;
+}
+
 float AChaosImpactBuddyBall::GetAppear() const
 {
 	return BuddyEaseOutBack(Age / 0.3f);
@@ -158,7 +184,7 @@ bool AChaosImpactBuddyBall::IsPickupAvailable() const
 
 bool AChaosImpactBuddyBall::ConsumePickup(AChaosImpactCharacter* Collector)
 {
-	if (!IsPickupAvailable() || !Collector || !Collector->GetBallForm()->CanCollect(Passenger.Get())
+	if (!HasAuthority() || !IsPickupAvailable() || !Collector || !Collector->GetBallForm()->CanCollect(Passenger.Get())
 		|| !Collector->TryPickupBall(this)) { return false; }
 	Carrier = Collector;
 	bPickupConsumed = true;
@@ -168,6 +194,10 @@ bool AChaosImpactBuddyBall::ConsumePickup(AChaosImpactCharacter* Collector)
 	PrepareForAnimatedThrow(Collector->GetRootComponent(), NAME_None, FVector::ZeroVector, FRotator::ZeroRotator);
 	SetActorTickEnabled(true);
 	FollowHand();
+	// Unlike a normal pickup this actor survives; the owner must not predict/destroy a replacement ball.
+	Collector->ClientBallCountReset(Collector->GetCarriedBallCount(), Collector->GetCarriedBallTypesPacked());
+	Collector->ForceNetUpdate();
+	ForceNetUpdate();
 	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharPickup, GetActorLocation());
 	return true;
 }
@@ -190,6 +220,7 @@ void AChaosImpactBuddyBall::FollowHand()
 void AChaosImpactBuddyBall::Launch(const FVector& Direction, const float Speed,
 	const EChaosImpactBallFlightMode Mode, const float UpSpeed)
 {
+	if (!HasAuthority()) { return; }
 	bLaunched = true;
 	LaunchedAt = GetWorld()->GetTimeSeconds();
 	Carrier.Reset();
@@ -202,15 +233,24 @@ void AChaosImpactBuddyBall::Launch(const FVector& Direction, const float Speed,
 
 void AChaosImpactBuddyBall::UpdateLook(const float DeltaSeconds)
 {
+	// Team/PlayerState references can arrive after the passenger actor reference.
+	const FLinearColor TeamColor = GetTeamColor();
+	if (!TeamColor.Equals(TeamLookColor))
+	{
+		TeamLookColor = TeamColor;
+		if (ShellLook) { ShellLook->SetVectorParameterValue(TEXT("Color"), TeamColor); }
+		if (RingLook) { RingLook->SetVectorParameterValue(TEXT("Color"), TeamColor); }
+		for (const auto& Look : GhostLooks) { if (Look) { Look->SetVectorParameterValue(TEXT("Color"), TeamColor); } }
+	}
 	Age += DeltaSeconds;
 	Flash = FMath::Max(0.0f, Flash - DeltaSeconds * 3.0f);
 	const bool bHeld = Carrier.IsValid();
-	const bool bFlying = bLaunched && ProjectileMovement && ProjectileMovement->IsActive();
+	const bool bFlying = bLaunched && !IsPickup();
 	const bool bWaiting = !bHeld && !bLaunched;
 	// Rolling: about the axis across its way, as fast as its speed over its radius; waiting it turns slowly.
 	if (bFlying)
 	{
-		const FVector Velocity = ProjectileMovement->Velocity;
+		const FVector Velocity = GetBallVelocity();
 		const FVector Axis = FVector::CrossProduct(FVector::UpVector, Velocity.GetSafeNormal2D());
 		if (!Axis.IsNearlyZero())
 		{
@@ -278,9 +318,25 @@ void AChaosImpactBuddyBall::UpdateLook(const float DeltaSeconds)
 	}
 }
 
+void AChaosImpactBuddyBall::OnRep_Launched()
+{
+	if (bLaunched) { Flash = 1.0f; Trace.Reset(); }
+}
+
 void AChaosImpactBuddyBall::Tick(const float DeltaSeconds)
 {
-	if (!Passenger.IsValid()) { Destroy(); return; }
+	// Replicated actor references can arrive after the actor's first frame.
+	if (!Passenger.IsValid()) { if (HasAuthority()) { Destroy(); } return; }
+	if (!HasAuthority())
+	{
+		Super::Tick(DeltaSeconds);
+		// Base balls hide the owner's real projectile behind its predicted normal ball. A buddy has no preview.
+		SetActorHiddenInGame(false);
+		BallMesh->SetVisibility(false, true);
+		if (Carrier.IsValid()) { FollowHand(); }
+		UpdateLook(DeltaSeconds);
+		return;
+	}
 	UpdateLook(DeltaSeconds);
 	if (Carrier.IsValid())
 	{
@@ -291,15 +347,16 @@ void AChaosImpactBuddyBall::Tick(const float DeltaSeconds)
 		FollowHand();
 		return;
 	}
-	if (bLaunched && (!Steering.IsNearlyZero()) && ProjectileMovement->IsActive())
+	if (bLaunched && (!Steering.IsNearlyZero()) && ProjectileMovement->IsActive()
+		&& GetWorld()->GetTimeSeconds() <= SteeringUntil)
 	{
 		const FVector V = ProjectileMovement->Velocity;
 		const float Speed = V.Size2D();
 		const FVector Turned = FMath::VInterpNormalRotationTo(V.GetSafeNormal2D(), Steering.GetSafeNormal2D(), DeltaSeconds, 32.0f);
 		ProjectileMovement->Velocity = Turned * Speed + FVector::UpVector * V.Z;
-		Steering = FVector::ZeroVector;
 	}
 	if (bLaunched) { Super::Tick(DeltaSeconds); }
+	else { UpdateNetState(); }
 	BallMesh->SetVisibility(false, true);
 	if (bLaunched && (IsPickup() || GetWorld()->GetTimeSeconds() - LaunchedAt > 4.0))
 	{
@@ -351,6 +408,7 @@ void AChaosImpactBuddyBall::PlayPop(const UObject* WorldContext, const FVector& 
 
 void AChaosImpactBuddyBall::ReleasePassenger()
 {
+	if (!HasAuthority()) { return; }
 	if (AChaosImpactCharacter* Rider = Passenger.Get()) { Rider->GetBallForm()->Restore(); }
 	else { Destroy(); }
 }
@@ -358,7 +416,7 @@ void AChaosImpactBuddyBall::ReleasePassenger()
 float AChaosImpactBuddyBall::TakeDamage(const float Amount, const FDamageEvent& Event,
 	AController* InstigatorController, AActor* Causer)
 {
-	return Passenger.IsValid() ? Passenger->TakeDamage(Amount, Event, InstigatorController, Causer) : 0.0f;
+	return HasAuthority() && Passenger.IsValid() ? Passenger->TakeDamage(Amount, Event, InstigatorController, Causer) : 0.0f;
 }
 
 void AChaosImpactBuddyBall::EndPlay(const EEndPlayReason::Type Reason)
@@ -367,6 +425,6 @@ void AChaosImpactBuddyBall::EndPlay(const EEndPlayReason::Type Reason)
 	{
 		Trail->Deactivate();
 	}
-	if (Reason == EEndPlayReason::Destroyed && Passenger.IsValid()) { Passenger->GetBallForm()->Restore(); }
+	if (HasAuthority() && Reason == EEndPlayReason::Destroyed && Passenger.IsValid()) { Passenger->GetBallForm()->Restore(); }
 	Super::EndPlay(Reason);
 }

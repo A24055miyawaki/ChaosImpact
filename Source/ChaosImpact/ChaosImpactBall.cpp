@@ -722,6 +722,7 @@ void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& Imp
 
 void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 {
+	if (IsA<AChaosImpactBuddyBall>()) { bAwaitingLaunchAdoption = false; return; }
 	AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ReplicatedThrower.Get());
 	if (!Thrower)
 	{
@@ -775,6 +776,8 @@ void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 
 void AChaosImpactBall::TryClaimLocalPickup()
 {
+	// Teammates-as-balls stay visible and are collected by the server; never hide/replace the passenger locally.
+	if (IsA<AChaosImpactBuddyBall>()) { return; }
 	const bool bPickupState = NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Hover)
 		|| NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Rolling);
 	if (bClientPickupClaimed || !bPickupState || !GetWorld()

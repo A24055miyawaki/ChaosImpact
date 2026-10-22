@@ -24,6 +24,7 @@ enum class EChaosImpactAction : uint8
 	TrainingMenu,
 	LobbyReady,
 	LobbySpectate,
+	Tackle, // Append only: profile/action IDs must remain stable.
 	Count
 };
 
@@ -176,10 +177,10 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API void ApplyStartupSettings();
 
 	// --- Screen and picture (UGameUserSettings) ---
-	/** 0 fullscreen, 1 borderless (fullscreen window), 2 window. */
+	/** 1 borderless fullscreen, 2 window. Legacy 0 (exclusive) is accepted but changed to 1 when applied. */
 	CHAOSIMPACT_API int32 GetWindowMode();
 	CHAOSIMPACT_API void SetWindowMode(int32 Mode);
-	/** F11 / Alt+Enter: between a window and the last fullscreen kind, kept the same as the settings screen. */
+	/** F11 / Alt+Enter: between a window and borderless fullscreen, kept the same as the settings screen. */
 	CHAOSIMPACT_API void ToggleFullscreen();
 	/**
 	 * In a window: the window's size (16:9 sizes that fit on the monitor). In fullscreen: how finely the game is drawn

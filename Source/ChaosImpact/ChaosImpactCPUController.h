@@ -116,6 +116,17 @@ private:
 		const FVector& TargetVelocity, float LaunchDelay) const;
 	float ChooseDesiredCharge(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target) const;
 	void UpdateOffense(AChaosImpactCharacter* Self, AChaosImpactCharacter* Target, float Now);
+	/** Opportunistic close-range disarm, with a visible reaction delay and the human tackle's rules. */
+	bool TryTackle(AChaosImpactCharacter* Self, float Now);
+	TWeakObjectPtr<AChaosImpactCharacter> TackleTarget;
+	float TackleOpportunityAt = 0.0f;
+	float NextTackleAt = 0.0f;
+	/** A support role near a teammate; never curls up with nobody left to throw it. */
+	bool UpdateTeamBallForm(AChaosImpactCharacter* Self, float Now, bool bAllowStart);
+	TWeakObjectPtr<AChaosImpactCharacter> BallFormMate;
+	float NextBallFormAt = 0.f;
+	float BallFormReadyAt = 0.f;
+	float BallFormStartedAt = -1.f;
 
 	// Positioning and ball economy
 	AChaosImpactBall* SelectPickup(const AChaosImpactCharacter* Self) const;

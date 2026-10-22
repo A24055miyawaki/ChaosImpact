@@ -9,6 +9,7 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactTornado.h"
+#include "ChaosImpactTackleComponent.h"
 #include "CollisionShape.h"
 #include "CollisionQueryParams.h"
 #include "Components/CapsuleComponent.h"
@@ -69,6 +70,11 @@ void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 	ObservedVelocities.Reset();
 	BallFirstSeenAt.Reset();
 	CurrentTarget.Reset();
+	TackleTarget.Reset();
+	NextTackleAt = Now + 0.8f;
+	BallFormMate.Reset();
+	NextBallFormAt = Now + 2.f;
+	BallFormStartedAt = -1.f;
 	SimaePerchedSince = -1.0;
 	SimaeDashAt = -1.0;
 }
@@ -188,6 +194,7 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	}
 	if (Self->IsTrainingMenuFrozen() || Self->IsMatchInputLocked())
 	{
+		if (Self->IsInBallForm()) { Self->GetBallForm()->Steer(FVector::ZeroVector); }
 		// World time and physics keep running, but the CPU itself must stand still.
 		if (Self->IsChargingThrow())
 		{
@@ -208,6 +215,26 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	{
 		Self->StopJumping();
 		bHoldingJump = false;
+	}
+	if (Self->GetTackle()->IsBusy())
+	{
+		// Do not start a shot, dodge or stuck-recovery while rushing or being knocked back.
+		DesiredMoveDirection = FVector::ZeroVector;
+		DesiredMoveScale = 0.0f;
+		EvadeUntil = 0.0f;
+		NextThrowAt = FMath::Max(NextThrowAt, Now + 0.15f);
+		return;
+	}
+	if (Self->IsInBallForm())
+	{
+		UpdateTeamBallForm(Self, Now, false);
+		return;
+	}
+	if (BallFormStartedAt >= 0.f)
+	{
+		BallFormStartedAt = -1.f;
+		BallFormMate.Reset();
+		NextBallFormAt = FMath::Max(NextBallFormAt, Now + 8.f);
 	}
 	if (Self->IsDriving())
 	{
@@ -293,6 +320,16 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 			Section(2);
 			const bool bEvading = UpdateTornadoEvasion(Self, Now) || UpdateEvasion(Self, Now);
 			Section(3);
+			if (!bEvading && Now >= EvadeUntil && UpdateTeamBallForm(Self, Now, true))
+			{
+				Section(4);
+				return;
+			}
+			if (!bEvading && Now >= EvadeUntil && TryTackle(Self, Now))
+			{
+				Section(4);
+				return;
+			}
 			UpdateOffense(Self, Target, Now);
 			Section(4);
 			if (!bEvading)
@@ -343,6 +380,148 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	{
 		Self->AddMovementInput(ActiveMoveDirection, (bEvading ? 1.0f : DesiredMoveScale) * MoveSpeedScale);
 	}
+}
+
+bool AChaosImpactCPUController::UpdateTeamBallForm(AChaosImpactCharacter* Self, const float Now, const bool bAllowStart)
+{
+	auto* Form = Self->GetBallForm();
+	if (!HasAuthority()) { return false; }
+	if (Self->IsInBallForm())
+	{
+		if (BallFormStartedAt < 0) { BallFormStartedAt = Now; }
+		auto* Ball = Form->GetFormBall();
+		if (!Ball) { return true; }
+		DesiredMoveDirection = FVector::ZeroVector; DesiredMoveScale = 0;
+		const float Age = Now - BallFormStartedAt;
+		if (!Form->IsAvailable() || Age > 12.f)
+		{
+			Form->Restore(); return true;
+		}
+		if (Ball->IsLaunched())
+		{
+			// Same limited steering as a human passenger; the ball itself uncurls on landing or after 4s.
+			auto* Enemy = SelectTarget(Self);
+			Form->Steer(Enemy ? (Enemy->GetActorLocation() + GetObservedVelocity(Enemy)*.1f - Ball->GetActorLocation()).GetSafeNormal2D()
+				: FVector::ZeroVector);
+			return true;
+		}
+		Form->Steer(FVector::ZeroVector);
+		if (Ball->GetCarrier()) { return true; }
+		// A teammate walked away, filled both hands, died, or never picked us up: resume fighting.
+		const auto* Mate = BallFormMate.Get();
+		if (Age > 3.f || !Mate || !Mate->GetBallForm()->CanCollect(Self)
+			|| FVector::DistSquared2D(Mate->GetActorLocation(), Ball->GetActorLocation()) > FMath::Square(650.f))
+		{
+			Form->Restore();
+		}
+		return true;
+	}
+	BallFormStartedAt = -1.f;
+	if (!bAllowStart || Now < NextBallFormAt || !Form->IsAvailable() || Self->GetCarriedBallCount() != 0
+		|| Self->IsChargingThrow() || Self->IsDashing() || Self->IsIceFrozen() || Self->IsDriving()
+		|| Self->IsCarriedByWind() || Self->GetTackle()->IsBusy() || Self->IsThrowReleasePending()
+		|| !Self->GetCharacterMovement()->IsMovingOnGround())
+	{
+		BallFormMate.Reset(); return false;
+	}
+	const FVector Here = Self->GetActorLocation();
+	const auto* Enemy = SelectTarget(Self);
+	if (Enemy && FVector::DistSquared2D(Here, Enemy->GetActorLocation()) < FMath::Square(350.f))
+	{
+		BallFormMate.Reset(); return false; // Do not curl up in melee instead of defending ourselves.
+	}
+	AChaosImpactCharacter* Best = nullptr;
+	float BestScore = -FLT_MAX;
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		auto* Mate = *It;
+		if (Mate == Self || !Mate->GetBallForm()->CanCollect(Self) || Mate->IsDriving() || Mate->IsDashing()
+			|| Mate->GetTackle()->IsBusy() || !Mate->GetCharacterMovement()->IsMovingOnGround()
+			|| Mate->GetBallForm()->GetHeldBall(0) || Mate->GetBallForm()->GetHeldBall(1)) { continue; }
+		const float Distance = FVector::Dist2D(Here, Mate->GetActorLocation());
+		if (Distance > 550.f || FMath::Abs(Here.Z - Mate->GetActorLocation().Z) > 45.f
+			|| !IsPathClear(Here, (Mate->GetActorLocation()-Here).GetSafeNormal2D(), Distance)) { continue; }
+		const bool bOtherCPU = Cast<AChaosImpactCPUController>(Mate->GetController()) != nullptr;
+		// Of two empty-handed CPUs, leave the lower-ID one upright to be the thrower.
+		if (bOtherCPU && Mate->GetCarriedBallCount() == 0 && Self->GetUniqueID() < Mate->GetUniqueID()) { continue; }
+		const float Score = (bOtherCPU ? 0.f : 1000.f) - Distance;
+		if (Score > BestScore) { BestScore = Score; Best = Mate; }
+	}
+	if (!Best) { BallFormMate.Reset(); return false; }
+	if (Best != BallFormMate.Get())
+	{
+		BallFormMate = Best;
+		BallFormReadyAt = Now + FMath::Lerp(.6f, .25f, Skill);
+	}
+	// Wait until close enough for the existing teammate pickup, rather than becoming an immobile ball far away.
+	if (Now < BallFormReadyAt || FVector::DistSquared2D(Here, Best->GetActorLocation()) > FMath::Square(110.f)) { return false; }
+	if (!Form->Toggle()) { return false; }
+	BallFormStartedAt = Now;
+	NextBallFormAt = Now + FMath::Lerp(18.f, 12.f, Skill);
+	DesiredMoveDirection = FVector::ZeroVector; DesiredMoveScale = 0;
+	bSnowMashing = false;
+	TackleTarget.Reset();
+	return true;
+}
+
+bool AChaosImpactCPUController::TryTackle(AChaosImpactCharacter* Self, const float Now)
+{
+	auto* Tackle = Self->GetTackle();
+	if (!HasAuthority() || Now < NextTackleAt || !Tackle->CanStart()
+		|| Self->IsChargingNova() || Self->GetStamina() < Tackle->StaminaCost + 0.65f)
+	{
+		TackleTarget.Reset();
+		return false;
+	}
+	AChaosImpactCharacter* Best = nullptr;
+	float BestScore = -FLT_MAX;
+	const FVector Here = Self->GetActorLocation();
+	const float Reach = FMath::Min(280.f, Tackle->RushSpeed * Tackle->ActiveSeconds + 65.f);
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		auto* Enemy = *It;
+		if (Enemy == Self || Enemy->IsEliminated() || Enemy->IsDashing() || Enemy->IsInBallForm()
+			|| Enemy->IsTrainingMenuFrozen() || Enemy->GetTackle()->IsBusy()
+			|| AChaosImpactGameState::AreTeammates(GetWorld(), Self, Enemy)) { continue; }
+		const FVector Offset = Enemy->GetActorLocation() - Here;
+		const float Distance = Offset.Size2D();
+		if (Distance > Reach || FMath::Abs(Offset.Z) > 65.f) { continue; }
+		FHitResult Wall;
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(CPUTackle), false, Self);
+		if (GetWorld()->LineTraceSingleByObjectType(Wall, Here, Enemy->GetActorLocation(),
+			FCollisionObjectQueryParams(ECC_WorldStatic), Query)) { continue; }
+		const float Score = (Enemy->IsChargingThrow() ? 4.f : 0.f)
+			+ (Enemy->GetCarriedBallCount() > 0 ? 2.f : 0.f) - Distance / Reach;
+		if (Score > BestScore) { Best = Enemy; BestScore = Score; }
+	}
+	if (!Best) { TackleTarget.Reset(); return false; }
+	if (Best != TackleTarget.Get())
+	{
+		TackleTarget = Best;
+		TackleOpportunityAt = Now + (bPerfect ? 0.08f : FMath::Lerp(0.45f, 0.16f, Skill));
+		return false;
+	}
+	if (Now < TackleOpportunityAt) { return false; }
+	const FVector Lead = (GetObservedVelocity(Best) * .10f).GetClampedToMaxSize2D(45.f);
+	const FVector Direction = (Best->GetActorLocation() + Lead - Here).GetSafeNormal2D();
+	if (Direction.IsNearlyZero()) { return false; }
+	const float Travel = Tackle->RushSpeed * Tackle->ActiveSeconds;
+	if (!IsPathClear(Here, Direction, Travel)) { return false; }
+	// Do not deliberately rush off a ledge; the tackle itself has no invulnerability.
+	FHitResult Floor;
+	const FVector End = Here + Direction * Travel;
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(CPUTackleFloor), false, Self);
+	if (!GetWorld()->LineTraceSingleByObjectType(Floor, End + FVector(0,0,30), End - FVector(0,0,210),
+		FCollisionObjectQueryParams(ECC_WorldStatic), Query) || Floor.ImpactNormal.Z < .6f) { return false; }
+	Self->SetAIAimDirection(Direction);
+	if (!Tackle->Request()) { return false; }
+	NextTackleAt = Now + (bPerfect ? 1.65f : FMath::Lerp(5.f, 2.4f, Skill));
+	NextThrowAt = FMath::Max(NextThrowAt, Now + Tackle->ActiveSeconds + Tackle->RecoverySeconds + .12f);
+	DesiredMoveDirection = FVector::ZeroVector;
+	DesiredMoveScale = 0;
+	bSnowMashing = false;
+	TackleTarget.Reset();
+	return true;
 }
 
 void AChaosImpactCPUController::SetDifficulty(const int32 Level)
@@ -1343,6 +1522,24 @@ void AChaosImpactCPUController::UpdatePositioning(
 	AChaosImpactBall* Pickup = Balls < Self->GetMaximumCarriedBalls() ? SelectPickup(Self) : nullptr;
 	const float PickupDistance = Pickup ? FVector::Dist2D(Pickup->GetActorLocation(), Location) : 0.0f;
 	const float TargetDistance = Target ? FVector::Dist2D(Target->GetActorLocation(), Location) : 0.0f;
+	if (const auto* Mate = BallFormMate.Get(); Mate && Now >= NextBallFormAt)
+	{
+		const FVector Offset = Mate->GetActorLocation() - Location;
+		DesiredMoveDirection = SteerAroundObstacles(Location, Offset.GetSafeNormal2D(), Now);
+		DesiredMoveScale = FMath::Clamp((static_cast<float>(Offset.Size2D()) - 95.f) / 130.f, 0.f, .85f);
+		bSnowMashing = false;
+		return;
+	}
+	if (const auto* CloseEnemy = TackleTarget.Get(); CloseEnemy && Now >= NextTackleAt)
+	{
+		// During the short reaction window, do not immediately back out to throwing range.
+		// Take a measured step in, giving the opponent time to escape rather than input-reading a rush.
+		const FVector Offset = CloseEnemy->GetActorLocation() - Location;
+		DesiredMoveDirection = SteerAroundObstacles(Location, Offset.GetSafeNormal2D(), Now);
+		DesiredMoveScale = FMath::Clamp((static_cast<float>(Offset.Size2D()) - 140.f) / 140.f, 0.f, .55f);
+		bSnowMashing = false;
+		return;
+	}
 	// Always hold a ball; take a second one when it is close and nobody is pressing.
 	const bool bGoForPickup = Pickup && (Balls == 0
 		|| (PickupDistance < 420.0f && (!Target || TargetDistance > 700.0f) && !Self->IsChargingThrow())
@@ -1614,6 +1811,8 @@ float AChaosImpactCPUController::SweepWalls(const FVector& Origin, const FVector
 	// pawns: treating either as a wall is what used to leave the CPU shuffling against nothing.
 	FCollisionObjectQueryParams WallObjects;
 	WallObjects.AddObjectTypesToQuery(ECC_WorldStatic);
+	// The edges of floating islands (ステージ3): walls only characters meet.
+	WallObjects.AddObjectTypesToQuery(ECC_Destructible);
 	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUClearance), false, GetPawn());
 	Parameters.AddIgnoredActor(IgnoredActor);
 	FHitResult Hit;

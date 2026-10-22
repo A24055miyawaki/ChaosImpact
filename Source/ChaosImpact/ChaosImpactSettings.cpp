@@ -33,7 +33,7 @@ namespace
 		int32 Shake = 2;
 		int32 Brightness = 5;
 		bool bSwitchConfirmRight = true;
-		/** The fullscreen kind F11 goes back to (0 fullscreen, 1 borderless). */
+		/** Fullscreen uses a borderless window; old exclusive-mode preferences are migrated on load. */
 		int32 LastFullscreenMode = 1;
 		FIntPoint WindowedResolution = FIntPoint::ZeroValue;
 		FIntPoint FullscreenResolution = FIntPoint::ZeroValue;
@@ -54,7 +54,7 @@ namespace
 	{
 		static const TCHAR* const Tags[] = {TEXT("MoveUp"), TEXT("MoveDown"), TEXT("MoveLeft"), TEXT("MoveRight"),
 			TEXT("Throw"), TEXT("CancelThrow"), TEXT("Dash"), TEXT("Jump"), TEXT("SwapBall"), TEXT("DropBall"),
-			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate")};
+			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle")};
 		static_assert(UE_ARRAY_COUNT(Tags) == FChaosImpactProfile::ActionCount, "One tag per action");
 		return Tags[FMath::Clamp(static_cast<int32>(Action), 0, FChaosImpactProfile::ActionCount - 1)];
 	}
@@ -175,7 +175,7 @@ namespace
 		S.Volume = FMath::Clamp(S.Volume, 0, 100);
 		S.Shake = FMath::Clamp(S.Shake, 0, 2);
 		S.Brightness = FMath::Clamp(S.Brightness, 1, 10);
-		S.LastFullscreenMode = FMath::Clamp(S.LastFullscreenMode, 0, 1);
+		S.LastFullscreenMode = 1;
 		Count = FMath::Clamp(Count, 0, ChaosImpactSettings::MaxProfiles);
 		for (int32 Index = 0; Index < Count; ++Index)
 		{
@@ -223,6 +223,27 @@ namespace
 					{
 						Profile.Keys[Device][Action][Slot] = Keys[Slot].IsValid() ? Keys[Slot] : FKey();
 					}
+				}
+				// Old profiles predate tackle. Keep custom bindings; migrate only the old RMB cancel default.
+				FString SavedTackle;
+				if (!GConfig->GetString(*Section, *FString::Printf(TEXT("%s_Tackle"), DeviceTag(static_cast<EDevice>(Device))), SavedTackle, GGameUserSettingsIni))
+				{
+					auto KeyInUse = [&](const FKey& Key)
+					{
+						for (int32 A=0; A<static_cast<int32>(EAction::Tackle); ++A)
+						{ for (int32 K=0; K<2; ++K) { if (Profile.Keys[Device][A][K]==Key) { return true; } } }
+						return false;
+					};
+					if (Device==0)
+					{
+						for (int32 K=0; K<2; ++K)
+						{
+							auto& Cancel=Profile.Keys[Device][static_cast<int32>(EAction::CancelThrow)][K];
+							if (Cancel==EKeys::RightMouseButton) { Cancel=FKey(); if (!KeyInUse(EKeys::E)) { Cancel=EKeys::E; } }
+						}
+					}
+					auto& NewKey=Profile.Keys[Device][static_cast<int32>(EAction::Tackle)][0];
+					if (KeyInUse(NewKey)) { NewKey=FKey(); }
 				}
 			}
 			Profile.Name = Profile.Name.Left(ChaosImpactSettings::MaxNameLength).TrimStartAndEnd();
@@ -614,7 +635,8 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 		case EAction::MoveLeft: return Slot == 0 ? EKeys::A : EKeys::Left;
 		case EAction::MoveRight: return Slot == 0 ? EKeys::D : EKeys::Right;
 		case EAction::Throw: return Slot == 0 ? EKeys::LeftMouseButton : EKeys::G;
-		case EAction::CancelThrow: return Slot == 0 ? EKeys::RightMouseButton : FKey();
+		case EAction::CancelThrow: return Slot == 0 ? EKeys::E : FKey();
+		case EAction::Tackle: return Slot == 0 ? EKeys::RightMouseButton : FKey();
 		case EAction::Dash: return Slot == 0 ? EKeys::LeftShift : EKeys::RightShift;
 		case EAction::Jump: return Slot == 0 ? EKeys::SpaceBar : FKey();
 		case EAction::SwapBall: return Slot == 0 ? EKeys::Q : FKey();
@@ -633,6 +655,7 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 	{
 	case EAction::Throw: return Slot == 0 ? EKeys::Gamepad_RightTrigger : EKeys::Gamepad_FaceButton_Left;
 	case EAction::CancelThrow: return Slot == 0 ? EKeys::Gamepad_LeftTrigger : FKey();
+	case EAction::Tackle: return Slot == 0 ? EKeys::Gamepad_FaceButton_Top : FKey();
 	case EAction::Dash:
 		return Slot == 0 ? (bSwitch ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right)
 			: EKeys::Gamepad_RightShoulder;
@@ -689,6 +712,7 @@ FString ChaosImpactSettings::GetActionName(const EChaosImpactAction Action)
 	case EAction::MoveRight: return TEXT("移動（右）");
 	case EAction::Throw: return TEXT("投げる（長押しでため）");
 	case EAction::CancelThrow: return TEXT("投げをやめる");
+	case EAction::Tackle: return TEXT("タックル");
 	case EAction::Dash: return TEXT("ダッシュ");
 	case EAction::Jump: return TEXT("ジャンプ");
 	case EAction::SwapBall: return TEXT("ボール入れ替え");
@@ -1096,11 +1120,10 @@ void ChaosImpactSettings::ApplyStartupSettings()
 		Audio->SetTransientPrimaryVolume(Store().Volume / 100.0f);
 	}
 	GEngine->DisplayGamma = 2.2f + (Store().Brightness - 5) * 0.12f;
-	if (UGameUserSettings* Settings = UserSettings(); Settings && GetWindowMode() != 2 && CanApplyWindowChanges()
-		&& Settings->GetScreenResolution() != GetMonitorResolution())
+	if (UserSettings() && GetWindowMode() != 2 && CanApplyWindowChanges())
 	{
-		Settings->SetScreenResolution(GetMonitorResolution());
-		SaveUserSettings(Settings, true);
+		// Also migrate a saved exclusive mode when its resolution already matches the monitor.
+		SetWindowMode(1);
 	}
 	ApplyRenderScale();
 }
@@ -1126,9 +1149,11 @@ void ChaosImpactSettings::SetWindowMode(const int32 Mode)
 		return;
 	}
 	FSettingsStore& S = Store();
-	const int32 Clamped = FMath::Clamp(Mode, 0, 2);
+	// DXGI exclusive mode can repeatedly lose/reacquire the display (especially Standalone launched from
+	// the editor), flashing the screen and losing input. Both old fullscreen IDs now mean borderless.
+	const int32 Clamped = FMath::Clamp(Mode, 0, 2) == 2 ? 2 : 1;
 	const FIntPoint Monitor = GetMonitorResolution();
-	// Fullscreen (either kind) always shows the monitor's own pixels, so the picture is never stretched; how finely
+	// Fullscreen always shows the monitor's own pixels, so the picture is never stretched; how finely
 	// it is drawn is the resolution setting (ApplyRenderScale).
 	FIntPoint Resolution = Monitor;
 	if (Clamped < 2)
@@ -1144,20 +1169,25 @@ void ChaosImpactSettings::SetWindowMode(const int32 Mode)
 			Resolution = FIntPoint(Monitor.X * 4 / 5, Monitor.Y * 4 / 5);
 		}
 	}
-	Settings->SetFullscreenMode(Clamped == 0 ? EWindowMode::Fullscreen : Clamped == 1 ? EWindowMode::WindowedFullscreen
-		: EWindowMode::Windowed);
+	const EWindowMode::Type WindowMode = Clamped == 1 ? EWindowMode::WindowedFullscreen : EWindowMode::Windowed;
+	const bool bChanged = Settings->GetFullscreenMode() != WindowMode || Settings->GetScreenResolution() != Resolution
+		|| Settings->IsFullscreenModeDirty() || Settings->IsScreenResolutionDirty();
+	Settings->SetFullscreenMode(WindowMode);
 	if (Resolution.X > 0 && Resolution.Y > 0)
 	{
 		Settings->SetScreenResolution(Resolution);
 	}
 	SaveOptions();
-	SaveUserSettings(Settings, true);
+	if (bChanged)
+	{
+		SaveUserSettings(Settings, true);
+	}
 	ApplyRenderScale();
 }
 
 void ChaosImpactSettings::ToggleFullscreen()
 {
-	SetWindowMode(GetWindowMode() == 2 ? Store().LastFullscreenMode : 2);
+	SetWindowMode(GetWindowMode() == 2 ? 1 : 2);
 }
 
 FIntPoint ChaosImpactSettings::GetMonitorResolution()

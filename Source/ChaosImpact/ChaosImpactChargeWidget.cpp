@@ -15,6 +15,7 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactSimaeBird.h"
+#include "ChaosImpactSimaeBoss.h"
 #include "ChaosImpactSpectatorPawn.h"
 #include "ChaosImpactWarpPad.h"
 #include "Engine/GameViewportClient.h"
@@ -90,6 +91,7 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 	ForceVolatile(true);
+	SetClipping(EWidgetClipping::ClipToBoundsAlways);
 
 	if (!WidgetTree || WidgetTree->RootWidget)
 	{
@@ -352,6 +354,7 @@ void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const flo
 	RefreshPersonalAimGuide();
 	RefreshSplitScreenDividers();
 	RefreshBallPickupAnimation();
+	UpdateCombatHealth();
 
 	// VS: stamina and ball stock only matter while the match is running.
 	const AChaosImpactGameState* MatchState = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
@@ -929,6 +932,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		return BaseLayer;
 	}
 	PaintPlayerMarkers(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	PaintCombatHealth(AllottedGeometry, OutDrawElements, BaseLayer + 1);
 	// Smoke hides the others' markers too; this player's own HP and balls stay readable on top.
 	const bool bSmoked = BlindAmount > 0.0f && !bSpectatorView;
 	if (bSmoked)
@@ -944,8 +948,14 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	{
 		PaintVitals(AllottedGeometry, OutDrawElements, HudLayer);
 		PaintBallInventory(AllottedGeometry, OutDrawElements, HudLayer);
+		PaintLastHealthWarning(AllottedGeometry, OutDrawElements, HudLayer + 1);
 	}
 	PaintGameplayPointer(AllottedGeometry, OutDrawElements, HudLayer + 18);
+	if (!bSpectatorView && GetWorld())
+	{
+		// A boss fight: the boss's own bar across the top.
+		AChaosImpactSimaeBoss::PaintHud(GetWorld(), AllottedGeometry, OutDrawElements, HudLayer + 2, GetHudScale(Size.X, Size.Y));
+	}
 	const double Clock = FPlatformTime::Seconds();
 	const UGameInstance* GameInstance = GetGameInstance();
 	const ULocalPlayer* LocalPlayer = GetOwningLocalPlayer();
@@ -1704,7 +1714,7 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	// chevron of ice per point, pointing on. A lost point breaks apart.
 	const int32 HealthCells = FMath::Clamp(FMath::RoundToInt(MaxHealthValue), 1, 6);
 	const int32 HealthLeft = FMath::Max(0, FMath::CeilToInt(Health - KINDA_SMALL_NUMBER));
-	const bool bLastPoint = HealthLeft <= 1;
+	const bool bLastPoint = HealthLeft == 1 && Health > 0 && !bRespawnVisible;
 	const float Pulse = bLastPoint ? 0.5f + 0.5f * FMath::Sin(Time * 8.0f) : 0.0f;
 	const float HitAge = static_cast<float>(Clock - HitAt);
 	const float Shake = HitAge < 0.3f ? FMath::Sin(HitAge * 90.0f) * (0.3f - HitAge) * 18.0f : 0.0f;
@@ -1725,6 +1735,7 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	constexpr float RowTop = -120.0f;
 	constexpr float RowBottom = -84.0f;
 	constexpr float RowMiddle = (RowTop + RowBottom) * 0.5f;
+	const auto* CombatSample = SupportsCombatHealth() ? CombatHealth.Find(Cast<AChaosImpactCharacter>(GetOwningPlayerPawn())) : nullptr;
 	for (int32 Cell = 0; Cell < HealthCells; ++Cell)
 	{
 		const float L = RowLeft + Cell * (ChevronWidth + ChevronGap);
@@ -1741,7 +1752,17 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 		{
 			HudStroke(Top, {At(L + 4.0f, RowTop + 4.0f), At(R - Tip - 2.0f, RowTop + 4.0f)}, FLinearColor(1.0f, 1.0f, 1.0f, 0.8f), 2.0f);
 		}
-		if (Cell == LostHealthSegment && HitAge < 0.7f)
+		if (CombatSample)
+		{
+			for (const auto& Broken : CombatSample->Breaks)
+			{
+				if (Broken.Cell != Cell) { continue; }
+				ChaosImpactCombatHealth::PaintBreak(FPainter{Corner, OutDrawElements, BaseLayer + 8}, At((L + R) * .5f, RowMiddle),
+					static_cast<float>(GetWorld()->GetTimeSeconds() - Broken.At) / ChaosImpactCombatHealth::BreakSeconds,
+					ChevronWidth, RowBottom - RowTop, IceFill, Cell);
+			}
+		}
+		else if (Cell == LostHealthSegment && HitAge < 0.7f)
 		{
 			HudShatter(FPainter{Corner, OutDrawElements, BaseLayer + 8}, At((L + R) * 0.5f, RowMiddle), HitAge / 0.7f, 16.0f,
 				bLastPoint ? FireFill : IceFill, 7, static_cast<float>(Cell));
@@ -1749,7 +1770,9 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	}
 
 	// Each row says what it is at its end: HP in ice after the chevrons, ST in fire before the stamina at the blade's tip.
-	HudText3D(Top, TEXT("HP"), RowLeft + HealthCells * (ChevronWidth + ChevronGap) + 4.0f, RowTop + 3.0f, 20.0f, IceFill.Top, ETextAlign::Left);
+	const bool bCriticalCombat = IsLastHealthWarningActive();
+	HudText3D(Top, bCriticalCombat ? TEXT("残り1") : TEXT("HP"), RowLeft + HealthCells * (ChevronWidth + ChevronGap) + 4.0f,
+		RowTop + 3.0f, 20.0f, bCriticalCombat ? FireFill.Top : IceFill.Top, ETextAlign::Left);
 
 	// Stamina: a thin blade under the chevrons that fills with fire, a notch per dash. A dash's notch flashes, a full
 	// blade glints now and then, and it all goes grey while a dash is not possible.
@@ -1945,7 +1968,9 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 				const FPainter Tag{AllottedGeometry, OutDrawElements, BaseLayer, Shown};
 				const float FontSize = 15.0f * S;
 				const FVector2D Tip(HeadScreen.X, HeadScreen.Y);
-				Tag.Text(Name, static_cast<float>(HeadScreen.X), static_cast<float>(HeadScreen.Y) - FontSize * 1.75f - 7.0f * S,
+				ChaosImpactCombatHealth::FPresentation HealthTag;
+				const float HealthSpace = GetCombatHealthPresentation(Character,HealthTag) ? 24.0f * S : 0.0f;
+				Tag.Text(Name, static_cast<float>(HeadScreen.X), static_cast<float>(HeadScreen.Y) - FontSize * 1.75f - 7.0f * S - HealthSpace,
 					FontSize, Color, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
 				PaintMarkerArrow(Tag, Tip, FVector2D(0.0, 1.0), 0.38f * S, Color);
 			}

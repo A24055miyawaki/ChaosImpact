@@ -2,6 +2,7 @@
 
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
+#include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
@@ -123,7 +124,8 @@ namespace
 				{
 					It->Destroy();
 				}
-				Origin = P->GetActorLocation();
+				// Start on the open floor, not an edge spawn where Mate + 520 can leave the stage.
+				Origin = FVector(Match->StageCenter.X-600, Match->StageCenter.Y-600, P->GetActorLocation().Z);
 				P->ResetForOnlineMatch(Origin, FRotator::ZeroRotator);
 				Mate->ResetForOnlineMatch(Origin + FVector(0.0f, 520.0f, 0.0f), FRotator::ZeroRotator);
 				Enemy->ResetForOnlineMatch(Origin + FVector(1100.0f, -500.0f, 0.0f), FRotator(0.0f, 180.0f, 0.0f));
@@ -208,6 +210,8 @@ namespace
 				return false;
 			case 8:
 				// A CPU teammate left to itself: it comes for the ball and keeps it (the passenger stays curled up).
+				// Remove unrelated pickups left by the previous real hit so this checks the teammate pickup path.
+				for (TActorIterator<AChaosImpactBall> It(World); It; ++It) { It->Destroy(); }
 				P->ResetForOnlineMatch(Origin, FRotator::ZeroRotator);
 				Mate->ResetForOnlineMatch(Origin + FVector(0.0f, 600.0f, 0.0f), FRotator::ZeroRotator);
 				Enemy->ResetForOnlineMatch(Origin + FVector(2400.0f, 1200.0f, 0.0f), FRotator::ZeroRotator);
@@ -224,6 +228,14 @@ namespace
 			case 10:
 				if (!Buddy.IsValid() || Buddy->GetCarrier() != Mate.Get())
 				{
+					if (Now-LastLog>4)
+					{
+						LastLog=Now;
+						UE_LOG(LogTemp,Display,TEXT("BUDDYVS CPU pickup: at %s balls %d charge %d frozen %d KO %d can %d ball %s"),
+							*Mate->GetActorLocation().ToCompactString(),Mate->GetCarriedBallCount(),Mate->IsChargingThrow(),
+							Mate->IsTrainingMenuFrozen(),Mate->IsEliminated(),Mate->GetBallForm()->CanCollect(P),
+							Buddy.IsValid()?*Buddy->GetActorLocation().ToCompactString():TEXT("gone"));
+					}
 					if (Now - StartedAt > 140.0)
 					{
 						Test->AddError(TEXT("The CPU teammate never picked the ball up"));
@@ -256,6 +268,32 @@ namespace
 				Step = 13;
 				NextAt = Now + 0.5;
 				return false;
+			case 13:
+				// Reverse roles: without calling Toggle on the CPU, it offers itself as a ball.
+				for (TActorIterator<AChaosImpactBallSpawner> It(World); It; ++It) { It->Destroy(); }
+				for (TActorIterator<AChaosImpactBall> It(World); It; ++It) { It->Destroy(); }
+				P->ResetForOnlineMatch(Origin, FRotator::ZeroRotator);
+				Mate->ResetForOnlineMatch(Origin+FVector(280,0,0), FRotator::ZeroRotator);
+				Enemy->ResetForOnlineMatch(Origin+FVector(1200,0,0), FRotator::ZeroRotator);
+				CastChecked<AChaosImpactCPUController>(Mate->GetController())->SetDifficulty(ChaosImpactMatch::CPULevelStrong);
+				Ai(Mate.Get(), true);
+				SupportDeadline = Now + 6;
+				Step = 14; NextAt = Now; return false;
+			case 14:
+				Buddy = P->GetBallForm()->GetHeldBall(0);
+				if ((!Buddy.IsValid() || Buddy->GetPassenger()!=Mate.Get()) && Now<SupportDeadline) { return false; }
+				if (!Test->TestTrue(TEXT("Team VS CPU autonomously approaches and becomes a held teammate ball"),
+					Buddy.IsValid() && Buddy->GetPassenger()==Mate.Get())) { return true; }
+				P->SetAIAimDirection(FVector::ForwardVector); P->BeginThrowInput();
+				Step = 15; NextAt = Now+.3; return false;
+			case 15:
+				P->EndThrowInput();
+				Step = 16; NextAt = Now+.4; SupportDeadline = Now+5; return false;
+			case 16:
+				if (Mate->IsInBallForm() && Now<SupportDeadline) { return false; }
+				Test->TestFalse(TEXT("Thrown VS CPU returns to its original pawn"),Mate->IsInBallForm());
+				Test->TestEqual(TEXT("Throwing the CPU frees the human's inventory slot"),P->GetCarriedBallCount(),0);
+				return true;
 			default:
 				return true;
 			}
@@ -267,6 +305,7 @@ namespace
 		double NextAt = 0.0;
 		int32 Step = 0;
 		double LastLog = 0.0;
+		double SupportDeadline = 0.0;
 		bool bStartAsked = false;
 		FVector Origin = FVector::ZeroVector;
 		TWeakObjectPtr<AChaosImpactCharacter> Mate;

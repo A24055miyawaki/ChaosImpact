@@ -1,4 +1,5 @@
 #include "ChaosImpactBallFormComponent.h"
+#include "ChaosImpactTackleComponent.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
@@ -12,11 +13,73 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
+#include "Net/UnrealNetwork.h"
 
 UChaosImpactBallFormComponent::UChaosImpactBallFormComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
+	SetIsReplicatedByDefault(true);
+}
+
+void UChaosImpactBallFormComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UChaosImpactBallFormComponent, FormBall);
+	DOREPLIFETIME(UChaosImpactBallFormComponent, Slots);
+}
+
+void UChaosImpactBallFormComponent::ServerToggle_Implementation() { Toggle(); }
+void UChaosImpactBallFormComponent::ServerSteer_Implementation(FVector_NetQuantizeNormal Direction)
+{
+	if (IsInBallForm() && IsAvailable() && !Direction.ContainsNaN()) { FormBall->SetSteering(Direction); }
+}
+void UChaosImpactBallFormComponent::Steer(const FVector& Direction)
+{
+	auto* P = Character();
+	if (!P || !IsInBallForm() || Direction.ContainsNaN()) { return; }
+	if (P->HasAuthority()) { FormBall->SetSteering(Direction); }
+	else if (P->IsLocallyControlled() && GetWorld()->GetTimeSeconds() >= NextSteerAt)
+	{
+		ServerSteer(Direction.GetSafeNormal2D());
+		NextSteerAt = GetWorld()->GetTimeSeconds() + .05;
+	}
+}
+void UChaosImpactBallFormComponent::OnRep_Slots()
+{
+	if (auto* P = Character()) { P->UpdateBallPresentation(); }
+}
+void UChaosImpactBallFormComponent::OnRep_FormBall()
+{
+	if (IsInBallForm()) { ApplyFormPresentation(); }
+	else { Restore(false); }
+}
+void UChaosImpactBallFormComponent::ApplyFormPresentation()
+{
+	auto* P = Character();
+	if (!P || bSavedPuppet) { return; }
+	// The owning client keeps its own charge/click-move state (it is not replicated back by the pawn).
+	P->CancelChargingThrow();
+	P->bClickMoveActive = false;
+	P->ClickMovePath.Reset();
+	P->bPointerMoveHeld = false;
+	SavedCollision = static_cast<uint8>(P->GetCapsuleComponent()->GetCollisionEnabled());
+	SavedMovement = static_cast<uint8>(P->GetCharacterMovement()->MovementMode);
+	// MovementMode may have arrived before the component reference on an online client.
+	if (SavedMovement == MOVE_None) { SavedMovement = MOVE_Walking; }
+	SavedCustomMovement = P->GetCharacterMovement()->CustomMovementMode;
+	if (P->ToonCharacter)
+	{
+		SavedPuppetTransform = P->ToonCharacter->GetRelativeTransform();
+		P->ToonCharacter->SetBallPose(true);
+	}
+	bSavedPuppet = true;
+	P->GetCharacterMovement()->StopMovementImmediately();
+	P->GetCharacterMovement()->DisableMovement();
+	P->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	CurlAge = 0.0f; UncurlAge = -1.0f; bCurlCenterKnown = false;
+	CurlCenter = FVector(0, 0, 85);
+	if (FormBall.IsValid()) { AChaosImpactBuddyBall::PlayPop(this, FormBall->GetShellCenter(), FormBall->GetTeamColor(), false); }
 }
 
 AChaosImpactCharacter* UChaosImpactBallFormComponent::Character() const { return Cast<AChaosImpactCharacter>(GetOwner()); }
@@ -30,11 +93,11 @@ bool UChaosImpactBallFormComponent::IsAvailable() const
 	const UWorld* World = GetWorld();
 	const auto* PC = World ? Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController()) : nullptr;
 	const auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
-	if (!bEnabled || !World || World->GetNetMode() != NM_Standalone)
+	if (!bEnabled || !World)
 	{
 		return false;
 	}
-	// Local VS team battles while the match runs, and local training (its own teams).
+	// The replicated match/team rules are also available on remote clients.
 	if (Match && Match->bVersusMatch)
 	{
 		return Match->IsTeamBattle() && Match->Phase == EChaosImpactOnlinePhase::Match;
@@ -54,11 +117,17 @@ bool UChaosImpactBallFormComponent::CanCollect(const AChaosImpactCharacter* Pass
 bool UChaosImpactBallFormComponent::Toggle()
 {
 	AChaosImpactCharacter* P = Character();
-	if (!P || !IsAvailable() || P->IsEliminated() || P->IsTrainingMenuFrozen()) { return false; }
+	if (!P || !IsAvailable() || P->IsEliminated() || P->IsTrainingMenuFrozen() || P->GetTackle()->IsBusy()) { return false; }
+	if (!P->HasAuthority())
+	{
+		if (!P->IsLocallyControlled()) { return false; }
+		ServerToggle();
+		return true;
+	}
 	if (IsInBallForm()) { Restore(); return true; }
 	if (GetWorld()->GetTimeSeconds() < NextTransformAt || P->IsIceFrozen() || P->IsDashing()
 		|| P->IsThrowReleasePending() || P->IsDriving() || P->WindCarrier != nullptr
-		|| !P->GetCharacterMovement()->IsMovingOnGround() || !P->ToonCharacter) { return false; }
+		|| !P->GetCharacterMovement()->IsMovingOnGround()) { return false; }
 	P->RequestCancelThrow();
 	P->bClickMoveActive = false;
 	P->ClickMovePath.Reset();
@@ -69,25 +138,16 @@ bool UChaosImpactBallFormComponent::Toggle()
 	SafeLocation = P->GetActorLocation();
 	const FVector GroundBall = SafeLocation - FVector::UpVector * (P->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() - 36.0f);
 	FActorSpawnParameters Spawn;
+	Spawn.Owner = P;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	AChaosImpactBuddyBall* Ball = GetWorld()->SpawnActor<AChaosImpactBuddyBall>(GroundBall, FRotator::ZeroRotator, Spawn);
 	if (!Ball) { return false; }
 	FormBall = Ball;
-	SavedCollision = static_cast<uint8>(P->GetCapsuleComponent()->GetCollisionEnabled());
-	SavedMovement = static_cast<uint8>(P->GetCharacterMovement()->MovementMode);
-	SavedCustomMovement = P->GetCharacterMovement()->CustomMovementMode;
-	SavedPuppetTransform = P->ToonCharacter->GetRelativeTransform();
-	bSavedPuppet = true;
-	P->GetCharacterMovement()->StopMovementImmediately();
-	P->GetCharacterMovement()->DisableMovement();
-	P->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	P->ToonCharacter->SetBallPose(true);
 	Ball->InitializePassenger(P);
-	CurlAge = 0.0f;
-	UncurlAge = -1.0f;
-	bCurlCenterKnown = false;
-	CurlCenter = FVector(0.0f, 0.0f, 85.0f);
-	AChaosImpactBuddyBall::PlayPop(this, Ball->GetShellCenter(), Ball->GetTeamColor(), false);
+	ApplyFormPresentation();
+	P->NotifyServerTeleport();
+	P->ClientBallCountReset(P->CarriedBallCount, P->CarriedBallTypes);
+	P->ForceNetUpdate();
 	return true;
 }
 
@@ -98,8 +158,12 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 	AChaosImpactCharacter* P = Character();
 	AChaosImpactBuddyBall* Ball = FormBall.Get();
 	FVector At = Ball ? Ball->GetActorLocation() : (P ? P->GetActorLocation() : SafeLocation);
+	if (P && !P->HasAuthority() && bSavedPuppet)
+	{
+		AChaosImpactBuddyBall::PlayPop(this, At, Ball ? Ball->GetTeamColor() : FLinearColor(.35f,.75f,1), true);
+	}
 	FormBall.Reset();
-	if (Ball)
+	if (Ball && P && P->HasAuthority())
 	{
 		AChaosImpactBuddyBall::PlayPop(this, Ball->GetShellCenter(), Ball->GetTeamColor(), true);
 		Ball->ForgetPassenger();
@@ -121,7 +185,7 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 			P->ToonCharacter->SetBallPose(false);
 			P->ToonCharacter->SetRelativeTransform(SavedPuppetTransform);
 		}
-		if (bRelocate && !P->IsEliminated())
+		if (P->HasAuthority() && bRelocate && !P->IsEliminated())
 		{
 			FCollisionQueryParams Query(SCENE_QUERY_STAT(BuddyUncurl), false, P);
 			if (Ball) { Query.AddIgnoredActor(Ball); }
@@ -141,6 +205,7 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 				}
 			}
 			P->SetActorLocation(Free, false, nullptr, ETeleportType::TeleportPhysics);
+			P->NotifyServerTeleport();
 		}
 		P->GetCapsuleComponent()->SetCollisionEnabled(static_cast<ECollisionEnabled::Type>(SavedCollision));
 		P->GetCharacterMovement()->SetMovementMode(static_cast<EMovementMode>(SavedMovement), SavedCustomMovement);
@@ -151,11 +216,18 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 			P->GetCharacterMovement()->DisableMovement();
 		}
 		P->GetCharacterMovement()->StopMovementImmediately();
+		if (P->IsEliminated())
+		{
+			// HP/KO and component references may replicate in either order.
+			P->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			P->GetCharacterMovement()->DisableMovement();
+		}
 		// A steering click held through landing must not start a new throw after uncurling.
 		P->bWaitForThrowRelease = true;
 		P->bMouseChargeActive = false;
 		P->bWasMouseDownLastTick = false;
 		P->UpdateBallPresentation();
+		P->ForceNetUpdate();
 	}
 	if (bSavedPuppet && P && !P->IsEliminated())
 	{
@@ -170,12 +242,13 @@ void UChaosImpactBallFormComponent::Restore(const bool bRelocate)
 
 void UChaosImpactBallFormComponent::Push(AChaosImpactBuddyBall* Ball, const int32 Slot)
 {
-	if (Slot >= 0 && Slot < 2) { Slots[Slot] = Ball; }
+	if (GetOwner()->HasAuthority() && Slot >= 0 && Slot < 2) { Slots[Slot] = Ball; GetOwner()->ForceNetUpdate(); }
 }
-void UChaosImpactBallFormComponent::Pop() { Slots[0] = Slots[1]; Slots[1].Reset(); }
-void UChaosImpactBallFormComponent::SwapSlots() { ::Swap(Slots[0], Slots[1]); }
+void UChaosImpactBallFormComponent::Pop() { if (GetOwner()->HasAuthority()) { Slots[0] = Slots[1]; Slots[1].Reset(); GetOwner()->ForceNetUpdate(); } }
+void UChaosImpactBallFormComponent::SwapSlots() { if (GetOwner()->HasAuthority()) { ::Swap(Slots[0], Slots[1]); GetOwner()->ForceNetUpdate(); } }
 void UChaosImpactBallFormComponent::Clear()
 {
+	if (!GetOwner()->HasAuthority()) { return; }
 	const TWeakObjectPtr<AChaosImpactBuddyBall> Copy[] = {Slots[0], Slots[1]};
 	Slots[0].Reset(); Slots[1].Reset();
 	for (const auto& Ball : Copy) { if (Ball.IsValid()) { Ball->ReleasePassenger(); } }
@@ -192,6 +265,7 @@ void UChaosImpactBallFormComponent::Remove(AChaosImpactBuddyBall* Ball)
 		if (Slot == 1) { P->SwapCarriedBalls(); }
 		P->PopCarriedBall();
 		P->UpdateBallPresentation();
+		P->ClientBallCountReset(P->CarriedBallCount, P->CarriedBallTypes);
 		break;
 	}
 }
@@ -238,7 +312,7 @@ bool UChaosImpactBallFormComponent::HandleInput()
 			FVector Point;
 			if (IsActionDown(PC, EChaosImpactAction::Throw) && P->FindMouseAimPoint(Point)) { Direction = (Point-P->GetActorLocation()).GetSafeNormal2D(); }
 		}
-		FormBall->SetSteering(Direction);
+		Steer(Direction);
 		return true;
 	}
 	return false;
@@ -251,12 +325,14 @@ void UChaosImpactBallFormComponent::TickComponent(const float Delta, const ELeve
 	if (!P) { return; }
 	if (IsInBallForm())
 	{
-		if (!IsAvailable() || P->IsEliminated()) { Restore(false); return; }
+		if (P->HasAuthority() && (!IsAvailable() || P->IsEliminated())) { Restore(false); return; }
+		ApplyFormPresentation();
 		const FVector Center = FormBall->GetActorLocation();
 		P->GetCharacterMovement()->DisableMovement();
 		P->SetActorLocation(Center, false, nullptr, ETeleportType::TeleportPhysics);
 		if (P->ToonCharacter)
 		{
+			P->ToonCharacter->SetBallPose(true);
 			// Curled up inside the shell, rolling with it; it shrinks into the shell over the first moment.
 			CurlAge += Delta;
 			const float In = FMath::InterpEaseOut(0.0f, 1.0f, FMath::Clamp(CurlAge / 0.22f, 0.0f, 1.0f), 2.0f);
@@ -287,6 +363,7 @@ void UChaosImpactBallFormComponent::TickComponent(const float Delta, const ELeve
 			}
 		}
 	}
+	else if (bSavedPuppet) { Restore(false); }
 	else if (UncurlAge >= 0.0f && P->ToonCharacter)
 	{
 		// Out of the ball: a quick stretch up past full size, settling back.

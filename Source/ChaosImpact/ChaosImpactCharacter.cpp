@@ -3,6 +3,7 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
+#include "ChaosImpactTackleComponent.h"
 #include "ChaosImpactShoulderCameraComponent.h"
 #include "ChaosImpactClickNavigation.h"
 #include "Framework/Application/SlateApplication.h"
@@ -103,6 +104,7 @@ namespace
 AChaosImpactCharacter::AChaosImpactCharacter()
 {
 	BallForm = CreateDefaultSubobject<UChaosImpactBallFormComponent>(TEXT("BallForm"));
+	Tackle = CreateDefaultSubobject<UChaosImpactTackleComponent>(TEXT("Tackle"));
 	PrimaryActorTick.bCanEverTick = true;
 	// Placed in a level, a character plays as the VS mode's CPU by itself (AutoPossessAI stays PlacedInWorld: characters
 	// the game spawns, players and VS/training CPUs, are not taken over).
@@ -272,6 +274,13 @@ void AChaosImpactCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AChaosImpactCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	// Blueprint movement defaults are loaded by now. Apply once per spawned character,
+	// not per jump/respawn, so existing BP values cannot silently restore the floaty arc.
+	// v -> v*t, g -> g*t*t preserves v*v/(2*g), while airtime becomes 1/t.
+	AppliedJumpTempo = FMath::IsFinite(JumpTempo) ? FMath::Clamp(JumpTempo, 1.0f, 2.5f) : 1.7f;
+	GetCharacterMovement()->JumpZVelocity *= AppliedJumpTempo;
+	GetCharacterMovement()->GravityScale *= FMath::Square(AppliedJumpTempo);
+	JumpMaxHoldTime = 0.0f;
 	if (CameraBoom)
 	{
 		// Preserve Blueprint/editor camera tuning as the state restored after the menu.
@@ -568,6 +577,7 @@ void AChaosImpactCharacter::UpdateBoundControls()
 		|| (IsPointerOverGameplayUI() && !bMouseChargeActive);
 	if (!bPhysicalThrow) { bSuppressPointerThrow = false; }
 	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	if (Tackle->HandleInput()) { return; }
 	if (BallForm->HandleInput()) { return; }
 	if (bPointerDropActive)
 	{
@@ -612,7 +622,8 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	};
 	if (Pressed(EChaosImpactAction::Dash) && !bPointerDropActive && !IsPointerOverGameplayUI())
 	{
-		if (IsMouseOnlyScheme(Scheme))
+		if (Scheme==EChaosImpactControlScheme::Simple) { Tackle->QueueSimpleDash(); }
+		else if (IsMouseOnlyScheme(Scheme))
 		{
 			FVector Point;
 			if (FindMouseAimPoint(Point)) { RequestDirectionalDash(Point - GetActorLocation()); }
@@ -642,6 +653,7 @@ void AChaosImpactCharacter::UpdateBoundControls()
 	{
 		RequestCancelThrow();
 	}
+	if (Pressed(EChaosImpactAction::Tackle)) { Tackle->Request(); }
 	if (!BallForm->IsAvailable() && Pressed(EChaosImpactAction::DropBall))
 	{
 		RequestDropBall();
@@ -673,6 +685,7 @@ void AChaosImpactCharacter::UpdateBoundControls()
 
 void AChaosImpactCharacter::ResetEasyControls()
 {
+	Tackle->ResetInput();
 	BallForm->ResetGesture();
 	BallManageGesture.Reset(); PointerDropGesture.Reset(); MoveClickGesture.Reset();
 	bPointerDropActive = false; bClickMoveActive = false; bClickMoveRejected = false;
@@ -888,7 +901,7 @@ void AChaosImpactCharacter::StopAimingWithStick(const FInputActionValue& Value)
 void AChaosImpactCharacter::DoMove(float Right, float Forward)
 {
 	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(GetController());
-	if (IsInBallForm() || bEliminated || bTrainingMenuFrozen || IsIceFrozen() || IsMatchInputLocked() || IsChargingNova()
+	if (Tackle->IsBusy() || IsInBallForm() || bEliminated || bTrainingMenuFrozen || IsIceFrozen() || IsMatchInputLocked() || IsChargingNova()
 		|| (MenuController && !MenuController->IsGameplayActive()))
 	{
 		return;
@@ -978,7 +991,7 @@ void AChaosImpactCharacter::StartChargingThrow()
 		StopDrivenBall();
 		return;
 	}
-	if (IsInBallForm() || bEliminated || bTrainingMenuFrozen || bIsDashing || bIsChargingThrow || bThrowReleasePending
+	if (Tackle->IsBusy() || IsInBallForm() || bEliminated || bTrainingMenuFrozen || bIsDashing || bIsChargingThrow || bThrowReleasePending
 		|| CarriedBallCount <= 0 || !GetWorld() || IsEliminationPredicted() || IsIceFrozen() || IsMatchInputLocked() || IsDriving())
 	{
 		return;
@@ -1016,7 +1029,7 @@ void AChaosImpactCharacter::StartDash()
 	{
 		EndDriving(true);
 	}
-	if (IsInBallForm() || !GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
+	if (Tackle->IsBusy() || IsInBallForm() || !GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
 		|| GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds || IsIceFrozen() || IsMatchInputLocked()
 		|| IsChargingNova())
 	{
@@ -1263,6 +1276,13 @@ void AChaosImpactCharacter::ReleaseThrowNow(const float ChargeAlpha)
 		&& GetCarriedBallType(0) == EChaosImpactBallType::Nova && bNovaTargetValid;
 	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation(), NovaTargetLocation, bThrowingTargetedNova);
 	PendingBallActions.Add(-1);
+	if (BallForm->GetHeldBall(0) || BallForm->GetHeldBall(1))
+	{
+		// A teammate is a replicated actor, never a disposable client-side throw preview.
+		// Leave its attachment, inventory slot and release cue under server authority.
+		RefreshPredictedBallCount();
+		return;
+	}
 	// Throw on this screen immediately with a cosmetic ball. The server trims its release delay
 	// by this player's ping, and its ball takes over from the cosmetic one when it arrives.
 	SpawnBall(ChargeAlpha);
@@ -2539,7 +2559,7 @@ void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 
 void AChaosImpactCharacter::ServerStartCharge_Implementation()
 {
-	if (!bEliminated && !bIsDashing && CarriedBallCount > 0 && GetWorld())
+	if (!Tackle->IsBusy() && !IsInBallForm() && !bEliminated && !bIsDashing && CarriedBallCount > 0 && GetWorld())
 	{
 		bIsChargingThrow = true;
 		ThrowChargeStartedAt = GetWorld()->GetTimeSeconds();
@@ -2558,7 +2578,7 @@ void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float Charge
 	const bool bRemote = IsRemotePlayerOnServer();
 	bool bThrown = false;
 	// A remote owner's dash may still be finishing here only because of latency.
-	if (!bEliminated && !(bIsDashing && !bRemote) && !bTrainingMenuFrozen)
+	if (!Tackle->IsBusy() && !bEliminated && !IsInBallForm() && !(bIsDashing && !bRemote) && !bTrainingMenuFrozen)
 	{
 		const FVector Direction = FVector(Aim).GetSafeNormal2D();
 		if (!Direction.IsNearlyZero())
@@ -2592,6 +2612,7 @@ void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float Charge
 
 void AChaosImpactCharacter::ServerStartDash_Implementation(FVector_NetQuantizeNormal Direction)
 {
+	if (Tackle->IsBusy() || IsInBallForm()) { return; }
 	bIsChargingThrow = false;
 	bNovaTargetValid = false;
 	if (IsRemotePlayerOnServer() && GetWorld())
@@ -2734,7 +2755,7 @@ void AChaosImpactCharacter::ServerReportTornadoHit_Implementation(AChaosImpactTo
 	Tornado->TryApplyReportedHit(this);
 }
 
-void AChaosImpactCharacter::StartWindKnockback(const FVector& Velocity, const float Seconds)
+void AChaosImpactCharacter::StartWindKnockback(const FVector& Velocity, const float Seconds, const bool bLift)
 {
 	if (!IsLocallyControlled() || bEliminated || !GetWorld())
 	{
@@ -2746,9 +2767,9 @@ void AChaosImpactCharacter::StartWindKnockback(const FVector& Velocity, const fl
 	UE_LOG(LogChaosImpact, Log, TEXT("Wind knockback on %s (authority=%d) from %s"), *GetNameSafe(GetPlayerState()), HasAuthority(),
 		*GetActorLocation().ToCompactString());
 	// Blown off the ground a little too.
-	if (GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
+	if (bLift && GetCharacterMovement() && GetCharacterMovement()->IsMovingOnGround())
 	{
-		LaunchCharacter(FVector(0.0f, 0.0f, 420.0f), false, false);
+		LaunchCharacter(FVector(0.0f, 0.0f, 420.0f * AppliedJumpTempo), false, false);
 	}
 	PlayControllerRumble(0.6f, 0.9f, 0.25f);
 }
@@ -2783,7 +2804,7 @@ void AChaosImpactCharacter::BeginWindCarry(AChaosImpactTornado* Tornado)
 
 bool AChaosImpactCharacter::IsMoveInputIgnored() const
 {
-	return Super::IsMoveInputIgnored() || WindCarrier != nullptr;
+	return Super::IsMoveInputIgnored() || WindCarrier != nullptr || (Tackle && Tackle->IsBusy());
 }
 
 void AChaosImpactCharacter::UpdateWindCarry(const float DeltaSeconds)
@@ -2895,7 +2916,7 @@ void AChaosImpactCharacter::UpdateMovementAuthority()
 	{
 		return;
 	}
-	const bool bTrustClient = !bEliminated && GetWorld()->GetTimeSeconds() >= ServerAuthoritativeUntil;
+	const bool bTrustClient = !bEliminated && !IsInBallForm() && GetWorld()->GetTimeSeconds() >= ServerAuthoritativeUntil;
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
 	Movement->bIgnoreClientMovementErrorChecksAndCorrection = bTrustClient;
 	Movement->bServerAcceptClientAuthoritativePosition = bTrustClient;
@@ -3472,6 +3493,7 @@ void AChaosImpactCharacter::ResetForOnlineMatch(const FVector& Location, const F
 	{
 		return;
 	}
+	Tackle->ResetAction();
 	if (bEliminated)
 	{
 		ResetAfterElimination();
@@ -3665,7 +3687,7 @@ void AChaosImpactCharacter::SetAIAimDirection(const FVector& Direction)
 
 bool AChaosImpactCharacter::CanDashNow() const
 {
-	return GetWorld() && !IsInBallForm() && !bEliminated && !bTrainingMenuFrozen && !bIsDashing && !IsIceFrozen()
+	return GetWorld() && !Tackle->IsBusy() && !IsInBallForm() && !bEliminated && !bTrainingMenuFrozen && !bIsDashing && !IsIceFrozen()
 		&& Stamina + UE_SMALL_NUMBER >= DashCost
 		&& GetWorld()->GetTimeSeconds() >= NextDashAvailableAtSeconds;
 }
@@ -3682,8 +3704,8 @@ void AChaosImpactCharacter::RequestAIDash(const FVector& Direction)
 
 bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 {
-	if (!HasAuthority() || IsInBallForm() || !IsValid(Ball) || !Ball->IsPickupAvailable() || bEliminated
-		|| CarriedBallCount >= MaximumCarriedBalls)
+	if (!bCanCollectBalls || !HasAuthority() || Tackle->IsBusy() || IsInBallForm() || !IsValid(Ball) || !Ball->IsPickupAvailable()
+		|| bEliminated || CarriedBallCount >= MaximumCarriedBalls)
 	{
 		return false;
 	}
@@ -4141,7 +4163,7 @@ void AChaosImpactCharacter::SnapCameraToCharacter()
 
 bool AChaosImpactCharacter::CanJumpInternal_Implementation() const
 {
-	return !IsInBallForm() && !IsMatchInputLocked() && !IsChargingNova() && !IsDriving() && Super::CanJumpInternal_Implementation();
+	return !Tackle->IsBusy() && !IsInBallForm() && !IsMatchInputLocked() && !IsChargingNova() && !IsDriving() && Super::CanJumpInternal_Implementation();
 }
 
 double AChaosImpactCharacter::GetSharedServerTime() const
@@ -4897,6 +4919,25 @@ void AChaosImpactCharacter::DropFrontBall()
 	UE_LOG(LogChaosImpact, Log, TEXT("%s dropped a %s ball"), *GetName(), ChaosImpactBallTypes::GetInternalName(Type));
 }
 
+void AChaosImpactCharacter::LoseCarriedBalls()
+{
+	if (!HasAuthority() || bEliminated || CarriedBallCount <= 0)
+	{
+		return;
+	}
+	if (bIsChargingThrow)
+	{
+		CancelChargingThrow();
+	}
+	DropCarriedBalls();
+	ClearCarriedBalls();
+	if (IsRemotePlayerOnServer())
+	{
+		ClientBallCountReset(0, 0);
+	}
+	UpdateBallPresentation();
+}
+
 void AChaosImpactCharacter::DropCarriedBalls()
 {
 	UWorld* World = GetWorld();
@@ -5445,7 +5486,9 @@ void AChaosImpactCharacter::ApplyBlastKnockback(const FVector& Velocity)
 	}
 	if (IsLocallyControlled())
 	{
-		LaunchCharacter(Velocity, true, true);
+		FVector Impulse = Velocity;
+		Impulse.Z *= AppliedJumpTempo;
+		LaunchCharacter(Impulse, true, true);
 		PlayControllerRumble(0.8f, 1.0f, 0.4f);
 	}
 	else if (HasAuthority())
@@ -5459,7 +5502,9 @@ void AChaosImpactCharacter::ClientBlastKnockback_Implementation(FVector_NetQuant
 {
 	if (!bEliminated)
 	{
-		LaunchCharacter(Velocity, true, true);
+		FVector Impulse = Velocity;
+		Impulse.Z *= AppliedJumpTempo;
+		LaunchCharacter(Impulse, true, true);
 		PlayControllerRumble(0.8f, 1.0f, 0.4f);
 	}
 }

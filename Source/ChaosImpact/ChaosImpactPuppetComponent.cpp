@@ -171,8 +171,10 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
 	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, *AssetPath(CharacterIndex, TEXT("M"), TEXT("")));
 	const EChaosImpactModelKind Kind = ChaosImpactRoster::Get(CharacterIndex).Kind;
-	bRigid = Kind == EChaosImpactModelKind::Rigid;
-	bSkinned = Kind == EChaosImpactModelKind::Skinned;
+	bFloating = Kind == EChaosImpactModelKind::Floating;
+	bRigid = Kind == EChaosImpactModelKind::Rigid || bFloating;
+	bHandstand = Kind == EChaosImpactModelKind::Handstand;
+	bSkinned = Kind == EChaosImpactModelKind::Skinned || bHandstand;
 	ColourIndex = INDEX_NONE;
 	if (Kind == EChaosImpactModelKind::Authored)
 	{
@@ -435,6 +437,13 @@ void UChaosImpactPuppetComponent::SetPartsOverlayMaterial(UMaterialInterface* Ov
 
 bool UChaosImpactPuppetComponent::GetPalmLocation(const bool bRightHand, FVector& OutLocation) const
 {
+	if (bFloating && bReady && Body)
+	{
+		const FName Socket=bRightHand ? TEXT("BallRight") : TEXT("BallLeft");
+		if (!Body->DoesSocketExist(Socket)) { return false; }
+		OutLocation=Body->GetSocketLocation(Socket);
+		return true;
+	}
 	if (AuthoredMesh && bReady)
 	{
 		// There are no fin joints in Fish.fbx. Carry at the side-fin tips,
@@ -462,6 +471,30 @@ void UChaosImpactPuppetComponent::SetHeldBalls(USceneComponent* RightBall, UScen
 {
 	RightHeldBall = RightBall;
 	LeftHeldBall = LeftBall;
+}
+
+USceneComponent* UChaosImpactPuppetComponent::GetFixedCarryComponent() const
+{
+	return bFloating ? Body.Get() : nullptr;
+}
+
+bool UChaosImpactPuppetComponent::GetModelCarryAttachment(USceneComponent*& OutParent,FName& OutSocket,FVector& OutOffset) const
+{
+	OutParent=nullptr; OutSocket=NAME_None; OutOffset=FVector::ZeroVector;
+	if (!bReady) { return false; }
+	if (bFloating && Body)
+	{
+		OutParent=Body; OutSocket=TEXT("BallRight"); return true;
+	}
+	if (bHandstand && Skin && ChainArmR.bSolved)
+	{
+		// The source calls this bone a hand, but Reverse's authored geometry here is a foot.
+		OutParent=Skin; OutSocket=ChainArmR.Joints[2];
+		FVector Toe; if (!GetPalmLocation(true,Toe)) { return false; }
+		OutOffset=Skin->GetSocketTransform(OutSocket,RTS_World).InverseTransformPosition(Toe);
+		return true;
+	}
+	return false;
 }
 
 void UChaosImpactPuppetComponent::SolveTwoBone(const FVector& Root, const FVector& Target, const FVector& Pole,
@@ -520,6 +553,14 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow, const float An
 {
 	if (!bReady || !IsValid(Source) || !Source->GetSkinnedAsset() || !IsVisible())
 	{
+		return;
+	}
+	if (bFloating)
+	{
+		// The model deliberately has no walk, throw, recoil, tackle or ball-form deformation.
+		// Its owner still moves, turns and jumps normally; only the visible mesh hovers above the floor.
+		Body->SetRelativeLocationAndRotation(FVector(0,0,22),FQuat::Identity);
+		PlaceHeldBalls();
 		return;
 	}
 	PrepareDrivePose();
@@ -812,6 +853,15 @@ void UChaosImpactPuppetComponent::UpdateSkinnedPose()
 		const FLimbChain& Other = bRight ? ChainArmL : ChainArmR;
 		const FVector OtherShoulder = Skin->GetBoneTransformByName(Other.Joints[0], EBoneSpaces::ComponentSpace).GetLocation();
 		const FVector Outward = FVector(Shoulder.X - OtherShoulder.X, Shoulder.Y - OtherShoulder.Y, 0.0f).GetSafeNormal();
+		if (bHandstand)
+		{
+			// Reverse's real hands are the lower leg chains, so they keep the normal planted walking cycle.
+			// Its real feet (these upper chains) stay raised and kick forward at the normal throw release.
+			const float Reach=Chain.UpperLength+Chain.LowerLength;
+			const FVector Raised=Shoulder+(FVector::UpVector*.78f+Outward*.32f+FVector(0,.08f,0))*Reach;
+			Target=FMath::Lerp(Raised,Target,Exact);
+			Pole=FMath::Lerp((Outward-FVector(0,.7f,.1f)).GetSafeNormal(),Pole.GetSafeNormal(),Exact);
+		}
 		RaiseArm(Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		DriveArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		if(TackleWeight>0)
@@ -922,7 +972,7 @@ void UChaosImpactPuppetComponent::PlaceHeldBalls()
 		FVector Palm;
 		if (Ball && Ball->IsVisible() && GetPalmLocation(bRight, Palm))
 		{
-			if (bRight && DriveHoldWeight > 0.0f && GetWorld() && !AuthoredMesh)
+			if (bRight && DriveHoldWeight > 0.0f && GetWorld() && !AuthoredMesh && !bFloating)
 			{
 				// A drive ball floats between the cupped hands, bobbing.
 				const float Bob = FMath::Sin(static_cast<float>(GetWorld()->GetTimeSeconds()) * 5.0f) * 2.5f;

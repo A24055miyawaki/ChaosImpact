@@ -46,6 +46,12 @@ public:
 	void UpdatePose(bool bPushNow = false, float AnimationDeltaSeconds = -1.0f);
 	/** Non-humanoid characters play their supplied clips rather than copying HumanIK joints. */
 	bool HasAuthoredAnimations() const { return AuthoredMesh != nullptr; }
+	/** Static floating characters keep both balls on fixed fingertip sockets, including during a throw cue. */
+	bool HasFixedCarrySockets() const { return bFloating; }
+	bool HasFootCarry() const { return bHandstand; }
+	/** A visible fingertip or foot attachment; false for characters using the standard animated source hand. */
+	bool GetModelCarryAttachment(USceneComponent*& OutParent, FName& OutSocket, FVector& OutOffset) const;
+	USceneComponent* GetFixedCarryComponent() const;
 	USkeletalMeshComponent* GetAuthoredMesh() const { return AuthoredMesh; }
 	void PlaySelectionAppeal();
 	void PlayAuthoredThrow(bool bNova, float ReleaseDelaySeconds);
@@ -207,7 +213,9 @@ private:
 	int32 CharacterIndex = 0;
 	/** A single rigid mesh with no limbs (see EChaosImpactModelKind). */
 	bool bRigid = false;
+	bool bFloating = false;
 	bool bSkinned = false;
+	bool bHandstand = false;
 	/** Skinned model: hips, spine, neck, head and shoulders, parents first. */
 	TArray<FDrivenBone> DrivenBody;
 	FDrivenBone DrivenLegs[2];

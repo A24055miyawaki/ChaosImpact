@@ -138,10 +138,13 @@ namespace
 				StageKey(EKeys::Right);
 				Test->TestEqual(TEXT("Right moves to ステージ2"), Menu->GetSelectedIndex(), 1);
 				StageKey(EKeys::Down);
-				Test->TestEqual(TEXT("Down moves to the back button"), Menu->GetSelectedIndex(), 2);
+				Test->TestEqual(TEXT("Down moves to the second row (ステージ5)"), Menu->GetSelectedIndex(), 4);
+				StageKey(EKeys::Down);
+				Test->TestEqual(TEXT("Down again moves to the back button"), Menu->GetSelectedIndex(), ChaosImpactMatch::StageCount);
 				StageKey(EKeys::Up);
-				Test->TestEqual(TEXT("Up returns to the cards"), Menu->GetSelectedIndex(), 0);
-				StageKey(EKeys::Right);
+				Test->TestEqual(TEXT("Up returns to the bottom-row card (ステージ5)"), Menu->GetSelectedIndex(), 4);
+				StageKey(EKeys::Up);
+				Test->TestEqual(TEXT("Up returns to ステージ2"), Menu->GetSelectedIndex(), 1);
 				return Next(1.0);
 			case 3:
 				StageShot(TEXT("02-Stage2.png"));

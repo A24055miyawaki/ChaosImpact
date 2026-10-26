@@ -754,12 +754,14 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter ILabel{IconSpace, Elements, IconLayer + 2, In};
 		if (bUnlocked)
 		{
+			const auto ModelKind=ChaosImpactRoster::Get(Tile).Kind;
 			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 22.0f, FLinearColor(0.08f, 0.2f, 0.52f, 1.0f));
 			RoundBox(I, 0.0f, IconSize * 0.5f, IconSize, IconSize * 0.5f, 22.0f, FLinearColor(0.03f, 0.1f, 0.3f, 1.0f));
 			if (PortraitBrushes.IsValidIndex(Tile))
 			{
 				FSlateBrush& Face = PortraitBrushes[Tile];
-				const bool bWholeBody = ChaosImpactRoster::Get(Tile).Kind == EChaosImpactModelKind::Authored;
+				// Nicola's face is below its waist: the normal upper-body crop would show only its raised feet.
+				const bool bWholeBody = ModelKind == EChaosImpactModelKind::Authored || ModelKind == EChaosImpactModelKind::Handstand;
 				Face.SetUVRegion(bWholeBody
 					? FBox2f(FVector2f(0.03f, 0.2f), FVector2f(0.97f, 0.8f))
 					: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f)));
@@ -768,7 +770,8 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			if (*ChaosImpactRoster::Get(Tile).Name)
 			{
 				RoundBox(ILabel, 10.0f, IconSize - 44.0f, IconSize - 20.0f, 36.0f, 12.0f, WithAlpha(Ink, 0.85f));
-				ILabel.Text(ChaosImpactRoster::Get(Tile).Name, IconSize * 0.5f, IconSize - 44.0f, 21.0f, Paper,
+				ILabel.Text(ChaosImpactRoster::Get(Tile).Name, IconSize * 0.5f, IconSize - 44.0f,
+					ModelKind == EChaosImpactModelKind::Handstand ? 17.5f : 21.0f, Paper,
 					ETextAlign::Center, TEXT("Black"));
 			}
 		}
@@ -929,7 +932,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	{
 		// Crop to the upper body so the character is not tiny in a short window.
 		VisibleHeight = 0.72f;
-		VisibleTop = ChaosImpactRoster::Get(Slot.Character).Kind == EChaosImpactModelKind::Authored ? 0.14f : 0.02f;
+		const auto ModelKind=ChaosImpactRoster::Get(Slot.Character).Kind;
+		VisibleTop = ModelKind == EChaosImpactModelKind::Authored ? 0.14f : 0.02f;
+		if (ModelKind == EChaosImpactModelKind::Handstand) { VisibleHeight=.94f; VisibleTop=.03f; }
 		PictureW = AreaHeight * 0.75f / VisibleHeight;
 	}
 	else if (PictureW > W - 28.0f)

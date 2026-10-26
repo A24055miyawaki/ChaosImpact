@@ -128,7 +128,7 @@ private:
 
 	// VS match flow: [TeamSelect] -> Intro -> Match -> Results -> (online) back to the lobby.
 	void SetMatchPhase(EChaosImpactOnlinePhase NewPhase, float Seconds);
-	/** Makes the stage for StageIndex (0 standard, 1 splash) the one in use, replacing a different one. */
+	/** Makes the stage for StageIndex (0..5) the one in use, replacing a different one. */
 	void EnsureVersusStage(int32 StageIndex);
 	void StartMatchIntro();
 	/** Every opening has finished (or the wait timed out): Ready?, then GO. */
@@ -191,6 +191,15 @@ private:
 	/** ステージ3 (the sky temple), raised in a room's lobby level; a local match travels to its own level instead. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
 	TSubclassOf<AChaosImpactStageBase> TempleStageClass;
+	/** ステージ4 (the neon cyber highway junction). */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
+	TSubclassOf<AChaosImpactStageBase> CyberStageClass;
+	/** ステージ5 (the frozen yukimi sanctuary). */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
+	TSubclassOf<AChaosImpactStageBase> SnowStageClass;
+	/** ステージ6 (the molten core foundry). */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
+	TSubclassOf<AChaosImpactStageBase> ForgeStageClass;
 
 	/** Where that stage is spawned. X/Y as set; Z follows the players' floor. Far from the training arena. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))

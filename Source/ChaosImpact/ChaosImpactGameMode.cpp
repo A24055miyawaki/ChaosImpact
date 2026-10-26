@@ -17,6 +17,9 @@
 #include "ChaosImpactVersusStage.h"
 #include "ChaosImpactSplashStage.h"
 #include "ChaosImpactTempleStage.h"
+#include "ChaosImpactCyberStage.h"
+#include "ChaosImpactSnowStage.h"
+#include "ChaosImpactForgeStage.h"
 #include "GameFramework/GameSession.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
@@ -43,6 +46,9 @@ AChaosImpactGameMode::AChaosImpactGameMode()
 	VersusStageClass = AChaosImpactVersusStage::StaticClass();
 	SplashStageClass = AChaosImpactSplashStage::StaticClass();
 	TempleStageClass = AChaosImpactTempleStage::StaticClass();
+	CyberStageClass = AChaosImpactCyberStage::StaticClass();
+	SnowStageClass = AChaosImpactSnowStage::StaticClass();
+	ForgeStageClass = AChaosImpactForgeStage::StaticClass();
 }
 
 void AChaosImpactGameMode::BeginPlay()
@@ -1095,11 +1101,18 @@ void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex)
 	UClass* Wanted = Stage == 1
 		? (SplashStageClass ? SplashStageClass.Get() : AChaosImpactSplashStage::StaticClass())
 		: Stage == 2 ? (TempleStageClass ? TempleStageClass.Get() : AChaosImpactTempleStage::StaticClass())
+		: Stage == 3 ? (CyberStageClass ? CyberStageClass.Get() : AChaosImpactCyberStage::StaticClass())
+		: Stage == 4 ? (SnowStageClass ? SnowStageClass.Get() : AChaosImpactSnowStage::StaticClass())
+		: Stage == 5 ? (ForgeStageClass ? ForgeStageClass.Get() : AChaosImpactForgeStage::StaticClass())
 		: (VersusStageClass ? VersusStageClass.Get() : AChaosImpactVersusStage::StaticClass());
 	// The stages are told apart by their C++ family, so a Blueprint of one (or one placed in the level, as in
 	// each stage's own level) still counts as that stage.
 	UClass* Family = Stage == 1 ? AChaosImpactSplashStage::StaticClass()
-		: Stage == 2 ? AChaosImpactTempleStage::StaticClass() : AChaosImpactVersusStage::StaticClass();
+		: Stage == 2 ? AChaosImpactTempleStage::StaticClass()
+		: Stage == 3 ? AChaosImpactCyberStage::StaticClass()
+		: Stage == 4 ? AChaosImpactSnowStage::StaticClass()
+		: Stage == 5 ? AChaosImpactForgeStage::StaticClass()
+		: AChaosImpactVersusStage::StaticClass();
 	if (IsValid(VersusStage) && VersusStage->IsA(Family))
 	{
 		return;

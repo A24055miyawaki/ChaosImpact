@@ -371,18 +371,22 @@ namespace
 		const float W = Rect.Right - Rect.Left;
 		const float H = Rect.Bottom - Rect.Top;
 		const float B = EaseOut(Blend);
+		const bool bCompact = H < 320.0f;
 		const FGeometry Card = MakeSkewed(Design, Rect.Left, Rect.Top - 12.0f * B, W, H, -0.14f,
 			(1.0f + 0.025f * B) * (bPressed ? 0.97f : 1.0f));
 		const FMenuPainter Words{Card, Elements, Layer + 2, Alpha};
-		Words.Text(Big, 40.0f, H - 184.0f, 60.0f, WithAlpha(Paper, 0.7f + 0.3f * B), ETextAlign::Left, TEXT("Black"), 3.0f * B, Ink);
-		Words.Text(Sub, 46.0f, H - 96.0f, 30.0f, WithAlpha(Paper, 0.55f + 0.45f * B));
+		Words.Text(Big, bCompact ? 28.0f : 40.0f, bCompact ? H - 150.0f : H - 184.0f, bCompact ? 40.0f : 60.0f,
+			WithAlpha(Paper, 0.7f + 0.3f * B), ETextAlign::Left, TEXT("Black"), 3.0f * B, Ink);
+		Words.Text(Sub, bCompact ? 32.0f : 46.0f, bCompact ? H - 74.0f : H - 96.0f, bCompact ? 26.0f : 30.0f,
+			WithAlpha(Paper, 0.55f + 0.45f * B));
 
-		// 16:9 across the top, shifted with the card's lean at that height and its lift when selected.
-		const float ShotW = W - 80.0f;
+		// 16:9 preview: across the top on tall cards, or on the right half on compact two-row cards.
+		const float ShotW = bCompact ? 224.0f : W - 80.0f;
 		const float ShotH = ShotW * 9.0f / 16.0f;
-		const float ShotY = Rect.Top + 26.0f - 12.0f * B;
-		const float Lean = 0.14f * (H * 0.5f - (26.0f + ShotH * 0.5f));
-		const float ShotX = Rect.Left + 40.0f + Lean;
+		const float LocalTop = bCompact ? (H - ShotH) * 0.5f : 26.0f;
+		const float ShotY = Rect.Top + LocalTop - 12.0f * B;
+		const float Lean = 0.14f * (H * 0.5f - (LocalTop + ShotH * 0.5f));
+		const float ShotX = (bCompact ? Rect.Right - ShotW - 24.0f : Rect.Left + 40.0f) + Lean;
 		const FMenuPainter Frame{Design, Elements, Layer + 1, Alpha};
 		Frame.Box(ShotX + 8.0f, ShotY + 10.0f, ShotW, ShotH, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 		const float Light = 0.5f + 0.5f * B;
@@ -402,11 +406,17 @@ namespace
 		const FSlateRect& Rect, const int32 StageIndex, const float Blend, const float Alpha)
 	{
 		const float B = EaseOut(Blend);
-		constexpr float Half = 112.0f;
+		const float CardH = Rect.Bottom - Rect.Top;
+		const bool bCompact = CardH < 320.0f;
+		const float Half = bCompact ? 82.0f : 112.0f;
 		// Follows the card's lean at this height and its lift when selected.
-		const FVector2D Center((Rect.Left + Rect.Right) * 0.5f + 12.0f, Rect.Top + 150.0f - 12.0f * B);
+		const FVector2D Center(bCompact ? Rect.Right - 114.0f : (Rect.Left + Rect.Right) * 0.5f + 12.0f,
+			bCompact ? (Rect.Top + Rect.Bottom) * 0.5f - 12.0f * B : Rect.Top + 150.0f - 12.0f * B);
 		const FMenuPainter P{Design, Elements, Layer, Alpha};
-		const float S = Half / (StageIndex == 1 ? 3400.0f : StageIndex == 2 ? 3500.0f : 3000.0f);
+		const float MaxExtent = (StageIndex == 1 || StageIndex == 3) ? 3400.0f
+			: (StageIndex == 2 || StageIndex == 5) ? 3500.0f
+			: StageIndex == 4 ? 3300.0f : 3000.0f;
+		const float S = Half / MaxExtent;
 		// World X is up the map and world Y to the right.
 		const auto ToMap = [&Center, S](const float X, const float Y) { return Center + FVector2D(Y, -X) * S; };
 		const auto Block = [&P, &ToMap, S](const float X, const float Y, const float SizeX, const float SizeY, const FLinearColor& Color)
@@ -458,6 +468,103 @@ namespace
 				const float Angle = FMath::DegreesToRadians(22.5f + Index * 45.0f);
 				Block(FMath::Cos(Angle) * 1200.0f, FMath::Sin(Angle) * 1200.0f, 180.0f, 180.0f, Paper);
 			}
+			return;
+		}
+		if (StageIndex == 3)
+		{
+			// Stage 4: Neon Cyber Highway Junction (octagonal asphalt + 4 overpasses + central holo court + 4 pulse gates).
+			constexpr float Reach = 3400.0f;
+			constexpr float Bevel = 5200.0f;
+			for (int32 Strip = 0; Strip < 34; ++Strip)
+			{
+				const float X = -Reach + 100.0f + Strip * 200.0f;
+				Block(X, 0.0f, 200.0f, 2.0f * FMath::Min(Reach, Bevel - FMath::Abs(X)), Ground);
+			}
+			Block(0.0f, 0.0f, 1520.0f, 1520.0f, WithAlpha(Ice, 0.45f));
+			P.Ring(Center, 520.0f * S, Ice, 2.5f, 28);
+			P.Ring(Center, 240.0f * S, Gold, 2.5f, 20);
+			for (int32 Quarter = 0; Quarter < 4; ++Quarter)
+			{
+				const FLinearColor Neon = PlayerAccents[Quarter];
+				const bool bSide = Quarter % 2 == 1;
+				FVector2D Overpass(2950.0f, 0.0f);
+				FVector2D Gate(1160.0f, 1160.0f);
+				FVector2D Bank(1620.0f, 1620.0f);
+				for (int32 Turn = 0; Turn < Quarter; ++Turn)
+				{
+					Overpass = FVector2D(-Overpass.Y, Overpass.X);
+					Gate = FVector2D(-Gate.Y, Gate.X);
+					Bank = FVector2D(-Bank.Y, Bank.X);
+				}
+				Block(Overpass.X, Overpass.Y, bSide ? 2500.0f : 860.0f, bSide ? 860.0f : 2500.0f, WithAlpha(Neon, 0.7f));
+				const FVector2D Tangent = FVector2D(-Gate.Y, Gate.X).GetSafeNormal() * 300.0f;
+				P.Line(ToMap(Gate.X - Tangent.X, Gate.Y - Tangent.Y), ToMap(Gate.X + Tangent.X, Gate.Y + Tangent.Y),
+					Quarter % 2 == 0 ? Ice : Gold, 3.5f);
+				P.Line(ToMap(Bank.X - Tangent.X, Bank.Y - Tangent.Y), ToMap(Bank.X + Tangent.X, Bank.Y + Tangent.Y), Paper, 3.0f);
+			}
+			return;
+		}
+		if (StageIndex == 4)
+		{
+			// Stage 5: Frozen Yukimi Sanctuary & Ice Pond (outer wooden veranda + central ice pond + 4 Taiko bridges).
+			constexpr float Reach = 3300.0f;
+			constexpr float Bevel = 5000.0f;
+			for (int32 Strip = 0; Strip < 33; ++Strip)
+			{
+				const float X = -Reach + 100.0f + Strip * 200.0f;
+				Block(X, 0.0f, 200.0f, 2.0f * FMath::Min(Reach, Bevel - FMath::Abs(X)), FLinearColor(0.26f, 0.17f, 0.12f, 0.96f));
+			}
+			Block(0.0f, 0.0f, 3500.0f, 3500.0f, FLinearColor(0.28f, 0.62f, 0.88f, 0.88f));
+			P.Ring(Center, 470.0f * S, Paper, 3.0f, 24);
+			P.Ring(Center, 220.0f * S, Gold, 2.5f, 20);
+			for (int32 Quarter = 0; Quarter < 4; ++Quarter)
+			{
+				const bool bSide = Quarter % 2 == 1;
+				FVector2D Bridge(1560.0f, 0.0f);
+				FVector2D Pillar(1020.0f, 1020.0f);
+				for (int32 Turn = 0; Turn < Quarter; ++Turn)
+				{
+					Bridge = FVector2D(-Bridge.Y, Bridge.X);
+					Pillar = FVector2D(-Pillar.Y, Pillar.X);
+				}
+				Block(Bridge.X, Bridge.Y, bSide ? 460.0f : 620.0f, bSide ? 620.0f : 460.0f, Fire);
+				Block(Pillar.X, Pillar.Y, 220.0f, 220.0f, Paper);
+			}
+			return;
+		}
+		if (StageIndex == 5)
+		{
+			// Stage 6: Molten Core Foundry (central circular core + 4 thermal vents + 4 bays + 4 corner chambers).
+			const auto Disc = [&](const float X, const float Y, const float Radius, const FLinearColor& Color)
+			{
+				constexpr int32 Strips = 12;
+				for (int32 Strip = 0; Strip < Strips; ++Strip)
+				{
+					const float Middle = -Radius + (Strip + 0.5f) * 2.0f * Radius / Strips;
+					Block(X + Middle, Y, 2.0f * Radius / Strips, 2.0f * FMath::Sqrt(FMath::Max(0.0f, Radius * Radius - Middle * Middle)), Color);
+				}
+			};
+			const FVector2D Bays[] = {{2600.0f, 0.0f}, {0.0f, 2600.0f}, {-2600.0f, 0.0f}, {0.0f, -2600.0f}};
+			const FVector2D Corners[] = {{2450.0f, 2450.0f}, {-2450.0f, 2450.0f}, {-2450.0f, -2450.0f}, {2450.0f, -2450.0f}};
+			const FVector2D Vents[] = {{920.0f, 0.0f}, {0.0f, 920.0f}, {-920.0f, 0.0f}, {0.0f, -920.0f}};
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				P.Line(ToMap(0.0f, 0.0f), ToMap(Bays[Index].X, Bays[Index].Y), Ground, 620.0f * S);
+				P.Line(ToMap(0.0f, 0.0f), ToMap(Corners[Index].X, Corners[Index].Y), Ground, 360.0f * S);
+				P.Line(ToMap(Bays[Index].X, Bays[Index].Y), ToMap(Corners[Index].X, Corners[Index].Y), Ground, 420.0f * S);
+				P.Line(ToMap(Bays[(Index + 1) % 4].X, Bays[(Index + 1) % 4].Y), ToMap(Corners[Index].X, Corners[Index].Y), Ground, 420.0f * S);
+			}
+			Disc(0.0f, 0.0f, 1520.0f, Ground);
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				const bool bSide = Index % 2 == 1;
+				Block(Bays[Index].X, Bays[Index].Y, bSide ? 1700.0f : 1260.0f, bSide ? 1260.0f : 1700.0f, Ground);
+				Block(Bays[Index].X, Bays[Index].Y, bSide ? 540.0f : 230.0f, bSide ? 230.0f : 540.0f, Paper);
+				Disc(Corners[Index].X, Corners[Index].Y, 640.0f, Ground);
+				Disc(Corners[Index].X, Corners[Index].Y, 300.0f, WithAlpha(Ice, 0.65f));
+				Disc(Vents[Index].X, Vents[Index].Y, 330.0f, WithAlpha(Fire, 0.85f));
+			}
+			Disc(0.0f, 0.0f, 460.0f, WithAlpha(Gold, 0.9f));
 			return;
 		}
 		if (StageIndex != 1)
@@ -1448,10 +1555,13 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::StageSelect:
-		// One card per stage (StageIndex order), side by side above a back button. Picking a card starts.
-		Entries.Add({FSlateRect(110, 198, 560, 702), ChaosImpactMatch::GetStageLabel(0), TEXT(""), TEXT("STAGE 1"), Gold});
-		Entries.Add({FSlateRect(575, 198, 1025, 702), ChaosImpactMatch::GetStageLabel(1), TEXT(""), TEXT("STAGE 2"), Ice});
-		Entries.Add({FSlateRect(1040, 198, 1490, 702), ChaosImpactMatch::GetStageLabel(2), TEXT(""), TEXT("STAGE 3"), Violet});
+		// Six stages in a 3x2 grid (StageIndex order) above a back button. Picking a card starts.
+		Entries.Add({FSlateRect(110, 184, 560, 434), ChaosImpactMatch::GetStageLabel(0), TEXT(""), TEXT("STAGE 1"), Gold});
+		Entries.Add({FSlateRect(575, 184, 1025, 434), ChaosImpactMatch::GetStageLabel(1), TEXT(""), TEXT("STAGE 2"), Ice});
+		Entries.Add({FSlateRect(1040, 184, 1490, 434), ChaosImpactMatch::GetStageLabel(2), TEXT(""), TEXT("STAGE 3"), Violet});
+		Entries.Add({FSlateRect(110, 456, 560, 706), ChaosImpactMatch::GetStageLabel(3), TEXT(""), TEXT("STAGE 4"), Ice});
+		Entries.Add({FSlateRect(575, 456, 1025, 706), ChaosImpactMatch::GetStageLabel(4), TEXT(""), TEXT("STAGE 5"), Gold});
+		Entries.Add({FSlateRect(1040, 456, 1490, 706), ChaosImpactMatch::GetStageLabel(5), TEXT(""), TEXT("STAGE 6"), Fire});
 		Entries.Add({FSlateRect(146, 736, 470, 800), TEXT("ルールへ戻る"), TEXT(""), TEXT(""), Muted});
 		break;
 	case EChaosImpactScreen::TeamSelect:
@@ -2100,8 +2210,9 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			}
 			else
 			{
+				const float BigFontSize = (Rect.Bottom - Rect.Top) < 320.0f ? 40.0f : 64.0f;
 				PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
-					Entry.Accent, Blend, bPressed, EntryIn, T, 64.0f, 0);
+					Entry.Accent, Blend, bPressed, EntryIn, T, BigFontSize, 0);
 				PaintStageMap(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Index, Blend, EntryIn);
 			}
 		}
@@ -2308,33 +2419,41 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	}
 	else if (Screen == EChaosImpactScreen::StageSelect && Key != EKeys::Tab)
 	{
-		// The stages side by side (left and right go round them), the back button below.
+		// 3x2 grid of stages (0..2 top row, 3..5 bottom row) above the back button (Stages).
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
 			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
 		const int32 Stages = ChaosImpactMatch::StageCount;
+		constexpr int32 Cols = 3;
 		if (bHorizontal)
 		{
-			const bool bToLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
-			SelectedIndex = SelectedIndex >= Stages ? Stages : (SelectedIndex + (bToLeft ? Stages - 1 : 1)) % Stages;
+			if (SelectedIndex < Stages)
+			{
+				const bool bToLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
+				const int32 RowStart = (SelectedIndex / Cols) * Cols;
+				const int32 RowCount = FMath::Min(Cols, Stages - RowStart);
+				SelectedIndex = RowStart + (SelectedIndex - RowStart + (bToLeft ? RowCount - 1 : 1)) % RowCount;
+			}
+		}
+		else if (SelectedIndex >= Stages)
+		{
+			SelectedIndex = bUp ? FMath::Clamp(LastStageCard >= Cols ? LastStageCard : LastStageCard + Cols, 0, Stages - 1)
+				: FMath::Clamp(LastStageCard % Cols, 0, Stages - 1);
+		}
+		else if (bUp)
+		{
+			LastStageCard = SelectedIndex;
+			SelectedIndex = SelectedIndex >= Cols ? SelectedIndex - Cols : Stages;
 		}
 		else
 		{
-			if (SelectedIndex < Stages) { LastStageCard = SelectedIndex; }
-			SelectedIndex = SelectedIndex >= Stages ? FMath::Clamp(LastStageCard, 0, Stages - 1) : Stages;
+			LastStageCard = SelectedIndex;
+			SelectedIndex = SelectedIndex + Cols < Stages ? SelectedIndex + Cols : Stages;
 		}
 	}
 	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::SoloStageSelect) && Key != EKeys::Tab)
 	{
 		// 左右でステージ1と2を行き来し、下入力で戻るボタンへ移動
-		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
-			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
-		SelectedIndex = bHorizontal
-			? (SelectedIndex == 0 ? 1 : SelectedIndex == 1 ? 0 : 2)
-			: (SelectedIndex == 2 ? 0 : 2);
-	}
-	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::StageSelect) && Key != EKeys::Tab)
-	{
-		// Local / Online (or the two stages) side by side above a single back button.
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
 			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
 		SelectedIndex = bHorizontal

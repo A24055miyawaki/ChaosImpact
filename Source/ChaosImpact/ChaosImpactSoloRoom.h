@@ -180,7 +180,7 @@ private:
 	void HandlePlayerEliminated(AChaosImpactCharacter* Character);
 
 	AChaosImpactCharacter* SpawnEnemy(const TSoftClassPtr<AChaosImpactCharacter>& Class, const TCHAR* FallbackPath,
-		const FVector& Location, EChaosImpactCPULevel Level);
+		const FVector& Location, EChaosImpactCPULevel Level, bool bBossEnemy = false);
 	/** A spot on the floor for the Index-th minion. */
 	FVector PickSpawnLocation(int32 Index) const;
 	/** On the floor under a point (where a character stands). */

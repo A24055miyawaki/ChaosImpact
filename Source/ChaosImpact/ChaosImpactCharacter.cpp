@@ -83,8 +83,19 @@ namespace
 	}
 
 	/** The roster character a player's model shows. */
-	int32 ShownCharacterIndex(const AChaosImpactPlayerState* State)
+	int32 ShownCharacterIndex(const AChaosImpactCharacter* Character, const AChaosImpactPlayerState* State)
 	{
+		const UWorld* World=Character ? Character->GetWorld() : nullptr;
+		const auto* SoloPC=World ? Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController()) : nullptr;
+		const bool bSolo=World && !World->URL.HasOption(TEXT("CIRPGPrototype=1"))
+			&& (World->URL.HasOption(TEXT("CISolo=1")) || (SoloPC && (SoloPC->IsSoloMode() || SoloPC->IsSoloWorldMap())));
+		if (bSolo)
+		{
+			if (Character->IsPlayerControlled()) { return ChaosImpactRoster::HeroIndex; }
+			// Rooms mark bosses before BeginPlay; preserve existing placed BP/native bosses too.
+			if (!Character->ActorHasTag(TEXT("CI.SoloBoss")) && !Character->GetClass()->GetName().Contains(TEXT("Boss")))
+			{ return ChaosImpactRoster::RoboIndex; }
+		}
 #if !UE_BUILD_SHIPPING
 		// Development (-CIDevCharacter=<index>): every character, CPUs included, shows that model (performance checks).
 		static const int32 DevCharacter = []()
@@ -1774,7 +1785,13 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		}
 		PendingThrowBall = Ball;
 		bThrowReleasePending = true;
-		if (ToonCharacter && ToonCharacter->HasAuthoredAnimations())
+		USceneComponent* ModelCarryParent=nullptr; FName ModelCarrySocket; FVector ModelCarryOffset;
+		if (ToonCharacter && ToonCharacter->GetModelCarryAttachment(ModelCarryParent,ModelCarrySocket,ModelCarryOffset))
+		{
+			// Floating fingertips and Nicola's feet retain their own visible attachment until release.
+			Ball->PrepareForAnimatedThrow(ModelCarryParent,ModelCarrySocket,ModelCarryOffset,FRotator::ZeroRotator);
+		}
+		else if (ToonCharacter && ToonCharacter->HasAuthoredAnimations())
 		{
 			Ball->PrepareForAnimatedThrow(ToonCharacter->GetAuthoredMesh(), NAME_None,
 				FVector::ZeroVector, FRotator::ZeroRotator);
@@ -1849,7 +1866,11 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 	if (IsValid(Ball))
 	{
 		FVector Mouth;
-		if (ToonCharacter && ToonCharacter->GetAuthoredMouthLocation(Mouth))
+		if (ToonCharacter && (ToonCharacter->HasFixedCarrySockets() || ToonCharacter->HasFootCarry()) && ToonCharacter->GetPalmLocation(true,Mouth))
+		{
+			Ball->SetActorLocation(Mouth);
+		}
+		else if (ToonCharacter && ToonCharacter->GetAuthoredMouthLocation(Mouth))
 		{
 			Ball->SetActorLocation(Mouth);
 		}
@@ -3853,7 +3874,7 @@ int32 AChaosImpactCharacter::GetShownCharacter() const
 	{
 		return ToonCharacter->GetCharacterIndex();
 	}
-	return ShownCharacterIndex(GetPlayerState<AChaosImpactPlayerState>());
+	return ShownCharacterIndex(this,GetPlayerState<AChaosImpactPlayerState>());
 }
 
 int32 AChaosImpactCharacter::GetShownColour() const
@@ -4520,7 +4541,7 @@ void AChaosImpactCharacter::CreateToonCharacter()
 	ToonCharacter->SetupAttachment(GetMesh());
 	ToonCharacter->SetRelativeScale3D(FVector(ToonCharacterScale));
 	ToonCharacter->RegisterComponent();
-	if (!ToonCharacter->Initialize(GetMesh(), ShownCharacterIndex(PickState)))
+	if (!ToonCharacter->Initialize(GetMesh(), ShownCharacterIndex(this,PickState)))
 	{
 		ToonCharacter->DestroyComponent();
 		ToonCharacter = nullptr;
@@ -4541,7 +4562,7 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 	}
 	const AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>();
 	// The picked character can arrive after the pawn (a remote player's choice replicates in a moment later).
-	if (State && ToonCharacter && ToonCharacter->GetCharacterIndex() != ShownCharacterIndex(State))
+	if (ToonCharacter && ToonCharacter->GetCharacterIndex() != ShownCharacterIndex(this,State))
 	{
 		ToonCharacter->DestroyComponent();
 		ToonCharacter = nullptr;
@@ -4804,7 +4825,7 @@ void AChaosImpactCharacter::UpdateSnowRollPresentation()
 	const bool bOverhead = bRightSnow && ChaosImpactBallTypes::IsSnowOverhead(RightScale);
 	float ChargeSeconds = 0.0f;
 	const bool bCharging = bRightSnow && GetPresentedCharge(ChargeSeconds);
-	const bool bInHand = (ToonCharacter && ToonCharacter->HasAuthoredAnimations()) || (bCharging && !bOverhead);
+	const bool bInHand = (ToonCharacter && (ToonCharacter->HasAuthoredAnimations() || ToonCharacter->HasFixedCarrySockets() || ToonCharacter->HasFootCarry())) || (bCharging && !bOverhead);
 	if (HeldBallMesh && bRightSnow && !bThrowReleasePending && !bEliminated)
 	{
 		HeldBallMesh->SetRelativeScale3D(FVector(0.34f * RightScale));
@@ -5160,7 +5181,7 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 FVector AChaosImpactCharacter::GetOverheadHoldOffset(const EChaosImpactBallType Type, const float Scale) const
 {
 	FVector Fin;
-	if (ToonCharacter && ToonCharacter->HasAuthoredAnimations() && ToonCharacter->GetPalmLocation(true, Fin))
+	if (ToonCharacter && (ToonCharacter->HasAuthoredAnimations() || ToonCharacter->HasFixedCarrySockets() || ToonCharacter->HasFootCarry()) && ToonCharacter->GetPalmLocation(true, Fin))
 	{
 		return Fin - GetPresentationLocation();
 	}

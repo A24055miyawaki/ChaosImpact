@@ -327,7 +327,7 @@ void AChaosImpactSoloRoom::HandlePlayerEliminated(AChaosImpactCharacter* Charact
 }
 
 AChaosImpactCharacter* AChaosImpactSoloRoom::SpawnEnemy(const TSoftClassPtr<AChaosImpactCharacter>& Class, const TCHAR* FallbackPath,
-	const FVector& Location, const EChaosImpactCPULevel Level)
+	const FVector& Location, const EChaosImpactCPULevel Level, const bool bBossEnemy)
 {
 	UWorld* World = GetWorld();
 	UClass* EnemyClass = Class.IsNull() ? LoadClass<AChaosImpactCharacter>(nullptr, FallbackPath) : Class.LoadSynchronous();
@@ -347,6 +347,7 @@ AChaosImpactCharacter* AChaosImpactSoloRoom::SpawnEnemy(const TSoftClassPtr<ACha
 	}
 	// Knocked out for good (it is then destroyed: that is what the room counts).
 	Enemy->bRespawnAfterElimination = false;
+	if (bBossEnemy) { Enemy->Tags.AddUnique(TEXT("CI.SoloBoss")); }
 	Enemy->CPULevel = Level;
 	Enemy->FinishSpawning(Where);
 	// What Spawn AI From Class does: a CPU to play it.
@@ -398,7 +399,7 @@ void AChaosImpactSoloRoom::SpawnWaitingBoss()
 		return;
 	}
 	const FVector Where = IsValid(BossSpawnPoint) ? OnFloor(BossSpawnPoint->GetActorLocation()) : OnFloor(RoomArea->GetComponentLocation());
-	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel);
+	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel, true);
 	Boss = NewBoss;
 	if (NewBoss)
 	{
@@ -429,7 +430,7 @@ void AChaosImpactSoloRoom::SpawnBoss()
 	}
 	Phase = EChaosImpactSoloRoomPhase::Boss;
 	const FVector Where = IsValid(BossSpawnPoint) ? OnFloor(BossSpawnPoint->GetActorLocation()) : OnFloor(RoomArea->GetComponentLocation());
-	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel);
+	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel, true);
 	Boss = NewBoss;
 	if (NewBoss)
 	{

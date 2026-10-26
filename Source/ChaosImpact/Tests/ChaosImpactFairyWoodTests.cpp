@@ -345,4 +345,16 @@ bool FAntMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFair
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFishMenuTest,"ChaosImpact.Characters.Maguro.Menu",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 bool FFishMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,5,4,TEXT("FishQA"))); return true; }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHeroRoboMenuTest,"ChaosImpact.Characters.HeroRobo.Menu",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FHeroRoboMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,6,7,TEXT("HeroRoboQA"))); return true; }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEmojiMenuTest,"ChaosImpact.Characters.Emoji.Menu",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FEmojiMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,8,6,TEXT("EmojiQA"))); return true; }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FReverseMenuTest,"ChaosImpact.Characters.Reverse.Menu",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FReverseMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,9,8,TEXT("ReverseQA"))); return true; }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FReverseGameplayTest,"ChaosImpact.Characters.Reverse.Gameplay",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FReverseGameplayTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodGameplayCommand(this,9,1,TEXT("ReverseQA"))); return true; }
 #endif

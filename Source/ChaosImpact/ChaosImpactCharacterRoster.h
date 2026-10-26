@@ -14,6 +14,10 @@ enum class EChaosImpactModelKind : uint8
 	Skinned,
 	/** A non-humanoid skeletal mesh with its own authored action clips. */
 	Authored,
+	/** A static hovering body: no locomotion deformation; carries balls on mesh sockets. */
+	Floating,
+	/** The authored model's lower limbs are hands; its upper limbs are feet used to carry and throw. */
+	Handstand,
 };
 
 /** One playable character: what the menus call it and where its model lives. */
@@ -53,7 +57,15 @@ namespace ChaosImpactRoster
 		{TEXT("ウッドウーマン"), TEXT("/Game/ChaosImpact/Wood"), TEXT("Wood"), EChaosImpactModelKind::Skinned, false},
 		{TEXT("アントキッズ"), TEXT("/Game/ChaosImpact/Ant"), TEXT("Ant"), EChaosImpactModelKind::Skinned, false},
 		{TEXT("マグロ"), TEXT("/Game/ChaosImpact/Fish"), TEXT("Fish"), EChaosImpactModelKind::Authored, false},
+		{TEXT("ヒーロー"), TEXT("/Game/ChaosImpact/Hero"), TEXT("Hero"), EChaosImpactModelKind::Skinned, false},
+		{TEXT("Robo"), TEXT("/Game/ChaosImpact/Robo"), TEXT("Robo"), EChaosImpactModelKind::Skinned, false},
+		{TEXT("しんきんぐ"), TEXT("/Game/ChaosImpact/Emoji"), TEXT("Emoji"), EChaosImpactModelKind::Floating, false},
+		{TEXT("サカサ・ニコラ"), TEXT("/Game/ChaosImpact/Reverse"), TEXT("Reverse"), EChaosImpactModelKind::Handstand, false},
 	};
+	inline constexpr int32 HeroIndex = 6;
+	inline constexpr int32 RoboIndex = 7;
+	inline constexpr int32 EmojiIndex = 8;
+	inline constexpr int32 ReverseIndex = 9;
 
 	/** Tiles on the select screen; the ones past the roster show as locked, so it reads as a roster that grows. */
 	inline constexpr int32 TileCount = ((UE_ARRAY_COUNT(Characters) + 3) / 4) * 4;

@@ -34,7 +34,7 @@ struct FChaosImpactMatchRules
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	bool bSpectate = false;
 
-	/** Which stage: 0 = ステージ1 (the original square arena), 1 = ステージ2 (the terraced harbour). */
+	/** Which stage: 0..5 = ステージ1..ステージ6 on the stage select screen. */
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	int32 StageIndex = 0;
 
@@ -51,14 +51,14 @@ namespace ChaosImpactMatch
 	inline constexpr int32 MaxTeams = 4;
 
 	/** Stages offered on the stage select screen, in StageIndex order. */
-	inline constexpr int32 StageCount = 3;
+	inline constexpr int32 StageCount = 6;
 
 	inline int32 SanitizeStage(const int32 StageIndex)
 	{
 		return FMath::Clamp(StageIndex, 0, StageCount - 1);
 	}
 
-	/** Stages have no names yet: they are shown by number (ステージ1, ステージ2). */
+	/** Stages have no names yet: they are shown by number (ステージ1 .. ステージ6). */
 	inline FString GetStageLabel(const int32 StageIndex)
 	{
 		return FString::Printf(TEXT("ステージ%d"), SanitizeStage(StageIndex) + 1);
@@ -73,7 +73,10 @@ namespace ChaosImpactMatch
 		static const TCHAR* Levels[StageCount] = {
 			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage1"),
 			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage2"),
-			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage3")};
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage3"),
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage4"),
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage5"),
+			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage6")};
 		return Levels[SanitizeStage(StageIndex)];
 	}
 

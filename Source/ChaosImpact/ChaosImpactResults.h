@@ -42,6 +42,8 @@ struct FChaosImpactResultEntry
 	int32 DriveHits = 0;
 	/** Centimetres. */
 	int32 LongestHit = 0;
+	/** クラッシュボール: throws that pushed the giant ball towards the opponents' goal. */
+	int32 CrashPushes = 0;
 	TArray<int16> History;
 	/** Their award (one each): its title, what earned it, and which picture goes with it. */
 	FString AwardTitle;
@@ -56,6 +58,8 @@ struct FChaosImpactResultsData
 {
 	TArray<FChaosImpactResultEntry> Entries;
 	bool bTeams = false;
+	bool bCrashBall = false;
+	bool bCrashKnockout = false;
 	/** Team battle: (team, points), best first. */
 	TArray<TPair<int32, int32>> TeamTotals;
 	bool bTie = false;

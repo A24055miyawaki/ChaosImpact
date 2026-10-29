@@ -51,6 +51,7 @@ protected:
 	virtual void OnPossess(APawn* InPawn) override;
 
 private:
+	bool UpdateCrashObjective(AChaosImpactCharacter* Self, AChaosImpactCharacter* Enemy, float Now, bool bEvading);
 	struct FShotPlan
 	{
 		bool bValid = false;

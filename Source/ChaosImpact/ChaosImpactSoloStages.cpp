@@ -71,6 +71,39 @@ namespace
 	}
 }
 
+int32 ChaosImpactSolo::GetTier(const int32 Number)
+{
+	// Map 1: the sea (2-7) and the forest (8-13) both open off stage 1, then the path and the temple (14, 15).
+	// Map 2: the ice (16-21) and fire (22-27) states both open off the temple, then the capital (28-30).
+	if (Number <= 1) { return 0; }
+	if (Number <= 7) { return Number - 1; }
+	if (Number <= 13) { return Number - 7; }
+	if (Number <= 15) { return Number - 7; }
+	if (Number <= 21) { return Number - 7; }
+	if (Number <= 27) { return Number - 13; }
+	return Number - 13;
+}
+
+ChaosImpactSolo::FDifficulty ChaosImpactSolo::GetDifficulty(const int32 Number)
+{
+	using ELevel = EChaosImpactCPULevel;
+	// Minions, at once, weak, strong, the room's boss.
+	static const FDifficulty Tiers[] = {
+		{3, 2, 3, 0, ELevel::Normal},   // 1: learning to play
+		{4, 2, 2, 0, ELevel::Normal},
+		{4, 3, 1, 0, ELevel::Strong},
+		{5, 3, 0, 0, ELevel::Strong},
+		{5, 3, 0, 1, ELevel::Strong},
+		{5, 3, 0, 1, ELevel::Strong},
+		{5, 3, 0, 2, ELevel::Strong},
+		{6, 3, 0, 2, ELevel::Strongest}, // 14: the cloud path
+		{6, 4, 0, 2, ELevel::Strongest}, // 15: the temple's gatekeeper
+		{6, 4, 0, 3, ELevel::Strongest},
+		{6, 4, 0, 4, ELevel::Strongest},
+	};
+	return Tiers[FMath::Clamp(GetTier(Number), 0, static_cast<int32>(UE_ARRAY_COUNT(Tiers)) - 1)];
+}
+
 const TArray<FChaosImpactSoloStageInfo>& ChaosImpactSolo::GetStages()
 {
 	static const TArray<FChaosImpactSoloStageInfo> Stages = MakeStages();

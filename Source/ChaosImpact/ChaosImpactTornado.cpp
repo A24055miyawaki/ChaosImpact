@@ -5,10 +5,12 @@
 #include "ChaosImpactSfx.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactFxKit.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpactCrashBall.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -74,8 +76,8 @@ namespace
 			Mesh.Vertices.Add(Points[Index] - Side * HalfWidth);
 			Mesh.Normals.Add(-ViewDirection);
 			Mesh.Normals.Add(-ViewDirection);
-			Mesh.UVs.Add(FVector2D(0.0f, V));
-			Mesh.UVs.Add(FVector2D(1.0f, V));
+			Mesh.UVs.Add(FVector2D(V, 0.0f));
+			Mesh.UVs.Add(FVector2D(V, 1.0f));
 		}
 		for (int32 Index = 0; Index + 1 < Points.Num(); ++Index)
 		{
@@ -544,6 +546,19 @@ void AChaosImpactTornado::Tick(const float DeltaSeconds)
 		if (bActive)
 		{
 			CatchBalls(DeltaSeconds);
+		for (TActorIterator<AChaosImpactCrashBall> CrashIt(GetWorld()); CrashIt; ++CrashIt)
+		{
+			AChaosImpactCrashBall* CrashBall = *CrashIt;
+			if (IsValid(CrashBall))
+			{
+				const FVector CrashDelta = CrashBall->GetActorLocation() - Center;
+				if (FMath::Abs(CrashDelta.Z) <= FunnelHeight + CrashBall->GetBallRadius()
+					&& FVector(CrashDelta.X, CrashDelta.Y, 0.0f).SizeSquared() <= FMath::Square(CatchRadius + CrashBall->GetBallRadius()))
+				{
+					CrashBall->ApplySpecialEffectPush(this, SourcePawn, Center, PathHeading, 0.78f, true);
+				}
+			}
+		}
 		}
 		else
 		{
@@ -573,21 +588,24 @@ void AChaosImpactTornado::BuildPresentation()
 {
 	using namespace ChaosImpactBallTypes;
 	FRandomStream Stream(Seed);
-	UMaterialInstanceDynamic* StrandLook = MakeAdditive(this, FLinearColor(0.16f, 1.0f, 0.26f), 1.0f);
+	// The funnel's strands of wind: soft streaks (the FX kit's), soft across and fading out at the foot and the top,
+	// so no ribbon edge or end shows. (No cone shells: their hard rims read as a plastic cone from above.)
+	UMaterialInstanceDynamic* StrandLook = nullptr;
+	if (UMaterialInterface* Streak = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Streak.M_CIFX_Streak")))
+	{
+		StrandLook = UMaterialInstanceDynamic::Create(Streak, this);
+		StrandLook->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.12f, 0.95f, 0.3f));
+		StrandLook->SetVectorParameterValue(TEXT("CoreColor"), FLinearColor(0.8f, 1.0f, 0.85f));
+		StrandLook->SetScalarParameterValue(TEXT("Erode"), 0.0f);
+	}
+	else
+	{
+		StrandLook = MakeAdditive(this, FLinearColor(0.16f, 1.0f, 0.26f), 1.0f);
+	}
 	FunnelMaterial = StrandLook;
 	Funnel = ChaosImpactLightning::CreateComponent(this, SceneRoot, StrandLook);
-	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, TornadoCoreColor, 1.2f);
-	RingMaterial = RingLook;
-	GroundRings = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
 
-	UStaticMesh* Cone = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cone.Cone"));
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	for (int32 Index = 0; Index < 2 && Cone; ++Index)
-	{
-		UMaterialInstanceDynamic* ShellLook = MakeAdditive(this, Index == 0 ? TornadoColor : TornadoDeepColor, 0.6f, 1.0f);
-		ShellMaterials.Add(ShellLook);
-		Shells.Add(AddShape(Cone, ShellLook));
-	}
 	constexpr int32 DebrisCount = 28;
 	for (int32 Index = 0; Index < DebrisCount && Cube; ++Index)
 	{
@@ -611,15 +629,6 @@ void AChaosImpactTornado::BuildPresentation()
 	Glow->RegisterComponent();
 	Light = Glow;
 
-	if (UNiagaraSystem* Smoke = LoadEffect(Effects::Smoke))
-	{
-		if (UNiagaraComponent* Dust = UNiagaraFunctionLibrary::SpawnSystemAttached(Smoke, SceneRoot, NAME_None,
-			FVector(0.0f, 0.0f, 10.0f), FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, false))
-		{
-			SetEffectColor(Dust, TEXT("Smoke Color"), FLinearColor(0.34f, 0.62f, 0.36f));
-			BaseDust = Dust;
-		}
-	}
 	if (UNiagaraSystem* Continuous = LoadEffect(Effects::WindSparks))
 	{
 		if (UNiagaraComponent* Glints = UNiagaraFunctionLibrary::SpawnSystemAttached(Continuous, SceneRoot, NAME_None,
@@ -629,15 +638,106 @@ void AChaosImpactTornado::BuildPresentation()
 			Sparks = Glints;
 		}
 	}
-	// The release: a burst of dirt and a flash where it forms.
-	if (UNiagaraSystem* Burst = LoadEffect(Effects::DirtBurstMedium))
+	// Soft (FX kit), riding with it: a flash and a ring of wind as it forms, rings of wind rolling out from its foot as
+	// long as it whirls, and the ground lit green under it; dust whipped up in puffs (TornadoDust).
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, Origin))
 	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst, Origin, FRotator::ZeroRotator, FVector(0.9f));
+		Fx->AttachToActor(this, FAttachmentTransformRules::KeepWorldTransform);
+		Fx->Stream.Initialize(Seed);
+		const float Whirl = GetWhirlSeconds() + CollapseSeconds;
+		FChaosImpactFxPiece Flash;
+		Flash.Location = FVector(0.0f, 0.0f, 80.0f);
+		Flash.Life = 0.25f;
+		Flash.SizeFrom = 200.0f;
+		Flash.SizeTo = 480.0f;
+		Flash.Color = TornadoColor;
+		Flash.CoreColor = TornadoCoreColor;
+		Flash.Intensity = 4.0f;
+		Flash.Attack = 0.05f;
+		Fx->Add(Flash);
+		FChaosImpactFxPiece Form;
+		Form.Look = EChaosImpactFxLook::Ring;
+		Form.Location = FVector(0.0f, 0.0f, 8.0f);
+		Form.Life = 0.5f;
+		Form.SizeFrom = Form.SizeTo = 1150.0f;
+		Form.RingFrom = 0.08f;
+		Form.RingTo = 0.92f;
+		Form.RingWidth = 0.05f;
+		Form.Color = TornadoColor;
+		Form.CoreColor = TornadoCoreColor;
+		Form.Intensity = 3.0f;
+		Form.Attack = 0.04f;
+		Form.ErodeTo = 0.7f;
+		Fx->Add(Form);
+		FChaosImpactFxPiece Lit;
+		Lit.Look = EChaosImpactFxLook::GroundGlow;
+		Lit.Location = FVector(0.0f, 0.0f, 4.0f);
+		Lit.Life = Whirl;
+		Lit.Attack = 0.3f / Whirl;
+		Lit.Hold = FMath::Max(0.0f, 1.0f - 0.5f / Whirl);
+		Lit.SizeFrom = Lit.SizeTo = 520.0f;
+		Lit.Color = TornadoColor;
+		Lit.CoreColor = TornadoCoreColor;
+		Lit.Intensity = 0.9f;
+		Lit.NoiseAmount = 0.7f;
+		Lit.NoiseSpeed = 1.2f;
+		Lit.Spin = 220.0f;
+		Fx->Add(Lit);
+		FChaosImpactFxPiece Roll;
+		Roll.Look = EChaosImpactFxLook::Ring;
+		Roll.Location = FVector(0.0f, 0.0f, 6.0f);
+		Roll.Life = 0.75f;
+		Roll.SizeFrom = Roll.SizeTo = 640.0f;
+		Roll.RingFrom = 0.18f;
+		Roll.RingTo = 0.92f;
+		Roll.RingWidth = 0.05f;
+		Roll.Color = TornadoColor;
+		Roll.CoreColor = TornadoCoreColor;
+		Roll.Intensity = 1.8f;
+		Roll.Attack = 0.2f;
+		Roll.ErodeTo = 0.7f;
+		Roll.Spin = 300.0f;
+		Fx->AddEmitter(Roll, 2.4f, FMath::Max(GetWhirlSeconds() - 0.3f, 0.2f), 0.0f, FVector::ZeroVector, 0.1f);
+		KitFx = Fx;
 	}
+	TornadoDust(Origin, 6, 1.0f);
 	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindTornado, Origin);
 	WindSound = ChaosImpactSfx::PlayAttached(EChaosImpactSfx::WindLoop, SceneRoot);
 	bPresentationBuilt = true;
 	UpdatePresentation(0.0f, 0.0f);
+}
+
+void AChaosImpactTornado::TornadoDust(const FVector& At, const int32 Puffs, const float Scale)
+{
+	// Dust whipped up off the floor: soft grey-green puffs swirling out low and thinning (never a dirt decal).
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, At);
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Stream.Initialize(FMath::Rand());
+	for (int32 Index = 0; Index < Puffs; ++Index)
+	{
+		const float Angle = (Index + Fx->Stream.FRandRange(-0.3f, 0.3f)) * UE_TWO_PI / Puffs;
+		const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+		FChaosImpactFxPiece Puff;
+		Puff.Look = EChaosImpactFxLook::Smoke;
+		Puff.Location = Out * 60.0f * Scale + FVector(0.0f, 0.0f, 50.0f * Scale);
+		// Out and round (the wind's way).
+		Puff.Velocity = (Out + FVector(-Out.Y, Out.X, 0.0f) * 0.8f) * 380.0f * Scale + FVector(0.0f, 0.0f, 90.0f);
+		Puff.Drag = 2.2f;
+		Puff.Life = Fx->Stream.FRandRange(0.6f, 0.9f);
+		Puff.SizeFrom = 80.0f * Scale;
+		Puff.SizeTo = 190.0f * Scale;
+		Puff.Color = FLinearColor(0.38f, 0.48f, 0.42f);
+		Puff.CoreColor = FLinearColor(0.7f, 0.8f, 0.72f);
+		Puff.Intensity = 1.0f;
+		Puff.Opacity = 0.4f;
+		Puff.Attack = 0.1f;
+		Puff.ErodeTo = 0.95f;
+		Puff.Spin = 120.0f;
+		Fx->Add(Puff);
+	}
 }
 
 void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaSeconds)
@@ -686,7 +786,7 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 					const float Radius = TornadoFunnelRadius(Fraction) * Size * (bInner ? 0.45f : 1.0f)
 						* (1.0f + 0.12f * FMath::Sin(PresentationAge * 6.0f + Strand + Fraction * 5.0f));
 					Line.Add(Axis(Fraction) + FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, 0.0f));
-					Widths.Add((bInner ? 8.0f : 12.0f) + (bInner ? 14.0f : 30.0f) * Fraction);
+					Widths.Add(((bInner ? 8.0f : 12.0f) + (bInner ? 14.0f : 30.0f) * Fraction) * 1.5f);
 				}
 				AppendTornadoRibbon(Mesh, Line, Widths, View);
 			}
@@ -694,7 +794,7 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 		ChaosImpactLightning::SetMesh(Strands, Mesh);
 		if (UMaterialInstanceDynamic* Look = FunnelMaterial.Get())
 		{
-			Look->SetScalarParameterValue(TEXT("Intensity"), 0.95f * (0.85f + 0.15f * FMath::Sin(PresentationAge * 13.0f)));
+			Look->SetScalarParameterValue(TEXT("Intensity"), 2.1f * (0.85f + 0.15f * FMath::Sin(PresentationAge * 13.0f)));
 		}
 	}
 
@@ -736,27 +836,6 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 		}
 	}
 
-	if (UProceduralMeshComponent* Rings = GroundRings.Get())
-	{
-		ChaosImpactIceMeshes::FMeshBuffers Mesh;
-		if (bVisible)
-		{
-			for (int32 Index = 0; Index < 3; ++Index)
-			{
-				const float Wave = FMath::Frac(PresentationAge * 1.7f + Index / 3.0f);
-				ChaosImpactLightning::AppendRing(Mesh, FVector(0.0f, 0.0f, 6.0f), (60.0f + 230.0f * Wave) * Size,
-					18.0f * FMath::Sin(Wave * UE_PI), 40);
-			}
-			// The flash of forming.
-			if (Age < 0.5f)
-			{
-				const float Burst = Age / 0.5f;
-				ChaosImpactLightning::AppendRing(Mesh, FVector(0.0f, 0.0f, 8.0f), 60.0f + 520.0f * TornadoEaseOut(Burst),
-					40.0f * (1.0f - Burst), 56);
-			}
-		}
-		ChaosImpactLightning::SetMesh(Rings, Mesh);
-	}
 
 	if (UPointLightComponent* Glow = Light.Get())
 	{
@@ -764,7 +843,7 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 	}
 
 	const bool bLooping = Age < GetWhirlSeconds();
-	for (const TWeakObjectPtr<UNiagaraComponent>& Effect : {BaseDust, Sparks})
+	for (const TWeakObjectPtr<UNiagaraComponent>& Effect : {Sparks})
 	{
 		if (UNiagaraComponent* System = Effect.Get(); System && !bLooping && System->IsActive())
 		{
@@ -776,10 +855,7 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 	if (bLooping && Size > 0.5f && Now >= NextDustAt)
 	{
 		NextDustAt = Now + 0.3;
-		if (UNiagaraSystem* Dirt = LoadEffect(Effects::DirtBurstSmall))
-		{
-			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Dirt, Center, FRotator::ZeroRotator, FVector(0.55f));
-		}
+		TornadoDust(Center, 2, 0.6f);
 	}
 	if (!bLooping && WindSound)
 	{
@@ -789,9 +865,6 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 	if (!bLooping && CollapseT >= 1.0f && Funnel.IsValid() && Funnel->IsVisible())
 	{
 		Funnel->SetVisibility(false);
-		if (UNiagaraSystem* Puff = LoadEffect(Effects::DirtBurstMedium))
-		{
-			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Puff, Center, FRotator::ZeroRotator, FVector(0.7f));
-		}
+		TornadoDust(Center, 6, 0.9f);
 	}
 }

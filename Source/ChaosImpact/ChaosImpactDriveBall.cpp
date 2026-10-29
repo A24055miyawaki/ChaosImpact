@@ -2,6 +2,7 @@
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactFxKit.h"
 #include "ChaosImpactLightning.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
@@ -268,9 +269,66 @@ void AChaosImpactDriveBurst::BeginPlay()
 	Super::BeginPlay();
 	using namespace ChaosImpactBallTypes;
 	SetLifeSpan(1.2f);
-	RingMaterial = MakeAdditive(this, DrivePaleGold, 3.0f);
-	ShockRing = ChaosImpactLightning::CreateComponent(this, BurstRoot, RingMaterial);
 	BurstLight->SetIntensity(bHit ? 16000.0f : 5000.0f);
+	// The burst itself, soft (FX kit): a gold flash, a ring of light racing out (two when it hits) and gold sparks.
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation()))
+	{
+		Fx->Stream.Initialize(FMath::Rand());
+		const float Reach = bHit ? 420.0f : 160.0f;
+		FChaosImpactFxPiece Flash;
+		Flash.Life = bHit ? 0.22f : 0.16f;
+		Flash.SizeFrom = Reach * 0.5f;
+		Flash.SizeTo = Reach * 1.1f;
+		Flash.Color = DriveGold;
+		Flash.CoreColor = DrivePaleGold;
+		Flash.Intensity = 6.0f;
+		Flash.Attack = 0.05f;
+		Flash.NoiseAmount = 0.2f;
+		Fx->Add(Flash);
+		// Lying flat (turned to the camera it would be cut in half by the floor).
+		FChaosImpactFxPiece Wave;
+		Wave.Look = EChaosImpactFxLook::Ring;
+		Wave.Life = bHit ? 0.5f : 0.32f;
+		Wave.SizeFrom = Wave.SizeTo = Reach * 2.3f;
+		Wave.RingFrom = 0.15f;
+		Wave.RingTo = 0.9f;
+		Wave.RingWidth = 0.06f;
+		Wave.Color = DriveGold;
+		Wave.CoreColor = DrivePaleGold;
+		Wave.Intensity = 3.5f;
+		Wave.Attack = 0.04f;
+		Wave.ErodeTo = 0.65f;
+		Fx->Add(Wave);
+		if (bHit)
+		{
+			FChaosImpactFxPiece Echo = Wave;
+			Echo.Delay = 0.08f;
+			Echo.RingTo = 0.6f;
+			Echo.RingWidth = 0.04f;
+			Echo.Intensity = 2.0f;
+			Fx->Add(Echo);
+		}
+		for (int32 Index = 0; Index < (bHit ? 14 : 6); ++Index)
+		{
+			FChaosImpactFxPiece Spark;
+			Spark.Look = EChaosImpactFxLook::Streak;
+			Spark.Velocity = FRotator(Fx->Stream.FRandRange(-10.0f, 60.0f), Fx->Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+				* Fx->Stream.FRandRange(600.0f, 1300.0f) * (bHit ? 1.0f : 0.7f);
+			Spark.Gravity = 1800.0f;
+			Spark.Drag = 2.0f;
+			Spark.Life = Fx->Stream.FRandRange(0.25f, 0.5f);
+			Spark.SizeFrom = 90.0f;
+			Spark.SizeTo = 25.0f;
+			Spark.Width = 6.0f;
+			Spark.Color = DriveGold;
+			Spark.CoreColor = DrivePaleGold;
+			Spark.Intensity = 6.0f;
+			Spark.Attack = 0.02f;
+			Spark.ErodeTo = 0.0f;
+			Spark.Flicker = 0.4f;
+			Fx->Add(Spark);
+		}
+	}
 	if (bHit)
 	{
 		if (UNiagaraSystem* Explosion = LoadEffect(Effects::MediumExplosion))
@@ -302,20 +360,5 @@ void AChaosImpactDriveBurst::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	Age += DeltaSeconds;
-	const float Span = bHit ? 0.55f : 0.35f;
-	const float Fade = FMath::Clamp(1.0f - Age / Span, 0.0f, 1.0f);
-	if (ShockRing)
-	{
-		ChaosImpactIceMeshes::FMeshBuffers Rings;
-		const float Reach = bHit ? 420.0f : 160.0f;
-		const float Grow = 1.0f - FMath::Pow(1.0f - FMath::Clamp(Age / Span, 0.0f, 1.0f), 3.0f);
-		ChaosImpactLightning::AppendRing(Rings, FVector::UpVector * -20.0f, 20.0f + Reach * Grow, 10.0f * Fade, 64);
-		if (bHit)
-		{
-			ChaosImpactLightning::AppendRing(Rings, FVector::UpVector * -18.0f, 10.0f + Reach * 0.6f * Grow, 6.0f * Fade, 64);
-		}
-		ChaosImpactLightning::SetMesh(ShockRing, Rings);
-		RingMaterial->SetScalarParameterValue(TEXT("Intensity"), 3.0f * Fade);
-	}
 	BurstLight->SetIntensity((bHit ? 16000.0f : 5000.0f) * FMath::Exp(-Age * 9.0f));
 }

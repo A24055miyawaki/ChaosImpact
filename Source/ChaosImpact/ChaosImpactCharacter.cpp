@@ -1,6 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactEase.h"
+#include "ChaosImpactGameFeel.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactPrisonBall.h"
@@ -140,9 +142,13 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 	GetCharacterMovement()->AirControl = 0.35f;
 	GetCharacterMovement()->MaxWalkSpeed = 560.f;
 	GetCharacterMovement()->MinAnalogWalkSpeed = 20.f;
-	GetCharacterMovement()->MaxAcceleration = 100000.0f;
-	GetCharacterMovement()->BrakingDecelerationWalking = 100000.0f;
+	// Starting and stopping take a moment (about 0.15 s) instead of jumping straight to full speed and dead still:
+	// a run eases in and out. The high ground friction keeps turns sharp; braking uses its own, softer friction.
+	GetCharacterMovement()->MaxAcceleration = 3800.0f;
+	GetCharacterMovement()->BrakingDecelerationWalking = 3000.0f;
 	GetCharacterMovement()->GroundFriction = 100.0f;
+	GetCharacterMovement()->bUseSeparateBrakingFriction = true;
+	GetCharacterMovement()->BrakingFriction = 4.0f;
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	// Online: draw other players closer to their latest replicated position.
 	GetCharacterMovement()->NetworkSimulatedSmoothLocationTime = 0.06f;
@@ -308,6 +314,7 @@ void AChaosImpactCharacter::BeginPlay()
 	NextDashAvailableAtSeconds = 0.0f;
 	// Restored when leaving frozen ground.
 	DefaultGroundFriction = GetCharacterMovement()->GroundFriction;
+	DefaultBrakingFriction = GetCharacterMovement()->BrakingFriction;
 	DefaultBrakingDecelerationWalking = GetCharacterMovement()->BrakingDecelerationWalking;
 	DefaultMaxAcceleration = GetCharacterMovement()->MaxAcceleration;
 	BaseMaxWalkSpeed = GetCharacterMovement()->MaxWalkSpeed;
@@ -388,6 +395,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		UpdateSoundPresentation();
+		UpdateFeelPresentation(DeltaSeconds);
 		UpdateSnowRollPresentation();
 		UpdateNovaChargePresentation(DeltaSeconds);
 		UpdateLandingPreview(DeltaSeconds);
@@ -434,17 +442,20 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		FVector DriveOffset = Driven ? Driven->GetActorLocation() - GetActorLocation() : FVector::ZeroVector;
 		DriveOffset.Z = 0.0f;
 		const FVector DesiredTargetOffset = bTrainingMenuCameraActive
-			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead;
+			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead + CameraMoveLead;
 		const float DriveBlendSpeed = 6.0f;
-		CameraBoom->TargetArmLength = FMath::FInterpTo(CameraBoom->TargetArmLength,
-			DesiredArmLength + (Driven ? ChaosImpactBallTypes::DriveCameraExtra : 0.0f), DeltaSeconds,
-			bNovaOverview ? NovaOverviewBlendSpeed : Driven ? DriveBlendSpeed : TrainingMenuCameraBlendSpeed);
-		CameraBoom->SocketOffset = FMath::VInterpTo(CameraBoom->SocketOffset,
-			DesiredSocketOffset, DeltaSeconds, TrainingMenuCameraBlendSpeed);
-		CameraBoom->TargetOffset = FMath::VInterpTo(CameraBoom->TargetOffset, DesiredTargetOffset, DeltaSeconds,
-			bNovaOverview ? NovaOverviewBlendSpeed : Driven ? DriveBlendSpeed : TrainingMenuCameraBlendSpeed);
-		CameraBoom->SetWorldRotation(bShoulder ? DesiredBoomRotation : FMath::RInterpTo(CameraBoom->GetComponentRotation(),
-			DesiredBoomRotation, DeltaSeconds, bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed));
+		// Springs rather than a chase at a fixed rate: each change of view sets off gently and settles (イージーイーズ).
+		const auto SmoothTime = [](const float Speed) { return 1.2f / FMath::Max(Speed, 0.01f); };
+		const float ViewSpeed = bNovaOverview ? NovaOverviewBlendSpeed : Driven ? DriveBlendSpeed : TrainingMenuCameraBlendSpeed;
+		CameraBoom->TargetArmLength = ChaosImpactEase::SpringTo(CameraBoom->TargetArmLength,
+			DesiredArmLength + (Driven ? ChaosImpactBallTypes::DriveCameraExtra : 0.0f), CameraArmVelocity, DeltaSeconds, SmoothTime(ViewSpeed));
+		CameraBoom->SocketOffset = ChaosImpactEase::SpringTo(CameraBoom->SocketOffset,
+			DesiredSocketOffset, CameraSocketVelocity, DeltaSeconds, SmoothTime(TrainingMenuCameraBlendSpeed));
+		CameraBoom->TargetOffset = ChaosImpactEase::SpringTo(CameraBoom->TargetOffset, DesiredTargetOffset, CameraTargetVelocity, DeltaSeconds,
+			SmoothTime(ViewSpeed));
+		CameraBoom->SetWorldRotation(bShoulder ? DesiredBoomRotation : ChaosImpactEase::SpringToRotator(CameraBoom->GetComponentRotation(),
+			DesiredBoomRotation, CameraTurnVelocity, DeltaSeconds,
+			SmoothTime(bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed)));
 	}
 	if (bEliminationEffectActive)
 	{
@@ -1250,6 +1261,7 @@ void AChaosImpactCharacter::ReleaseChargedThrow()
 	}
 
 	const float ChargeAlpha = GetThrowChargeAlpha();
+	FeelThrowCharge = ChargeAlpha;
 	bIsChargingThrow = false;
 	OnThrowChargeChanged(0.0f);
 	if (ChargeWidget)
@@ -1393,8 +1405,9 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	{
 		AimDirection = DesiredDirection;
 		const FRotator TargetRotation = AimDirection.Rotation();
-		const FRotator SmoothRotation = FMath::RInterpConstantTo(
-			GetActorRotation(), TargetRotation, DeltaSeconds, 720.0f);
+		// Turning to aim slows into the new facing instead of swinging round at a fixed rate.
+		const FRotator SmoothRotation = FMath::RInterpTo(
+			GetActorRotation(), TargetRotation, DeltaSeconds, 18.0f);
 		SetActorRotation(FRotator(0.0f, SmoothRotation.Yaw, 0.0f));
 	}
 
@@ -1705,7 +1718,7 @@ void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
 		if (!Toward.IsNearlyZero())
 		{
 			AimDirection = Toward;
-			const FRotator Smooth = FMath::RInterpConstantTo(GetActorRotation(), Toward.Rotation(), DeltaSeconds, 720.0f);
+			const FRotator Smooth = FMath::RInterpTo(GetActorRotation(), Toward.Rotation(), DeltaSeconds, 18.0f);
 			SetActorRotation(FRotator(0.0f, Smooth.Yaw, 0.0f));
 		}
 	}
@@ -1993,6 +2006,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	if (AppliedDamage > 0.0f && IsInBallForm()) { BallForm->Restore(); }
 	Health = FMath::Clamp(Health - AppliedDamage, 0.0f, MaxHealth);
 	LastDamageCauser = DamageCauser;
+	LastHitSourcePawn = SourcePawn;
 	LastDamagedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 	OnPlayerHit(Health, AppliedDamage);
 	if (Match && Match->bVersusMatch && SourcePawn && SourcePawn != this)
@@ -2253,6 +2267,7 @@ void AChaosImpactCharacter::StartEliminationEffect()
 		bEliminationEffectActive = true;
 	EliminationEffectTime = 0.0f;
 	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharKO, GetActorLocation());
+	PlayHitFeel(true);
 	GetMesh()->SetVisibility(false, true);
 	HeldBallMesh->SetVisibility(false, true);
 	LeftHeldBallMesh->SetVisibility(false, true);
@@ -2443,6 +2458,8 @@ void AChaosImpactCharacter::EndEliminationSpectate()
 	{
 		CameraBoom->TargetArmLength = SavedCameraArmLength;
 		CameraBoom->TargetOffset = FVector::ZeroVector;
+		CameraArmVelocity = 0.0f;
+		CameraTargetVelocity = FVector::ZeroVector;
 	}
 }
 
@@ -4279,6 +4296,7 @@ void AChaosImpactCharacter::UpdateIceStatus(const float DeltaSeconds)
 			Movement->GroundFriction = bOnIce ? 0.45f : DefaultGroundFriction;
 			Movement->BrakingDecelerationWalking = bOnIce ? 170.0f : DefaultBrakingDecelerationWalking;
 			Movement->MaxAcceleration = bOnIce ? 1100.0f : DefaultMaxAcceleration;
+			Movement->BrakingFriction = bOnIce ? 0.45f : DefaultBrakingFriction;
 		}
 	}
 }
@@ -4453,6 +4471,7 @@ void AChaosImpactCharacter::UpdateSoundPresentation()
 	if (SoundHealth >= 0.0f && Health < SoundHealth - KINDA_SMALL_NUMBER && Health > 0.0f)
 	{
 		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharHit, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f));
+		PlayHitFeel(false);
 	}
 	SoundHealth = Health;
 
@@ -5567,6 +5586,145 @@ void AChaosImpactCharacter::AddCameraShake(const float Strength, const float Sec
 		CameraShakeStartedAt = Now;
 	}
 	PlayControllerRumble(0.6f * Strength, Strength, 0.5f);
+}
+
+void AChaosImpactCharacter::PlayHitFeel(const bool bKnockout)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// The hold. The whole world stops only for a hit a player here took part in (hit or hitting; never CPU on CPU),
+	// and with two or more players sharing the screen only for a knockout, so nobody else's dodge is cut into.
+	// Otherwise (and online, where the clock is the server's) only the one who was hit freezes for its moment.
+	const float Hold = bKnockout ? 0.08f : 0.04f;
+	const auto IsHereHuman = [](const APawn* Pawn) { return Pawn && Pawn->IsPlayerControlled() && Pawn->IsLocallyControlled(); };
+	const UGameInstance* Game = GetGameInstance();
+	const bool bShared = Game && Game->GetNumLocalPlayers() > 1;
+	const bool bInvolved = IsHereHuman(this) || IsHereHuman(LastHitSourcePawn.Get());
+	if (!(bInvolved && (bKnockout || !bShared) && ChaosImpactFeel::HitStop(this, Hold)))
+	{
+		AnimHeldUntil = FPlatformTime::Seconds() + Hold;
+	}
+	// The players on this machine feel it in their camera: hard if it was them, lighter the further off they are.
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		const APlayerController* Viewer = It->Get();
+		AChaosImpactCharacter* Seen = Viewer && Viewer->IsLocalController() ? Cast<AChaosImpactCharacter>(Viewer->GetPawn()) : nullptr;
+		if (!Seen)
+		{
+			continue;
+		}
+		const float Near = Seen == this ? 1.0f
+			: 0.45f * FMath::Clamp(1.0f - static_cast<float>(FVector::Dist2D(Seen->GetActorLocation(), GetActorLocation())) / 1800.0f, 0.0f, 1.0f);
+		if (Near > 0.02f)
+		{
+			Seen->AddCameraShake((bKnockout ? 0.42f : 0.26f) * Near, bKnockout ? 0.32f : 0.2f);
+		}
+	}
+	// A low thud under the hit's own sound.
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f),
+		bKnockout ? 0.9f : 0.6f, bKnockout ? 0.45f : 0.55f);
+}
+
+void AChaosImpactCharacter::UpdateFeelPresentation(const float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!World || !Body || DeltaSeconds <= 0.0f)
+	{
+		return;
+	}
+	const bool bAlive = !bEliminated && !bEliminationEffectActive;
+	const bool bLocalView = IsLocallyControlled() && IsPlayerControlled();
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	const bool bGround = Movement && Movement->IsMovingOnGround();
+
+	// How it moves as drawn (from where it is each frame, so other players' characters count too).
+	const FVector Location = GetActorLocation();
+	FVector Seen = FeelLastLocation.IsZero() ? FVector::ZeroVector : (Location - FeelLastLocation) / DeltaSeconds;
+	Seen.Z = 0.0f;
+	FeelLastLocation = Location;
+	if (Seen.SizeSquared() > FMath::Square(3200.0f))
+	{
+		// A respawn or a warp, not a run.
+		Seen = FeelVelocity;
+	}
+	FeelAcceleration = FMath::VInterpTo(FeelAcceleration, (Seen - FeelVelocity) / DeltaSeconds, DeltaSeconds, 14.0f);
+	FeelVelocity = Seen;
+
+	const bool bDashing = bIsDashing || bReplicatedDashing;
+	const bool bDashStart = bDashing && !bFeelWasDashing;
+
+	// The camera widens for a moment at a dash or a hard throw, and runs a little ahead of the way it is going.
+	const bool bThrowing = bThrowAnimationActive;
+	if (bLocalView && FollowCamera)
+	{
+		if (BaseFieldOfView < 0.0f)
+		{
+			BaseFieldOfView = FollowCamera->FieldOfView;
+		}
+		if (bDashStart)
+		{
+			FovKickVelocity += 150.0f;
+		}
+		if (bThrowing && !bFeelWasThrowing)
+		{
+			FovKickVelocity += 40.0f + 90.0f * FeelThrowCharge;
+		}
+		FovKick = ChaosImpactEase::SpringTo(FovKick, 0.0f, FovKickVelocity, DeltaSeconds, 0.18f);
+		FollowCamera->SetFieldOfView(BaseFieldOfView + FovKick);
+		CameraMoveLead = bAlive && !bDashing ? (Seen * 0.12f).GetClampedToMaxSize(110.0f) : FVector::ZeroVector;
+	}
+	// A throw's whoosh, sharper the harder it was thrown.
+	if (bThrowing && !bFeelWasThrowing && bAlive)
+	{
+		const float Charge = bLocalView ? FeelThrowCharge : 0.4f;
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharDash, Location + GetActorForwardVector() * 60.0f,
+			0.25f + 0.4f * Charge, 1.3f + 0.35f * Charge);
+	}
+	bFeelWasDashing = bDashing;
+	bFeelWasThrowing = bThrowing;
+
+	// Online, the one who was hit holds still for its moment.
+	const bool bHeld = FPlatformTime::Seconds() < AnimHeldUntil;
+	if (bHeld != bAnimHeld)
+	{
+		bAnimHeld = bHeld;
+		Body->GlobalAnimRateScale = bHeld ? 0.0f : 1.0f;
+	}
+
+	// The body leans into a start, a stop and a turn (and hard forward through a dash), from the feet.
+	if (!bMeshLeanBaseSet)
+	{
+		MeshLeanBase = Body->GetRelativeRotation().Quaternion();
+		bMeshLeanBaseSet = true;
+	}
+	const bool bLean = bAlive && !bWindCarryPosed && !Body->bPauseAnims && (bGround || bDashing);
+	FVector2D Target = FVector2D::ZeroVector;
+	if (bLean)
+	{
+		const FVector Local = GetActorTransform().InverseTransformVectorNoScale(FeelAcceleration);
+		Target.X = bDashing ? 11.0f : FMath::Clamp(static_cast<float>(Local.X) / 3800.0f, -1.0f, 1.0f) * 7.0f;
+		Target.Y = bDashing ? 0.0f : FMath::Clamp(static_cast<float>(Local.Y) / 3800.0f, -1.0f, 1.0f) * 6.0f;
+	}
+	MeshLean = ChaosImpactEase::SpringTo(MeshLean, Target, MeshLeanVelocity, DeltaSeconds, 0.09f);
+	if (bLean && (MeshLean.SizeSquared() > 0.01f || bMeshLeaning))
+	{
+		bMeshLeaning = MeshLean.SizeSquared() > 0.0025f;
+		Body->SetRelativeRotation(FQuat(FRotator(static_cast<float>(-MeshLean.X), 0.0f, static_cast<float>(MeshLean.Y))) * MeshLeanBase);
+	}
+	else if (bMeshLeaning && !bLean)
+	{
+		bMeshLeaning = false;
+		MeshLean = FVector2D::ZeroVector;
+		MeshLeanVelocity = FVector2D::ZeroVector;
+		if (!bWindCarryPosed)
+		{
+			Body->SetRelativeRotation(MeshLeanBase);
+		}
+	}
 }
 
 void AChaosImpactCharacter::UpdateCameraShake()

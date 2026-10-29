@@ -15,6 +15,7 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, bSpectating);
 	DOREPLIFETIME(AChaosImpactPlayerState, Knockouts);
 	DOREPLIFETIME(AChaosImpactPlayerState, Points);
+	DOREPLIFETIME(AChaosImpactPlayerState, CrashPushes);
 	DOREPLIFETIME(AChaosImpactPlayerState, TeamIndex);
 	DOREPLIFETIME(AChaosImpactPlayerState, bHostMachine);
 	DOREPLIFETIME(AChaosImpactPlayerState, bSecondOfMachine);
@@ -33,6 +34,7 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 void AChaosImpactPlayerState::ResetMatchStats()
 {
 	Points = 0;
+	CrashPushes = 0;
 	Knockouts = 0;
 	Throws = 0;
 	Hits = 0;
@@ -55,6 +57,7 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, bRecruitmentClosed);
 	DOREPLIFETIME(AChaosImpactGameState, bVersusMatch);
 	DOREPLIFETIME(AChaosImpactGameState, Rules);
+	DOREPLIFETIME(AChaosImpactGameState, Crash);
 	DOREPLIFETIME(AChaosImpactGameState, StageCenter);
 	DOREPLIFETIME(AChaosImpactGameState, StageHalfExtent);
 	DOREPLIFETIME(AChaosImpactGameState, ReadyStartedAt);

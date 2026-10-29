@@ -59,6 +59,20 @@ FVector AChaosImpactForgeStage::GetVentOffset(const int32 Vent)
 
 AChaosImpactForgeStage::AChaosImpactForgeStage()
 {
+	CrashBallStartOffset = FVector(0, 0, 95);
+	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/M_StageMetalFloor.M_StageMetalFloor"));
+	Team0GoalOffset = FVector(-2990, 0, 0);
+	Team1GoalOffset = FVector(2990, 0, 0);
+	CrashRemovedObstaclePrefixes = {TEXT("BayContainer_Q0"), TEXT("BayContainer_Q2")};
+	CrashBallExtraBallOffsets = {FVector(-1100, 400, 60), FVector(1100, -400, 60), FVector(-2400, 600, 0), FVector(2400, -600, 0)};
+	for (const float Sign : {-1.f, 1.f})
+	{
+		FChaosImpactCrashRoutePart Ramp;
+		Ramp.Start = FVector(Sign * 1420, 0, 60);
+		Ramp.End = FVector(Sign * 2000, 0, 0);
+		Ramp.Width = 900;
+		CrashRouteParts.Add(Ramp);
+	}
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	bAlwaysRelevant = true;

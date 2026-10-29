@@ -64,6 +64,10 @@ FVector AChaosImpactSnowStage::GetWindDirectionVector(const int32 WindDir)
 
 AChaosImpactSnowStage::AChaosImpactSnowStage()
 {
+	CrashBallStartOffset = FVector(0, 0, 16);
+	Team0GoalOffset = FVector(-2750, 0, 0);
+	Team1GoalOffset = FVector(2750, 0, 0);
+	CrashBallExtraBallOffsets = {FVector(-900, 500, -60), FVector(900, -500, -60), FVector(-2200, 600, 0), FVector(2200, -600, 0)};
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	bAlwaysRelevant = true;

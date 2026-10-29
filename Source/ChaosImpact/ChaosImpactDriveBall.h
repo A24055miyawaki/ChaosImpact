@@ -68,12 +68,6 @@ private:
 	UPROPERTY()
 	TObjectPtr<UPointLightComponent> BurstLight;
 
-	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> ShockRing;
-
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> RingMaterial;
-
 	bool bHit = false;
 	float Age = 0.0f;
 };

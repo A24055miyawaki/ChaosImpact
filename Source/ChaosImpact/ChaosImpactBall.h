@@ -321,6 +321,14 @@ protected:
 
 	/** Every machine blinks and shrinks the ball from the replicated expiry time. */
 	void UpdateExpiryPresentation(float DeltaSeconds);
+	/**
+	 * Speed shown as shape: a ball flying fast is drawn a little longer along its flight and thinner across it (its
+	 * collision never changes). Plain-looking balls only; the ones with a face or a build of their own keep theirs.
+	 */
+	void UpdateSpeedStretch(float DeltaSeconds);
+	FVector StretchLastLocation = FVector::ZeroVector;
+	float StretchAmount = 0.0f;
+	bool bStretched = false;
 	FVector BallMeshBaseScale = FVector(0.48f);
 	float ExpiryBlinkPhase = 0.0f;
 	float ExpiryScale = 1.0f;

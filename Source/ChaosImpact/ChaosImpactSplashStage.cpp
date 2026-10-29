@@ -51,6 +51,27 @@ namespace
 
 AChaosImpactSplashStage::AChaosImpactSplashStage()
 {
+	CrashBallStartOffset = FVector(0, 0, 150);
+	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/Splash/M_CI_Concrete.M_CI_Concrete"));
+	Team0GoalOffset = FVector(-3450, 0, 260);
+	Team1GoalOffset = FVector(3450, 0, 260);
+	CrashRemovedObstaclePrefixes = {TEXT("Fountain"), TEXT("Tower"), TEXT("Container_Q0"), TEXT("Container_Q2")};
+	CrashBallExtraBallOffsets = {FVector(-1300, 700, 0), FVector(1300, -700, 0), FVector(-2500, 650, 110), FVector(2500, -650, 110)};
+	for (const float Sign : {-1.f, 1.f})
+	{
+		FChaosImpactCrashRoutePart Ramp;
+		Ramp.Start = FVector(Sign * 570, 0, 150);
+		Ramp.End = FVector(Sign * 1350, 0, 0);
+		Ramp.Width = 820;
+		CrashRouteParts.Add(Ramp);
+		Ramp.Start = FVector(Sign * 1600, 0, 0);
+		Ramp.End = FVector(Sign * 2700, 0, 260);
+		Ramp.Width = 880;
+		CrashRouteParts.Add(Ramp);
+		Ramp.Start = FVector(Sign * 2700, 0, 260);
+		Ramp.End = FVector(Sign * 3500, 0, 260);
+		CrashRouteParts.Add(Ramp);
+	}
 	PrimaryActorTick.bCanEverTick = false;
 	// Clients move their own characters, so they need the walls themselves, not just the server.
 	bReplicates = true;

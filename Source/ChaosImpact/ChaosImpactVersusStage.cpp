@@ -52,6 +52,9 @@ namespace
 
 AChaosImpactVersusStage::AChaosImpactVersusStage()
 {
+	CrashBallStartOffset = FVector(0, 0, 40);
+	CrashRemovedObstaclePrefixes = {TEXT("PillarE"), TEXT("PillarW")};
+	CrashBallExtraBallOffsets = {FVector(-900, 400, 0), FVector(900, -400, 0)};
 	PrimaryActorTick.bCanEverTick = false;
 	// Clients move their own characters, so they need the walls themselves, not just the server.
 	bReplicates = true;

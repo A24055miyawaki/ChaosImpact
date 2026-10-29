@@ -96,6 +96,8 @@ public:
 	/** Every key press: pause, the training menu and the lobby's 準備OK / 観戦, by the player's own controls. */
 	void HandleBoundKeyPressed(FKey Key);
 	bool IsGameplayActive() const { return CurrentScreen == EChaosImpactScreen::Playing && !bTravelPending; }
+	/** Off to another level (the VS card is up): the menus no longer answer. */
+	bool IsTravelPending() const { return bTravelPending; }
 	bool IsTrainingMode() const { return bTrainingMode; }
 	bool IsTrainingOverlayOpen() const { return CurrentScreen == EChaosImpactScreen::TrainingOverlay; }
 	bool IsPrimaryLocalPlayerController() const;
@@ -285,6 +287,11 @@ public:
 	/** 現在のソロステージ番号を取得 */
 	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
 	int32 GetCurrentSoloStage() const { return CurrentSoloStage; }
+
+	/** When this solo stage was cleared (FPlatformTime seconds; negative before): the HUD's clear presentation. */
+	double GetSoloClearedAt() const { return SoloClearedAt; }
+	/** How long after the clear it goes back to the world map (real seconds). */
+	static constexpr float SoloClearSeconds = 5.5f;
 
 	/** Solo mode's world map (1: 占領された世界, 2: デットボール合衆国), the player standing on a node (a stage or a gate). */
 	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
@@ -543,6 +550,10 @@ protected:
 
 	/** 現在プレイ中のソロステージ番号 */
 	int32 CurrentSoloStage = 1;
+
+	double SoloClearedAt = -1.0;
+	/** The clear's celebration round the player: a pillar of light, a ring and fireworks bursting overhead. */
+	void PlaySoloClearFireworks();
 
 	/** On a solo world map. */
 	bool bSoloWorldMap = false;

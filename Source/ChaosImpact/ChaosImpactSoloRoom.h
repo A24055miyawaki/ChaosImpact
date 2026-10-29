@@ -170,6 +170,11 @@ public:
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Solo Room")
 	bool AreDoorsClosed() const { return bDoorsClosed; }
 
+	/** The minions this run of the room brings in all (the stage's difficulty in solo mode, else Minion Count). */
+	int32 GetPlannedMinionCount() const { return PlannedMinions; }
+	/** How many come in at once (the rest step in as those go down). */
+	int32 GetFirstWaveCount() const { return FMath::Min(PlannedMinions, MaxAliveMinions); }
+
 private:
 	UFUNCTION()
 	void HandleEntryOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComponent,
@@ -193,6 +198,13 @@ private:
 	/** bKeepBoss: a boss waiting in its place stays. */
 	void ClearEnemies(bool bKeepBoss = false);
 	void BindPlayer(AChaosImpactCharacter* NewPlayer);
+	/**
+	 * This room's fight: from the level's settings, or, a stage of solo mode with the default enemies, from the
+	 * stage's difficulty (ChaosImpactSolo::GetDifficulty).
+	 */
+	void PlanDifficulty();
+	/** The next minion of the wave steps in (a flash where it appears). */
+	void SpawnNextMinion();
 	/** Fits the stand-in floor and walls to the parts (or hides them). */
 	void LayoutPlaceholder();
 
@@ -201,6 +213,14 @@ private:
 	TWeakObjectPtr<AChaosImpactCharacter> Boss;
 	TWeakObjectPtr<AChaosImpactCharacter> Player;
 	int32 Defeated = 0;
+	int32 PlannedMinions = 0;
+	int32 MaxAliveMinions = 0;
+	int32 SpawnedMinions = 0;
+	TArray<EChaosImpactCPULevel> MinionPlan;
+	EChaosImpactCPULevel PlannedBossLevel = EChaosImpactCPULevel::Strongest;
+	/** The boss was reached: knocked out after that, the player goes straight back to the boss (minions done). */
+	bool bReachedBoss = false;
+	FTimerHandle WaveTimer;
 	/** Enemies being cleared away by this room itself (not knockouts). */
 	bool bClearing = false;
 	bool bDoorsClosed = false;

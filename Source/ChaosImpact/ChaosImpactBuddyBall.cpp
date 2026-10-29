@@ -328,11 +328,26 @@ void AChaosImpactBuddyBall::UpdateLook(const float DeltaSeconds)
 		{
 			PrisonCage = ChaosImpactPrison::CreateCage(this,RootComponent);
 			if (PrisonCage) { PrisonCage->SetUsingAbsoluteScale(true); PrisonCage->SetUsingAbsoluteRotation(true); }
+			// Fresh off the hit (not one joining late): the bars slam shut with a flash.
+			if (PrisonCage && GetCaptureSecondsLeft()>ChaosImpactBallTypes::PrisonSeconds-.5f) { ChaosImpactPrison::PlayLock(this,GetShellCenter(),ShellRadius); }
 		}
 		if (PrisonCage)
 		{
 			PrisonCage->SetWorldLocation(GetShellCenter());
-			ChaosImpactPrison::UpdateCage(PrisonCage,ShellRadius*(Carrier.IsValid() ? .82f : 1.f)*FMath::Min(GetAppear(),1.f),GetCaptureSecondsLeft(),Age,true);
+			// Resting (not held, not flying): its clock is also drawn on the floor under it.
+			float FloorBelow = -1.f;
+			if (!Carrier.IsValid() && !(bLaunched && !IsPickup()))
+			{
+				FHitResult Floor;
+				const FVector From = GetShellCenter();
+				FCollisionQueryParams Params(SCENE_QUERY_STAT(PrisonFloor), false, this);
+				if (Passenger.IsValid()) { Params.AddIgnoredActor(Passenger.Get()); }
+				if (GetWorld()->LineTraceSingleByObjectType(Floor,From,From-FVector(0,0,400),FCollisionObjectQueryParams(ECC_WorldStatic),Params))
+				{
+					FloorBelow = static_cast<float>(From.Z-Floor.ImpactPoint.Z);
+				}
+			}
+			ChaosImpactPrison::UpdateCage(PrisonCage,ShellRadius*(Carrier.IsValid() ? .82f : 1.f)*FMath::Min(GetAppear(),1.f),GetCaptureSecondsLeft(),Age,true,FloorBelow);
 		}
 	}
 	Flash = FMath::Max(0.0f, Flash - DeltaSeconds * 3.0f);
@@ -544,6 +559,8 @@ void AChaosImpactBuddyBall::EndPlay(const EEndPlayReason::Type Reason)
 	{
 		Trail->Deactivate();
 	}
+	// The cage breaks open as its captive goes free (everywhere it was seen).
+	if (bPrison && PrisonCage && Reason == EEndPlayReason::Destroyed) { ChaosImpactPrison::PlayBreak(this,GetShellCenter(),ShellRadius); }
 	if (HasAuthority() && Reason == EEndPlayReason::Destroyed && Passenger.IsValid()) { Passenger->GetBallForm()->Restore(); }
 	Super::EndPlay(Reason);
 }

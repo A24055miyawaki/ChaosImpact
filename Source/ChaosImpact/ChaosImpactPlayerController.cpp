@@ -33,6 +33,7 @@
 #include "Engine/GameViewportClient.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
+#include "ChaosImpactFxKit.h"
 #include "Misc/ConfigCacheIni.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactLoadoutSubsystem.h"
@@ -2471,9 +2472,9 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	const int32 Humans = GetMatchHumanCount();
 	FChaosImpactMatchRules& Rules = PendingMatchRules;
 	const auto Wrap = [](const int32 Value, const int32 Count) { return (Value % Count + Count) % Count; };
-	if (Row == 0)
+	if (Row == 0 && !Rules.bCrashBall)
 	{
-		// 3 → 4 → 5 minutes.
+		// 3 → 4 → 5 minutes (クラッシュボール is always five).
 		const int32 ChoiceCount = UE_ARRAY_COUNT(ChaosImpactMatch::MinuteChoices);
 		const int32 CurrentMinutes = ChaosImpactMatch::SanitizeMinutes(Rules.Minutes);
 		int32 Current = 0;
@@ -2485,10 +2486,12 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	}
 	else if (Row == 1)
 	{
-		// 個人戦 → 2 → 3 → 4 teams.
-		static constexpr int32 Modes[] = {0, 2, 3, 4};
-		const int32 Current = Rules.TeamCount >= 2 ? Rules.TeamCount - 1 : 0;
-		Rules.TeamCount = Modes[Wrap(Current + Direction, UE_ARRAY_COUNT(Modes))];
+		// Existing rules plus the objective team battle, using the same left/right selector.
+		static constexpr int32 Modes[] = {0, 2, 3, 4, 2};
+		const int32 Current = Rules.bCrashBall ? 4 : (Rules.TeamCount >= 2 ? Rules.TeamCount - 1 : 0);
+		const int32 Next = Wrap(Current + Direction, UE_ARRAY_COUNT(Modes));
+		Rules.bCrashBall = Next == 4;
+		Rules.TeamCount = Modes[Next];
 	}
 	else if (Row == 2)
 	{
@@ -2614,7 +2617,7 @@ FChaosImpactVersusCardInfo AChaosImpactPlayerController::BuildVersusCardInfo() c
 		Info.Entrants.Add(Entrant);
 	}
 	Info.Footer = FString::Printf(TEXT("%s ・ %s ・ %d分%s"), *ChaosImpactMatch::GetStageLabel(Rules.StageIndex),
-		*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, Rules.bSpectate ? TEXT(" ・ 観戦") : TEXT(""));
+		*ChaosImpactMatch::DescribeRule(Rules), Rules.Minutes, Rules.bSpectate ? TEXT(" ・ 観戦") : TEXT(""));
 	return Info;
 }
 
@@ -2738,7 +2741,7 @@ FChaosImpactVersusCardInfo AChaosImpactPlayerController::BuildOnlineVersusCardIn
 	}
 	const FChaosImpactMatchRules& Rules = Match->Rules;
 	Info.Footer = FString::Printf(TEXT("%s ・ %s ・ %d分 ・ %s"), *ChaosImpactMatch::GetStageLabel(Rules.StageIndex),
-		*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, *Match->RoomName);
+		*ChaosImpactMatch::DescribeRule(Rules), Rules.Minutes, *Match->RoomName);
 	return Info;
 }
 
@@ -3411,16 +3414,115 @@ void AChaosImpactPlayerController::NotifySoloStageCleared()
 	Progress->MarkCleared(CurrentSoloStage);
 	Progress->LastNode = CurrentSoloStage;
 	Progress->Save();
-	// No clear presentation yet: a few seconds in the opened room, then back to the map (where the way on opens).
+	// The clear: a flash and a moment of slow motion, STAGE CLEAR! on the HUD (UChaosImpactChargeWidget::PaintSoloClear)
+	// over fireworks round the player, then back to the map (where the way on opens).
+	SoloClearedAt = FPlatformTime::Seconds();
+	PlaySoloClearFireworks();
+	constexpr float SlowSpeed = 0.35f;
+	constexpr float SlowRealSeconds = 0.7f;
+	UGameplayStatics::SetGlobalTimeDilation(this, SlowSpeed);
+	FTimerHandle Restore;
+	GetWorldTimerManager().SetTimer(Restore, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		UGameplayStatics::SetGlobalTimeDilation(this, 1.0f);
+	}), SlowRealSeconds * SlowSpeed, false);
 	const int32 Map = Info->Map;
 	const int32 Stage = CurrentSoloStage;
+	if (!GetWorld()->URL.HasOption(TEXT("CIStage")))
+	{
+		// A room played on its own (not a stage of the map): nowhere to go back to.
+		return;
+	}
+	// (Game seconds: the slow part counts for less.)
 	GetWorldTimerManager().SetTimer(SoloReturnTimer, FTimerDelegate::CreateWeakLambda(this, [this, Map, Stage]()
 	{
 		if (!bTravelPending)
 		{
 			OpenSoloWorldMap(Map, Stage);
 		}
-	}), 5.0f, false);
+	}), SoloClearSeconds - SlowRealSeconds * (1.0f - SlowSpeed), false);
+}
+
+void AChaosImpactPlayerController::PlaySoloClearFireworks()
+{
+	const APawn* Me = GetPawn();
+	AChaosImpactFxKit* Fx = Me ? AChaosImpactFxKit::Spawn(this, Me->GetActorLocation() - FVector(0.0f, 0.0f, 88.0f)) : nullptr;
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Stream.Initialize(FMath::Rand());
+	const FLinearColor Gold(1.0f, 0.62f, 0.08f);
+	const FLinearColor White(1.0f, 0.95f, 0.8f);
+	FChaosImpactFxPiece Pillar;
+	Pillar.Life = 1.8f;
+	Pillar.SizeFrom = 300.0f;
+	Pillar.SizeTo = 160.0f;
+	Pillar.Width = 5.0f;
+	Pillar.Taper = 1.0f;
+	Pillar.Color = Gold;
+	Pillar.CoreColor = White;
+	Pillar.Intensity = 3.0f;
+	Pillar.Attack = 0.05f;
+	Pillar.NoiseSpeed = 1.4f;
+	Pillar.NoiseAmount = 0.45f;
+	Fx->Add(Pillar);
+	FChaosImpactFxPiece Ring;
+	Ring.Look = EChaosImpactFxLook::Ring;
+	Ring.Location = FVector(0.0f, 0.0f, 4.0f);
+	Ring.Life = 0.8f;
+	Ring.SizeFrom = Ring.SizeTo = 1000.0f;
+	Ring.RingFrom = 0.08f;
+	Ring.RingTo = 0.92f;
+	Ring.RingWidth = 0.04f;
+	Ring.Color = Gold;
+	Ring.CoreColor = White;
+	Ring.Intensity = 3.0f;
+	Ring.Attack = 0.04f;
+	Ring.ErodeTo = 0.7f;
+	Fx->Add(Ring);
+	// Fireworks bursting overhead, one after another, in the game's colours.
+	const FLinearColor Colors[] = {Gold, FLinearColor(0.1f, 0.6f, 1.0f), FLinearColor(1.0f, 0.12f, 0.2f), FLinearColor(0.6f, 0.3f, 1.0f)};
+	const FVector Spots[] = {FVector(120.0f, -260.0f, 520.0f), FVector(-60.0f, 280.0f, 600.0f), FVector(260.0f, 60.0f, 680.0f), FVector(-220.0f, -60.0f, 560.0f)};
+	for (int32 Burst = 0; Burst < 4; ++Burst)
+	{
+		const float Delay = 0.12f + Burst * 0.38f;
+		const FLinearColor Color = Colors[Burst];
+		FChaosImpactFxPiece Pop;
+		Pop.Location = Spots[Burst];
+		Pop.Delay = Delay;
+		Pop.Life = 0.3f;
+		Pop.SizeFrom = 140.0f;
+		Pop.SizeTo = 380.0f;
+		Pop.Color = Color;
+		Pop.CoreColor = White;
+		Pop.Intensity = 5.0f;
+		Pop.Attack = 0.05f;
+		Pop.NoiseAmount = 0.2f;
+		Fx->Add(Pop);
+		for (int32 Index = 0; Index < 18; ++Index)
+		{
+			FChaosImpactFxPiece Star;
+			Star.Look = EChaosImpactFxLook::Streak;
+			Star.Location = Spots[Burst];
+			Star.Delay = Delay;
+			Star.Velocity = FRotator(Fx->Stream.FRandRange(-60.0f, 70.0f), Index * 20.0f + Fx->Stream.FRandRange(-6.0f, 6.0f), 0.0f).Vector()
+				* Fx->Stream.FRandRange(650.0f, 850.0f);
+			Star.Gravity = 500.0f;
+			Star.Drag = 1.6f;
+			Star.Life = Fx->Stream.FRandRange(0.9f, 1.3f);
+			Star.SizeFrom = 110.0f;
+			Star.SizeTo = 30.0f;
+			Star.Width = 7.0f;
+			Star.Color = Color;
+			Star.CoreColor = White;
+			Star.Intensity = 6.0f;
+			Star.Attack = 0.03f;
+			Star.ErodeTo = 0.0f;
+			Star.Flicker = 0.6f;
+			Fx->Add(Star);
+		}
+	}
 }
 
 bool AChaosImpactPlayerController::OpenExplorationMap(const FString& ExtraOptions)

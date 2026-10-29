@@ -3,6 +3,8 @@
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactEase.h"
+#include "ChaosImpactFxKit.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactSfx.h"
@@ -28,59 +30,6 @@
 namespace
 {
 	using FMeshBuffers = ChaosImpactIceMeshes::FMeshBuffers;
-
-	/** A flat four-cornered patch, drawn from both sides. */
-	void SimaeQuad(FMeshBuffers& Mesh, const FVector& A, const FVector& B, const FVector& C, const FVector& D,
-		const FVector2D& UvA = FVector2D(0, 0), const FVector2D& UvC = FVector2D(1, 1))
-	{
-		const int32 I = Mesh.Vertices.Num();
-		Mesh.Vertices.Append({A, B, C, D});
-		const FVector Normal = FVector::CrossProduct(B - A, C - A).GetSafeNormal();
-		for (int32 J = 0; J < 4; ++J)
-		{
-			Mesh.Normals.Add(Normal);
-		}
-		Mesh.UVs.Append({UvA, FVector2D(UvC.X, UvA.Y), UvC, FVector2D(UvA.X, UvC.Y)});
-		Mesh.Triangles.Append({I, I + 1, I + 2, I, I + 2, I + 3, I, I + 2, I + 1, I, I + 3, I + 2});
-	}
-
-	/** A filled flat disc (a fan) on the horizontal plane. */
-	void SimaeDisc(FMeshBuffers& Mesh, const FVector& Center, const float Radius, const int32 Segments = 48)
-	{
-		if (Radius < 1.0f)
-		{
-			return;
-		}
-		const int32 Middle = Mesh.Vertices.Num();
-		Mesh.Vertices.Add(Center);
-		Mesh.Normals.Add(FVector::UpVector);
-		Mesh.UVs.Add(FVector2D(0.5f, 0.5f));
-		for (int32 Index = 0; Index <= Segments; ++Index)
-		{
-			const float Angle = Index * UE_TWO_PI / Segments;
-			Mesh.Vertices.Add(Center + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Radius);
-			Mesh.Normals.Add(FVector::UpVector);
-			Mesh.UVs.Add(FVector2D(0.5f + 0.5f * FMath::Cos(Angle), 0.5f + 0.5f * FMath::Sin(Angle)));
-			if (Index > 0)
-			{
-				const int32 A = Middle + Index;
-				Mesh.Triangles.Append({Middle, A, A + 1, Middle, A + 1, A});
-			}
-		}
-	}
-
-	/** A ring of upright panels (a shock wall standing round a centre). */
-	void SimaeWall(FMeshBuffers& Mesh, const FVector& Center, const float Radius, const float Height, const int32 Segments = 40)
-	{
-		for (int32 Index = 0; Index < Segments; ++Index)
-		{
-			const float A = Index * UE_TWO_PI / Segments;
-			const float B = (Index + 1) * UE_TWO_PI / Segments;
-			const FVector PA = Center + FVector(FMath::Cos(A), FMath::Sin(A), 0.0f) * Radius;
-			const FVector PB = Center + FVector(FMath::Cos(B), FMath::Sin(B), 0.0f) * Radius;
-			SimaeQuad(Mesh, PA, PB, PB + FVector(0, 0, Height), PA + FVector(0, 0, Height));
-		}
-	}
 
 	void SimaeSetSection(UProceduralMeshComponent* Component, const int32 Section, const FMeshBuffers& Mesh)
 	{
@@ -119,38 +68,6 @@ namespace
 		}
 	}
 
-	/** A pale see-through tint (it shows on the white snow, unlike added light). */
-	UMaterialInstanceDynamic* SimaeMakeTint(UObject* Outer, const FLinearColor& Color, const float Opacity)
-	{
-		UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr,
-			TEXT("/Game/ChaosImpact/FX/M_CI_SimaeWarningFill.M_CI_SimaeWarningFill"), nullptr, LOAD_NoWarn | LOAD_Quiet);
-		if (!Parent)
-		{
-			return ChaosImpactBallTypes::MakeAdditive(Outer, Color, Opacity);
-		}
-		UMaterialInstanceDynamic* Tint = UMaterialInstanceDynamic::Create(Parent, Outer);
-		Tint->SetVectorParameterValue(TEXT("Color"), Color);
-		Tint->SetScalarParameterValue(TEXT("Opacity"), Opacity);
-		return Tint;
-	}
-
-	void SimaeSetOpacity(UMaterialInstanceDynamic* Material, const float Opacity)
-	{
-		if (Material)
-		{
-			Material->SetScalarParameterValue(TEXT("Opacity"), FMath::Clamp(Opacity, 0.0f, 1.0f));
-		}
-	}
-
-	void SimaeSetColor(UMaterialInstanceDynamic* Material, const FLinearColor& Color)
-	{
-		if (Material)
-		{
-			Material->SetVectorParameterValue(TEXT("Color"), Color);
-			Material->SetVectorParameterValue(TEXT("Base Color"), Color);
-		}
-	}
-
 	/** The shock's colour: icy white, turning to the full power's red. */
 	FLinearColor SimaeShockColor(const float Heat)
 	{
@@ -160,49 +77,62 @@ namespace
 
 // ---------------------------------------------------------------------------------------------------- Shared
 
+namespace
+{
+	/** Puffs of powder snow: pale, lit from above, thinning as they drift up (never the dark dust of a dirt floor). */
+	void SimaePowder(UWorld* World, const FVector& Location, const float Size, const int32 Puffs, const float Spread, const float Life)
+	{
+		AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(World, Location);
+		if (!Fx)
+		{
+			return;
+		}
+		Fx->Stream.Initialize(FMath::Rand());
+		for (int32 Index = 0; Index < Puffs; ++Index)
+		{
+			const float Angle = (Index + Fx->Stream.FRandRange(-0.4f, 0.4f)) * UE_TWO_PI / Puffs;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			FChaosImpactFxPiece Puff;
+			Puff.Look = EChaosImpactFxLook::Smoke;
+			Puff.Location = Out * Size * 0.15f + FVector(0, 0, Size * 0.25f);
+			Puff.Velocity = Out * Spread * Fx->Stream.FRandRange(0.6f, 1.0f) + FVector(0, 0, Size * 0.3f);
+			Puff.Drag = 2.5f;
+			Puff.Delay = Fx->Stream.FRandRange(0.0f, 0.06f);
+			Puff.Life = Life * Fx->Stream.FRandRange(0.8f, 1.15f);
+			Puff.SizeFrom = Size * 0.45f;
+			Puff.SizeTo = Size * 1.05f;
+			Puff.Color = FLinearColor(0.74f, 0.8f, 0.9f);
+			Puff.CoreColor = FLinearColor(0.98f, 0.99f, 1.0f);
+			Puff.Intensity = 1.0f;
+			Puff.Opacity = 0.55f;
+			Puff.Attack = 0.1f;
+			Puff.ErodeTo = 0.95f;
+			Puff.NoiseSpeed = 0.2f;
+			Puff.Spin = Fx->Stream.FRandRange(-50.0f, 50.0f);
+			Fx->Add(Puff);
+		}
+	}
+}
+
 void ChaosImpactSimaeFx::PlaySnowDust(UWorld* World, const FVector& Location, const float Size, const float Seconds,
 	const float Rate)
 {
-	using namespace ChaosImpactBallTypes;
 	if (!World || World->GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
-	UNiagaraSystem* Smoke = LoadEffect(Effects::Smoke);
-	UNiagaraComponent* Cloud = Smoke ? UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, Smoke, Location) : nullptr;
-	if (!Cloud)
-	{
-		return;
-	}
-	// Light: a few small puffs only. A plume's smoke lingers and swells, so more of it soon hides the whole fight.
-	const float Puff = FMath::Min(Size * 0.35f, 110.0f);
-	SetEffectColor(Cloud, TEXT("Smoke Color"), SnowDust);
-	SetEffectSize(Cloud, TEXT("Sprite Size"), Puff);
-	SetEffectSize(Cloud, TEXT("Uniform Sprite Size"), Puff);
-	SetEffectFloat(Cloud, TEXT("SpawnRate"), FMath::Min(Rate, 14.0f));
-	// A plume would go on rising for ever: it only puffs for a moment, then what it made drifts off and fades.
-	FTimerHandle Stop;
-	World->GetTimerManager().SetTimer(Stop, FTimerDelegate::CreateWeakLambda(Cloud, [Cloud]() { Cloud->Deactivate(); }),
-		FMath::Clamp(Seconds, 0.05f, 0.12f), false);
+	// Light: a few small puffs only (more soon hides the fight).
+	const float Puff = FMath::Min(Size * 0.6f, 220.0f);
+	SimaePowder(World, Location, Puff, FMath::Clamp(FMath::RoundToInt(Rate * Seconds * 3.0f), 2, 4), Puff * 0.8f, 0.8f);
 }
 
 void ChaosImpactSimaeFx::PlaySnowBurst(UWorld* World, const FVector& Location, const float Scale)
 {
-	using namespace ChaosImpactBallTypes;
 	if (!World || World->GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
-	if (UNiagaraSystem* Dirt = LoadEffect(Effects::DirtBurstSmall))
-	{
-		if (UNiagaraComponent* Burst = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, Dirt, Location, FRotator::ZeroRotator,
-			FVector(FMath::Clamp(Scale * 0.6f, 0.4f, 1.2f))))
-		{
-			Burst->SetAllowScalability(false);
-			SetEffectColor(Burst, TEXT("Dirt Color"), FLinearColor(0.9f, 0.94f, 1.0f));
-			SetEffectColor(Burst, TEXT("Smoke Color"), SnowDust);
-		}
-	}
+	SimaePowder(World, Location, FMath::Clamp(Scale, 0.5f, 1.6f) * 200.0f, 7, FMath::Clamp(Scale, 0.5f, 1.6f) * 500.0f, 1.0f);
 	ChaosImpactBallTypes::PlaySnowBurst(World, Location + FVector(0, 0, 30), FMath::Clamp(Scale, 0.5f, 1.6f));
 }
 
@@ -226,8 +156,15 @@ AChaosImpactSimaeWarning::AChaosImpactSimaeWarning()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
-	Outline = SimaeMeshComponent(this, TEXT("Outline"), GetRootComponent());
-	Fill = SimaeMeshComponent(this, TEXT("Fill"), GetRootComponent());
+	Plane = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Plane"));
+	Plane->SetupAttachment(GetRootComponent());
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> PlaneMesh(TEXT("/Engine/BasicShapes/Plane.Plane"));
+	Plane->SetStaticMesh(PlaneMesh.Object);
+	Plane->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Plane->SetGenerateOverlapEvents(false);
+	Plane->SetCastShadow(false);
+	Plane->bUseAsOccluder = false;
+	Plane->bReceivesDecals = false;
 	SetActorEnableCollision(false);
 	SetReplicates(false);
 }
@@ -261,12 +198,12 @@ AChaosImpactSimaeWarning* AChaosImpactSimaeWarning::SpawnCircle(UWorld* World, c
 		Warning->Radius = Radius;
 		Warning->Seconds = FMath::Max(Seconds, 0.1f);
 		Warning->Color = Color;
-		Warning->OutlineMaterial = ChaosImpactBallTypes::MakeEmissive(Warning, Color, 3.0f);
-		Warning->FillMaterial = SimaeMakeTint(Warning, Color, 0.22f);
-		Warning->ProgressMaterial = SimaeMakeTint(Warning, Color, 0.2f);
-		Warning->Outline->SetMaterial(0, Warning->OutlineMaterial);
-		Warning->Fill->SetMaterial(0, Warning->FillMaterial);
-		Warning->Fill->SetMaterial(1, Warning->ProgressMaterial);
+		if (UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Warn.M_CIFX_Warn")))
+		{
+			Warning->Look = UMaterialInstanceDynamic::Create(Parent, Warning);
+			Warning->Look->SetVectorParameterValue(TEXT("Color"), Color);
+			Warning->Plane->SetMaterial(0, Warning->Look);
+		}
 		Warning->Rebuild();
 		if (World->GetNetMode() == NM_ListenServer)
 		{
@@ -310,8 +247,9 @@ void AChaosImpactSimaeWarning::SetLane(const FVector& Start, const FVector& NewD
 	{
 		Direction = Flat;
 	}
-	Length = FMath::Max(NewLength, 50.0f);
-	SetActorLocationAndRotation(ChaosImpactSimaeFx::FindGround(GetWorld(), Start, this) + FVector(0, 0, 4), Direction.Rotation());
+	const FVector Ground = ChaosImpactSimaeFx::FindGround(GetWorld(), Start, this);
+	Length = FMath::Max(TrimToWalls(Ground, NewLength), 50.0f);
+	SetActorLocationAndRotation(Ground + FVector(0, 0, 4), Direction.Rotation());
 	if (NetFxId > 0 && !GSimaeSpawningLane)
 	{
 		ChaosImpactSimaeFx::FNetFx Fx;
@@ -350,59 +288,60 @@ void AChaosImpactSimaeWarning::Tick(const float DeltaSeconds)
 	Rebuild();
 }
 
+float AChaosImpactSimaeWarning::TrimToWalls(const FVector& Start, const float WantedLength) const
+{
+	// Waist high over the floor, the scenery only (as the floor is found): the first thing standing in the way that is
+	// not a slope underfoot ends the lane, a little short of it so its soft end shows in front of the wall.
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return WantedLength;
+	}
+	const FVector From = Start + FVector(0, 0, 90);
+	TArray<FHitResult> Hits;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(SimaeLane), false, this);
+	World->LineTraceMultiByObjectType(Hits, From, From + Direction * WantedLength, FCollisionObjectQueryParams(ECC_WorldStatic), Params);
+	for (const FHitResult& Hit : Hits)
+	{
+		if (Hit.ImpactNormal.Z < 0.6f)
+		{
+			return FMath::Max(Hit.Distance - 20.0f, 50.0f);
+		}
+	}
+	return WantedLength;
+}
+
 void AChaosImpactSimaeWarning::Rebuild()
 {
 	const float Progress = FMath::Clamp(Age / Seconds, 0.0f, 1.0f);
-	const float Flash = FinishedAge >= 0.0f ? 1.0f - (Age - FinishedAge) / 0.22f : 0.0f;
-	// Blinking faster and faster as it is about to go off.
-	const float Blink = 0.75f + 0.25f * FMath::Sin(Age * FMath::Lerp(7.0f, 26.0f, Progress));
-	SimaeSetIntensity(OutlineMaterial, (FinishedAge >= 0.0f ? 4.0f * Flash : 2.2f * Blink));
-	// Pale red all over the area; the part filled so far deeper; a flash as it goes off.
-	SimaeSetOpacity(FillMaterial, FinishedAge >= 0.0f ? 0.45f * Flash : 0.2f + 0.06f * Blink);
-	SimaeSetOpacity(ProgressMaterial, FinishedAge >= 0.0f ? 0.0f : 0.18f);
-	FMeshBuffers Lines;
-	FMeshBuffers Area;
-	FMeshBuffers Filled;
-	if (!bLane)
+	const float Gone = FinishedAge >= 0.0f ? FMath::Clamp((Age - FinishedAge) / 0.22f, 0.0f, 1.0f) : 0.0f;
+	// Breathing faster and faster as it is about to go off; a flash as it goes, fading straight away.
+	const float Blink = 0.5f + 0.5f * FMath::Sin(Age * FMath::Lerp(6.0f, 22.0f, Progress * Progress));
+	// Appears with a quick ease-out swell instead of popping in.
+	const float Born = ChaosImpactEase::Out(FMath::Clamp(Age / 0.18f, 0.0f, 1.0f));
+	if (Plane)
 	{
-		ChaosImpactLightning::AppendRing(Lines, FVector::ZeroVector, Radius, FMath::Clamp(Radius * 0.035f, 8.0f, 22.0f), 72);
-		// Rings closing in on the centre, over and over.
-		for (int32 Pulse = 0; Pulse < 2; ++Pulse)
+		if (bLane)
 		{
-			const float Phase = FMath::Frac(Age * 1.3f + Pulse * 0.5f);
-			ChaosImpactLightning::AppendRing(Lines, FVector::ZeroVector, Radius * (1.0f - 0.9f * Phase), 6.0f, 60);
+			Plane->SetRelativeLocation(FVector(Length * 0.5f, 0, 0));
+			Plane->SetRelativeScale3D(FVector(Length / 100.0f, HalfWidth * 2.0f * FMath::Lerp(0.6f, 1.0f, Born) / 100.0f, 1.0f));
 		}
-		SimaeDisc(Area, FVector(0, 0, -2), Radius, 64);
-		// Filling up from the middle: when it is full, it goes off.
-		SimaeDisc(Filled, FVector(0, 0, -1), Radius * Progress, 56);
+		else
+		{
+			const float Size = Radius * 2.0f * FMath::Lerp(0.75f, 1.0f, Born) / 100.0f;
+			Plane->SetRelativeLocation(FVector::ZeroVector);
+			Plane->SetRelativeScale3D(FVector(Size, Size, 1.0f));
+		}
 	}
-	else
+	if (UMaterialInstanceDynamic* M = Look.Get())
 	{
-		const float Edge = FMath::Clamp(HalfWidth * 0.05f, 4.0f, 9.0f);
-		const auto Strip = [&Lines](const FVector& A, const FVector& B, const float Half)
-		{
-			const FVector Side = FVector::CrossProduct(FVector::UpVector, (B - A).GetSafeNormal()) * Half;
-			SimaeQuad(Lines, A - Side, B - Side, B + Side, A + Side);
-		};
-		Strip(FVector(0, -HalfWidth, 0), FVector(Length, -HalfWidth, 0), Edge);
-		Strip(FVector(0, HalfWidth, 0), FVector(Length, HalfWidth, 0), Edge);
-		Strip(FVector(Length, -HalfWidth - Edge, 0), FVector(Length, HalfWidth + Edge, 0), Edge);
-		// Arrows racing along it.
-		const float Spacing = FMath::Max(HalfWidth * 2.5f, 300.0f);
-		const float Shift = FMath::Frac(Age * 1.8f) * Spacing;
-		for (float X = Shift; X < Length - Spacing * 0.3f; X += Spacing)
-		{
-			const float Arm = HalfWidth * 0.35f;
-			Strip(FVector(X - Arm * 0.7f, -Arm, 0), FVector(X, 0, 0), Edge * 0.6f);
-			Strip(FVector(X - Arm * 0.7f, Arm, 0), FVector(X, 0, 0), Edge * 0.6f);
-		}
-		SimaeQuad(Area, FVector(0, -HalfWidth, -2), FVector(Length, -HalfWidth, -2), FVector(Length, HalfWidth, -2), FVector(0, HalfWidth, -2));
-		const float Reached = Length * Progress;
-		SimaeQuad(Filled, FVector(0, -HalfWidth, -1), FVector(Reached, -HalfWidth, -1), FVector(Reached, HalfWidth, -1), FVector(0, HalfWidth, -1));
+		M->SetScalarParameterValue(TEXT("Lane"), bLane ? 1.0f : 0.0f);
+		M->SetScalarParameterValue(TEXT("Aspect"), Length / FMath::Max(HalfWidth * 2.0f, 1.0f));
+		M->SetScalarParameterValue(TEXT("Progress"), FinishedAge >= 0.0f ? 1.0f : Progress);
+		M->SetScalarParameterValue(TEXT("Flash"), FinishedAge >= 0.0f ? 1.0f - Gone : 0.12f * Blink * Progress);
+		M->SetScalarParameterValue(TEXT("Opacity"), (FinishedAge >= 0.0f ? 1.0f - ChaosImpactEase::InOut(Gone) : 1.0f) * Born);
+		M->SetScalarParameterValue(TEXT("Intensity"), 1.0f + 0.25f * Blink * Progress);
 	}
-	SimaeSetSection(Outline, 0, Lines);
-	SimaeSetSection(Fill, 0, Area);
-	SimaeSetSection(Fill, 1, Filled);
 }
 
 // ---------------------------------------------------------------------------------------------------- Blast
@@ -411,7 +350,6 @@ AChaosImpactSimaeBlast::AChaosImpactSimaeBlast()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
-	Rings = SimaeMeshComponent(this, TEXT("Rings"), GetRootComponent());
 	Cracks = SimaeMeshComponent(this, TEXT("Cracks"), GetRootComponent());
 	Flash = CreateDefaultSubobject<UPointLightComponent>(TEXT("Flash"));
 	Flash->SetupAttachment(GetRootComponent());
@@ -443,17 +381,110 @@ AChaosImpactSimaeBlast* AChaosImpactSimaeBlast::Play(UWorld* World, const FVecto
 	Blast->Seed = FMath::Rand();
 	FRandomStream Stream(Blast->Seed);
 	const FLinearColor Shock = SimaeShockColor(Heat);
-	Blast->RingMaterial = ChaosImpactBallTypes::MakeAdditive(Blast, Shock, 3.0f);
-	Blast->Rings->SetMaterial(0, Blast->RingMaterial);
-	Blast->Rings->SetMaterial(1, Blast->RingMaterial);
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(World, Center + FVector(0, 0, 3)))
+	{
+		Fx->Stream.Initialize(Blast->Seed);
+		// Deep enough to read on white snow (see-through colour, not added light), white-hot at the front of the wave.
+		const FLinearColor Deep = Heat > 0.5f ? FLinearColor(0.75f, 0.02f, 0.08f) : FLinearColor(0.16f, 0.4f, 0.95f);
+		const FLinearColor Pale = FMath::Lerp(FLinearColor(0.92f, 0.97f, 1.0f), FLinearColor(1.0f, 0.78f, 0.62f), FMath::Clamp(Heat, 0.0f, 1.0f));
+		const float Reach = Radius * 2.3f;
+		FChaosImpactFxPiece Flash;
+		Flash.Location = FVector(0, 0, 80);
+		Flash.Life = 0.2f;
+		Flash.SizeFrom = FMath::Clamp(Radius * 0.45f, 140.0f, 420.0f);
+		Flash.SizeTo = Flash.SizeFrom * 2.0f;
+		Flash.Color = Shock;
+		Flash.CoreColor = Pale;
+		Flash.Intensity = 5.0f;
+		Flash.Attack = 0.05f;
+		Flash.NoiseAmount = 0.2f;
+		Fx->Add(Flash);
+		FChaosImpactFxPiece Wave;
+		Wave.Look = EChaosImpactFxLook::SolidRing;
+		Wave.Location = FVector(0, 0, 4);
+		Wave.Life = 0.55f;
+		Wave.SizeFrom = Wave.SizeTo = Reach;
+		Wave.RingFrom = 0.06f;
+		Wave.RingTo = 0.93f;
+		Wave.RingWidth = 0.06f;
+		Wave.Color = Deep;
+		Wave.CoreColor = Pale;
+		Wave.Intensity = 1.0f;
+		Wave.Opacity = 1.0f;
+		Wave.Attack = 0.04f;
+		Wave.ErodeTo = 0.65f;
+		Wave.NoiseScale = 2.5f;
+		Wave.NoiseAmount = 0.45f;
+		Fx->Add(Wave);
+		FChaosImpactFxPiece Edge = Wave;
+		Edge.Look = EChaosImpactFxLook::Ring;
+		Edge.Location.Z = 6.0f;
+		Edge.Life = 0.45f;
+		Edge.RingWidth = 0.03f;
+		Edge.Color = Shock;
+		Edge.Intensity = 2.5f;
+		Fx->Add(Edge);
+		FChaosImpactFxPiece After = Wave;
+		After.Delay = 0.1f;
+		After.Life = 0.7f;
+		After.RingTo = 0.8f;
+		After.RingWidth = 0.03f;
+		After.Opacity = 0.55f;
+		Fx->Add(After);
+		// Powder thrown out low along the ground, and glints of ice (embers at full power) flung up.
+		const float Puff = FMath::Clamp(Radius * 0.3f, 90.0f, 300.0f);
+		for (int32 Index = 0; Index < 10; ++Index)
+		{
+			const float Angle = (Index + Stream.FRandRange(-0.35f, 0.35f)) * UE_TWO_PI / 10.0f;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			FChaosImpactFxPiece Powder;
+			Powder.Look = EChaosImpactFxLook::Smoke;
+			Powder.Location = Out * Radius * 0.15f + FVector(0, 0, Puff * 0.3f);
+			Powder.Velocity = Out * Radius * Stream.FRandRange(1.6f, 2.4f);
+			Powder.Drag = 3.0f;
+			Powder.Gravity = -60.0f;
+			Powder.Life = Stream.FRandRange(0.8f, 1.15f);
+			Powder.SizeFrom = Puff * 0.6f;
+			Powder.SizeTo = Puff * 1.5f;
+			Powder.Color = FLinearColor(0.6f, 0.68f, 0.8f);
+			Powder.CoreColor = FLinearColor(0.97f, 0.98f, 1.0f);
+			Powder.Intensity = 1.0f;
+			Powder.Opacity = 0.6f;
+			Powder.Attack = 0.08f;
+			Powder.ErodeTo = 0.9f;
+			Powder.Spin = Stream.FRandRange(-40.0f, 40.0f);
+			Fx->Add(Powder);
+		}
+		for (int32 Index = 0; Index < 12; ++Index)
+		{
+			FChaosImpactFxPiece Glint;
+			Glint.Look = EChaosImpactFxLook::Streak;
+			Glint.Location = FVector(0, 0, 40);
+			Glint.Velocity = FRotator(Stream.FRandRange(20.0f, 60.0f), Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+				* Stream.FRandRange(700.0f, 1400.0f) * FMath::Clamp(Radius / 500.0f, 0.7f, 1.4f);
+			Glint.Gravity = 2400.0f;
+			Glint.Drag = 1.0f;
+			Glint.Life = Stream.FRandRange(0.4f, 0.7f);
+			Glint.SizeFrom = 80.0f;
+			Glint.SizeTo = 30.0f;
+			Glint.Width = 6.0f;
+			Glint.Color = Shock;
+			Glint.CoreColor = Pale;
+			Glint.Intensity = 5.0f;
+			Glint.Attack = 0.02f;
+			Glint.ErodeTo = 0.0f;
+			Glint.Flicker = 0.4f;
+			Fx->Add(Glint);
+		}
+	}
 	Blast->Flash->SetLightColor(Shock);
 	Blast->Flash->SetAttenuationRadius(Radius * 2.5f + 400.0f);
 	if (bCracks)
 	{
 		// Cracks in the packed snow: dark blue-grey, or glowing red when the full power struck.
 		Blast->HotMaterial = Heat > 0.5f
-			? ChaosImpactBallTypes::MakeEmissive(Blast, FLinearColor(1.0f, 0.08f, 0.12f), 4.0f)
-			: ChaosImpactBallTypes::MakeEmissive(Blast, FLinearColor(0.32f, 0.42f, 0.58f), 0.75f);
+			? ChaosImpactBallTypes::MakeEmissive(Blast, FLinearColor(1.0f, 0.12f, 0.08f), 2.5f)
+			: ChaosImpactBallTypes::MakeEmissive(Blast, FLinearColor(0.45f, 0.56f, 0.72f), 0.8f);
 		Blast->Cracks->SetMaterial(0, Blast->HotMaterial);
 		FMeshBuffers Lines;
 		const int32 Count = 9 + Stream.RandRange(0, 4);
@@ -462,7 +493,7 @@ AChaosImpactSimaeBlast* AChaosImpactSimaeBlast::Play(UWorld* World, const FVecto
 			const float Angle = (Index + Stream.FRandRange(-0.3f, 0.3f)) * UE_TWO_PI / Count;
 			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
 			ChaosImpactIceMeshes::AppendCrack(Lines, FTransform::Identity, Out * Radius * 0.08f, Out,
-				Radius * Stream.FRandRange(0.45f, 0.85f), FMath::Clamp(Radius * 0.04f, 10.0f, 34.0f), Stream);
+				Radius * Stream.FRandRange(0.3f, 0.6f), FMath::Clamp(Radius * 0.016f, 5.0f, 12.0f), Stream);
 		}
 		SimaeSetSection(Blast->Cracks, 0, Lines);
 	}
@@ -525,29 +556,6 @@ void AChaosImpactSimaeBlast::Tick(const float DeltaSeconds)
 
 void AChaosImpactSimaeBlast::Rebuild()
 {
-	FMeshBuffers Flat;
-	FMeshBuffers Walls;
-	for (int32 Wave = 0; Wave < 3; ++Wave)
-	{
-		const float Local = (Age - Wave * 0.09f) / (0.5f + Wave * 0.12f);
-		if (Local <= 0.0f || Local >= 1.0f)
-		{
-			continue;
-		}
-		const float Out = 1.0f - FMath::Pow(1.0f - Local, 3.0f);
-		const float R = Radius * (0.12f + 0.95f * Out) * (Wave == 2 ? 1.12f : 1.0f);
-		const float Thin = 1.0f - Local;
-		ChaosImpactLightning::AppendRing(Flat, FVector::ZeroVector, R, (Wave == 0 ? 60.0f : 26.0f) * Thin + 4.0f, 80);
-		if (Wave == 0)
-		{
-			// A wall of wind standing up round the first ring (it reads from the high camera).
-			SimaeWall(Walls, FVector::ZeroVector, R, FMath::Clamp(Radius * 0.35f, 60.0f, 320.0f) * Thin, 48);
-		}
-	}
-	SimaeSetSection(Rings, 0, Flat);
-	SimaeSetSection(Rings, 1, Walls);
-	const float Glow = FMath::Clamp(1.0f - Age / 0.7f, 0.0f, 1.0f);
-	SimaeSetIntensity(RingMaterial, 3.5f * Glow + 0.4f);
 	Flash->SetIntensity(FMath::Square(FMath::Clamp(1.0f - Age / 0.45f, 0.0f, 1.0f)) * (8000.0f + Radius * 25.0f));
 	if (HotMaterial)
 	{
@@ -564,24 +572,10 @@ AChaosImpactSimaeGoukyu::AChaosImpactSimaeGoukyu()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
-	Wind = SimaeMeshComponent(this, TEXT("Wind"), GetRootComponent());
-	// The furrow stays on the ground where it was ploughed (it does not move with the ball).
-	Furrow = SimaeMeshComponent(this, TEXT("Furrow"), GetRootComponent());
-	Furrow->SetUsingAbsoluteLocation(true);
-	Furrow->SetUsingAbsoluteRotation(true);
 	Glow = CreateDefaultSubobject<UPointLightComponent>(TEXT("Glow"));
 	Glow->SetupAttachment(GetRootComponent());
 	Glow->SetCastShadows(false);
 	Glow->SetAttenuationRadius(1500.0f);
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	for (TObjectPtr<UStaticMeshComponent>* Part : {&Core, &Shell})
-	{
-		*Part = CreateDefaultSubobject<UStaticMeshComponent>(Part == &Core ? TEXT("Core") : TEXT("Shell"));
-		(*Part)->SetupAttachment(GetRootComponent());
-		(*Part)->SetStaticMesh(Sphere.Object);
-		(*Part)->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		(*Part)->SetCastShadow(false);
-	}
 	SetActorEnableCollision(false);
 	SetReplicates(false);
 }
@@ -617,23 +611,55 @@ AChaosImpactSimaeGoukyu* AChaosImpactSimaeGoukyu::Launch(AChaosImpactSimaeBoss* 
 		Ball->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 		Ball->SetActorLocation(Start);
 	}
-	const FLinearColor WindColor = FMath::Lerp(FLinearColor(0.62f, 0.86f, 1.0f), FLinearColor(1.0f, 0.24f, 0.36f), Heat);
-	Shot->WindMaterial = ChaosImpactBallTypes::MakeAdditive(Shot, WindColor, 2.4f);
-	Shot->StreakMaterial = ChaosImpactBallTypes::MakeEmissive(Shot, FMath::Lerp(FLinearColor(0.85f, 0.95f, 1.0f), FLinearColor(1.0f, 0.55f, 0.6f), Heat), 1.6f);
-	// The ploughed track: a shaded blue groove in the snow.
-	Shot->FurrowMaterial = ChaosImpactBallTypes::MakeEmissive(Shot, FLinearColor(0.5f, 0.62f, 0.8f), 0.85f);
-	Shot->Wind->SetMaterial(0, Shot->WindMaterial);
-	Shot->Wind->SetMaterial(1, Shot->StreakMaterial);
-	Shot->Furrow->SetMaterial(0, Shot->FurrowMaterial);
-	Shot->Glow->SetLightColor(WindColor);
+	Shot->WindColor = FMath::Lerp(FLinearColor(0.45f, 0.75f, 1.0f), FLinearColor(1.0f, 0.2f, 0.32f), Heat);
+	Shot->Glow->SetLightColor(Shot->WindColor);
 	Shot->Glow->SetIntensity(20000.0f);
-	// A white-hot core round the ball, a rim of pressed air round that.
-	Shot->CoreMaterial = ChaosImpactBallTypes::MakeAdditive(Shot, FMath::Lerp(FLinearColor(0.75f, 0.92f, 1.0f), FLinearColor(1.0f, 0.55f, 0.6f), Heat), 3.0f);
-	Shot->ShellMaterial = ChaosImpactBallTypes::MakeAdditive(Shot, WindColor, 2.0f, 1.0f);
-	Shot->Core->SetMaterial(0, Shot->CoreMaterial);
-	Shot->Shell->SetMaterial(0, Shot->ShellMaterial);
-	Shot->Core->SetRelativeScale3D(FVector(0.9f));
-	Shot->Shell->SetRelativeScale3D(FVector(HitRadius * 1.1f / 100.0f, HitRadius * 0.9f / 100.0f, HitRadius * 0.9f / 100.0f));
+	const float Flight = Range / FMath::Max(Speed, 1.0f);
+	const FLinearColor Hot = FMath::Lerp(FLinearColor(0.9f, 0.97f, 1.0f), FLinearColor(1.0f, 0.8f, 0.7f), Heat);
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(World, Start))
+	{
+		// Riding with the ball: a white-hot glow round it inside a wider haze of pressed air, and air streaming off it.
+		Fx->AttachToActor(Shot, FAttachmentTransformRules::KeepWorldTransform);
+		Shot->Around = Fx;
+		FChaosImpactFxPiece Heart;
+		Heart.Life = Flight + 0.3f;
+		Heart.Attack = 0.1f / Heart.Life;
+		Heart.Hold = 1.0f - 0.25f / Heart.Life;
+		Heart.SizeFrom = Heart.SizeTo = HitRadius * 1.1f;
+		Heart.Color = Shot->WindColor;
+		Heart.CoreColor = Hot;
+		Heart.Intensity = 3.0f;
+		Heart.Flicker = 0.15f;
+		Heart.NoiseAmount = 0.3f;
+		Heart.Spin = 300.0f;
+		Fx->Add(Heart);
+		FChaosImpactFxPiece Haze = Heart;
+		Haze.SizeFrom = Haze.SizeTo = HitRadius * 1.7f;
+		Haze.Intensity = 0.45f;
+		Haze.NoiseAmount = 0.7f;
+		Haze.NoiseSpeed = 1.2f;
+		Haze.Spin = -200.0f;
+		Fx->Add(Haze);
+		FChaosImpactFxPiece Air;
+		Air.Look = EChaosImpactFxLook::Streak;
+		Air.Location = FVector(0, 0, -20);
+		Air.Velocity = -Flat * Speed * 0.55f;
+		Air.Life = 0.22f;
+		Air.SizeFrom = HitRadius * 1.6f;
+		Air.SizeTo = HitRadius * 0.8f;
+		Air.Width = 7.0f;
+		Air.Color = Shot->WindColor;
+		Air.CoreColor = Hot;
+		Air.Intensity = 3.0f;
+		Air.Attack = 0.15f;
+		Air.ErodeTo = 0.0f;
+		Fx->AddEmitter(Air, 45.0f, Flight, HitRadius * 0.85f, FVector(0, 0, HitRadius * 0.5f), 0.3f);
+	}
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(World, FVector(Start.X, Start.Y, Shot->GroundZ)))
+	{
+		Fx->Stream.Initialize(FMath::Rand());
+		Shot->Wake = Fx;
+	}
 	{
 		using namespace ChaosImpactBallTypes;
 		const auto Attach = [Shot](const TCHAR* Path) -> UNiagaraComponent*
@@ -677,7 +703,6 @@ AChaosImpactSimaeGoukyu* AChaosImpactSimaeGoukyu::Launch(AChaosImpactSimaeBoss* 
 	ChaosImpactSfx::PlayAt(Shot, EChaosImpactSfx::WindGust, Start, 1.0f, 0.7f);
 	// A burst of powder where it leaves the hand.
 	ChaosImpactSimaeFx::PlaySnowDust(World, FVector(Start.X, Start.Y, Shot->GroundZ), 200.0f, 0.08f, 12.0f);
-	Shot->RebuildWind();
 	return Shot;
 }
 
@@ -700,14 +725,6 @@ void AChaosImpactSimaeGoukyu::Tick(const float DeltaSeconds)
 	{
 		// What is left: the furrow closing up and the wind blowing itself out.
 		const float Since = Age - StoppedAge;
-		SimaeSetIntensity(WindMaterial, 2.4f * FMath::Clamp(1.0f - Since / 0.3f, 0.0f, 1.0f));
-		SimaeSetIntensity(StreakMaterial, 1.6f * FMath::Clamp(1.0f - Since / 0.3f, 0.0f, 1.0f));
-		Wind->SetVisibility(Since < 0.3f);
-		Core->SetVisibility(false);
-		Shell->SetVisibility(false);
-		Furrow->SetWorldScale3D(FVector(1.0f, 1.0f, 1.0f));
-		const float Left = FMath::Clamp(1.0f - (Since - 0.6f) / 1.2f, 0.0f, 1.0f);
-		SimaeSetIntensity(FurrowMaterial, 0.85f * Left);
 		Glow->SetIntensity(8000.0f * FMath::Clamp(1.0f - Since / 0.25f, 0.0f, 1.0f));
 		if (Since > 1.9f)
 		{
@@ -772,30 +789,63 @@ void AChaosImpactSimaeGoukyu::Tick(const float DeltaSeconds)
 		ChaosImpactSimaeFx::PlaySnowDust(World, Ground + Side, HitRadius * 1.2f, 0.08f, 12.0f);
 		NextDustAt += 400.0f;
 	}
-	// The groove behind it.
-	FMeshBuffers Track;
-	const FVector Side = FVector::CrossProduct(FVector::UpVector, Direction);
-	const FVector From(Origin.X, Origin.Y, GroundZ + 2.0f);
-	const FVector To(Next.X, Next.Y, GroundZ + 2.0f);
-	const float Groove = HitRadius * 0.22f;
-	SimaeQuad(Track, From - Side * Groove, To - Side * Groove, To + Side * Groove, From + Side * Groove);
-	for (const float Ridge : {-1.0f, 1.0f})
+	// Shock rings bursting off it over the snow every few metres, and the ploughed track left behind (soft blue-grey
+	// hollows that run together into one groove, fading after it has passed).
+	if (AChaosImpactFxKit* Fx = Wake.Get())
 	{
-		const FVector Off = Side * Ridge * HitRadius * 0.85f;
-		SimaeQuad(Track, From + Off - Side * 6.0f, To + Off - Side * 6.0f, To + Off + Side * 6.0f, From + Off + Side * 6.0f);
+		const FVector Base = Fx->GetActorLocation();
+		while (Travelled >= NextBoomAt)
+		{
+			const FVector Spot = Origin + Direction * NextBoomAt;
+			FChaosImpactFxPiece Boom;
+			Boom.Look = EChaosImpactFxLook::SolidRing;
+			Boom.Location = FVector(Spot.X - Base.X, Spot.Y - Base.Y, GroundZ - Base.Z + 5.0f);
+			Boom.Life = 0.45f;
+			Boom.SizeFrom = Boom.SizeTo = HitRadius * 3.0f;
+			Boom.RingFrom = 0.25f;
+			Boom.RingTo = 0.9f;
+			Boom.RingWidth = 0.05f;
+			Boom.Color = WindColor * 0.7f;
+			Boom.CoreColor = FLinearColor(0.95f, 0.98f, 1.0f);
+			Boom.Intensity = 1.0f;
+			Boom.Opacity = 0.7f;
+			Boom.Attack = 0.05f;
+			Boom.ErodeTo = 0.7f;
+			Fx->Add(Boom);
+			FChaosImpactFxPiece Pop = Boom;
+			Pop.Look = EChaosImpactFxLook::Ring;
+			Pop.Location.Z += 2.0f;
+			Pop.Life = 0.3f;
+			Pop.RingWidth = 0.03f;
+			Pop.Color = WindColor;
+			Pop.Intensity = 2.2f;
+			Fx->Add(Pop);
+			NextBoomAt += 360.0f;
+		}
+		while (Travelled >= NextTrackAt)
+		{
+			const FVector Spot = Origin + Direction * NextTrackAt;
+			FChaosImpactFxPiece Groove;
+			Groove.Look = EChaosImpactFxLook::GroundFlame;
+			Groove.Location = FVector(Spot.X - Base.X, Spot.Y - Base.Y, GroundZ - Base.Z + 3.0f);
+			Groove.Life = 2.2f;
+			Groove.Attack = 0.03f;
+			Groove.Hold = 0.4f;
+			Groove.SizeFrom = HitRadius * 1.1f;
+			Groove.SizeTo = HitRadius * 1.3f;
+			Groove.Color = FLinearColor(0.32f, 0.42f, 0.62f);
+			Groove.CoreColor = FLinearColor(0.42f, 0.54f, 0.75f);
+			Groove.Intensity = 1.0f;
+			Groove.Opacity = 0.32f;
+			Groove.NoiseScale = 1.8f;
+			Groove.NoiseSpeed = 0.05f;
+			Groove.NoiseAmount = 0.5f;
+			Groove.ErodeTo = 0.8f;
+			Groove.Softness = 0.8f;
+			Fx->Add(Groove);
+			NextTrackAt += HitRadius * 0.6f;
+		}
 	}
-	SimaeSetSection(Furrow, 0, Track);
-	Glow->SetIntensity(20000.0f * (0.85f + 0.15f * FMath::Sin(Age * 40.0f)));
-	Core->SetRelativeScale3D(FVector(0.85f + 0.15f * FMath::Sin(Age * 50.0f)));
-	Shell->AddRelativeRotation(FRotator(0.0f, 0.0f, 900.0f * DeltaSeconds));
-	SimaeSetIntensity(ShellMaterial, 1.6f + 0.6f * FMath::Sin(Age * 30.0f));
-	// A shock ring bursts off it every few metres and hangs in the air behind, widening.
-	while (Travelled >= NextBoomAt)
-	{
-		Booms.Add(NextBoomAt);
-		NextBoomAt += 300.0f;
-	}
-	Booms.RemoveAll([this](const float At) { return (Travelled - At) / Speed > 0.4f; });
 	// Those it rushes past feel it.
 	if (Age >= NextShakeAt)
 	{
@@ -805,7 +855,7 @@ void AChaosImpactSimaeGoukyu::Tick(const float DeltaSeconds)
 			Thrower->ShakeNearby(Next, HitRadius + 700.0f, 0.3f, 0.2f);
 		}
 	}
-	RebuildWind();
+	Glow->SetIntensity(20000.0f * (0.85f + 0.15f * FMath::Sin(Age * 40.0f)));
 	if (bEnd)
 	{
 		Stop(Next);
@@ -829,6 +879,13 @@ void AChaosImpactSimaeGoukyu::Stop(const FVector& Where)
 		Carried->MakeRollingPickup(-Direction * 300.0f);
 	}
 	Ball.Reset();
+	if (AChaosImpactFxKit* Fx = Around.Get())
+	{
+		// What rides with it stays where it stopped and fades.
+		Fx->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		Fx->StopEmitters();
+		Fx->SetLifeSpan(0.4f);
+	}
 	for (UNiagaraComponent* Trail : Trails)
 	{
 		if (Trail)
@@ -848,80 +905,6 @@ void AChaosImpactSimaeGoukyu::Stop(const FVector& Where)
 	{
 		Thrower->ShakeNearby(Where, 1400.0f, 0.35f, 0.4f);
 	}
-}
-
-void AChaosImpactSimaeGoukyu::RebuildWind()
-{
-	// In the shot's own space: +X ahead, the ball at the origin.
-	FMeshBuffers Swirl;
-	FMeshBuffers Lines;
-	const float R = HitRadius;
-	// Three wind helices round the line of flight, widening behind the ball.
-	for (int32 Curl = 0; Curl < 3; ++Curl)
-	{
-		constexpr int32 Steps = 36;
-		for (int32 I = 0; I < Steps; ++I)
-		{
-			const auto Point = [&](const float U, const float Edge)
-			{
-				const float Angle = Curl * UE_TWO_PI / 3.0f + U * UE_PI * 2.2f - Age * 22.0f;
-				const float Radius = R * (0.35f + 0.6f * U);
-				const float Width = FMath::Sin(U * UE_PI) * R * 0.09f;
-				return FVector(40.0f - U * R * 4.2f, FMath::Cos(Angle) * (Radius + Edge * Width),
-					FMath::Sin(Angle) * (Radius + Edge * Width) * 0.75f);
-			};
-			const float A = I / static_cast<float>(Steps);
-			const float B = (I + 1) / static_cast<float>(Steps);
-			SimaeQuad(Swirl, Point(A, -1), Point(B, -1), Point(B, 1), Point(A, 1));
-		}
-	}
-	// The bow wave: a cone of pressed air just ahead.
-	constexpr int32 Ribs = 20;
-	for (int32 I = 0; I < Ribs; ++I)
-	{
-		const float A = I * UE_TWO_PI / Ribs;
-		const float B = (I + 1) * UE_TWO_PI / Ribs;
-		const float Back = R * 0.9f;
-		const FVector Tip(55.0f, 0.0f, 0.0f);
-		const FVector PA(-Back * 0.6f, FMath::Cos(A) * R * 0.55f, FMath::Sin(A) * R * 0.45f);
-		const FVector PB(-Back * 0.6f, FMath::Cos(B) * R * 0.55f, FMath::Sin(B) * R * 0.45f);
-		SimaeQuad(Swirl, Tip, Tip, PB, PA);
-	}
-	// The shock rings left hanging behind, standing across the line of flight, widening and thinning out.
-	for (const float At : Booms)
-	{
-		const float Since = (Travelled - At) / Speed;
-		const float Grow = 1.0f - FMath::Square(1.0f - FMath::Clamp(Since / 0.4f, 0.0f, 1.0f));
-		const float RingRadius = R * (0.55f + 0.9f * Grow);
-		const float Thick = FMath::Max(R * 0.07f * (1.0f - Grow), 1.5f);
-		const float X = At - Travelled;
-		constexpr int32 Segments = 28;
-		for (int32 I = 0; I < Segments; ++I)
-		{
-			const float A = I * UE_TWO_PI / Segments;
-			const float B = (I + 1) * UE_TWO_PI / Segments;
-			const auto P = [&](const float Angle, const float Radius)
-			{
-				return FVector(X, FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius * 0.8f);
-			};
-			SimaeQuad(Lines, P(A, RingRadius - Thick), P(B, RingRadius - Thick), P(B, RingRadius + Thick), P(A, RingRadius + Thick));
-		}
-	}
-	// Speed lines streaming off behind.
-	FRandomStream Stream(1234);
-	for (int32 I = 0; I < 14; ++I)
-	{
-		const float Angle = Stream.FRandRange(0.0f, UE_TWO_PI);
-		const float Radius = R * Stream.FRandRange(0.3f, 1.05f);
-		const float Run = FMath::Frac(Age * 2.5f + Stream.FRand());
-		const float Length = R * Stream.FRandRange(1.5f, 3.5f);
-		const FVector Head(-R * 0.4f - Run * R * 2.0f, FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius * 0.7f);
-		const FVector Tail = Head - FVector(Length, 0, 0);
-		const FVector Across = FVector(0, -FMath::Sin(Angle), FMath::Cos(Angle)) * 3.5f;
-		SimaeQuad(Lines, Tail - Across * 0.3f, Head - Across, Head + Across, Tail + Across * 0.3f);
-	}
-	SimaeSetSection(Wind, 0, Swirl);
-	SimaeSetSection(Wind, 1, Lines);
 }
 
 // ---------------------------------------------------------------------------------------------------- Boulder
@@ -1044,7 +1027,6 @@ AChaosImpactSimaeFlameBurst::AChaosImpactSimaeFlameBurst()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
-	Flames = SimaeMeshComponent(this, TEXT("Flames"), GetRootComponent());
 	Flash = CreateDefaultSubobject<UPointLightComponent>(TEXT("Flash"));
 	Flash->SetupAttachment(GetRootComponent());
 	Flash->SetRelativeLocation(FVector(0, 0, 250));
@@ -1075,20 +1057,6 @@ AChaosImpactSimaeFlameBurst* AChaosImpactSimaeFlameBurst::Play(UWorld* World, co
 	Burst->Ground = Ground;
 	Burst->Height = Height;
 	Burst->bColumn = bColumn;
-	// The aura's own smoky flame, brighter and solid at its heart.
-	if (UMaterialInterface* Flame = LoadObject<UMaterialInterface>(nullptr,
-		TEXT("/Game/ChaosImpact/FX/M_CI_SimaeAuraFlame.M_CI_SimaeAuraFlame"), nullptr, LOAD_NoWarn | LOAD_Quiet))
-	{
-		Burst->FlameMaterial = UMaterialInstanceDynamic::Create(Flame, Burst);
-		Burst->FlameMaterial->SetScalarParameterValue(TEXT("Intensity"), 6.0f);
-		Burst->FlameMaterial->SetScalarParameterValue(TEXT("Speed"), 2.6f);
-		Burst->FlameMaterial->SetScalarParameterValue(TEXT("Opacity"), 1.0f);
-	}
-	else
-	{
-		Burst->FlameMaterial = ChaosImpactBallTypes::MakeAdditive(Burst, FLinearColor(1.0f, 0.1f, 0.2f), 3.0f);
-	}
-	Burst->Flames->SetMaterial(0, Burst->FlameMaterial);
 	FRandomStream Stream(FMath::Rand());
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
@@ -1108,8 +1076,8 @@ AChaosImpactSimaeFlameBurst* AChaosImpactSimaeFlameBurst::Play(UWorld* World, co
 			{
 				Flame->SetAllowScalability(false);
 				ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Flame Scale"), Blob.Size / (bColumn ? 70.0f : 90.0f));
-				// Barely any smoke: it must not hide the fight.
-				ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Smoke Spawn Scale"), 0.05f);
+				// No smoke: it must not hide the fight (and dark smoke smudges the snow).
+				ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Smoke Spawn Scale"), 0.0f);
 				ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Base Light Intentsity"), 0.0f);
 				Blob.Fire = Flame;
 			}
@@ -1129,7 +1097,7 @@ AChaosImpactSimaeFlameBurst* AChaosImpactSimaeFlameBurst::Play(UWorld* World, co
 				{
 					Flame->SetAllowScalability(false);
 					ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Flame Scale"), 3.2f);
-					ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Smoke Spawn Scale"), 0.05f);
+					ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Smoke Spawn Scale"), 0.0f);
 					ChaosImpactBallTypes::SetEffectFloat(Flame, TEXT("Base Light Intentsity"), 0.0f);
 					FTimerHandle Out;
 					World->GetTimerManager().SetTimer(Out, FTimerDelegate::CreateWeakLambda(Flame, [Flame]() { Flame->Deactivate(); }), 0.9f, false);
@@ -1137,8 +1105,63 @@ AChaosImpactSimaeFlameBurst* AChaosImpactSimaeFlameBurst::Play(UWorld* World, co
 			}
 		}
 	}
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(World, Ground))
+	{
+		// The power's punch: a red-hot flash at the chest, a ring of fire racing out over the snow, embers flung up.
+		Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+		const float Big = bColumn ? 1.0f : 0.45f;
+		FChaosImpactFxPiece Burn;
+		Burn.Look = EChaosImpactFxLook::Flame;
+		Burn.Location = FVector(0, 0, Height * 0.5f);
+		Burn.Life = 0.3f;
+		Burn.SizeFrom = Height * 0.8f * Big;
+		Burn.SizeTo = Height * 1.7f * Big;
+		Burn.Color = FLinearColor(1.0f, 0.12f, 0.1f);
+		Burn.CoreColor = FLinearColor(1.0f, 0.85f, 0.6f);
+		Burn.Intensity = 1.6f;
+		Burn.Opacity = 0.85f;
+		Burn.Attack = 0.06f;
+		Burn.ErodeTo = 1.0f;
+		Burn.NoiseAmount = 0.6f;
+		Fx->Add(Burn);
+		FChaosImpactFxPiece Wave;
+		Wave.Look = EChaosImpactFxLook::SolidRing;
+		Wave.Location = FVector(0, 0, 5);
+		Wave.Life = 0.6f;
+		Wave.SizeFrom = Wave.SizeTo = Height * 5.0f * Big;
+		Wave.RingFrom = 0.08f;
+		Wave.RingTo = 0.92f;
+		Wave.RingWidth = 0.05f;
+		Wave.Color = FLinearColor(0.85f, 0.04f, 0.06f);
+		Wave.CoreColor = FLinearColor(1.0f, 0.6f, 0.3f);
+		Wave.Intensity = 1.0f;
+		Wave.Opacity = 0.85f;
+		Wave.Attack = 0.04f;
+		Wave.ErodeTo = 0.7f;
+		Wave.NoiseScale = 2.5f;
+		Fx->Add(Wave);
+		for (int32 Index = 0; Index < (bColumn ? 18 : 6); ++Index)
+		{
+			FChaosImpactFxPiece Ember;
+			Ember.Look = EChaosImpactFxLook::Streak;
+			Ember.Location = FVector(0, 0, Height * 0.5f);
+			Ember.Velocity = FRotator(Stream.FRandRange(20.0f, 75.0f), Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector() * Stream.FRandRange(900.0f, 1900.0f) * Big;
+			Ember.Gravity = 1800.0f;
+			Ember.Drag = 1.0f;
+			Ember.Life = Stream.FRandRange(0.5f, 0.9f);
+			Ember.SizeFrom = 110.0f;
+			Ember.SizeTo = 40.0f;
+			Ember.Width = 8.0f;
+			Ember.Color = FLinearColor(1.0f, 0.18f, 0.05f);
+			Ember.CoreColor = FLinearColor(1.0f, 0.85f, 0.5f);
+			Ember.Intensity = 6.0f;
+			Ember.Attack = 0.02f;
+			Ember.ErodeTo = 0.0f;
+			Ember.Flicker = 0.5f;
+			Fx->Add(Ember);
+		}
+	}
 	Burst->SetLifeSpan(2.6f);
-	Burst->Rebuild();
 	return Burst;
 }
 
@@ -1182,75 +1205,4 @@ void AChaosImpactSimaeFlameBurst::Tick(const float DeltaSeconds)
 		}
 	}
 	Flash->SetIntensity(FMath::Square(FMath::Clamp(1.0f - Age / 0.8f, 0.0f, 1.0f)) * (bColumn ? 60000.0f : 8000.0f));
-	Rebuild();
-}
-
-void AChaosImpactSimaeFlameBurst::Rebuild()
-{
-	const UWorld* World = GetWorld();
-	const APlayerController* Viewer = World ? World->GetFirstPlayerController() : nullptr;
-	const FRotator View = Viewer && Viewer->PlayerCameraManager ? Viewer->PlayerCameraManager->GetCameraRotation() : FRotator(-60, 0, 0);
-	const FRotationMatrix Axes(View);
-	const FVector Ahead = Axes.GetUnitAxis(EAxis::X);
-	const FVector ScreenUp = Axes.GetUnitAxis(EAxis::Z);
-	TArray<FVector> Vertices;
-	TArray<int32> Triangles;
-	TArray<FVector> Normals;
-	TArray<FVector2D> UVs;
-	TArray<FLinearColor> Colors;
-	// A card from Root reaching along Up (flat to the camera), Width across.
-	const auto Card = [&](const FVector& Root, const FVector& Up, const float Width, const float Length, const float Seed, const float Strength)
-	{
-		FVector Along = Up - Ahead * FVector::DotProduct(Up, Ahead);
-		Along = Along.IsNearlyZero() ? ScreenUp : Along.GetSafeNormal();
-		const FVector Across = FVector::CrossProduct(Ahead, Along).GetSafeNormal();
-		const int32 Base = Vertices.Num();
-		for (int32 Row = 0; Row < 3; ++Row)
-		{
-			const float V = Row * 0.5f;
-			const float Half = Width * 0.5f * (1.0f - 0.35f * V);
-			for (int32 Column = 0; Column < 3; ++Column)
-			{
-				const float U = Column * 0.5f;
-				Vertices.Add(Root + Along * Length * V + Across * (U * 2.0f - 1.0f) * Half - GetActorLocation());
-				Normals.Add(-Ahead);
-				UVs.Add(FVector2D(U, V));
-				Colors.Add(FLinearColor(Seed, Strength, 0.0f, 1.0f));
-			}
-		}
-		for (int32 Row = 0; Row < 2; ++Row)
-		{
-			for (int32 Column = 0; Column < 2; ++Column)
-			{
-				const int32 A = Base + Row * 3 + Column;
-				Triangles.Append({A, A + 3, A + 4, A, A + 4, A + 1});
-			}
-		}
-	};
-	// The column: a ring of tall flames shooting up round the body, then sinking away.
-	const float Column = FMath::Clamp(1.0f - (Age - 0.25f) / 0.9f, 0.0f, 1.0f) * FMath::Clamp(Age / 0.12f, 0.0f, 1.0f);
-	if (bColumn && Column > 0.01f)
-	{
-		for (int32 Index = 0; Index < 12; ++Index)
-		{
-			const float Angle = Index * UE_TWO_PI / 12.0f;
-			const FVector Root = Ground + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Height * 0.28f;
-			const float Lick = 0.8f + 0.25f * FMath::Sin(Age * 14.0f + Index * 1.7f);
-			Card(Root, FVector::UpVector, Height * 0.5f, Height * 2.1f * Column * Lick, Index / 12.0f, Column);
-		}
-	}
-	// The blobs: a ball of fire streaming flame behind it, shrinking as it burns out.
-	for (const FBlob& Blob : Blobs)
-	{
-		const float Left = Blob.bLanded ? 0.0f : FMath::Clamp(1.0f - Age / Blob.Life, 0.0f, 1.0f);
-		if (Left <= 0.01f)
-		{
-			continue;
-		}
-		const float Size = Blob.Size * (0.4f + 0.6f * Left);
-		const FVector Behind = -Blob.Velocity.GetSafeNormal();
-		const float Tail = Size * 1.4f + Blob.Velocity.Size() * 0.12f;
-		Card(Blob.Location - Behind * Size * 0.35f, Behind, Size, Tail, Blob.Seed, FMath::Min(1.0f, Left * 1.5f));
-	}
-	Flames->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, Colors, TArray<FProcMeshTangent>(), false);
 }

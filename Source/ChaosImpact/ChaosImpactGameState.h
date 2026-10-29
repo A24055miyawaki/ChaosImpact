@@ -7,6 +7,32 @@
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactGameState.generated.h"
 
+class AChaosImpactCrashBall;
+
+/** One replicated snapshot keeps the objective, score and result consistent on clients. */
+USTRUCT()
+struct FChaosImpactCrashMatchState
+{
+	GENERATED_BODY()
+	UPROPERTY() TObjectPtr<AChaosImpactCrashBall> Ball;
+	UPROPERTY() int32 RedCount = 100;
+	UPROPERTY() int32 BlueCount = 100;
+	UPROPERTY() float Progress = 0.f;
+	UPROPERTY() bool bOvertime = false;
+	UPROPERTY() bool bKnockout = false;
+	UPROPERTY() int32 Winner = INDEX_NONE;
+	UPROPERTY() int32 OvertimeTeam = INDEX_NONE;
+	UPROPERTY() double LastLeadChangedAt = -100.;
+	UPROPERTY() double LastRecoveryAt = -100.;
+	/** Overtime: when it began and the overtime team's last direct hit (the HUD drains its grace from there). */
+	UPROPERTY() double OvertimeStartedAt = -100.;
+	UPROPERTY() double OvertimeHitAt = -100.;
+	/** When each team's count last went down (the scoreboard punches the number). */
+	UPROPERTY() double CountDroppedAt[2] = {-100., -100.};
+	/** Which team pushed the ball last (INDEX_NONE before the first push). */
+	UPROPERTY() int32 LastPushTeam = INDEX_NONE;
+};
+
 UENUM(BlueprintType)
 enum class EChaosImpactOnlinePhase : uint8
 {
@@ -50,9 +76,13 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	int32 Knockouts = 0;
 
-	/** VS match score: hits on opponents plus knockout bonuses. */
+	/** VS match score: hits on opponents plus knockout bonuses (クラッシュボール: pushes on the giant ball too). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
 	int32 Points = 0;
+
+	/** クラッシュボール: throws that pushed the giant ball toward the opponents' goal. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
+	int32 CrashPushes = 0;
 
 	/** Team battle team (0-3); INDEX_NONE in a free-for-all or outside a match. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
@@ -121,6 +151,11 @@ class AChaosImpactGameState : public AGameStateBase
 	GENERATED_BODY()
 
 public:
+	UPROPERTY(Replicated)
+	FChaosImpactCrashMatchState Crash;
+	AChaosImpactCrashBall* GetCrashBall() const { return Crash.Ball; }
+	int32 GetCrashCount(int32 Team) const { return Team == 0 ? Crash.RedCount : Crash.BlueCount; }
+	int32 GetCrashLeader() const { return Crash.RedCount == Crash.BlueCount ? INDEX_NONE : (Crash.RedCount < Crash.BlueCount ? 0 : 1); }
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Human members sorted host first, then by join order. CPUs are not members. */

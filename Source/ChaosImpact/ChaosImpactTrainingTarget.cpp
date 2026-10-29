@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpactEase.h"
 #include "ChaosImpactSfx.h"
 #include "ChaosImpact.h"
 #include "Net/UnrealNetwork.h"
@@ -237,8 +238,10 @@ void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
 		FallingAssembly->SetRelativeLocation(FVector(0.0f, 0.0f, -FallAlpha * 26.0f));
 
 		const float EffectAlpha = FMath::Clamp(DefeatTime / 0.68f, 0.0f, 1.0f);
+		// The burst flies out fast and slows (not at an even pace).
+		const float Burst = ChaosImpactEase::Out(EffectAlpha);
 		ShockCore->SetRelativeLocation(ImpactLocalLocation);
-		ShockCore->SetRelativeScale3D(FVector(FMath::Lerp(0.1f, 2.2f, EffectAlpha)));
+		ShockCore->SetRelativeScale3D(FVector(FMath::Lerp(0.1f, 2.2f, Burst)));
 		ShockCore->SetHiddenInGame(EffectAlpha >= 0.42f);
 		HitLight->SetIntensity(FMath::Lerp(22000.0f, 0.0f,
 			FMath::Clamp(DefeatTime / 0.36f, 0.0f, 1.0f)));
@@ -254,9 +257,9 @@ void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
 				FMath::Sin(Angle) * Radius, Height);
 			const float ScatterDistance = 230.0f + 24.0f * (PieceIndex % 8);
 			Piece->SetRelativeLocation(ImpactLocalLocation
-				+ Direction * FMath::Lerp(8.0f, ScatterDistance, EffectAlpha));
+				+ Direction * FMath::Lerp(8.0f, ScatterDistance, Burst));
 			Piece->SetRelativeRotation(Direction.Rotation()
-				+ FRotator(EffectAlpha * 720.0f, EffectAlpha * 540.0f, 0.0f));
+				+ FRotator(Burst * 720.0f, Burst * 540.0f, 0.0f));
 			const float ParticleSize = (0.045f + 0.012f * (PieceIndex % 4))
 				* FMath::Clamp(1.0f - EffectAlpha, 0.0f, 1.0f);
 			Piece->SetRelativeScale3D(FVector(ParticleSize));

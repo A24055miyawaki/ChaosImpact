@@ -148,12 +148,6 @@ private:
 	TObjectPtr<USceneComponent> BurstRoot;
 
 	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> ShockRing;
-
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> RingMaterial;
-
-	UPROPERTY()
 	TObjectPtr<UPointLightComponent> BurstLight;
 
 	struct FFeather

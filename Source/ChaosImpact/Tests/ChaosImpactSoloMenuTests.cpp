@@ -103,7 +103,7 @@ namespace
 				// ソロ: the world map, standing on stage 1 once its fog has cleared.
 				AChaosImpactWorldMap* Map = AChaosImpactWorldMap::Find(World);
 				const UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(PC);
-				if (!Map || !PC->IsSoloWorldMap() || Map->IsRevealing() || Map->GetFocusedNode() != 1 || (Loading && Loading->IsShowing()))
+				if (!Map || !PC->IsSoloWorldMap() || Map->IsRevealing() || Map->GetFocusedNode() != 1 || (Loading && Loading->IsShowing()) || !Map->IsReadyForInput())
 				{
 					return false;
 				}

@@ -1,4 +1,5 @@
 #include "ChaosImpactMenuWidget.h"
+#include "Engine/GameViewportClient.h"
 #include "ChaosImpactPaint.h"
 
 #include "ChaosImpactPlayerController.h"
@@ -216,6 +217,86 @@ namespace
 				Value, Font, ESlateDrawEffect::None, WithAlpha(Color, Alpha));
 		}
 	};
+
+	/**
+	 * Rules screen, クラッシュボール: a card beside the rows with the field in miniature (red goal, the giant ball, blue
+	 * goal, each team's throws pushing it the other way) and the rule in four short points.
+	 */
+	void PaintCrashRuleGuide(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const float Time)
+	{
+		constexpr float W = 390.0f;
+		constexpr float H = 484.0f;
+		const float In = EaseOut((Time - 0.3f) / 0.35f);
+		const FGeometry Card = MakeSkewed(Design, 1190.0f + (1.0f - In) * 90.0f, 206.0f, W, H, -0.06f);
+		const FMenuPainter P{Card, Elements, Layer, In};
+		const FLinearColor Red = ChaosImpactMatch::GetTeamColor(0);
+		const FLinearColor Blue = ChaosImpactMatch::GetTeamColor(1);
+		P.Box(10.0f, 12.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		P.Box(0.0f, 0.0f, W, H, FLinearColor(0.012f, 0.016f, 0.03f, 0.94f));
+		P.Box(0.0f, 0.0f, W, 8.0f, Violet);
+		P.Text(TEXT("クラッシュボール"), 26.0f, 18.0f, 28.0f, Paper);
+		P.Text(TEXT("2チーム ・ 5分"), 28.0f, 60.0f, 16.0f, Violet, ETextAlign::Left, TEXT("Bold"));
+
+		// The field: red goal left, blue goal right, the giant ball rocking between them as throws land.
+		const FMenuPainter F{Card, Elements, Layer + 1, In};
+		constexpr float FX = 24.0f;
+		constexpr float FY = 90.0f;
+		constexpr float FW = W - 48.0f;
+		constexpr float FH = 120.0f;
+		F.Box(FX, FY, FW, FH, FLinearColor(0.035f, 0.05f, 0.09f, 1.0f));
+		F.Box(FX + FW * 0.5f - 1.0f, FY + 6.0f, 2.0f, FH - 12.0f, WithAlpha(Paper, 0.18f));
+		F.Box(FX, FY + 4.0f, FW * 0.5f, 3.0f, WithAlpha(Red, 0.35f));
+		F.Box(FX + FW * 0.5f, FY + 4.0f, FW * 0.5f, 3.0f, WithAlpha(Blue, 0.35f));
+		const auto Goal = [&](const float X, const FLinearColor& Color, const float Facing)
+		{
+			F.Box(X - 12.0f, FY + FH * 0.5f - 30.0f, 24.0f, 60.0f, WithAlpha(Color, 0.25f));
+			F.Line(FVector2D(X + Facing * 12.0f, FY + FH * 0.5f - 30.0f), FVector2D(X - Facing * 12.0f, FY + FH * 0.5f - 30.0f), Color, 4.0f);
+			F.Line(FVector2D(X - Facing * 12.0f, FY + FH * 0.5f - 30.0f), FVector2D(X - Facing * 12.0f, FY + FH * 0.5f + 30.0f), Color, 4.0f);
+			F.Line(FVector2D(X - Facing * 12.0f, FY + FH * 0.5f + 30.0f), FVector2D(X + Facing * 12.0f, FY + FH * 0.5f + 30.0f), Color, 4.0f);
+		};
+		Goal(FX + 18.0f, Red, 1.0f);
+		Goal(FX + FW - 18.0f, Blue, -1.0f);
+		const float Sway = FMath::Sin(Time * 1.3f) * 34.0f;
+		const FVector2D Ball(FX + FW * 0.5f + Sway, FY + FH * 0.5f);
+		// Each team's small balls fly in from its own side and knock the giant ball towards the other goal.
+		for (int32 Team = 0; Team < 2; ++Team)
+		{
+			const float Phase = FMath::Frac(Time * 0.9f + Team * 0.5f);
+			const float Side = Team == 0 ? -1.0f : 1.0f;
+			const FVector2D From(Ball.X + Side * 120.0f, Ball.Y + (Team == 0 ? 26.0f : -26.0f));
+			const FVector2D Shot = FMath::Lerp(From, Ball + FVector2D(Side * 26.0f, 0.0f), Phase);
+			const FLinearColor Color = Team == 0 ? Red : Blue;
+			F.Ring(Shot, 3.5f, WithAlpha(Color, FMath::Sin(Phase * UE_PI)), 7.0f, 16);
+			// The way this team pushes.
+			const float ArrowX = Ball.X - Side * 44.0f;
+			const float Tip = ArrowX - Side * 26.0f;
+			F.Line(FVector2D(ArrowX, Ball.Y + (Team == 0 ? -38.0f : 38.0f)), FVector2D(Tip, Ball.Y + (Team == 0 ? -38.0f : 38.0f)), Color, 4.0f);
+			F.Line(FVector2D(Tip, Ball.Y + (Team == 0 ? -38.0f : 38.0f)), FVector2D(Tip + Side * 9.0f, Ball.Y + (Team == 0 ? -46.0f : 30.0f)), Color, 4.0f);
+			F.Line(FVector2D(Tip, Ball.Y + (Team == 0 ? -38.0f : 38.0f)), FVector2D(Tip + Side * 9.0f, Ball.Y + (Team == 0 ? -30.0f : 46.0f)), Color, 4.0f);
+		}
+		F.Ring(Ball, 12.0f, Gold, 24.0f, 40);
+		F.Ring(Ball, 24.0f, Ink, 3.0f, 40);
+		F.Ring(Ball + FVector2D(-7.0f, -7.0f), 3.0f, WithAlpha(Paper, 0.8f), 6.0f, 12);
+
+		// The rule in four points.
+		struct FPoint { const TCHAR* Head; const TCHAR* Body; FLinearColor Color; };
+		const FPoint Points[] = {
+			{TEXT("巨大球を押す"), TEXT("ボールを当てて押す。溜めるほど強い"), Gold},
+			{TEXT("ゴールでKO勝ち"), TEXT("相手ゴールに入れたら即勝利"), Violet},
+			{TEXT("カウント"), TEXT("100から減る。少ない方が勝ち"), Ice},
+			{TEXT("延長戦"), TEXT("負けている側が攻める間は続く"), Fire},
+		};
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Points); ++Index)
+		{
+			const float PointIn = EaseOut((Time - 0.45f - Index * 0.07f) / 0.3f);
+			const FMenuPainter L{Card, Elements, Layer + 1, In * PointIn};
+			const float Y = 230.0f + Index * 62.0f + (1.0f - PointIn) * 14.0f;
+			L.Box(24.0f, Y + 4.0f, 30.0f, 30.0f, Points[Index].Color);
+			L.Text(FString::FromInt(Index + 1), 39.0f, Y + 6.0f, 18.0f, Ink, ETextAlign::Center);
+			L.Text(Points[Index].Head, 66.0f, Y, 21.0f, Paper);
+			L.Text(Points[Index].Body, 66.0f, Y + 31.0f, 14.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		}
+	}
 
 	/** Deep navy field split by a blue slab on the left and a red slab on the right. */
 	void PaintBackdrop(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
@@ -873,6 +954,11 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 
 void UChaosImpactMenuWidget::NativeDestruct()
 {
+	if (UGameViewportClient* Viewport = bLevelHiddenByMenu && GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->bDisableWorldRendering = false;
+		bLevelHiddenByMenu = false;
+	}
 	if (CharacterSelect)
 	{
 		CharacterSelect->Close();
@@ -978,6 +1064,13 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		CharacterSelect->Close();
 	}
+	// Leaving the select screen: the level is drawn again at once (this widget may stop ticking when hidden).
+	if (UGameViewportClient* Viewport = bLevelHiddenByMenu && NewScreen != EChaosImpactScreen::CharacterSelect && GetWorld()
+		? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->bDisableWorldRendering = false;
+		bLevelHiddenByMenu = false;
+	}
 	if (SettingsScreen && NewScreen != EChaosImpactScreen::Settings)
 	{
 		SettingsScreen->Close();
@@ -1016,6 +1109,11 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		// Back from stage select lands on 決定 again.
 		SelectedIndex = 4;
+	}
+	else if (Screen == EChaosImpactScreen::MatchRules && Entries.IsValidIndex(0) && Entries[0].bDisabled)
+	{
+		// クラッシュボール: the fixed time row is passed over, straight to the rule.
+		SelectedIndex = 1;
 	}
 	else if (Screen == EChaosImpactScreen::MatchEnd)
 	{
@@ -1534,11 +1632,16 @@ void UChaosImpactMenuWidget::BuildEntries()
 	{
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const FChaosImpactMatchRules Rules = Controller ? Controller->GetPendingMatchRules() : FChaosImpactMatchRules();
-		Entries.Add({FSlateRect(430, 206, 1170, 270), FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
-			TEXT(""), TEXT(""), Ice});
+		// クラッシュボール always lasts five minutes: the time row stays, greyed out.
+		FMenuEntry Minutes{FSlateRect(430, 206, 1170, 270), Rules.bCrashBall
+				? FString::Printf(TEXT("試合時間　%d分（固定）"), Rules.Minutes)
+				: FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
+			TEXT(""), TEXT(""), Ice};
+		Minutes.bDisabled = Rules.bCrashBall;
+		Entries.Add(Minutes);
 		Entries.Add({FSlateRect(430, 282, 1170, 346),
-			FString::Printf(TEXT("ルール　＜  %s  ＞"), *ChaosImpactMatch::DescribeTeams(Rules.TeamCount)),
-			TEXT(""), TEXT(""), Rules.IsTeamBattle() ? Gold : Fire});
+			FString::Printf(TEXT("ルール　＜  %s  ＞"), *ChaosImpactMatch::DescribeRule(Rules)),
+			TEXT(""), TEXT(""), Rules.bCrashBall ? Violet : Rules.IsTeamBattle() ? Gold : Fire});
 		Entries.Add({FSlateRect(430, 358, 1170, 422), FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
 			TEXT(""), TEXT(""), Rules.CPUCount > 0 ? Fire : Muted});
 		// Only with CPUs in the match; otherwise shown greyed out and skipped by the cursor.
@@ -1645,6 +1748,21 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
 	{
 		SettingsScreen->Tick(InDeltaTime);
+	}
+
+	// The select screen covers the whole screen: the level behind it is not drawn at all (its pictures are filmed
+	// on their own). Every other screen keeps the level as it was.
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		// (Not once the VS card is up: its pictures are filmed with the level's drawing.)
+		const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const bool bHideLevel = Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
+			&& Owner && !Owner->IsTravelPending();
+		if (Viewport->bDisableWorldRendering != bHideLevel && (bHideLevel || bLevelHiddenByMenu))
+		{
+			Viewport->bDisableWorldRendering = bHideLevel;
+			bLevelHiddenByMenu = bHideLevel;
+		}
 	}
 
 	SelectBlend.SetNumZeroed(Entries.Num());
@@ -2064,13 +2182,20 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				? FString::Printf(TEXT("観戦：CPU %d人の試合をカメラで見る"), Rules.CPUCount)
 				: FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
 				36.0f, 14.0f, 30.0f, Paper);
-			Info.Text(Rules.IsTeamBattle()
+			Info.Text(Rules.bCrashBall
+				? FString::Printf(TEXT("レッド 対 ブルー・1チーム最大 %d人"), ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
+				: Rules.IsTeamBattle()
 				? FString::Printf(TEXT("1チーム最大 %d人・チームの合計ポイントで勝負"),
 					ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
-				: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Gold);
+				: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Rules.bCrashBall ? Violet : Gold);
 			if (!Rules.bSpectate)
 			{
-				Info.Text(TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"), 38.0f, 110.0f, 24.0f, Muted);
+				Info.Text(Rules.bCrashBall ? TEXT("巨大球に当てる +1pt　　敵に当てる +1pt") : TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"),
+					38.0f, 110.0f, 24.0f, Muted);
+			}
+			if (Rules.bCrashBall)
+			{
+				PaintCrashRuleGuide(DesignGeometry, OutDrawElements, BaseLayer + 2, T);
 			}
 		}
 	}
@@ -2087,7 +2212,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			Chip.Box(0.0f, 0.0f, 680.0f, 70.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
 			Chip.Box(0.0f, 0.0f, 10.0f, 70.0f, Rules.bSpectate ? Ice : Gold);
 			Chip.Text(FString::Printf(TEXT("%s%s ・ %d分 ・ CPU %d人%s"), Rules.bSpectate ? TEXT("観戦 ・ ") : TEXT(""),
-				*ChaosImpactMatch::DescribeTeams(Rules.TeamCount), Rules.Minutes, Rules.CPUCount,
+				*ChaosImpactMatch::DescribeRule(Rules), Rules.Minutes, Rules.CPUCount,
 				Rules.CPUCount > 0 ? *FString::Printf(TEXT("（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel)) : TEXT("")),
 				346.0f, 18.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Bold"));
 		}
@@ -2136,6 +2261,15 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				C.Text(ChaosImpactMatch::GetTeamName(Team), 24.0f, 12.0f, 36.0f, Paper);
 				C.Text(FString::Printf(TEXT("%d/%d"), Count, Capacity), Width - 20.0f, 18.0f, 28.0f,
 					Count >= Capacity ? Fire : Gold, ETextAlign::Right);
+				if (Match->Rules.bCrashBall)
+				{
+					// クラッシュボール: the goal this team pushes the giant ball into, in the other team's colour.
+					const FLinearColor Target = ChaosImpactMatch::GetTeamColor(1 - Team);
+					C.Box(14.0f, 372.0f, Width - 28.0f, 52.0f, WithAlpha(Target, 0.18f));
+					C.Box(14.0f, 372.0f, 8.0f, 52.0f, Target);
+					C.Text(FString::Printf(TEXT("%sのゴールへ巨大球を押し込め！"), ChaosImpactMatch::GetTeamName(1 - Team)),
+						Width * 0.5f, 382.0f, 24.0f, Paper, ETextAlign::Center);
+				}
 				int32 Row = 0;
 				for (const AChaosImpactPlayerState* Member : Humans)
 				{

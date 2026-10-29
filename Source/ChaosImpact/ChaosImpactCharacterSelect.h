@@ -28,7 +28,7 @@ class UChaosImpactCharacterSelect : public UObject
 
 public:
 	static constexpr int32 GridColumns = 4;
-	static constexpr int32 GridRows = 3;
+	static constexpr int32 GridRows = 4;
 
 	/** Where a player is: moving over the icons, choosing a colour for their character, or done. */
 	enum class EStep : uint8
@@ -143,6 +143,13 @@ private:
 	/** Brushes for those pictures; painting adjusts their visible part each frame. */
 	mutable TArray<FSlateBrush> PictureBrushes;
 	mutable TArray<FSlateBrush> PortraitBrushes;
+	/** Icon faces are filmed in turns (half of them each frame); each keeps the time it has yet to animate. */
+	TArray<float> PortraitPendingSeconds;
+	/** When each icon face was made (each is filmed steadily for its first second while its textures arrive). */
+	TMap<int32, double> PortraitBornAt;
+	int32 PortraitFrame = 0;
+	/** Icon faces made so far (a couple per frame after opening). */
+	int32 PortraitsMade = 0;
 
 	double OpenedAt = 0.0;
 	double AllReadyAt = -100.0;

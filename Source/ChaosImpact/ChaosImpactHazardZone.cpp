@@ -1,4 +1,5 @@
-﻿#include "ChaosImpactHazardZone.h"
+#include "ChaosImpactHazardZone.h"
+#include "ChaosImpactFxKit.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
@@ -8,6 +9,7 @@
 #include "ChaosImpactSfx.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactTrainingTarget.h"
+#include "ChaosImpactCrashBall.h"
 
 #include "Components/CapsuleComponent.h"
 #include "Components/PointLightComponent.h"
@@ -248,6 +250,60 @@ void ChaosImpactBallTypes::PlayBeamBurst(UObject* WorldContext, const FVector& L
 	if (UNiagaraSystem* Sparks = LoadEffect(Effects::SparkBurst))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(WorldContext, Sparks, Location, FRotator::ZeroRotator, FVector(Scale));
+	}
+	// The hit itself (FX kit, soft): a white-hot pink flash, a ring of light bursting out and sparks of it flung off.
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(WorldContext, Location);
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Scale = FMath::Clamp(Scale, 0.5f, 1.6f);
+	Fx->Stream.Initialize(FMath::Rand());
+	const FLinearColor Pink = GetColor(EChaosImpactBallType::Beam);
+	const FLinearColor White(1.0f, 0.9f, 1.0f);
+	FChaosImpactFxPiece Flash;
+	Flash.Life = 0.18f;
+	Flash.SizeFrom = 120.0f;
+	Flash.SizeTo = 290.0f;
+	Flash.Color = Pink;
+	Flash.CoreColor = White;
+	Flash.Intensity = 6.0f;
+	Flash.Attack = 0.05f;
+	Flash.NoiseAmount = 0.2f;
+	Fx->Add(Flash);
+	// Lying flat: a ring turned to the camera this close to the floor would be cut in half by it.
+	FChaosImpactFxPiece Burst;
+	Burst.Look = EChaosImpactFxLook::Ring;
+	Burst.Life = 0.32f;
+	Burst.SizeFrom = Burst.SizeTo = 560.0f;
+	Burst.RingFrom = 0.15f;
+	Burst.RingTo = 0.9f;
+	Burst.RingWidth = 0.06f;
+	Burst.Color = Pink;
+	Burst.CoreColor = White;
+	Burst.Intensity = 3.5f;
+	Burst.Attack = 0.05f;
+	Burst.ErodeTo = 0.6f;
+	Fx->Add(Burst);
+	for (int32 Index = 0; Index < 12; ++Index)
+	{
+		FChaosImpactFxPiece Spark;
+		Spark.Look = EChaosImpactFxLook::Streak;
+		Spark.Velocity = FRotator(Fx->Stream.FRandRange(-20.0f, 60.0f), Fx->Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+			* Fx->Stream.FRandRange(700.0f, 1500.0f);
+		Spark.Gravity = 1800.0f;
+		Spark.Drag = 2.0f;
+		Spark.Life = Fx->Stream.FRandRange(0.25f, 0.5f);
+		Spark.SizeFrom = 90.0f;
+		Spark.SizeTo = 25.0f;
+		Spark.Width = 6.0f;
+		Spark.Color = Pink;
+		Spark.CoreColor = White;
+		Spark.Intensity = 6.0f;
+		Spark.Attack = 0.02f;
+		Spark.ErodeTo = 0.0f;
+		Spark.Flicker = 0.4f;
+		Fx->Add(Spark);
 	}
 }
 
@@ -1040,6 +1096,17 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 				Affect(*It);
 			}
 		}
+		for (TActorIterator<AChaosImpactCrashBall> It(World); It; ++It)
+		{
+			AChaosImpactCrashBall* CrashBall = *It;
+			if (IsValid(CrashBall) && CrashBall != DirectVictim.Get() && !Affected.Contains(CrashBall)
+				&& IsInside(CrashBall, CrashBall->GetBallRadius(), BlastHeight + CrashBall->GetBallRadius()))
+			{
+				Affected.Add(CrashBall);
+				const float Strength = ZoneType == EChaosImpactBallType::Smoke ? 0.45f : 0.85f;
+				CrashBall->ApplySpecialEffectPush(this, SourcePawn, GetActorLocation(), FVector::ZeroVector, Strength, false);
+			}
+		}
 	}
 }
 
@@ -1142,6 +1209,18 @@ void AChaosImpactHazardZone::TickBurning(const float Radius)
 		if (!It->IsDefeated())
 		{
 			Burn(*It, 30.0f);
+		}
+	}
+	for (TActorIterator<AChaosImpactCrashBall> It(World); It; ++It)
+	{
+		AChaosImpactCrashBall* CrashBall = *It;
+		if (IsValid(CrashBall) && IsInside(CrashBall, CrashBall->GetBallRadius() * 0.7f, BurnHeight + CrashBall->GetBallRadius(), Radius))
+		{
+			AActor* CooldownKey = TrailLeader.IsValid() ? TrailLeader.Get() : this;
+			const FVector PreferredDir = ZoneType == EChaosImpactBallType::Black
+				? (GetActorLocation() - CrashBall->GetActorLocation()).GetSafeNormal2D()
+				: (CrashBall->GetActorLocation() - GetActorLocation()).GetSafeNormal2D();
+			CrashBall->ApplySpecialEffectPush(CooldownKey, SourcePawn, GetActorLocation(), PreferredDir, 0.65f, true);
 		}
 	}
 }
@@ -1293,10 +1372,57 @@ UNiagaraComponent* AChaosImpactHazardZone::AddLoopingEffect(const TCHAR* SystemP
 	return Effect;
 }
 
+namespace
+{
+	/** Under a fire: the ground lit hot orange where the flames stand, over a dark scorch that outlasts them. */
+	void AddFireGround(AChaosImpactFxKit* Fx, const FVector& At, const float Size, const float Seconds, const float Glow)
+	{
+		FChaosImpactFxPiece Scorch;
+		Scorch.Look = EChaosImpactFxLook::GroundFlame;
+		Scorch.Location = At + FVector(0.0f, 0.0f, 2.0f);
+		Scorch.Life = Seconds + 1.4f;
+		Scorch.SizeFrom = Size * 0.85f;
+		Scorch.SizeTo = Size;
+		Scorch.Color = FLinearColor(0.015f, 0.01f, 0.008f);
+		Scorch.CoreColor = FLinearColor(0.06f, 0.025f, 0.01f);
+		Scorch.Intensity = 1.0f;
+		Scorch.Opacity = 0.6f;
+		Scorch.Attack = 0.03f;
+		Scorch.ErodeFrom = 0.2f;
+		Scorch.ErodeTo = 0.75f;
+		Scorch.NoiseScale = 2.4f;
+		Scorch.NoiseSpeed = 0.02f;
+		Scorch.NoiseAmount = 0.9f;
+		Scorch.Softness = 0.6f;
+		Fx->Add(Scorch);
+		FChaosImpactFxPiece Heat;
+		Heat.Look = EChaosImpactFxLook::GroundGlow;
+		Heat.Location = At + FVector(0.0f, 0.0f, 4.0f);
+		Heat.Life = Seconds + 0.3f;
+		Heat.SizeFrom = Size * 0.7f;
+		Heat.SizeTo = Size * 0.8f;
+		Heat.Color = FLinearColor(1.0f, 0.2f, 0.02f);
+		Heat.CoreColor = FLinearColor(1.0f, 0.55f, 0.12f);
+		Heat.Intensity = Glow;
+		Heat.Attack = 0.04f;
+		Heat.ErodeFrom = 0.1f;
+		Heat.ErodeTo = 0.5f;
+		Heat.NoiseScale = 2.2f;
+		Heat.NoiseSpeed = 0.6f;
+		Heat.NoiseAmount = 0.7f;
+		Heat.Softness = 0.75f;
+		Heat.Flicker = 0.35f;
+		Fx->Add(Heat);
+	}
+}
+
 void AChaosImpactHazardZone::BuildFirePresentation(FRandomStream& Stream)
 {
 	using namespace ChaosImpactBallTypes;
 	ZoneLight->SetLightColor(FLinearColor(1.0f, 0.45f, 0.12f));
+	const float Radius = GetRadius();
+	const float Burning = GetActiveSeconds();
+	const float Up = BurstHeight * 0.5f + 40.0f;
 
 	if (UNiagaraSystem* Explosion = LoadEffect(Effects::Explosion))
 	{
@@ -1308,6 +1434,8 @@ void AChaosImpactHazardZone::BuildFirePresentation(FRandomStream& Stream)
 	}
 
 	// A large fire where the ball burst and smaller ones spread over the burning area.
+	TArray<FVector, TInlineAllocator<8>> FireSpots;
+	FireSpots.Add(FVector::ZeroVector);
 	if (UNiagaraComponent* Center = AddLoopingEffect(Effects::Fire, FVector::ZeroVector))
 	{
 		SetEffectFloat(Center, TEXT("Flame Scale"), 2.6f * FMath::Clamp(GetVisualScale(), 0.45f, 1.0f));
@@ -1317,9 +1445,10 @@ void AChaosImpactHazardZone::BuildFirePresentation(FRandomStream& Stream)
 	for (int32 Index = 0; Index < Around; ++Index)
 	{
 		const float Angle = (Index + Stream.FRandRange(-0.25f, 0.25f)) * UE_TWO_PI / Around;
-		const float Distance = GetRadius() * Stream.FRandRange(0.5f, 0.74f);
-		if (UNiagaraComponent* Flames = AddLoopingEffect(Effects::Fire,
-			FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.0f)))
+		const float Distance = Radius * Stream.FRandRange(0.5f, 0.74f);
+		const FVector Spot(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.0f);
+		FireSpots.Add(Spot);
+		if (UNiagaraComponent* Flames = AddLoopingEffect(Effects::Fire, Spot))
 		{
 			SetEffectFloat(Flames, TEXT("Flame Scale"), Stream.FRandRange(1.5f, 2.1f) * FMath::Clamp(GetVisualScale(), 0.5f, 1.0f));
 			SetEffectFloat(Flames, TEXT("Smoke Spawn Scale"), 0.2f);
@@ -1327,14 +1456,76 @@ void AChaosImpactHazardZone::BuildFirePresentation(FRandomStream& Stream)
 			SetEffectFloat(Flames, TEXT("Base Light Intentsity"), 0.0f);
 		}
 	}
+
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Scale = FMath::Clamp(GetVisualScale(), 0.45f, 1.4f);
+	Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+	// The flames stand on burning ground: lit and scorched under each one, so nothing floats.
+	AddFireGround(Fx, FVector::ZeroVector, Radius * 1.0f, Burning, 2.0f);
+	for (int32 Index = 1; Index < FireSpots.Num(); ++Index)
+	{
+		AddFireGround(Fx, FireSpots[Index], Radius * 0.55f, Burning, 1.6f);
+	}
+	// The burst's punch: a hot flash, a shock ring racing over the ground, sparks thrown out and falling.
+	FChaosImpactFxPiece Flash;
+	Flash.Location = FVector(0.0f, 0.0f, Up);
+	Flash.Life = 0.15f;
+	Flash.SizeFrom = 220.0f;
+	Flash.SizeTo = 400.0f;
+	Flash.Color = FLinearColor(1.0f, 0.5f, 0.12f);
+	Flash.CoreColor = FLinearColor(1.0f, 0.92f, 0.72f);
+	Flash.Intensity = 7.0f;
+	Flash.Attack = 0.04f;
+	Flash.ErodeTo = 0.3f;
+	Flash.NoiseAmount = 0.15f;
+	Fx->Add(Flash);
+	FChaosImpactFxPiece Shock;
+	Shock.Look = EChaosImpactFxLook::Ring;
+	Shock.Location = FVector(0.0f, 0.0f, 6.0f);
+	Shock.Life = 0.45f;
+	Shock.SizeFrom = Shock.SizeTo = Radius * 2.6f;
+	Shock.RingFrom = 0.12f;
+	Shock.RingTo = 0.95f;
+	Shock.RingWidth = 0.07f;
+	Shock.Color = FLinearColor(1.0f, 0.22f, 0.02f);
+	Shock.CoreColor = FLinearColor(1.0f, 0.68f, 0.2f);
+	Shock.Intensity = 3.5f;
+	Shock.Attack = 0.05f;
+	Shock.ErodeTo = 0.7f;
+	Fx->Add(Shock);
+	for (int32 Index = 0; Index < 16; ++Index)
+	{
+		FChaosImpactFxPiece Spark;
+		Spark.Look = EChaosImpactFxLook::Streak;
+		const FVector Out = FRotator(Stream.FRandRange(15.0f, 65.0f), Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector();
+		Spark.Location = FVector(0.0f, 0.0f, Up);
+		Spark.Velocity = Out * Stream.FRandRange(800.0f, 1700.0f);
+		Spark.Gravity = 2200.0f;
+		Spark.Drag = 1.2f;
+		Spark.Life = Stream.FRandRange(0.4f, 0.8f);
+		Spark.SizeFrom = Stream.FRandRange(70.0f, 110.0f);
+		Spark.SizeTo = 30.0f;
+		Spark.Width = 7.0f;
+		Spark.Color = FLinearColor(1.0f, 0.35f, 0.05f);
+		Spark.CoreColor = FLinearColor(1.0f, 0.85f, 0.5f);
+		Spark.Intensity = 6.0f;
+		Spark.Attack = 0.02f;
+		Spark.ErodeTo = 0.0f;
+		Spark.Flicker = 0.5f;
+		Fx->Add(Spark);
+	}
 }
 
 void AChaosImpactHazardZone::BuildFireTrailPresentation(FRandomStream& Stream)
 {
 	using namespace ChaosImpactBallTypes;
 	// The same flames as those round a burst, without its big centre fire, blast or plume of smoke: one to each fire,
-	// large enough that neighbours 130 apart run into one another, so the path burns as one line. Nothing is laid
-	// under them: a flat mark on the floor there (a scorch tried first) shrank the flames to small dim tongues.
+	// large enough that neighbours 130 apart run into one another, so the path burns as one line. Under each, the
+	// ground glows and scorches (kept low and soft: a flat mark the flames' own colour shrank them to dim tongues).
 	if (UNiagaraComponent* Flames = AddLoopingEffect(Effects::Fire,
 		FVector(Stream.FRandRange(-10.0f, 10.0f), Stream.FRandRange(-10.0f, 10.0f), 0.0f)))
 	{
@@ -1342,6 +1533,11 @@ void AChaosImpactHazardZone::BuildFireTrailPresentation(FRandomStream& Stream)
 		Flames->SetAllowScalability(false);
 		SetEffectFloat(Flames, TEXT("Flame Scale"), Stream.FRandRange(1.6f, 2.0f));
 		SetEffectFloat(Flames, TEXT("Smoke Spawn Scale"), 0.2f);
+	}
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation()))
+	{
+		Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+		AddFireGround(Fx, FVector::ZeroVector, 210.0f, GetActiveSeconds(), 1.6f);
 	}
 }
 
@@ -1410,13 +1606,15 @@ void AChaosImpactHazardZone::BuildSmokePresentation(FRandomStream& Stream)
 	}
 	// A heavy centre and one ring of plumes out toward the cloud's edge: a few big, slow plumes cover its whole area
 	// (many small ones piled up translucent smoke far too thick to draw).
-	Plume(FVector::ZeroVector, 760.0f * Size, 12.0f);
-	constexpr int32 Ring = 5;
+	// (Four plumes round the centre and fewer, slightly larger puffs cover the same area as five did, for about a
+	// third less translucent overdraw: smoke is the heaviest thing on screen.)
+	Plume(FVector::ZeroVector, 800.0f * Size, 9.0f);
+	constexpr int32 Ring = 4;
 	for (int32 Index = 0; Index < Ring; ++Index)
 	{
-		const float Angle = (Index + Stream.FRandRange(-0.25f, 0.25f)) * UE_TWO_PI / Ring;
-		const float Distance = Radius * Stream.FRandRange(0.55f, 0.7f);
-		Plume(FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.0f), Stream.FRandRange(620.0f, 720.0f) * Size, 8.0f);
+		const float Angle = (Index + Stream.FRandRange(-0.2f, 0.2f)) * UE_TWO_PI / Ring;
+		const float Distance = Radius * Stream.FRandRange(0.55f, 0.68f);
+		Plume(FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.0f), Stream.FRandRange(690.0f, 780.0f) * Size, 6.0f);
 	}
 }
 
@@ -1448,7 +1646,8 @@ void AChaosImpactHazardZone::BuildSnowPresentation(FRandomStream& Stream)
 		Chunk->SetMaterial(0, Snow);
 		Chunk->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Chunk->SetGenerateOverlapEvents(false);
-		Chunk->SetCastShadow(true);
+		// No shadows: from the high camera a chunk's shadow reads as a dark fleck flung over the floor.
+		Chunk->SetCastShadow(false);
 		Chunk->SetupAttachment(SceneRoot);
 		Chunk->RegisterComponent();
 		FSnowChunk& Piece = SnowChunks.AddDefaulted_GetRef();
@@ -1460,6 +1659,72 @@ void AChaosImpactHazardZone::BuildSnowPresentation(FRandomStream& Stream)
 		Piece.Size = Stream.FRandRange(0.07f, 0.16f) * FMath::Clamp(Scale, 0.8f, 2.4f);
 	}
 	UpdateSnowChunks(0.0f);
+
+	// Soft (FX kit): a puff of powder bursting out low, a white ring of it over the floor and glints of ice in the air.
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Scale = FMath::Clamp(Scale, 0.7f, 2.4f);
+	Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+	const FLinearColor White(0.96f, 0.98f, 1.0f);
+	const FLinearColor Shade(0.68f, 0.78f, 0.92f);
+	FChaosImpactFxPiece Ring;
+	Ring.Look = EChaosImpactFxLook::SolidRing;
+	Ring.Location = FVector(0.0f, 0.0f, 4.0f);
+	Ring.Life = 0.4f;
+	Ring.SizeFrom = Ring.SizeTo = 420.0f;
+	Ring.RingFrom = 0.1f;
+	Ring.RingTo = 0.9f;
+	Ring.RingWidth = 0.06f;
+	Ring.Color = Shade;
+	Ring.CoreColor = White;
+	Ring.Intensity = 1.0f;
+	Ring.Opacity = 0.7f;
+	Ring.Attack = 0.05f;
+	Ring.ErodeTo = 0.7f;
+	Fx->Add(Ring);
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		const float Angle = (Index + Fx->Stream.FRandRange(-0.3f, 0.3f)) * UE_TWO_PI / 6.0f;
+		const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+		FChaosImpactFxPiece Puff;
+		Puff.Look = EChaosImpactFxLook::Smoke;
+		Puff.Location = Out * 20.0f + FVector(0.0f, 0.0f, 50.0f);
+		Puff.Velocity = Out * Fx->Stream.FRandRange(250.0f, 420.0f) + FVector(0.0f, 0.0f, 60.0f);
+		Puff.Drag = 2.5f;
+		Puff.Life = Fx->Stream.FRandRange(0.7f, 1.0f);
+		Puff.SizeFrom = 60.0f;
+		Puff.SizeTo = 130.0f;
+		Puff.Color = Shade;
+		Puff.CoreColor = White;
+		Puff.Intensity = 1.0f;
+		Puff.Opacity = 0.45f;
+		Puff.Attack = 0.08f;
+		Puff.ErodeTo = 0.95f;
+		Puff.Spin = Fx->Stream.FRandRange(-60.0f, 60.0f);
+		Fx->Add(Puff);
+	}
+	for (int32 Index = 0; Index < 10; ++Index)
+	{
+		FChaosImpactFxPiece Glint;
+		Glint.Location = FVector(0.0f, 0.0f, 50.0f);
+		Glint.Velocity = FRotator(Fx->Stream.FRandRange(25.0f, 75.0f), Fx->Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+			* Fx->Stream.FRandRange(300.0f, 650.0f);
+		Glint.Gravity = 900.0f;
+		Glint.Drag = 1.5f;
+		Glint.Life = Fx->Stream.FRandRange(0.45f, 0.8f);
+		Glint.SizeFrom = 45.0f;
+		Glint.SizeTo = 20.0f;
+		Glint.Color = FLinearColor(0.5f, 0.75f, 1.0f);
+		Glint.CoreColor = White;
+		Glint.Intensity = 4.0f;
+		Glint.Attack = 0.05f;
+		Glint.NoiseAmount = 0.0f;
+		Glint.Flicker = 0.8f;
+		Fx->Add(Glint);
+	}
 }
 
 void AChaosImpactHazardZone::ApplyNovaKnockback(AChaosImpactCharacter* Victim) const
@@ -1511,6 +1776,16 @@ void AChaosImpactHazardZone::TickNova(const float Age)
 			UGameplayStatics::ApplyDamage(*It, ChaosImpactBallTypes::GetNovaDamage(BurstScale), GetSourceController(), this, nullptr);
 		}
 	}
+	for (TActorIterator<AChaosImpactCrashBall> It(World); It; ++It)
+	{
+		AChaosImpactCrashBall* CrashBall = *It;
+		if (IsValid(CrashBall) && !Affected.Contains(CrashBall)
+			&& IsInside(CrashBall, CrashBall->GetBallRadius(), Reach + CrashBall->GetBallRadius(), Reach))
+		{
+			Affected.Add(CrashBall);
+			CrashBall->ApplySpecialEffectPush(this, SourcePawn, GetActorLocation(), FVector::ZeroVector, 1.35f, false);
+		}
+	}
 }
 
 void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
@@ -1539,13 +1814,6 @@ void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
 	ZoneLight->SetLightColor(FLinearColor(0.3f, 0.6f, 1.0f));
 	ZoneLight->SetAttenuationRadius(Blast * 3.0f + 800.0f);
 	ZoneLight->SetIntensity(0.0f);
-	// Shapes for the moment it goes off, all placed each frame by UpdateNovaPresentation.
-	AddZoneMesh(GroundGlow, false, MakeAdditive(this, FLinearColor(0.1f, 0.38f, 1.0f), 0.0f));
-	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(0.35f, 0.7f, 1.0f), 0.0f, 1.0f));
-	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(0.7f, 0.88f, 1.0f), 0.0f));
-	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(0.3f, 0.65f, 1.0f), 0.0f);
-	RingMaterial = RingLook;
-	RingMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
 	// Explosions going off all over inside the ball of fire as it grows, from the centre outward.
 	const FVector Base = GetActorLocation();
 	const float Size = Blast / 300.0f;
@@ -1561,6 +1829,106 @@ void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
 	}
 	// It lands spinning up.
 	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, Base, 0.8f, 1.4f);
+}
+
+void AChaosImpactHazardZone::PlayNovaKit(const FVector& Center)
+{
+	// All soft (FX kit), in the nova's blue: a blinding flash, a pillar of light up into the sky, the ground lit under
+	// the ball of fire, two shock waves racing out past the edge and sparks flung off.
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Stream.Initialize(VisualSeed);
+	const float Blast = GetRadius();
+	const FVector Middle = Center - GetActorLocation();
+	const FLinearColor Blue(0.2f, 0.5f, 1.0f);
+	const FLinearColor White(0.85f, 0.95f, 1.0f);
+	FChaosImpactFxPiece Flash;
+	Flash.Location = Middle;
+	Flash.Life = 0.45f;
+	Flash.SizeFrom = Blast * 0.5f;
+	Flash.SizeTo = Blast * 1.1f;
+	Flash.Color = Blue;
+	Flash.CoreColor = White;
+	Flash.Intensity = 6.0f;
+	Flash.Attack = 0.04f;
+	Flash.NoiseAmount = 0.25f;
+	Fx->Add(Flash);
+	FChaosImpactFxPiece Pillar;
+	Pillar.Location = FVector(0.0f, 0.0f, 0.0f);
+	Pillar.Life = 1.3f;
+	Pillar.SizeFrom = Blast * 0.55f;
+	Pillar.SizeTo = Blast * 0.3f;
+	Pillar.Width = 5.0f;
+	Pillar.Taper = 1.0f;
+	Pillar.Color = Blue;
+	Pillar.CoreColor = White;
+	Pillar.Intensity = 3.5f;
+	Pillar.Attack = 0.05f;
+	Pillar.NoiseSpeed = 1.6f;
+	Pillar.NoiseAmount = 0.5f;
+	Fx->Add(Pillar);
+	FChaosImpactFxPiece Lit;
+	Lit.Look = EChaosImpactFxLook::GroundGlow;
+	Lit.Location = FVector(0.0f, 0.0f, 4.0f);
+	Lit.Life = 2.2f;
+	Lit.SizeFrom = Blast * 2.3f;
+	Lit.SizeTo = Blast * 1.6f;
+	Lit.Color = FLinearColor(0.1f, 0.35f, 1.0f);
+	Lit.CoreColor = White;
+	Lit.Intensity = 1.8f;
+	Lit.Attack = 0.03f;
+	Lit.Hold = 0.25f;
+	Lit.NoiseScale = 2.0f;
+	Lit.NoiseSpeed = 0.8f;
+	Lit.NoiseAmount = 0.6f;
+	Lit.Flicker = 0.2f;
+	Fx->Add(Lit);
+	FChaosImpactFxPiece Wave;
+	Wave.Look = EChaosImpactFxLook::Ring;
+	Wave.Location = FVector(0.0f, 0.0f, 10.0f);
+	Wave.Life = 0.9f;
+	Wave.SizeFrom = Wave.SizeTo = Blast * 3.4f;
+	Wave.RingFrom = 0.05f;
+	Wave.RingTo = 0.95f;
+	Wave.RingWidth = 0.045f;
+	Wave.Color = Blue;
+	Wave.CoreColor = White;
+	Wave.Intensity = 3.5f;
+	Wave.Attack = 0.03f;
+	Wave.ErodeTo = 0.75f;
+	Wave.NoiseScale = 3.0f;
+	Fx->Add(Wave);
+	FChaosImpactFxPiece Second = Wave;
+	Second.Delay = 0.25f;
+	Second.Life = 1.2f;
+	Second.RingTo = 0.75f;
+	Second.RingWidth = 0.03f;
+	Second.Intensity = 2.0f;
+	Fx->Add(Second);
+	for (int32 Index = 0; Index < 22; ++Index)
+	{
+		FChaosImpactFxPiece Spark;
+		Spark.Look = EChaosImpactFxLook::Streak;
+		Spark.Location = Middle;
+		Spark.Velocity = FRotator(Fx->Stream.FRandRange(-10.0f, 70.0f), Fx->Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+			* Fx->Stream.FRandRange(1200.0f, 2600.0f) * FMath::Clamp(Blast / 400.0f, 0.7f, 1.5f);
+		Spark.Gravity = 2000.0f;
+		Spark.Drag = 1.5f;
+		Spark.Life = Fx->Stream.FRandRange(0.4f, 0.8f);
+		Spark.SizeFrom = Fx->Stream.FRandRange(110.0f, 180.0f);
+		Spark.SizeTo = 40.0f;
+		Spark.Width = 8.0f;
+		Spark.Color = Blue;
+		Spark.CoreColor = White;
+		Spark.Intensity = 6.0f;
+		Spark.Attack = 0.02f;
+		Spark.ErodeTo = 0.0f;
+		Spark.Flicker = 0.4f;
+		Fx->Add(Spark);
+	}
 }
 
 void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
@@ -1621,9 +1989,10 @@ void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 					ENCPoolMethod::None, true);
 			}
 		};
-		Play(Effects::BigExplosion, Center, Size * 1.2f);
-		Play(Effects::DirtBurstLarge, Base + FVector(0.0f, 0.0f, 20.0f), Size);
+		// (Its smoke is big: kept small enough not to bury the arena.)
+		Play(Effects::BigExplosion, Center, Size * 0.85f);
 		Play(Effects::SparkBurst, Center, Size * 2.5f);
+		PlayNovaKit(Center);
 		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBlast, Center);
 		if (UWorld* World = GetWorld())
 		{
@@ -1644,41 +2013,6 @@ void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 	}
 	if (Burst >= 0.0f)
 	{
-		// A blinding flash, gone in half a second.
-		const float FlashT = Burst / 0.5f;
-		const float FlashSize = FlashT < 1.0f ? 2.0f * Blast * 0.35f * HazardEaseOut(FlashT) : 0.0f;
-		PlaceZoneShape(FlashSphere, Center, FlashSize, FlashSize, FRotator::ZeroRotator,
-			1.4f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
-		// A pillar of fire up into the sky.
-		const float PillarT = FMath::Clamp(Burst / 1.6f, 0.0f, 1.0f);
-		if (DiskRings.Num() > 0)
-		{
-			const float PillarWidth = PillarT < 1.0f
-				? Blast * 0.45f * (0.35f + 0.65f * HazardEaseOut(Burst / 0.25f)) * (1.0f - 0.6f * PillarT) : 0.0f;
-			PlaceZoneShape(DiskRings[0], Base + FVector(0.0f, 0.0f, 2500.0f), PillarWidth, 5000.0f, FRotator::ZeroRotator,
-				1.2f * FMath::Square(1.0f - PillarT));
-		}
-		// The ground under it glows as long as the fire is out.
-		PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 3.0f), FireSize > 0.01f ? 2.0f * Blast * 1.05f * FireSize : 0.0f, 2.0f,
-			FRotator::ZeroRotator, 0.45f * FireSize);
-		// Shock waves along the ground, out past the edge.
-		if (UProceduralMeshComponent* Ring = RingMesh.Get())
-		{
-			ChaosImpactIceMeshes::FMeshBuffers Rings;
-			float Glow = 0.0f;
-			for (int32 Wave = 0; Wave < 2; ++Wave)
-			{
-				const float WaveT = (Burst - Wave * 0.25f) / (1.0f + Wave * 0.4f);
-				if (WaveT > 0.0f && WaveT < 1.0f)
-				{
-					ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 10.0f + Wave * 4.0f),
-						60.0f + Blast * (1.6f - Wave * 0.35f) * HazardEaseOut(WaveT), 45.0f * (1.0f - WaveT) + 6.0f, 128);
-					Glow = FMath::Max(Glow, 2.5f * (1.0f - WaveT));
-				}
-			}
-			ChaosImpactLightning::SetMesh(Ring, Rings);
-			SetIntensity(RingMaterial.Get(), Glow);
-		}
 		for (FNovaBurst& Later : NovaBursts)
 		{
 			if (!Later.bPlayed && Burst >= Later.At)
@@ -1734,10 +2068,9 @@ void AChaosImpactHazardZone::BuildIcePresentation(FRandomStream& Stream)
 	using namespace ChaosImpactBallTypes;
 	using namespace ChaosImpactIceMeshes;
 	ZoneLight->SetLightColor(FLinearColor(0.55f, 0.8f, 1.0f));
-	const FVector Burst = GetActorLocation() + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 30.0f));
-	PlayIceShatter(this, Burst, 1.6f * GetVisualScale(), 3.0f);
+	// (Not the pack's shatter here: its shards lie flat and, this big, read as a hard-edged white star over the area.)
 
-	// Frozen ground: a ragged sheet of clear ice, a frostier core and cracks running out from the impact.
+	// Frozen ground: soft frost over the area (FX kit, below), and cracks running out from the impact.
 	auto AddSheetLayer = [&](const FMeshBuffers& Mesh, const float Opacity, const float Glow, const FLinearColor& Tint)
 	{
 		UMaterialInstanceDynamic* Look = MakeIceCrystal(this, Opacity, Glow, Tint);
@@ -1748,13 +2081,6 @@ void AChaosImpactHazardZone::BuildIcePresentation(FRandomStream& Stream)
 		}
 	};
 	{
-		FMeshBuffers Sheet;
-		AppendSheet(Sheet, FTransform(FVector(0.0f, 0.0f, 1.5f)), GetRadius(), Stream);
-		AddSheetLayer(Sheet, 0.32f, 0.05f, FLinearColor(0.2f, 0.45f, 0.75f));
-		FMeshBuffers Frost;
-		AppendSheet(Frost, FTransform(FVector(Stream.FRandRange(-25.0f, 25.0f), Stream.FRandRange(-25.0f, 25.0f), 2.6f)),
-			GetRadius() * 0.55f, Stream);
-		AddSheetLayer(Frost, 0.16f, 0.1f, FLinearColor(0.6f, 0.8f, 0.95f));
 		FMeshBuffers Cracks;
 		constexpr int32 CrackCount = 11;
 		for (int32 Index = 0; Index < CrackCount; ++Index)
@@ -1762,9 +2088,9 @@ void AChaosImpactHazardZone::BuildIcePresentation(FRandomStream& Stream)
 			const float Angle = (Index + Stream.FRandRange(-0.35f, 0.35f)) * UE_TWO_PI / CrackCount;
 			const FVector Direction(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
 			AppendCrack(Cracks, FTransform(FVector(0.0f, 0.0f, 3.6f)), Direction * Stream.FRandRange(10.0f, 40.0f),
-				Direction, GetRadius() * Stream.FRandRange(0.5f, 0.9f), Stream.FRandRange(2.5f, 4.5f), Stream);
+				Direction, GetRadius() * Stream.FRandRange(0.45f, 0.8f), Stream.FRandRange(2.0f, 3.5f), Stream);
 		}
-		AddSheetLayer(Cracks, 0.65f, 0.3f, FLinearColor(0.85f, 0.95f, 1.0f));
+		AddSheetLayer(Cracks, 0.55f, 0.3f, FLinearColor(0.85f, 0.95f, 1.0f));
 	}
 
 	UMaterialInstanceDynamic* CrystalLook = MakeIceCrystal(this, 0.5f, 0.16f);
@@ -1804,6 +2130,136 @@ void AChaosImpactHazardZone::BuildIcePresentation(FRandomStream& Stream)
 	}
 
 	// No smoke plume here: the pack's plume is sized for scenery and buries the arena from this camera.
+
+	// Soft (FX kit): the frost over the whole slippery area, glinting, its edge marked by a faint cold rim; the burst
+	// itself a cold flash, a shock ring, shards of ice flung out and a low mist rolling off.
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+	const float Radius = GetRadius();
+	const float Lasting = GetActiveSeconds() + 0.6f;
+	const FLinearColor Cold(0.3f, 0.65f, 1.0f);
+	const FLinearColor White(0.88f, 0.97f, 1.0f);
+	const auto Hold = [Lasting](FChaosImpactFxPiece& Piece)
+	{
+		Piece.Life = Lasting;
+		Piece.Attack = 0.18f / Lasting;
+		Piece.Hold = FMath::Max(0.0f, 1.0f - 0.7f / Lasting);
+	};
+	FChaosImpactFxPiece Frost;
+	Frost.Look = EChaosImpactFxLook::GroundFlame;
+	Frost.Location = FVector(0.0f, 0.0f, 2.0f);
+	Hold(Frost);
+	Frost.SizeFrom = Radius * 1.75f;
+	Frost.SizeTo = Radius * 2.05f;
+	Frost.Color = FLinearColor(0.42f, 0.7f, 0.95f);
+	Frost.CoreColor = FLinearColor(0.86f, 0.95f, 1.0f);
+	Frost.Intensity = 1.0f;
+	Frost.Opacity = 0.5f;
+	Frost.NoiseScale = 2.4f;
+	Frost.NoiseSpeed = 0.02f;
+	Frost.NoiseAmount = 0.55f;
+	Frost.Softness = 0.45f;
+	Frost.ErodeTo = 0.9f;
+	Fx->Add(Frost);
+	FChaosImpactFxPiece Sheen;
+	Sheen.Look = EChaosImpactFxLook::GroundGlow;
+	Sheen.Location = FVector(0.0f, 0.0f, 3.0f);
+	Hold(Sheen);
+	Sheen.SizeFrom = Sheen.SizeTo = Radius * 1.9f;
+	Sheen.Color = Cold;
+	Sheen.CoreColor = White;
+	Sheen.Intensity = 0.7f;
+	Sheen.NoiseScale = 3.0f;
+	Sheen.NoiseSpeed = 0.25f;
+	Sheen.NoiseAmount = 0.85f;
+	Sheen.Softness = 0.6f;
+	Sheen.ErodeTo = 0.9f;
+	Fx->Add(Sheen);
+	FChaosImpactFxPiece Rim;
+	Rim.Look = EChaosImpactFxLook::Ring;
+	Rim.Location = FVector(0.0f, 0.0f, 4.0f);
+	Hold(Rim);
+	Rim.SizeFrom = Rim.SizeTo = Radius * 2.0f;
+	Rim.RingFrom = Rim.RingTo = 0.94f;
+	Rim.RingWidth = 0.035f;
+	Rim.Color = Cold;
+	Rim.CoreColor = White;
+	Rim.Intensity = 1.1f;
+	Rim.NoiseScale = 3.0f;
+	Rim.NoiseAmount = 0.55f;
+	Rim.ErodeTo = 0.5f;
+	Fx->Add(Rim);
+	FChaosImpactFxPiece Flash;
+	Flash.Location = FVector(0.0f, 0.0f, 60.0f);
+	Flash.Life = 0.2f;
+	Flash.SizeFrom = 160.0f;
+	Flash.SizeTo = 360.0f;
+	Flash.Color = Cold;
+	Flash.CoreColor = White;
+	Flash.Intensity = 6.0f;
+	Flash.Attack = 0.05f;
+	Flash.NoiseAmount = 0.2f;
+	Fx->Add(Flash);
+	FChaosImpactFxPiece Shock;
+	Shock.Look = EChaosImpactFxLook::Ring;
+	Shock.Location = FVector(0.0f, 0.0f, 7.0f);
+	Shock.Life = 0.42f;
+	Shock.SizeFrom = Shock.SizeTo = Radius * 2.4f;
+	Shock.RingFrom = 0.1f;
+	Shock.RingTo = 0.93f;
+	Shock.RingWidth = 0.05f;
+	Shock.Color = Cold;
+	Shock.CoreColor = White;
+	Shock.Intensity = 3.5f;
+	Shock.Attack = 0.04f;
+	Shock.ErodeTo = 0.7f;
+	Fx->Add(Shock);
+	for (int32 Index = 0; Index < 16; ++Index)
+	{
+		FChaosImpactFxPiece Shard;
+		Shard.Look = EChaosImpactFxLook::Streak;
+		Shard.Location = FVector(0.0f, 0.0f, 50.0f);
+		Shard.Velocity = FRotator(Fx->Stream.FRandRange(25.0f, 70.0f), Fx->Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+			* Fx->Stream.FRandRange(700.0f, 1400.0f);
+		Shard.Gravity = 2400.0f;
+		Shard.Drag = 1.2f;
+		Shard.Life = Fx->Stream.FRandRange(0.4f, 0.75f);
+		Shard.SizeFrom = Fx->Stream.FRandRange(60.0f, 100.0f);
+		Shard.SizeTo = 30.0f;
+		Shard.Width = 7.0f;
+		Shard.Color = Cold;
+		Shard.CoreColor = White;
+		Shard.Intensity = 5.0f;
+		Shard.Attack = 0.02f;
+		Shard.ErodeTo = 0.0f;
+		Shard.Flicker = 0.3f;
+		Fx->Add(Shard);
+	}
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		const float Angle = (Index + Fx->Stream.FRandRange(-0.3f, 0.3f)) * UE_TWO_PI / 6.0f;
+		const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+		FChaosImpactFxPiece Mist;
+		Mist.Look = EChaosImpactFxLook::Smoke;
+		Mist.Location = Out * Radius * 0.2f + FVector(0.0f, 0.0f, 40.0f);
+		Mist.Velocity = Out * Radius * 0.9f;
+		Mist.Drag = 1.6f;
+		Mist.Life = Fx->Stream.FRandRange(1.2f, 1.6f);
+		Mist.SizeFrom = Radius * 0.3f;
+		Mist.SizeTo = Radius * 0.65f;
+		Mist.Color = FLinearColor(0.55f, 0.72f, 0.9f);
+		Mist.CoreColor = White;
+		Mist.Intensity = 1.0f;
+		Mist.Opacity = 0.2f;
+		Mist.Attack = 0.1f;
+		Mist.ErodeTo = 0.95f;
+		Mist.Spin = Fx->Stream.FRandRange(-30.0f, 30.0f);
+		Fx->Add(Mist);
+	}
 }
 
 UStaticMeshComponent* AChaosImpactHazardZone::AddZoneMesh(FChaosImpactZoneMesh& Out, const bool bSphere,
@@ -1840,11 +2296,122 @@ void AChaosImpactHazardZone::BuildThunderPresentation()
 	UMaterialInstanceDynamic* ArcLook = MakeAdditive(this, FLinearColor(1.0f, 0.8f, 0.22f), 3.5f);
 	ArcMaterial = ArcLook;
 	ArcMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, ArcLook);
-	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(1.0f, 0.92f, 0.65f), 0.0f));
-	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(1.0f, 0.82f, 0.3f), 0.0f);
-	RingMaterial = RingLook;
-	RingMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
 	RebuildThunderBolts(0);
+
+	// Round the bolts, all soft (FX kit; no glass dome or hard ring): the strike's white flash, the ground lit where it
+	// struck and scorched after, a shock wave racing out, sparks thrown off and the area crackling for a moment after.
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Stream.Initialize(VisualSeed);
+	const float Radius = GetRadius();
+	const FLinearColor Yellow(1.0f, 0.72f, 0.12f);
+	const FLinearColor White(1.0f, 0.97f, 0.85f);
+	const FVector Strike(0.0f, 0.0f, FMath::Max(BurstHeight, 30.0f) * 0.3f + 40.0f);
+	FChaosImpactFxPiece Flash;
+	Flash.Location = Strike;
+	Flash.Life = 0.14f;
+	Flash.SizeFrom = 180.0f;
+	Flash.SizeTo = 400.0f;
+	Flash.Color = Yellow;
+	Flash.CoreColor = White;
+	Flash.Intensity = 6.0f;
+	Flash.Attack = 0.04f;
+	Flash.NoiseAmount = 0.2f;
+	Fx->Add(Flash);
+	FChaosImpactFxPiece Lit;
+	Lit.Look = EChaosImpactFxLook::GroundGlow;
+	Lit.Location = FVector(0.0f, 0.0f, 4.0f);
+	Lit.Life = 1.1f;
+	Lit.SizeFrom = Radius * 1.3f;
+	Lit.SizeTo = Radius * 1.6f;
+	Lit.Color = FLinearColor(1.0f, 0.55f, 0.05f);
+	Lit.CoreColor = White;
+	Lit.Intensity = 2.6f;
+	Lit.Attack = 0.03f;
+	Lit.ErodeFrom = 0.1f;
+	Lit.ErodeTo = 0.8f;
+	Lit.NoiseScale = 2.6f;
+	Lit.NoiseSpeed = 1.5f;
+	Lit.NoiseAmount = 0.8f;
+	Lit.Flicker = 0.6f;
+	Fx->Add(Lit);
+	FChaosImpactFxPiece Scorch;
+	Scorch.Look = EChaosImpactFxLook::GroundFlame;
+	Scorch.Location = FVector(0.0f, 0.0f, 2.0f);
+	Scorch.Life = 2.6f;
+	Scorch.SizeFrom = Radius * 0.55f;
+	Scorch.SizeTo = Radius * 0.65f;
+	Scorch.Color = FLinearColor(0.02f, 0.015f, 0.01f);
+	Scorch.CoreColor = FLinearColor(0.08f, 0.05f, 0.02f);
+	Scorch.Intensity = 1.0f;
+	Scorch.Opacity = 0.5f;
+	Scorch.Attack = 0.02f;
+	Scorch.ErodeFrom = 0.25f;
+	Scorch.ErodeTo = 0.8f;
+	Scorch.NoiseScale = 3.0f;
+	Scorch.NoiseSpeed = 0.02f;
+	Scorch.NoiseAmount = 0.9f;
+	Scorch.Softness = 0.6f;
+	Fx->Add(Scorch);
+	FChaosImpactFxPiece Shock;
+	Shock.Look = EChaosImpactFxLook::Ring;
+	Shock.Location = FVector(0.0f, 0.0f, 8.0f);
+	Shock.Life = 0.4f;
+	Shock.SizeFrom = Shock.SizeTo = Radius * 2.3f;
+	Shock.RingFrom = 0.08f;
+	Shock.RingTo = 0.94f;
+	Shock.RingWidth = 0.05f;
+	Shock.Color = Yellow;
+	Shock.CoreColor = White;
+	Shock.Intensity = 4.0f;
+	Shock.Attack = 0.04f;
+	Shock.ErodeTo = 0.7f;
+	Shock.NoiseScale = 3.0f;
+	Fx->Add(Shock);
+	FChaosImpactFxPiece Echo = Shock;
+	Echo.Delay = 0.12f;
+	Echo.Life = 0.45f;
+	Echo.RingTo = 0.7f;
+	Echo.RingWidth = 0.03f;
+	Echo.Intensity = 2.0f;
+	Fx->Add(Echo);
+	for (int32 Index = 0; Index < 18; ++Index)
+	{
+		FChaosImpactFxPiece Spark;
+		Spark.Look = EChaosImpactFxLook::Streak;
+		Spark.Location = Strike;
+		Spark.Velocity = FRotator(Fx->Stream.FRandRange(10.0f, 70.0f), Fx->Stream.FRandRange(0.0f, 360.0f), 0.0f).Vector()
+			* Fx->Stream.FRandRange(900.0f, 2000.0f);
+		Spark.Gravity = 2600.0f;
+		Spark.Drag = 2.0f;
+		Spark.Life = Fx->Stream.FRandRange(0.25f, 0.55f);
+		Spark.SizeFrom = Fx->Stream.FRandRange(80.0f, 140.0f);
+		Spark.SizeTo = 20.0f;
+		Spark.Width = 6.0f;
+		Spark.Color = Yellow;
+		Spark.CoreColor = White;
+		Spark.Intensity = 7.0f;
+		Spark.Attack = 0.02f;
+		Spark.ErodeTo = 0.0f;
+		Spark.Flicker = 0.7f;
+		Fx->Add(Spark);
+	}
+	// The ground still crackling: brief pinpoints of light jumping about the area.
+	FChaosImpactFxPiece Crackle;
+	Crackle.Location = FVector(0.0f, 0.0f, 12.0f);
+	Crackle.Life = 0.09f;
+	Crackle.SizeFrom = 40.0f;
+	Crackle.SizeTo = 90.0f;
+	Crackle.Color = Yellow;
+	Crackle.CoreColor = White;
+	Crackle.Intensity = 5.0f;
+	Crackle.Attack = 0.1f;
+	Crackle.NoiseAmount = 0.6f;
+	Crackle.Flicker = 0.8f;
+	Fx->AddEmitter(Crackle, 22.0f, 0.9f, Radius * 0.85f, FVector::ZeroVector, 0.4f);
 }
 
 void AChaosImpactHazardZone::RebuildThunderBolts(const int32 Flicker)
@@ -1913,27 +2480,6 @@ void AChaosImpactHazardZone::UpdateThunderPresentation(const float Age)
 		Arcs->SetVisibility(Age < 0.9f && (Age < 0.3f || Crackle > 0.6f));
 		SetIntensity(ArcMaterial.Get(), 3.5f * Crackle * FMath::Exp(-Age * 2.0f));
 	}
-	const FVector Base = GetActorLocation();
-	const float FlashT = Age / 0.28f;
-	const float FlashSize = FlashT < 1.0f ? 2.0f * (30.0f + GetRadius() * 0.6f * HazardEaseOut(FlashT)) : 0.0f;
-	PlaceZoneShape(FlashSphere, Base + FVector(0.0f, 0.0f, FMath::Max(BurstHeight, 40.0f)), FlashSize, FlashSize,
-		FRotator::ZeroRotator, 0.9f * FMath::Square(1.0f - FMath::Clamp(FlashT, 0.0f, 1.0f)));
-	const float RingT = FMath::Clamp(Age / 0.4f, 0.0f, 1.0f);
-	if (UProceduralMeshComponent* Ring = RingMesh.Get())
-	{
-		// A shock wave racing out to the edge of the blast, thinning as it goes.
-		ChaosImpactIceMeshes::FMeshBuffers Rings;
-		if (RingT < 1.0f)
-		{
-			ChaosImpactLightning::AppendRing(Rings, FVector(0.0f, 0.0f, 12.0f),
-				40.0f + GetRadius() * 1.05f * HazardEaseOut(RingT), 18.0f * (1.0f - RingT) + 3.0f, 96);
-		}
-		ChaosImpactLightning::SetMesh(Ring, Rings);
-		SetIntensity(RingMaterial.Get(), 3.0f * (1.0f - RingT));
-	}
-	const float GroundFade = FMath::Clamp(1.0f - Age / 1.6f, 0.0f, 1.0f);
-	PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 2.0f), GroundFade > 0.0f ? GetRadius() * 1.4f : 0.0f, 2.0f,
-		FRotator::ZeroRotator, 0.1f * GroundFade * GroundFade * (0.75f + 0.25f * Crackle));
 	ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, 220.0f));
 	ZoneLight->SetIntensity(Age < 0.6f ? 90000.0f * Crackle * FMath::Exp(-Age * 3.0f) : 0.0f);
 }
@@ -1942,33 +2488,170 @@ void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
 {
 	using namespace ChaosImpactBallTypes;
 	ZoneLight->SetLightColor(FLinearColor(0.55f, 0.2f, 1.0f));
-	if (UNiagaraSystem* Sparks = LoadEffect(Effects::SparkBurst))
-	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks,
-			GetActorLocation() + FVector(0.0f, 0.0f, BlackHoleCoreHeight), FRotator::ZeroRotator, FVector(1.4f * GetVisualScale()));
-	}
-	AddLoopingEffect(Effects::DarkAura, FVector(0.0f, 0.0f, 20.0f));
-	// Its reach is marked by thin rings (see UpdateBlackHolePresentation); a filled pool washed out the whole area.
-	UMaterialInstanceDynamic* RingLook = MakeAdditive(this, FLinearColor(0.75f, 0.35f, 1.0f), 0.0f);
-	RingMaterial = RingLook;
-	RingMesh = ChaosImpactLightning::CreateComponent(this, SceneRoot, RingLook);
-	AddZoneMesh(HaloSphere, true, MakeAdditive(this, FLinearColor(0.42f, 0.1f, 0.9f), 0.0f, 1.0f));
-	AddZoneMesh(HorizonSphere, true, MakeAdditive(this, FLinearColor(0.95f, 0.5f, 1.0f), 0.0f, 1.0f));
+	// The event horizon: a black sphere. Everything round it is drawn soft (FX kit): no hard rings or glass spheres.
 	AddZoneMesh(CoreSphere, true, MakeEmissive(this, FLinearColor(0.0f, 0.0f, 0.0f), 0.0f));
-	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(1.0f, 0.4f, 0.92f), 0.0f, 1.0f));
-	AddZoneMesh(DiskRings.AddDefaulted_GetRef(), false, MakeAdditive(this, FLinearColor(0.52f, 0.32f, 1.0f), 0.0f, 1.0f));
-	constexpr int32 MoteCount = 32;
+	constexpr int32 MoteCount = 16;
 	for (int32 Index = 0; Index < MoteCount; ++Index)
 	{
 		FChaosImpactZoneMesh& Mote = Motes.AddDefaulted_GetRef();
 		AddZoneMesh(Mote, true, MakeAdditive(this, Stream.FRand() < 0.5f
-			? FLinearColor(0.9f, 0.55f, 1.0f) : FLinearColor(0.5f, 0.36f, 1.0f), 0.0f));
+			? FLinearColor(0.85f, 0.25f, 1.0f) : FLinearColor(0.45f, 0.2f, 1.0f), 0.0f));
 		Mote.Angle = Stream.FRand() * UE_TWO_PI;
 		Mote.Radius = GetRadius() * Stream.FRandRange(0.25f, 1.0f);
 		Mote.Height = Stream.FRandRange(10.0f, 230.0f);
 		Mote.Seed = Stream.FRandRange(0.7f, 1.4f);
 	}
-	AddZoneMesh(FlashSphere, true, MakeAdditive(this, FLinearColor(0.85f, 0.65f, 1.0f), 0.0f));
+
+	AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+	if (!Fx)
+	{
+		return;
+	}
+	Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+	const float Radius = GetRadius();
+	const float Open = GetActiveSeconds();
+	const FVector Core(0.0f, 0.0f, BlackHoleCoreHeight);
+	const FLinearColor Magenta(0.95f, 0.25f, 1.0f);
+	const FLinearColor Violet(0.38f, 0.12f, 1.0f);
+	const FLinearColor Pale(0.95f, 0.8f, 1.0f);
+	// Every lasting piece holds steady while it is open and fades in its last moments.
+	const auto Lasting = [&](FChaosImpactFxPiece& Piece)
+	{
+		Piece.Life = Open + 0.35f;
+		Piece.Attack = 0.25f / Piece.Life;
+		Piece.Hold = FMath::Max(0.0f, 1.0f - 0.45f / Piece.Life);
+	};
+
+	// Opening: a violet flash and a shock ring thrown out over the ground.
+	FChaosImpactFxPiece Flash;
+	Flash.Location = Core;
+	Flash.Life = 0.22f;
+	Flash.SizeFrom = 200.0f;
+	Flash.SizeTo = 520.0f;
+	Flash.Color = Violet;
+	Flash.CoreColor = Pale;
+	Flash.Intensity = 7.0f;
+	Flash.Attack = 0.05f;
+	Flash.NoiseAmount = 0.2f;
+	Fx->Add(Flash);
+	FChaosImpactFxPiece Shock;
+	Shock.Look = EChaosImpactFxLook::Ring;
+	Shock.Location = FVector(0.0f, 0.0f, 6.0f);
+	Shock.Life = 0.5f;
+	Shock.SizeFrom = Shock.SizeTo = Radius * 2.2f;
+	Shock.RingFrom = 0.1f;
+	Shock.RingTo = 0.92f;
+	Shock.RingWidth = 0.06f;
+	Shock.Color = Violet;
+	Shock.CoreColor = Pale;
+	Shock.Intensity = 3.0f;
+	Shock.Attack = 0.05f;
+	Shock.ErodeTo = 0.7f;
+	Fx->Add(Shock);
+
+	// The well: the ground inside its reach sinks into a dark violet hollow, deepest in the middle.
+	FChaosImpactFxPiece Well;
+	Well.Look = EChaosImpactFxLook::GroundFlame;
+	Well.Location = FVector(0.0f, 0.0f, 2.0f);
+	Lasting(Well);
+	Well.SizeFrom = Radius * 1.4f;
+	Well.SizeTo = Radius * 2.0f;
+	Well.Color = FLinearColor(0.05f, 0.0f, 0.1f);
+	Well.CoreColor = FLinearColor(0.0f, 0.0f, 0.0f);
+	Well.Intensity = 1.0f;
+	Well.Opacity = 0.5f;
+	Well.Softness = 1.0f;
+	Well.NoiseAmount = 0.35f;
+	Well.NoiseSpeed = 0.15f;
+	Well.Spin = 40.0f;
+	Fx->Add(Well);
+	// (No ring at the edge of its reach: wider than the view, it ran off the screen's edges. The whirl fades out
+	// softly at its rim instead.)
+	// The pull: a whirlpool of light arms twisting into the core over the whole reach, streaming inward, and a
+	// tighter, brighter one round the core itself turning faster (a pinwheel being sucked down).
+	FChaosImpactFxPiece Whirl;
+	Whirl.Look = EChaosImpactFxLook::Spiral;
+	Whirl.Location = FVector(0.0f, 0.0f, 8.0f);
+	Lasting(Whirl);
+	Whirl.SizeFrom = Radius * 1.2f;
+	Whirl.SizeTo = Radius * 2.0f;
+	Whirl.Color = Violet;
+	Whirl.CoreColor = Magenta;
+	Whirl.Intensity = 1.6f;
+	Whirl.Arms = 5.0f;
+	Whirl.Twist = 1.8f;
+	Whirl.Swirl = 0.55f;
+	Whirl.Sharpness = 3.0f;
+	Whirl.NoiseScale = 1.6f;
+	Whirl.NoiseAmount = 0.6f;
+	Whirl.ErodeFrom = 0.1f;
+	Whirl.ErodeTo = 0.25f;
+	Fx->Add(Whirl);
+	FChaosImpactFxPiece Vortex = Whirl;
+	Vortex.Location = Core - FVector(0.0f, 0.0f, 20.0f);
+	Vortex.SizeFrom = 260.0f;
+	Vortex.SizeTo = 680.0f;
+	Vortex.Color = Magenta;
+	Vortex.CoreColor = FLinearColor(1.0f, 0.75f, 1.0f);
+	Vortex.Intensity = 2.6f;
+	Vortex.Arms = 3.0f;
+	Vortex.Twist = 2.4f;
+	Vortex.Swirl = 1.1f;
+	Vortex.Sharpness = 2.2f;
+	Fx->Add(Vortex);
+	// Round the black core: a thin hot ring of light (it bends the light round it) and a soft violet halo.
+	FChaosImpactFxPiece Photon;
+	Photon.Look = EChaosImpactFxLook::AirRing;
+	Photon.Location = Core;
+	Lasting(Photon);
+	Photon.SizeFrom = 120.0f;
+	Photon.SizeTo = 300.0f;
+	Photon.RingFrom = Photon.RingTo = 0.72f;
+	Photon.RingWidth = 0.07f;
+	Photon.Color = Magenta;
+	Photon.CoreColor = Pale;
+	Photon.Intensity = 6.0f;
+	Photon.NoiseScale = 3.0f;
+	Photon.NoiseSpeed = 1.2f;
+	Photon.NoiseAmount = 0.35f;
+	Photon.Spin = 200.0f;
+	Photon.Flicker = 0.15f;
+	Fx->Add(Photon);
+	FChaosImpactFxPiece Halo;
+	Halo.Location = Core;
+	Lasting(Halo);
+	Halo.SizeFrom = 260.0f;
+	Halo.SizeTo = 620.0f;
+	Halo.Color = Violet;
+	Halo.CoreColor = Magenta;
+	Halo.Intensity = 1.4f;
+	Halo.Softness = 1.0f;
+	Halo.NoiseAmount = 0.5f;
+	Halo.NoiseSpeed = 0.6f;
+	Halo.Spin = -60.0f;
+	Fx->Add(Halo);
+	// Sparks streaming in from the rim.
+	FChaosImpactFxPiece Drawn;
+	Drawn.Look = EChaosImpactFxLook::Streak;
+	Drawn.Life = 0.7f;
+	Drawn.SizeFrom = 40.0f;
+	Drawn.SizeTo = 110.0f;
+	Drawn.Width = 6.0f;
+	Drawn.Color = Magenta;
+	Drawn.CoreColor = Pale;
+	Drawn.Intensity = 4.0f;
+	Drawn.Attack = 0.3f;
+	Drawn.ErodeTo = 0.0f;
+	for (int32 Index = 0; Index < 14; ++Index)
+	{
+		const float Angle = Stream.FRandRange(0.0f, UE_TWO_PI);
+		const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+		FChaosImpactFxPiece Spark = Drawn;
+		Spark.Location = Out * Radius * Stream.FRandRange(0.7f, 1.0f) + FVector(0.0f, 0.0f, Stream.FRandRange(20.0f, 160.0f));
+		Spark.Velocity = (Core - Spark.Location) / Spark.Life;
+		Spark.Delay = Stream.FRandRange(0.1f, Open * 0.8f);
+		Fx->Add(Spark);
+	}
 }
 
 void AChaosImpactHazardZone::UpdateBlackHolePresentation(const float Age)
@@ -1997,8 +2680,6 @@ void AChaosImpactHazardZone::UpdateBlackHolePresentation(const float Age)
 			FRotator(bInner ? 14.0f : -9.0f, Age * (bInner ? 260.0f : -190.0f), bInner ? 6.0f : -12.0f),
 			(bInner ? 1.8f : 1.1f) * (0.8f + 0.2f * Pulse));
 	}
-	PlaceZoneShape(GroundGlow, Base + FVector(0.0f, 0.0f, 3.0f), GetRadius() * 2.0f * Reach, 2.0f,
-		FRotator::ZeroRotator, 0.07f * Reach);
 	if (UProceduralMeshComponent* Ring = RingMesh.Get())
 	{
 		// The edge of its reach, and three rings closing in on the centre, thin as they start and end.
@@ -2047,20 +2728,60 @@ void AChaosImpactHazardZone::UpdateBlackHolePresentation(const float Age)
 				Shape->SetWorldLocationAndRotation(
 					Base + FVector(FMath::Cos(Mote.Angle) * Mote.Radius, FMath::Sin(Mote.Angle) * Mote.Radius, Mote.Height),
 					FRotator(0.0f, FMath::RadiansToDegrees(Mote.Angle) + 90.0f, 0.0f));
-				Shape->SetWorldScale3D(FVector(Length, 7.0f, 7.0f) / 100.0f);
+				Shape->SetWorldScale3D(FVector(Length, 4.0f, 4.0f) / 100.0f);
 			}
-			SetIntensity(Mote.Material.Get(), 1.8f * Reach * FMath::Min(Closeness * 4.0f + 0.2f, 1.0f));
+			SetIntensity(Mote.Material.Get(), 0.9f * Reach * FMath::Min(Closeness * 4.0f + 0.2f, 1.0f));
 		}
 	}
 	UpdateBlackHoleTethers(Core, bOpen ? Reach : 0.0f);
 
-	// Closing: a violet implosion flash where the core was.
+	// Closing: it snaps shut in a white-violet flash, a ring of light thrown out and sparks flung from the point.
 	if (!bCollapseBurstPlayed && Age >= GetActiveSeconds() + 0.35f)
 	{
 		bCollapseBurstPlayed = true;
-		if (UNiagaraSystem* Sparks = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::SparkBurst))
+		if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, Core))
 		{
-			UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, Core, FRotator::ZeroRotator, FVector(1.8f));
+			FChaosImpactFxPiece Snap;
+			Snap.Life = 0.25f;
+			Snap.SizeFrom = 120.0f;
+			Snap.SizeTo = 560.0f;
+			Snap.Color = FLinearColor(0.5f, 0.2f, 1.0f);
+			Snap.CoreColor = FLinearColor(1.0f, 0.9f, 1.0f);
+			Snap.Intensity = 8.0f;
+			Snap.Attack = 0.05f;
+			Snap.NoiseAmount = 0.2f;
+			Fx->Add(Snap);
+			// Lying flat: turned to the camera, this wide a ring would be cut in half by the floor.
+			FChaosImpactFxPiece Wave;
+			Wave.Look = EChaosImpactFxLook::Ring;
+			Wave.Life = 0.4f;
+			Wave.SizeFrom = Wave.SizeTo = 900.0f;
+			Wave.RingFrom = 0.05f;
+			Wave.RingTo = 0.95f;
+			Wave.RingWidth = 0.05f;
+			Wave.Color = FLinearColor(0.6f, 0.25f, 1.0f);
+			Wave.CoreColor = FLinearColor(1.0f, 0.85f, 1.0f);
+			Wave.Intensity = 4.0f;
+			Wave.Attack = 0.05f;
+			Wave.ErodeTo = 0.8f;
+			Fx->Add(Wave);
+			for (int32 Index = 0; Index < 12; ++Index)
+			{
+				FChaosImpactFxPiece Spark;
+				Spark.Look = EChaosImpactFxLook::Streak;
+				Spark.Velocity = FRotator(FMath::FRandRange(-40.0f, 60.0f), FMath::FRandRange(0.0f, 360.0f), 0.0f).Vector() * FMath::FRandRange(700.0f, 1400.0f);
+				Spark.Drag = 2.0f;
+				Spark.Life = FMath::FRandRange(0.3f, 0.55f);
+				Spark.SizeFrom = 90.0f;
+				Spark.SizeTo = 20.0f;
+				Spark.Width = 6.0f;
+				Spark.Color = FLinearColor(0.75f, 0.3f, 1.0f);
+				Spark.CoreColor = FLinearColor(1.0f, 0.9f, 1.0f);
+				Spark.Intensity = 6.0f;
+				Spark.Attack = 0.02f;
+				Spark.ErodeTo = 0.0f;
+				Fx->Add(Spark);
+			}
 		}
 	}
 	const float FlashT = (Age - GetActiveSeconds() - 0.35f) / 0.3f;
@@ -2191,7 +2912,7 @@ void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 		if (!bThawPlayed && Age >= Active)
 		{
 			bThawPlayed = true;
-			ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f), 1.2f, 1.5f);
+			ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f), 0.6f, 1.0f);
 			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharIceShatter, GetActorLocation(), 0.55f, 1.15f);
 		}
 		for (const TWeakObjectPtr<USceneComponent>& Sheet : IceSheets)

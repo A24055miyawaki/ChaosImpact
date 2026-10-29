@@ -67,6 +67,22 @@ FVector AChaosImpactCyberStage::GetGateNormal(const int32 Gate)
 
 AChaosImpactCyberStage::AChaosImpactCyberStage()
 {
+	CrashBallStartOffset = FVector(0, 0, 110);
+	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/M_StageMetalFloor.M_StageMetalFloor"));
+	Team0GoalOffset = FVector(-2950, 0, 120);
+	Team1GoalOffset = FVector(2950, 0, 120);
+	CrashBallExtraBallOffsets = {FVector(-900, 650, 0), FVector(900, -650, 0)};
+	for (const float Sign : {-1.f, 1.f})
+	{
+		FChaosImpactCrashRoutePart Ramp;
+		Ramp.Start = FVector(Sign * 600, 0, 110);
+		Ramp.End = FVector(Sign * 1350, 0, 0);
+		Ramp.Width = 880;
+		CrashRouteParts.Add(Ramp);
+		Ramp.Start = FVector(Sign * 2070, 0, 0);
+		Ramp.End = FVector(Sign * 2600, 0, 120);
+		CrashRouteParts.Add(Ramp);
+	}
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	bAlwaysRelevant = true;

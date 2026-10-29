@@ -1,4 +1,6 @@
 #include "ChaosImpactCPUController.h"
+#include "ChaosImpactCrashBall.h"
+#include "ChaosImpactGameMode.h"
 
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallFormComponent.h"
@@ -320,6 +322,8 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 			Section(2);
 			const bool bEvading = UpdateTornadoEvasion(Self, Now) || UpdateEvasion(Self, Now);
 			Section(3);
+			if (!UpdateCrashObjective(Self, Target, Now, bEvading))
+			{
 			if (!bEvading && Now >= EvadeUntil && UpdateTeamBallForm(Self, Now, true))
 			{
 				Section(4);
@@ -337,6 +341,7 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 				UpdatePositioning(Self, Target, Now);
 			}
 			Section(5);
+			}
 		}
 	}
 	if (Now >= IdleUntil)
@@ -380,6 +385,63 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	{
 		Self->AddMovementInput(ActiveMoveDirection, (bEvading ? 1.0f : DesiredMoveScale) * MoveSpeedScale);
 	}
+}
+
+bool AChaosImpactCPUController::UpdateCrashObjective(AChaosImpactCharacter* Self, AChaosImpactCharacter* Enemy,
+	const float Now, const bool bEvading)
+{
+	const auto* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+	auto* GM = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>();
+	auto* Ball = Match ? Match->GetCrashBall() : nullptr;
+	const auto* Member = Self->GetPlayerState<AChaosImpactPlayerState>();
+	if (!Match || !Match->Rules.bCrashBall || !Ball || !GM || !Member || Member->TeamIndex < 0) { return false; }
+	// One member in each team protects the carrier from nearby opponents; everyone else pushes or supplies balls.
+	const bool bSupport = Member->JoinOrder % 3 == 1;
+	if (bSupport && Enemy && FVector::Dist2D(Self->GetActorLocation(), Enemy->GetActorLocation()) < 950.f) { return false; }
+	if (bEvading || Now < EvadeUntil) { return true; }
+	bSnowMashing = false;
+	const FVector At = Self->GetActorLocation();
+	if (Self->GetCarriedBallCount() == 0)
+	{
+		if (const auto* Pickup = SelectPickup(Self))
+		{
+			DesiredMoveDirection = SteerAroundObstacles(At, RouteToward(Self, Pickup->GetActorLocation(), Now), Now);
+			DesiredMoveScale = 1.f;
+			TryTraverseObstacle(Self, DesiredMoveDirection, Now);
+		}
+		else { DesiredMoveScale = 0.f; }
+		return true;
+	}
+	const FVector Push = GM->GetCrashPushDirection(Member->TeamIndex, Ball->GetActorLocation());
+	const FVector Side = FVector::CrossProduct(FVector::UpVector, Push);
+	const float Lane = ((Member->GetPlayerId() % 3) - 1) * 130.f;
+	const FVector Position = Ball->GetActorLocation() - Push * 540.f + Side * Lane;
+	const FVector ToBall = Ball->GetActorLocation() - At;
+	const bool bBehind = FVector::DotProduct((At - Ball->GetActorLocation()).GetSafeNormal2D(), -Push) > .8f;
+	if (!bBehind || FVector::Dist2D(At, Position) > 180.f)
+	{
+		if (Self->IsChargingThrow()) { Self->CancelChargingThrow(); }
+		// Approach from the flank rather than trying to walk through the giant sphere.
+		const FVector Goal = bBehind ? Position : Ball->GetActorLocation() - Push * 440.f
+			+ Side * (FVector::DotProduct(At - Ball->GetActorLocation(), Side) >= 0 ? 440.f : -440.f);
+		DesiredMoveDirection = SteerAroundObstacles(At, RouteToward(Self, Goal, Now), Now);
+		DesiredMoveScale = .95f;
+		TryTraverseObstacle(Self, DesiredMoveDirection, Now);
+		return true;
+	}
+	DesiredMoveScale = 0.f;
+	Self->SetAIAimDirection(ToBall.GetSafeNormal2D());
+	if (!Self->IsChargingThrow() && !Self->IsThrowReleasePending() && Now >= NextThrowAt)
+	{
+		Self->BeginThrowInput();
+		ChargeStartedAt = Now;
+	}
+	else if (Self->IsChargingThrow() && Now - ChargeStartedAt >= .7f && ToBall.Size2D() < 1000.f)
+	{
+		Self->EndThrowInput();
+		NextThrowAt = Now + .45f;
+	}
+	return true;
 }
 
 bool AChaosImpactCPUController::UpdateTeamBallForm(AChaosImpactCharacter* Self, const float Now, const bool bAllowStart)

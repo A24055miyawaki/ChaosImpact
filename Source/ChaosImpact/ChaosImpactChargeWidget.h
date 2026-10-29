@@ -130,6 +130,12 @@ private:
 	mutable double OwnRankChangedAt = -100.0;
 	int32 PointsGained = 0;
 	double PointsGainedAt = -100.0;
+	/** クラッシュボール: the stage with the giant ball's route and the two goals (found once while painting). */
+	mutable TWeakObjectPtr<class AChaosImpactStageBase> CrashStage;
+	mutable TWeakObjectPtr<class AChaosImpactCrashGoal> CrashGoals[2];
+	/** クラッシュボール: paints the giant ball's marker, the way this player's team pushes it and the goals. */
+	void PaintCrashMarkers(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
+		const class AChaosImpactGameState& Match, float S) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> VerticalDivider;
@@ -215,6 +221,8 @@ private:
 	double RoomWatchStartedAt = 0.0;
 	void UpdateRoomToasts(const class AChaosImpactGameState* Room);
 	void AddRoomToast(APlayerState* Member, const FString& Name, const TCHAR* Message, const FLinearColor& Accent);
+	/** Solo mode: STAGE CLEAR! slamming in over a burst, the stage's name, and the way back to the map filling. */
+	void PaintSoloClear(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 BaseLayer) const;
 	void PaintRoomToasts(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
 		float Top) const;
 

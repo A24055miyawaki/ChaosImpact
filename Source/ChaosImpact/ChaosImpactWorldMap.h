@@ -51,6 +51,8 @@ public:
 
 	/** The node the player stands on (a stage number or a gate), 0 when between nodes. */
 	int32 GetFocusedNode() const { return FocusedNode; }
+	/** Confirm and clicks count now (the map has been up a moment and every button was let go since arriving). */
+	bool IsReadyForInput() const { return bInputReleasedSinceArrival; }
 	/** How far the focused node's card has slid in (0-1). */
 	float GetCardAlpha() const { return CardAlpha; }
 	/** The fog is being cleared off newly opened stages (the player waits). */
@@ -249,6 +251,18 @@ private:
 	bool bPlaced = false;
 	bool bLeaving = false;
 	FVector CameraFocus = FVector::ZeroVector;
+	/** The focus's spring speed (the camera eases off and into place instead of chasing at a fixed rate). */
+	FVector CameraFocusVelocity = FVector::ZeroVector;
+	/**
+	 * A long move of the camera (to a stage coming out of the fog, back to the player, to a stage warped to) is one
+	 * clear イージーイーズ glide: from TweenFrom, gathering speed, quickest midway, settling onto its target. Negative
+	 * TweenTime: none (the camera follows on its spring).
+	 */
+	FVector TweenFrom = FVector::ZeroVector;
+	float TweenTime = -1.0f;
+	float TweenSeconds = 1.0f;
+	FVector LastWant = FVector::ZeroVector;
+	bool IsCameraGliding() const { return TweenTime >= 0.0f && TweenTime < TweenSeconds; }
 	bool bCameraFocusSet = false;
 
 	/** Reveal: nodes that come out of the fog this time, in order. */
@@ -261,10 +275,20 @@ private:
 	/** A click's route along the paths. */
 	TArray<FVector> AutoRoute;
 	int32 AutoIndex = 0;
+	/** How long the current route has been walked (its start eases in). */
+	float AutoWalkTime = 0.0f;
 	int32 AutoGoalNode = 0;
+	/**
+	 * Confirm and clicks count only once the map has been up a moment with every button let go: a press carried over
+	 * from the loading screen (its mini-game is played with the same buttons) must not walk straight into stage 1.
+	 */
+	double InputReadyAt = -1.0;
+	bool bInputReleasedSinceArrival = false;
 	bool bConfirmHeld = true;
 	bool bClickHeld = true;
 	bool bOverview = false;
+	/** Into and out of the whole-map view: OverviewLinear goes across at an even pace, OverviewBlend is it eased. */
+	float OverviewLinear = 0.0f;
 	float OverviewBlend = 0.0f;
 	bool bOverviewKeyHeld = true;
 	FBox2D NodeBounds = FBox2D(ForceInit);

@@ -17,6 +17,8 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Materials/MaterialInterface.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "Misc/AutomationTest.h"
 #include "ProceduralMeshComponent.h"
 #include "Misc/Paths.h"
@@ -340,6 +342,20 @@ namespace
 			}
 				Shot(TEXT("17_FullPower_Aura.png"));
 				StandBefore(Boss, 330.0f);
+				{
+				// The aura close up: a camera in front of the boss, a little above (back to the player's next step).
+					const FVector Chest = Boss->GetActorLocation() + FVector(0.0f, 0.0f, 120.0f);
+					const FVector Toward = (Player->GetActorLocation() - Boss->GetActorLocation()).GetSafeNormal2D();
+					const FVector From = Chest + Toward * 1300.0f + FVector(0.0f, 0.0f, 700.0f);
+					FActorSpawnParameters Params;
+					Params.ObjectFlags |= RF_Transient;
+					if (ACameraActor* Close = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), From, (Chest - From).Rotation(), Params))
+					{
+						Close->GetCameraComponent()->bConstrainAspectRatio = false;
+						PC->SetViewTarget(Close);
+						CloseCamera = Close;
+					}
+				}
 				Wait(0.4);
 				return false;
 			case 27:
@@ -349,6 +365,11 @@ namespace
 				Wait(0.65);
 				return false;
 			case 28:
+				if (ACameraActor* Close = CloseCamera.Get())
+				{
+					PC->SetViewTarget(Player);
+					Close->Destroy();
+				}
 				Shot(TEXT("19_FullPower_Lanes.png"));
 				Wait(0.3);
 				return false;
@@ -401,6 +422,7 @@ namespace
 
 	private:
 		FAutomationTestBase* Test;
+		TWeakObjectPtr<ACameraActor> CloseCamera;
 		double StartedAt = FPlatformTime::Seconds();
 		double NextAt = 0.0;
 		int32 Step = 0;

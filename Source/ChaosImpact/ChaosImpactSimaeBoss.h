@@ -67,6 +67,8 @@ public:
 	EChaosImpactSimaeMove GetMove() const { return Move; }
 	/** How strongly the aura burns (0 none, about 1 at full power). */
 	float GetAuraStrength() const { return AuraStrength; }
+	/** Its aura is being drawn (flames rising off it). */
+	bool IsAuraDrawn() const;
 
 	/** Tests: starts a move now (as if it had chosen it), against the nearest foe. */
 	void ForceMove(EChaosImpactSimaeMove NewMove);
@@ -290,6 +292,21 @@ private:
 		float Seed;
 	};
 	TArray<FFlameCard> FlameCards;
+	/**
+	 * The aura, soft FX-kit pieces riding with it: tongues of red flame rising off its outline and burning away, a hot
+	 * glow at its heart and waves of pressure pulsing out over the floor. (Soft on every side: nothing cut off.)
+	 */
+	TWeakObjectPtr<class AChaosImpactFxKit> AuraFx;
+	/** The aura hugging its outline: a copy of its body, following its pose, drawn as a shell of flame (M_CIFX_AuraShell). */
+	UPROPERTY(Transient)
+	TObjectPtr<USkeletalMeshComponent> AuraShell;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> AuraShellMaterial;
+	void UpdateAuraShell(bool bVisible, float Shown);
+	float AuraOwed = 0.0f;
+	float AuraPulseOwed = 0.0f;
+	FRandomStream AuraStream;
+	void FeedAura(float DeltaSeconds, float Shown);
 	/** The solo room it fights in (found the first time it is needed). */
 	mutable TWeakObjectPtr<class AChaosImpactSoloRoom> HomeRoom;
 	mutable bool bLookedForRoom = false;

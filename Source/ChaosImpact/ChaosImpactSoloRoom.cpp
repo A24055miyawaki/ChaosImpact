@@ -1,8 +1,12 @@
 #include "ChaosImpactSoloRoom.h"
+#include "ChaosImpactEase.h"
 #include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactFxKit.h"
+#include "ChaosImpactSoloStages.h"
+#include "TimerManager.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSimaeBoss.h"
 #include "EngineUtils.h"
@@ -145,10 +149,80 @@ void AChaosImpactSoloRoom::BeginPlay()
 	DoorRaise = 0.0f;
 	Door->SetRelativeLocation(DoorUpLocation - FVector(0.0f, 0.0f, SoloRoomDoorSink));
 	Door->SetVisibility(false);
+	PlanDifficulty();
 	if (bBossWaitsFromStart && bSpawnBoss)
 	{
 		SpawnWaitingBoss();
 	}
+}
+
+void AChaosImpactSoloRoom::PlanDifficulty()
+{
+	PlannedMinions = MinionCount;
+	MaxAliveMinions = FMath::Max(MinionCount, 1);
+	PlannedBossLevel = BossLevel;
+	MinionPlan.Init(MinionLevel, FMath::Max(MinionCount, 0));
+	const UWorld* World = GetWorld();
+	const int32 Stage = World ? FCString::Atoi(World->URL.GetOption(TEXT("CIStage="), TEXT("0"))) : 0;
+	if (!World || Stage <= 0 || !World->URL.HasOption(TEXT("CISolo")) || MinionCount <= 0 || !MinionClass.IsNull() || !BossClass.IsNull())
+	{
+		return;
+	}
+	const ChaosImpactSolo::FDifficulty Plan = ChaosImpactSolo::GetDifficulty(Stage);
+	PlannedMinions = Plan.Minions;
+	MaxAliveMinions = Plan.MaxAlive;
+	PlannedBossLevel = Plan.BossLevel;
+	// The weak ones first, the strong ones last (the fight builds up).
+	MinionPlan.Reset();
+	for (int32 Index = 0; Index < Plan.Minions; ++Index)
+	{
+		MinionPlan.Add(Index < Plan.Weak ? EChaosImpactCPULevel::Weak
+			: Index >= Plan.Minions - Plan.Strong ? EChaosImpactCPULevel::Strong : EChaosImpactCPULevel::Normal);
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: stage %d plays %d minions (%d at once, %d weak, %d strong), boss level %d"),
+		*GetName(), Stage, Plan.Minions, Plan.MaxAlive, Plan.Weak, Plan.Strong, static_cast<int32>(Plan.BossLevel));
+}
+
+void AChaosImpactSoloRoom::SpawnNextMinion()
+{
+	if (Phase != EChaosImpactSoloRoomPhase::Minions || SpawnedMinions >= PlannedMinions)
+	{
+		return;
+	}
+	const FVector Where = PickSpawnLocation(SpawnedMinions);
+	const EChaosImpactCPULevel Level = MinionPlan.IsValidIndex(SpawnedMinions) ? MinionPlan[SpawnedMinions] : MinionLevel;
+	if (AChaosImpactCharacter* Minion = SpawnEnemy(MinionClass, SoloRoomMinionPath, Where, Level))
+	{
+		Enemies.Add(Minion);
+		if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, Where - FVector(0.0f, 0.0f, 96.0f)))
+		{
+			// Where it steps in: a flash and a ring closing over the floor, so it is seen coming.
+			FChaosImpactFxPiece Flash;
+			Flash.Location = FVector(0.0f, 0.0f, 90.0f);
+			Flash.Life = 0.3f;
+			Flash.SizeFrom = 120.0f;
+			Flash.SizeTo = 300.0f;
+			Flash.Color = FLinearColor(1.0f, 0.15f, 0.2f);
+			Flash.CoreColor = FLinearColor(1.0f, 0.85f, 0.8f);
+			Flash.Intensity = 4.0f;
+			Flash.Attack = 0.06f;
+			Fx->Add(Flash);
+			FChaosImpactFxPiece Ring;
+			Ring.Look = EChaosImpactFxLook::Ring;
+			Ring.Location = FVector(0.0f, 0.0f, 4.0f);
+			Ring.Life = 0.45f;
+			Ring.SizeFrom = Ring.SizeTo = 420.0f;
+			Ring.RingFrom = 0.9f;
+			Ring.RingTo = 0.25f;
+			Ring.RingWidth = 0.06f;
+			Ring.Color = FLinearColor(1.0f, 0.15f, 0.2f);
+			Ring.CoreColor = FLinearColor(1.0f, 0.85f, 0.8f);
+			Ring.Intensity = 2.5f;
+			Ring.Attack = 0.1f;
+			Fx->Add(Ring);
+		}
+	}
+	++SpawnedMinions;
 }
 
 void AChaosImpactSoloRoom::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -166,7 +240,7 @@ void AChaosImpactSoloRoom::Tick(const float DeltaSeconds)
 	{
 		DoorRaise = DoorSeconds <= 0.0f ? Target
 			: FMath::FInterpConstantTo(DoorRaise, Target, DeltaSeconds, 1.0f / DoorSeconds);
-		const float Eased = FMath::InterpEaseOut(0.0f, 1.0f, DoorRaise, 2.0f);
+		const float Eased = ChaosImpactEase::InOut(DoorRaise);
 		Door->SetRelativeLocation(DoorUpLocation - FVector(0.0f, 0.0f, SoloRoomDoorSink * (1.0f - Eased)));
 		Door->SetVisibility(DoorRaise > 0.01f);
 	}
@@ -190,21 +264,29 @@ void AChaosImpactSoloRoom::StartRoom(AChaosImpactCharacter* InPlayer)
 	}
 	BindPlayer(InPlayer);
 	ClearEnemies(bBossWaitsFromStart);
+	PlanDifficulty();
 	Defeated = 0;
+	SpawnedMinions = 0;
 	Phase = EChaosImpactSoloRoomPhase::Minions;
 	SetDoorsClosed(true);
-	for (int32 Index = 0; Index < MinionCount; ++Index)
+	if (bReachedBoss && bSpawnBoss && PlannedMinions > 0 && !bBossWaitsFromStart)
 	{
-		if (AChaosImpactCharacter* Minion = SpawnEnemy(MinionClass, SoloRoomMinionPath, PickSpawnLocation(Index), MinionLevel))
-		{
-			Enemies.Add(Minion);
-		}
+		// Knocked out by the boss before: straight back to it (the minions were already beaten).
+		UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: back to the boss"), *GetName());
+		OnRoomStarted.Broadcast(this);
+		ReceiveRoomStarted();
+		SpawnBoss();
+		return;
+	}
+	for (int32 Index = 0; Index < FMath::Min(PlannedMinions, MaxAliveMinions); ++Index)
+	{
+		SpawnNextMinion();
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s started: %d minions (player at %s)"), *GetName(), Enemies.Num(),
 		InPlayer ? *InPlayer->GetActorLocation().ToCompactString() : TEXT("-"));
 	OnRoomStarted.Broadcast(this);
 	ReceiveRoomStarted();
-	if (MinionCount <= 0)
+	if (PlannedMinions <= 0)
 	{
 		if (bSpawnBoss)
 		{
@@ -220,7 +302,10 @@ void AChaosImpactSoloRoom::StartRoom(AChaosImpactCharacter* InPlayer)
 void AChaosImpactSoloRoom::ResetRoom()
 {
 	ClearEnemies();
+	GetWorldTimerManager().ClearTimer(WaveTimer);
+	bReachedBoss = false;
 	Defeated = 0;
+	SpawnedMinions = 0;
 	Phase = EChaosImpactSoloRoomPhase::Waiting;
 	SetDoorsClosed(false);
 	BindPlayer(nullptr);
@@ -276,7 +361,12 @@ void AChaosImpactSoloRoom::HandleEnemyDestroyed(AActor* DestroyedActor)
 		return;
 	}
 	++Defeated;
-	if (Phase == EChaosImpactSoloRoomPhase::Minions && Defeated >= MinionCount)
+	if (Phase == EChaosImpactSoloRoomPhase::Minions && Defeated < PlannedMinions && SpawnedMinions < PlannedMinions)
+	{
+		// The next of the wave steps in a moment later.
+		GetWorldTimerManager().SetTimer(WaveTimer, FTimerDelegate::CreateWeakLambda(this, [this]() { SpawnNextMinion(); }), 0.7f, false);
+	}
+	if (Phase == EChaosImpactSoloRoomPhase::Minions && Defeated >= PlannedMinions)
 	{
 		if (bSpawnBoss)
 		{
@@ -321,9 +411,12 @@ void AChaosImpactSoloRoom::HandlePlayerEliminated(AChaosImpactCharacter* Charact
 	{
 		return;
 	}
-	// Back at the entrance after the knockout, and the room as it was before going in.
+	// Back at the entrance after the knockout, and the room as it was before going in (but past the minions if the
+	// boss was reached).
 	Character->SetRespawnPoint(RespawnPoint->GetComponentLocation(), RespawnPoint->GetComponentRotation());
+	const bool bCheckpoint = bReachedBoss;
 	ResetRoom();
+	bReachedBoss = bCheckpoint;
 }
 
 AChaosImpactCharacter* AChaosImpactSoloRoom::SpawnEnemy(const TSoftClassPtr<AChaosImpactCharacter>& Class, const TCHAR* FallbackPath,
@@ -373,7 +466,7 @@ FVector AChaosImpactSoloRoom::PickSpawnLocation(const int32 Index) const
 	const FVector Inward = (Center - RespawnPoint->GetComponentLocation()).GetSafeNormal2D();
 	const FVector Across = FVector::CrossProduct(FVector::UpVector, Inward);
 	const float Depth = FMath::Min(Extent.X, Extent.Y);
-	const float Spread = FMath::Max(MinionCount - 1, 1);
+	const float Spread = FMath::Max(PlannedMinions - 1, 1);
 	const float Side = (Index / Spread - 0.5f) * 2.0f;
 	const FVector Point = Center + Inward * Depth * (0.25f + 0.25f * (Index % 2)) + Across * Side * Depth * 0.7f;
 	return OnFloor(Point);
@@ -399,7 +492,7 @@ void AChaosImpactSoloRoom::SpawnWaitingBoss()
 		return;
 	}
 	const FVector Where = IsValid(BossSpawnPoint) ? OnFloor(BossSpawnPoint->GetActorLocation()) : OnFloor(RoomArea->GetComponentLocation());
-	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel, true);
+	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, PlannedBossLevel, true);
 	Boss = NewBoss;
 	if (NewBoss)
 	{
@@ -429,8 +522,9 @@ void AChaosImpactSoloRoom::SpawnBoss()
 		return;
 	}
 	Phase = EChaosImpactSoloRoomPhase::Boss;
+	bReachedBoss = true;
 	const FVector Where = IsValid(BossSpawnPoint) ? OnFloor(BossSpawnPoint->GetActorLocation()) : OnFloor(RoomArea->GetComponentLocation());
-	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, BossLevel, true);
+	AChaosImpactCharacter* NewBoss = SpawnEnemy(BossClass, SoloRoomBossPath, Where, PlannedBossLevel, true);
 	Boss = NewBoss;
 	if (NewBoss)
 	{

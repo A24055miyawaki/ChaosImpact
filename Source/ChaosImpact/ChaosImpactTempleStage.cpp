@@ -65,6 +65,10 @@ FVector AChaosImpactTempleStage::GetPortalOffset(const int32 Portal)
 
 AChaosImpactTempleStage::AChaosImpactTempleStage()
 {
+	CrashBallStartOffset = FVector(0, 0, 105);
+	Team0GoalOffset = FVector(-3100, 0, 0);
+	Team1GoalOffset = FVector(3100, 0, 0);
+	CrashBallExtraBallOffsets = {FVector(-1050, 250, 0), FVector(1050, -250, 0), FVector(-2500, 350, 0), FVector(2500, -350, 0)};
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	SetNetUpdateFrequency(10.0f);

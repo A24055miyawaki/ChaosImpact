@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactEase.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpact.h"
@@ -11,8 +12,11 @@
 #include "ChaosImpactShoulderCameraComponent.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactCrashBall.h"
+#include "ChaosImpactStageBase.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSoloStages.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactSimaeBoss.h"
@@ -918,6 +922,135 @@ void UChaosImpactChargeWidget::ShowKnockout(const FString& VictimName)
 	KnockoutVictim = VictimName;
 }
 
+void UChaosImpactChargeWidget::PaintCrashMarkers(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+	const int32 BaseLayer, const AChaosImpactGameState& Match, const float S) const
+{
+	using namespace ChaosImpactPaint;
+	APlayerController* Owner = GetOwningPlayer();
+	const AChaosImpactCrashBall* Ball = Match.GetCrashBall();
+	if (!Owner || !Ball)
+	{
+		return;
+	}
+	if (!CrashStage.IsValid() || !CrashGoals[0].IsValid() || !CrashGoals[1].IsValid())
+	{
+		for (TActorIterator<AChaosImpactStageBase> It(GetWorld()); It; ++It)
+		{
+			if (It->IsCrashBallModeActive()) { CrashStage = *It; }
+		}
+		for (TActorIterator<AChaosImpactCrashGoal> It(GetWorld()); It; ++It)
+		{
+			CrashGoals[FMath::Clamp(It->GetTeamIndex(), 0, 1)] = *It;
+		}
+	}
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const FVector2D ViewCenter(Size.X * .5f, Size.Y * .5f);
+	const auto* Member = Owner->GetPlayerState<AChaosImpactPlayerState>();
+	const int32 Team = Member && !Member->bSpectating && (Member->TeamIndex == 0 || Member->TeamIndex == 1) ? Member->TeamIndex : INDEX_NONE;
+	const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
+	const auto Project = [Owner](const FVector& World, FVector2D& Out)
+	{
+		return UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(Owner, World, Out, true);
+	};
+	const auto OnScreen = [&](const FVector2D& At, const float Margin)
+	{
+		// Clear of the shared scoreboard and its gauge at the top.
+		return At.X > Margin && At.X < Size.X - Margin && At.Y > 135 * S && At.Y < Size.Y - 70;
+	};
+	const auto EdgeArrow = [&](const FVector& World, const bool bProjected, const FVector2D& Position, const FLinearColor& Color,
+		const TCHAR* Label, const float Scale, const int32 Layer)
+	{
+		FVector2D Direction = Position - ViewCenter;
+		if (!bProjected)
+		{
+			FVector Camera; FRotator Rotation;
+			Owner->GetPlayerViewPoint(Camera, Rotation);
+			const FVector Relative = Rotation.UnrotateVector(World - Camera);
+			Direction = FVector2D(Relative.Y, -Relative.Z);
+		}
+		Direction = Direction.GetSafeNormal();
+		if (Direction.IsNearlyZero()) { Direction = FVector2D(0, -1); }
+		const FVector2D Reach(FMath::Max(30.f, Size.X * .5f - 55 * S), FMath::Max(30.f, Size.Y * .5f - 145 * S));
+		const double Factor = FMath::Min(Reach.X / FMath::Max(.001, FMath::Abs(Direction.X)), Reach.Y / FMath::Max(.001, FMath::Abs(Direction.Y)));
+		const FVector2D Tip = ViewCenter + Direction * Factor;
+		const FPainter Marker{AllottedGeometry, OutDrawElements, Layer};
+		PaintMarkerArrow(Marker, Tip, Direction, S * Scale, Color);
+		const FVector2D LabelAt = Tip - Direction * 34 * S * Scale;
+		Marker.Text(Label, LabelAt.X, LabelAt.Y - 9 * S, 15 * S * Scale, Paper, ETextAlign::Center, TEXT("Black"), 2 * S, Ink);
+	};
+
+	// The goals: which one to attack and which to defend, over each goal while it is in view. Off screen, only the
+	// goal to attack is pointed at, and only once the giant ball is in the opponents' half.
+	const float Progress = Match.Crash.Progress;
+	for (int32 GoalTeam = 0; GoalTeam < 2; ++GoalTeam)
+	{
+		const AChaosImpactCrashGoal* Goal = CrashGoals[GoalTeam].Get();
+		if (!Goal)
+		{
+			continue;
+		}
+		const FVector Top = Goal->GetActorLocation() + FVector(0, 0, Goal->OpeningHeight + 190.0f);
+		FVector2D At;
+		const bool bProjected = Project(Top, At);
+		const bool bAttack = Team != INDEX_NONE && GoalTeam != Team;
+		const FLinearColor Color = ChaosImpactMatch::GetTeamColor(GoalTeam);
+		if (bProjected && OnScreen(At, 60.0f))
+		{
+			const FPainter Tag{AllottedGeometry, OutDrawElements, BaseLayer + 3};
+			const float Bob = FMath::Sin(Time * 3.0f + GoalTeam) * 4.0f * S;
+			const FString Word = Team == INDEX_NONE ? FString::Printf(TEXT("%sゴール"), ChaosImpactMatch::GetTeamName(GoalTeam))
+				: bAttack ? FString(TEXT("せめる")) : FString(TEXT("まもる"));
+			const float Width = HudMeasure(Word, 18 * S, TEXT("Black")) + 26 * S;
+			HudShard(Tag, {At + FVector2D(-Width * .5f, -34 * S + Bob), At + FVector2D(Width * .5f, -34 * S + Bob),
+				At + FVector2D(Width * .5f - 6 * S, -6 * S + Bob), At + FVector2D(-Width * .5f - 6 * S, -6 * S + Bob)},
+				bAttack ? MakeFill(FMath::Lerp(Color, Paper, 0.3f), Color * FLinearColor(0.55f, 0.55f, 0.55f, 1.0f)) : NightFill, 2.0f * S,
+				FVector2D(2, 3) * S, Navy);
+			HudAbove(Tag).Text(Word, At.X - 3 * S, At.Y - 33 * S + Bob, 18 * S, Paper, ETextAlign::Center, TEXT("Black"), 2 * S, Ink);
+			HudAbove(Tag).Box(At.X - 7 * S, At.Y - 6 * S + Bob, 14 * S, 4 * S, Color);
+		}
+		else if (bAttack && (GoalTeam == 1 ? Progress > 0.2f : Progress < -0.2f))
+		{
+			EdgeArrow(Goal->GetActorLocation(), bProjected, At, Color, TEXT("ゴール"), 0.85f, BaseLayer + 3);
+		}
+	}
+
+	// The giant ball: its name over it, and chevrons on the floor beside it running the way this player's team pushes it.
+	const float Radius = Ball->GetBallRadius();
+	FVector2D Position;
+	const bool bProjected = Project(Ball->GetActorLocation() + FVector(0, 0, Radius + 60), Position);
+	const int32 Pusher = Match.Crash.LastPushTeam;
+	const FLinearColor BallColor = Pusher == 0 || Pusher == 1 ? FMath::Lerp(ChaosImpactMatch::GetTeamColor(Pusher), Gold, 0.25f) : Gold;
+	if (bProjected && OnScreen(Position, 42.0f))
+	{
+		const FPainter Marker{AllottedGeometry, OutDrawElements, BaseLayer + 4};
+		Marker.Text(TEXT("巨大球"), Position.X, Position.Y - 24 * S, 17 * S, Paper, ETextAlign::Center, TEXT("Black"), 2 * S, Ink);
+		if (Team != INDEX_NONE && CrashStage.IsValid() && !Ball->IsRecovering())
+		{
+			const FVector Push = CrashStage->GetCrashBallPushDirection(Team, Ball->GetActorLocation());
+			const FVector Floor = Ball->GetActorLocation() - FVector(0, 0, Radius * 0.85f);
+			FVector2D From, To;
+			if (Project(Floor + Push * (Radius + 40.0f), From) && Project(Floor + Push * (Radius + 190.0f), To))
+			{
+				const FVector2D Direction = (To - From).GetSafeNormal();
+				if (!Direction.IsNearlyZero())
+				{
+					const FLinearColor Color = ChaosImpactMatch::GetTeamColor(Team);
+					for (int32 Chevron = 0; Chevron < 3; ++Chevron)
+					{
+						const float Phase = FMath::Frac(Time * 1.4f + Chevron / 3.0f);
+						PaintMarkerArrow(FPainter{AllottedGeometry, OutDrawElements, BaseLayer + 3, FMath::Sin(Phase * UE_PI)},
+							FMath::Lerp(From, To, Phase), Direction, 0.75f * S, Color);
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		EdgeArrow(Ball->GetActorLocation(), bProjected, Position, BallColor, TEXT("巨大球"), 1.0f, BaseLayer + 4);
+	}
+}
+
 int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
@@ -1044,7 +1177,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	{
 		const float S = GetHudScale(Size.X, Size.Y);
 		const float Leave = FMath::Clamp((KnockoutAge - 1.8f) / 0.4f, 0.0f, 1.0f);
-		const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, -Leave * 60.0f * S, S);
+		const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, -ChaosImpactEase::InOut(Leave) * 60.0f * S, S);
 		const float Cut = EaseOut(KnockoutAge / 0.14f);
 
 		const FGeometry Slashes = MakeSkewed(TopRight, -720.0f, 96.0f, 720.0f, 110.0f, -0.55f);
@@ -1146,7 +1279,89 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		}
 	}
 	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
-	return FMath::Max(BaseLayer + 22, HudLayer + 26);
+	PaintSoloClear(AllottedGeometry, OutDrawElements, HudLayer + 28);
+	return FMath::Max(BaseLayer + 22, HudLayer + 44);
+}
+
+void UChaosImpactChargeWidget::PaintSoloClear(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+	const int32 BaseLayer) const
+{
+	using namespace ChaosImpactPaint;
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (!PC || !PC->IsSoloMode() || PC->GetSoloClearedAt() < 0.0)
+	{
+		return;
+	}
+	const float Age = static_cast<float>(FPlatformTime::Seconds() - PC->GetSoloClearedAt());
+	const float Total = AChaosImpactPlayerController::SoloClearSeconds;
+	if (Age < 0.0f || Age > Total + 0.5f)
+	{
+		return;
+	}
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f);
+	const FGeometry Center = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.4f, S);
+	// Everything leaves together in the last half second (the loading screen takes over).
+	const float Leave = 1.0f - ChaosImpactEase::InOut(FMath::Clamp((Age - (Total - 0.5f)) / 0.5f, 0.0f, 1.0f));
+	// The flash of the moment.
+	if (Age < 0.4f)
+	{
+		FPainter{AllottedGeometry, OutDrawElements, BaseLayer}.Box(0.0f, 0.0f, Size.X, Size.Y, WithAlpha(Paper, 0.5f * (1.0f - Age / 0.4f)));
+	}
+	// A slanted band sweeps in behind the words (gold above, fire below), thin enough to leave the field in view.
+	const float BandIn = ChaosImpactEase::Out(FMath::Clamp((Age - 0.05f) / 0.35f, 0.0f, 1.0f));
+	const FGeometry Band = MakeSkewed(Center, -1300.0f + (1.0f - BandIn) * -1100.0f, -86.0f, 2600.0f, 172.0f, -0.18f);
+	const FPainter BandPainter{Band, OutDrawElements, BaseLayer + 1, Leave};
+	BandPainter.Box(0.0f, 0.0f, 2600.0f, 172.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.72f));
+	BandPainter.Box(0.0f, 0.0f, 2600.0f, 7.0f, Gold);
+	BandPainter.Box(0.0f, 165.0f, 2600.0f, 7.0f, Fire);
+	// STAGE CLEAR! slams in out of a golden burst, lands a little large and settles; a light sweeps across it.
+	const float WordAge = Age - 0.12f;
+	if (WordAge > 0.0f)
+	{
+		const float TextSize = 118.0f;
+		const float Scale = 1.0f + 0.9f * FMath::Exp(-9.0f * WordAge);
+		const float Alpha = ChaosImpactEase::Out(FMath::Clamp(WordAge / 0.1f, 0.0f, 1.0f)) * Leave;
+		const FString Word = TEXT("STAGE CLEAR!");
+		const FHudFill Blast = MakeFill(FLinearColor(1.0f, 0.93f, 0.55f, 1.0f), FLinearColor(0.85f, 0.38f, 0.02f, 1.0f));
+		const float Open = FMath::Clamp(Alpha * 1.3f, 0.0f, 1.0f) * Scale;
+		const float Outer = TextSize * 1.05f * Open;
+		const float HalfWidth = (HudMeasure(Word, TextSize, TEXT("BlackItalic")) * 0.5f + TextSize * 0.6f) * Open;
+		HudBurst(FPainter{Center, OutDrawElements, BaseLayer + 2, Alpha * FMath::Clamp(1.4f - WordAge, 0.35f, 1.0f)},
+			FVector2D(0.0, -TextSize * 0.1f), TextSize * 0.62f * Open, Outer, 18, Blast, -6.0f,
+			FVector2D(HalfWidth / FMath::Max(Outer, 1.0f), 0.85), 6.0f, FVector2D(9.0, 10.0), TextSize);
+		const FGeometry Space = MakeSkewed(Center, -800.0f, -TextSize * 0.8f, 1600.0f, TextSize * 1.6f, -0.12f, Scale);
+		const float Shine = FMath::Frac(Age * 0.45f);
+		const FLinearColor Color = FMath::Lerp(Paper, Gold, 0.25f + 0.25f * FMath::Sin(Shine * UE_TWO_PI));
+		HudText3D(FPainter{Space, OutDrawElements, BaseLayer + 5, Alpha}, Word, 800.0f, 0.0f, TextSize, Color, ETextAlign::Center,
+			TEXT("BlackItalic"), TextSize * 0.07f);
+	}
+	// The stage's name, in under the words.
+	const float NameIn = ChaosImpactEase::Out(FMath::Clamp((Age - 0.55f) / 0.3f, 0.0f, 1.0f));
+	if (NameIn > 0.0f)
+	{
+		FString Name;
+		if (const FChaosImpactSoloStageInfo* Info = ChaosImpactSolo::FindStage(PC->GetCurrentSoloStage()))
+		{
+			Name = FString::Printf(TEXT("ステージ %d　%s"), Info->Number, Info->Name);
+		}
+		const FGeometry Line = MakeSkewed(Center, -600.0f + (1.0f - NameIn) * 60.0f, 92.0f, 1200.0f, 40.0f, -0.12f);
+		const FPainter Words{Line, OutDrawElements, BaseLayer + 8, NameIn * Leave};
+		Words.Text(Name, 600.0f, 0.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+	}
+	// The way back to the map: a short gauge filling.
+	const float GaugeIn = ChaosImpactEase::Out(FMath::Clamp((Age - 1.2f) / 0.3f, 0.0f, 1.0f));
+	if (GaugeIn > 0.0f)
+	{
+		const FGeometry Bottom = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.78f, S);
+		const FPainter Gauge{Bottom, OutDrawElements, BaseLayer + 8, GaugeIn * Leave};
+		Gauge.Text(TEXT("マップにもどります"), 0.0f, -34.0f, 20.0f, Paper, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
+		const float Fill = FMath::Clamp((Age - 1.2f) / (Total - 1.4f), 0.0f, 1.0f);
+		const TArray<FVector2D> Track{FVector2D(-160, 0), FVector2D(166, 0), FVector2D(160, 9), FVector2D(-166, 9)};
+		HudShard(Gauge, Track, SolidFill(Navy), 1.5f, FVector2D(2, 3));
+		HudPoly(HudAbove(Gauge, 3), {FVector2D(-160, 0), FVector2D(-160 + 326 * Fill, 0), FVector2D(-166 + 326 * Fill, 9), FVector2D(-166, 9)},
+			MakeFill(Gold, Fire));
+	}
 }
 
 namespace
@@ -2167,10 +2382,10 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			// Plain type over the flyover, rising slightly into place.
 			const float Rise = (1.0f - In) * 16.0f;
 			const FPainter Words{Center, OutDrawElements, BaseLayer + 2, Alpha};
-			Words.Text(bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！"), 0.0f, -74.0f + Rise, 60.0f,
+			Words.Text(Match->Rules.bCrashBall ? TEXT("巨大球を相手のゴールへ押し込め！") : bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！"), 0.0f, -74.0f + Rise, 60.0f,
 				Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 			Words.Box(-150.0f * In, 18.0f + Rise, 300.0f * In, 2.0f, WithAlpha(Paper, 0.6f));
-			Words.Text(FString::Printf(TEXT("%s ・ %d分"), *ChaosImpactMatch::DescribeTeams(Match->Rules.TeamCount),
+			Words.Text(FString::Printf(TEXT("%s ・ %d分"), *ChaosImpactMatch::DescribeRule(Match->Rules),
 				Match->Rules.Minutes), 0.0f, 30.0f + Rise, 22.0f, WithAlpha(Paper, 0.85f), ETextAlign::Center,
 				TEXT("Regular"), 2.0f, Ink);
 		}
@@ -2180,6 +2395,11 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 
 	if (Match->Phase == EChaosImpactOnlinePhase::Match)
 	{
+		if (Match->Rules.bCrashBall)
+		{
+			PaintCrashMarkers(AllottedGeometry, OutDrawElements, BaseLayer, *Match, S);
+			return;
+		}
 		// The time is shown once for the whole screen by UChaosImpactMatchAnnouncerWidget. Each view keeps
 		// the standings: the top three players, or every team in a team battle, plus this player's own line.
 		// In split screen the shared clock sits at the top middle of the whole screen, over a view's corner.

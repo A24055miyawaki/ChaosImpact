@@ -8,6 +8,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactCrashBall.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactSpectatorPawn.h"
@@ -1197,6 +1198,7 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	}
 	Match->bVersusMatch = true;
 	Match->Rules = Rules;
+	SetupCrashMatch();
 	Match->StageCenter = VersusStage->GetCenter();
 	Match->StageHalfExtent = VersusStage->GetHalfExtent();
 	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
@@ -1378,7 +1380,9 @@ void AChaosImpactGameMode::StartMatchIntro()
 
 	ClearMatchBalls();
 	DestroyStageBallSpawners();
-	for (const FVector& Point : VersusStage->GetBallPoints())
+	TArray<FVector> SupplyPoints = VersusStage->GetBallPoints();
+	if (Match->Rules.bCrashBall) { SupplyPoints.Append(VersusStage->GetCrashBallExtraBallPoints()); }
+	for (const FVector& Point : SupplyPoints)
 	{
 		const FTransform SpawnTransform(FRotator::ZeroRotator, Point + FVector(0.0f, 0.0f, 3.0f));
 		if (AChaosImpactBallSpawner* Spawner = GetWorld()->SpawnActorDeferred<AChaosImpactBallSpawner>(
@@ -1397,6 +1401,20 @@ void AChaosImpactGameMode::StartMatchIntro()
 	{
 		SpawnPoints.Swap(Index, FMath::RandRange(0, Index));
 	}
+	// クラッシュボール: each team starts on its own half, in front of the goal it defends.
+	TArray<FVector> TeamPoints[2];
+	int32 TeamUsed[2] = {0, 0};
+	if (Match->Rules.bCrashBall)
+	{
+		for (int32 Team = 0; Team < 2; ++Team)
+		{
+			TeamPoints[Team] = GetCrashTeamSpawnPoints(Team);
+			for (int32 Index = TeamPoints[Team].Num() - 1; Index > 0; --Index)
+			{
+				TeamPoints[Team].Swap(Index, FMath::RandRange(0, Index));
+			}
+		}
+	}
 	for (int32 Index = 0; Index < Competitors.Num() && !SpawnPoints.IsEmpty(); ++Index)
 	{
 		AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Competitors[Index]->GetPawn());
@@ -1404,7 +1422,16 @@ void AChaosImpactGameMode::StartMatchIntro()
 		{
 			continue;
 		}
-		const FVector Floor = SpawnPoints[Index % SpawnPoints.Num()];
+		FVector Floor = SpawnPoints[Index % SpawnPoints.Num()];
+		const int32 Team = Competitors[Index]->TeamIndex;
+		if (Match->Rules.bCrashBall && (Team == 0 || Team == 1) && !TeamPoints[Team].IsEmpty())
+		{
+			// More members than points: the extra ones stand beside the first, towards the middle line.
+			const int32 Used = TeamUsed[Team]++;
+			Floor = TeamPoints[Team][Used % TeamPoints[Team].Num()];
+			const FVector Across = FVector::CrossProduct(FVector::UpVector, (Match->StageCenter - Floor).GetSafeNormal2D());
+			Floor += Across * 170.0f * (Used / TeamPoints[Team].Num()) * ((Used / TeamPoints[Team].Num()) % 2 ? 1.0f : -1.0f);
+		}
 		const FVector Location = Floor
 			+ FVector(0.0f, 0.0f, Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 4.0f);
 		Character->ResetForOnlineMatch(Location, FRotator(0.0f, (Match->StageCenter - Floor).Rotation().Yaw, 0.0f));
@@ -1464,7 +1491,11 @@ void AChaosImpactGameMode::BeginMatchPlay()
 	}
 	const float Seconds = MatchDurationOverride > 0.0f ? MatchDurationOverride : Match->Rules.Minutes * 60.0f;
 	SetMatchPhase(EChaosImpactOnlinePhase::Match, Seconds);
-	GetWorldTimerManager().SetTimer(MatchPhaseTimer, this, &AChaosImpactGameMode::EndMatch, Seconds, false);
+	GetWorldTimerManager().SetTimer(MatchPhaseTimer, this, &AChaosImpactGameMode::HandleMatchTimeExpired, Seconds, false);
+	if (Match->Rules.bCrashBall)
+	{
+		GetWorldTimerManager().SetTimer(CrashMatchTimer, this, &AChaosImpactGameMode::UpdateCrashMatch, 0.05f, true);
+	}
 	// The graph starts at 0 for everyone at GO.
 	for (AChaosImpactPlayerState* Member : Match->GetCompetitors(true))
 	{
@@ -1478,6 +1509,8 @@ void AChaosImpactGameMode::BeginMatchPlay()
 
 void AChaosImpactGameMode::EndMatch()
 {
+	GetWorldTimerManager().ClearTimer(CrashMatchTimer);
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
 	// The last point of the graph is the final score; every number goes out now for the results.
 	GetWorldTimerManager().ClearTimer(HistoryTimer);
 	SampleMatchHistory();
@@ -1527,6 +1560,7 @@ void AChaosImpactGameMode::ReturnToLobbyAfterMatch()
 		return;
 	}
 	SyncTrainingCPUCount(0, FVector::ZeroVector, FRotator::ZeroRotator);
+	ClearCrashMatch();
 	DestroyStageBallSpawners();
 	ClearMatchBalls();
 	Match->bVersusMatch = false;
@@ -1725,8 +1759,12 @@ bool AChaosImpactGameMode::ChooseMatchRespawn(const AActor* Character, FVector& 
 		return false;
 	}
 	// Prefer the points farthest from living opponents, with a little randomness among the best few.
+	// クラッシュボール: only points on the character's own half (the goal it defends).
+	const AChaosImpactPlayerState* Member = Cast<APawn>(Character) ? Cast<APawn>(Character)->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	const TArray<FVector> Points = Match->Rules.bCrashBall && Member
+		? GetCrashTeamSpawnPoints(Member->TeamIndex) : VersusStage->GetSpawnPoints();
 	TArray<TPair<float, FVector>> Candidates;
-	for (const FVector& Point : VersusStage->GetSpawnPoints())
+	for (const FVector& Point : Points)
 	{
 		float Nearest = UE_BIG_NUMBER;
 		for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)

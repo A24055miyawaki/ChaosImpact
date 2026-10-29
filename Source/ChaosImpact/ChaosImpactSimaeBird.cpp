@@ -1,9 +1,11 @@
 #include "ChaosImpactSimaeBird.h"
+#include "ChaosImpactFxKit.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactSfx.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactCrashBall.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -152,6 +154,15 @@ void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location,
 	}
 
 	const int32 NewFlockId = NextFlockId++;
+	for (TActorIterator<AChaosImpactCrashBall> CrashIt(World); CrashIt; ++CrashIt)
+	{
+		AChaosImpactCrashBall* CrashBall = *CrashIt;
+		if (IsValid(CrashBall) && CrashBall != DirectVictim
+			&& FVector::DistSquared2D(Location, CrashBall->GetActorLocation()) <= FMath::Square(320.0f + CrashBall->GetBallRadius()))
+		{
+			CrashBall->ApplySpecialEffectPush(CrashBall, ThrowingPawn, Location, FVector::ZeroVector, 0.75f, true);
+		}
+	}
 	const TSharedPtr<FChaosImpactSimaeFlockState> SharedState = MakeShared<FChaosImpactSimaeFlockState>();
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::SimaeBirdCount; ++Index)
 	{
@@ -749,19 +760,67 @@ void AChaosImpactSimaeFeatherBurst::BeginPlay()
 		Mesh->SetRelativeRotation(Stream.VRand().Rotation());
 		Mesh->SetRelativeScale3D(FVector(0.25f, 0.065f, 0.025f) * Feather.Size);
 	}
-	RingMaterial = MakeAdditive(this, FLinearColor(0.72f, 0.95f, 1.0f), 3.5f);
-	ShockRing = ChaosImpactLightning::CreateComponent(this, BurstRoot, RingMaterial);
 	BurstLight->SetIntensity(9000.0f * BurstScale);
-	if (UNiagaraSystem* Shatter = LoadEffect(Effects::Shatter))
+	// Soft (FX kit): a pale flash, one ring of light racing out over the ground (two for a big burst) and a puff of
+	// down. (No flat shatter shards: from above they read as a hard white star.)
+	if (AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, BurstRoot->GetComponentLocation()))
 	{
-		if (UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAttached(Shatter, BurstRoot, NAME_None,
-			FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, false))
+		Fx->Stream.Initialize(Stream.RandHelper(1 << 20));
+		const FLinearColor Ice(0.55f, 0.85f, 1.0f);
+		const FLinearColor Pale(0.95f, 0.98f, 1.0f);
+		FChaosImpactFxPiece Flash;
+		Flash.Location = FVector(0.0f, 0.0f, 30.0f);
+		Flash.Life = 0.2f;
+		Flash.SizeFrom = 160.0f * BurstScale;
+		Flash.SizeTo = 380.0f * BurstScale;
+		Flash.Color = Ice;
+		Flash.CoreColor = Pale;
+		Flash.Intensity = 5.0f;
+		Flash.Attack = 0.05f;
+		Flash.NoiseAmount = 0.2f;
+		Fx->Add(Flash);
+		FChaosImpactFxPiece Wave;
+		Wave.Look = EChaosImpactFxLook::Ring;
+		Wave.Location = FVector(0.0f, 0.0f, 6.0f);
+		Wave.Life = 0.5f;
+		Wave.SizeFrom = Wave.SizeTo = 620.0f * BurstScale;
+		Wave.RingFrom = 0.1f;
+		Wave.RingTo = 0.92f;
+		Wave.RingWidth = 0.05f;
+		Wave.Color = Ice;
+		Wave.CoreColor = Pale;
+		Wave.Intensity = 3.0f;
+		Wave.Attack = 0.04f;
+		Wave.ErodeTo = 0.7f;
+		Fx->Add(Wave);
+		if (BurstScale >= BigBurstScale)
 		{
-			Effect->SetRelativeScale3D(FVector(BurstScale));
-			SetEffectColor(Effect, TEXT("Base Color"), FLinearColor(0.95f, 0.97f, 1.0f));
-			SetEffectFloat(Effect, TEXT("Burst Amount"), 3.0f * BurstScale);
-			SetEffectVector(Effect, TEXT("Hit Normal"), FVector::UpVector);
-			SetEffectVector(Effect, TEXT("Hit Direction"), -FVector::UpVector);
+			FChaosImpactFxPiece Second = Wave;
+			Second.Delay = 0.08f;
+			Second.RingTo = 0.7f;
+			Second.RingWidth = 0.035f;
+			Second.Intensity = 1.8f;
+			Fx->Add(Second);
+		}
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			const float Angle = (Index + Fx->Stream.FRandRange(-0.3f, 0.3f)) * UE_TWO_PI / 6.0f;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			FChaosImpactFxPiece Down;
+			Down.Look = EChaosImpactFxLook::Smoke;
+			Down.Location = Out * 15.0f * BurstScale + FVector(0.0f, 0.0f, 40.0f);
+			Down.Velocity = Out * Fx->Stream.FRandRange(200.0f, 380.0f) * BurstScale + FVector(0.0f, 0.0f, 50.0f);
+			Down.Drag = 2.5f;
+			Down.Life = Fx->Stream.FRandRange(0.6f, 0.9f);
+			Down.SizeFrom = 70.0f * BurstScale;
+			Down.SizeTo = 160.0f * BurstScale;
+			Down.Color = FLinearColor(0.72f, 0.82f, 0.94f);
+			Down.CoreColor = Pale;
+			Down.Intensity = 1.0f;
+			Down.Opacity = 0.5f;
+			Down.Attack = 0.08f;
+			Down.ErodeTo = 0.95f;
+			Fx->Add(Down);
 		}
 	}
 	if (UNiagaraSystem* System = LoadEffect(Effects::SparkBurst))
@@ -791,22 +850,6 @@ void AChaosImpactSimaeFeatherBurst::Tick(const float DeltaSeconds)
 			const float Fade = FMath::Clamp((1.25f - Age) / 0.5f, 0.0f, 1.0f);
 			Mesh->SetRelativeScale3D(FVector(0.25f, 0.065f, 0.025f) * Feather.Size * Fade);
 		}
-	}
-	if (ShockRing)
-	{
-		ChaosImpactIceMeshes::FMeshBuffers Rings;
-		const float Fade = FMath::Clamp(1.0f - Age / 0.5f, 0.0f, 1.0f);
-		ChaosImpactLightning::AppendRing(Rings, FVector::UpVector * 5.0f,
-			(35.0f + 540.0f * Age) * BurstScale, 12.0f * Fade, 64);
-		if (BurstScale >= BigBurstScale && Age > 0.08f)
-		{
-			// A second, faster ring right behind the first.
-			const float Second = Age - 0.08f;
-			ChaosImpactLightning::AppendRing(Rings, FVector::UpVector * 9.0f, (20.0f + 420.0f * Second) * BurstScale,
-				7.0f * FMath::Clamp(1.0f - Second / 0.5f, 0.0f, 1.0f), 64);
-		}
-		ChaosImpactLightning::SetMesh(ShockRing, Rings);
-		RingMaterial->SetScalarParameterValue(TEXT("Intensity"), 3.5f * FMath::Clamp(1.0f - Age / 0.7f, 0.0f, 1.0f));
 	}
 	BurstLight->SetIntensity(9000.0f * BurstScale * FMath::Exp(-Age * 15.0f));
 }

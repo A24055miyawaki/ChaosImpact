@@ -187,7 +187,7 @@ namespace
 					Room->MinionCount > 0 ? EChaosImpactSoloRoomPhase::Minions : EChaosImpactSoloRoomPhase::Boss);
 				Test->TestTrue(TEXT("The door shuts"), Room->AreDoorsClosed());
 				// (A boss waiting there from the start counts among them.)
-				Test->TestEqual(TEXT("Its minions"), Room->GetAliveEnemyCount(), Room->MinionCount + (Room->bBossWaitsFromStart ? 1 : 0));
+				Test->TestEqual(TEXT("Its minions"), Room->GetAliveEnemyCount(), Room->GetFirstWaveCount() + (Room->bBossWaitsFromStart ? 1 : 0));
 				Enemies(false);
 				// A few steps in, to see them.
 				Place(FMath::Lerp(Room->EntryTrigger->GetComponentLocation(), Room->RoomArea->GetComponentLocation(), 0.55f));
@@ -206,6 +206,9 @@ namespace
 			case 14:
 				if (Room->GetPhase() == EChaosImpactSoloRoomPhase::Minions)
 				{
+					// They come in waves: each one stepping in is knocked out in turn.
+					Enemies(true);
+					NextAt = Now + 0.9;
 					return false;
 				}
 				if (Room->bSpawnBoss)

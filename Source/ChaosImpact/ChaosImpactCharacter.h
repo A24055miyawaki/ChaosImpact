@@ -647,6 +647,8 @@ protected:
 	TObjectPtr<UStaticMesh> LeftHandBaseMesh;
 
 	TWeakObjectPtr<AActor> LastDamageCauser;
+	/** Who dealt the last hit (server; on a game for this machine alone, read by the hit stop). */
+	TWeakObjectPtr<APawn> LastHitSourcePawn;
 	double LastDamagedAt = -100.0;
 
 	/** Server time a throw started charging (-1: not charging), so other machines can show it. */
@@ -773,6 +775,31 @@ protected:
 	TObjectPtr<UAudioComponent> NovaChargeSound;
 
 	void UpdateCameraShake();
+	/**
+	 * Game feel, drawn on each machine: the camera widening for a moment at a dash or a hard throw and running a
+	 * little ahead, the body leaning into starts, stops and turns, a throw's whoosh.
+	 */
+	void UpdateFeelPresentation(float DeltaSeconds);
+	/** A hit or a knockout felt here: the world held for a beat (hit stop), the shake for nearby players, a thud. */
+	void PlayHitFeel(bool bKnockout);
+	float FovKick = 0.0f;
+	float FovKickVelocity = 0.0f;
+	float BaseFieldOfView = -1.0f;
+	/** The charge of this screen's own last throw (how hard the camera kicks and the throw whooshes). */
+	float FeelThrowCharge = 0.0f;
+	FVector CameraMoveLead = FVector::ZeroVector;
+	FVector FeelLastLocation = FVector::ZeroVector;
+	FVector FeelVelocity = FVector::ZeroVector;
+	FVector FeelAcceleration = FVector::ZeroVector;
+	FQuat MeshLeanBase = FQuat::Identity;
+	FVector2D MeshLean = FVector2D::ZeroVector;
+	FVector2D MeshLeanVelocity = FVector2D::ZeroVector;
+	bool bMeshLeanBaseSet = false;
+	bool bMeshLeaning = false;
+	bool bAnimHeld = false;
+	bool bFeelWasDashing = false;
+	bool bFeelWasThrowing = false;
+	double AnimHeldUntil = 0.0;
 	float CameraShakeStrength = 0.0f;
 	float CameraShakeSeconds = 1.0f;
 	double CameraShakeStartedAt = -100.0;
@@ -945,6 +972,7 @@ protected:
 	float IceFreezeVisualSeconds = 0.0f;
 	bool bOnSlipperyIce = false;
 	float DefaultGroundFriction = 100.0f;
+	float DefaultBrakingFriction = 4.0f;
 	float DefaultBrakingDecelerationWalking = 100000.0f;
 	float DefaultMaxAcceleration = 100000.0f;
 
@@ -1204,6 +1232,11 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category="Chaos Impact|Training Camera", meta=(ClampMin="1.0"))
 	float TrainingMenuCameraBlendSpeed = 7.5f;
+	/** The camera boom's spring speeds (its length, offsets and turn ease off and into place). */
+	float CameraArmVelocity = 0.0f;
+	FVector CameraSocketVelocity = FVector::ZeroVector;
+	FVector CameraTargetVelocity = FVector::ZeroVector;
+	FVector CameraTurnVelocity = FVector::ZeroVector;
 
 public:
 

@@ -147,6 +147,8 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 		return Data;
 	}
 	Data.bTeams = Match->IsTeamBattle();
+	Data.bCrashBall = Match->Rules.bCrashBall;
+	Data.bCrashKnockout = Match->Crash.bKnockout;
 	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
 	const UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
 	if (const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
@@ -179,6 +181,7 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 		Entry.SpecialThrows = Member->SpecialThrows;
 		Entry.DriveHits = Member->DriveHits;
 		Entry.LongestHit = Member->LongestHit;
+		Entry.CrashPushes = Member->CrashPushes;
 		Entry.History = Member->PointsHistory;
 		Entry.Rank = 1;
 		for (int32 Other = 0; Other < Index; ++Other)
@@ -203,7 +206,7 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 	{
 		for (int32 Team = 0; Team < Match->Rules.TeamCount; ++Team)
 		{
-			Data.TeamTotals.Add({Team, Match->GetTeamPoints(Team)});
+			Data.TeamTotals.Add({Team, Data.bCrashBall ? 100 - Match->GetCrashCount(Team) : Match->GetTeamPoints(Team)});
 		}
 		Data.TeamTotals.StableSort([](const TPair<int32, int32>& A, const TPair<int32, int32>& B) { return A.Value > B.Value; });
 		Data.bTie = Data.TeamTotals.Num() > 1 && Data.TeamTotals[0].Value == Data.TeamTotals[1].Value;
@@ -245,6 +248,8 @@ void FChaosImpactResultsData::ChooseAwards()
 		return Entry.History.Last() - Entry.History[FMath::Clamp(Count * 2 / 3, 0, Count - 1)];
 	};
 	const TArray<FAward> Awards = {
+		{TEXT("押し込み王"), 6, [](const FEntry& E) { return static_cast<float>(E.CrashPushes); },
+			[](const FEntry& E) { return E.CrashPushes >= 3; }, [](const FEntry& E) { return FString::Printf(TEXT("巨大球を押した %d回"), E.CrashPushes); }},
 		{TEXT("KOキング"), 0, [](const FEntry& E) { return static_cast<float>(E.Knockouts); },
 			[](const FEntry& E) { return E.Knockouts > 0; }, [](const FEntry& E) { return FString::Printf(TEXT("KO ×%d"), E.Knockouts); }},
 		{TEXT("スナイパー"), 1, [](const FEntry& E) { return static_cast<float>(E.LongestHit); },
@@ -1157,7 +1162,8 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		if (!Data.Entries.IsEmpty())
 		{
 			const int32 Points = Data.bTeams && !Data.TeamTotals.IsEmpty() ? Data.TeamTotals[0].Value : Data.Entries[0].Points;
-			const FString Line = Data.bTeams ? FString::Printf(TEXT("TEAM %d pt"), Points)
+			const FString Line = Data.bCrashBall ? FString::Printf(TEXT("%s  %d : %d"), Data.bCrashKnockout ? TEXT("KNOCKOUT") : TEXT("カウント"),
+				100 - Data.TeamTotals[0].Value, 100 - Data.TeamTotals[1].Value) : Data.bTeams ? FString::Printf(TEXT("TEAM %d pt"), Points)
 				: FString::Printf(TEXT("%d pt   KO %d"), Points, Data.Entries[0].Knockouts);
 			N.Text(Line, 140.0f, 124.0f, 24.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 2.0f, ResultsPaint::Ink);
 		}

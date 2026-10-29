@@ -195,6 +195,8 @@ protected:
 	/** Server: blows someone caught in a nova outward, off their feet. */
 	void ApplyNovaKnockback(AChaosImpactCharacter* Victim) const;
 	void UpdateNovaPresentation(float Age);
+	/** The soft (FX kit) part of the nova going off: flash, pillar, lit ground, shock waves, sparks. */
+	void PlayNovaKit(const FVector& Center);
 	/** Server, nova: whoever its growing ball of fire reaches (once each). */
 	void TickNova(float Age);
 	/** Nova: the model landing, spinning, exploding and falling apart; its ball of fire. */

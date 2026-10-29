@@ -83,6 +83,10 @@ private:
 
 	void BuildPresentation();
 	void UpdatePresentation(float Age, float DeltaSeconds);
+	/** Puffs of dust whipped up at At (soft FX-kit smoke). */
+	void TornadoDust(const FVector& At, int32 Puffs, float Scale);
+	/** Its soft FX-kit pieces (rings rolling out, the lit ground), riding with it. */
+	TWeakObjectPtr<class AChaosImpactFxKit> KitFx;
 	/** How long it whirls (ActiveSeconds, or a look-only funnel's own time). */
 	float GetWhirlSeconds() const { return bVisualOnly ? VisualSeconds : ActiveSeconds; }
 	bool bVisualOnly = false;

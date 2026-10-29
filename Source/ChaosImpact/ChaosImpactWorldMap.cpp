@@ -1,7 +1,10 @@
 #include "ChaosImpactWorldMap.h"
+#include "Misc/CommandLine.h"
+#include "ChaosImpactEase.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSfx.h"
@@ -1969,7 +1972,9 @@ void AChaosImpactWorldMap::Tick(const float DeltaSeconds)
 		UpdateAutoWalk(Player);
 		UpdateFocus(Player, DeltaSeconds);
 	}
-	OverviewBlend = FMath::FInterpConstantTo(OverviewBlend, bOverview ? 1.0f : 0.0f, DeltaSeconds, 2.2f);
+	// Over a second into the whole-map view and back, easing out of one view and into the other.
+	ChaosImpactEase::Toggle(OverviewLinear, bOverview, DeltaSeconds, 1.3f);
+	OverviewBlend = ChaosImpactEase::InOutStrong(OverviewLinear);
 	// The birds hop now and then, turning a little.
 	const float Time = GetWorld()->GetTimeSeconds();
 	for (int32 I = 0; I < Birds.Num(); ++I)
@@ -2151,7 +2156,7 @@ void AChaosImpactWorldMap::UpdateFocus(AChaosImpactCharacter* Player, const floa
 	{
 		CardNode = FocusedNode;
 	}
-	CardAlpha = FMath::FInterpConstantTo(CardAlpha, FocusedNode && !IsRevealing() ? 1.0f : 0.0f, DeltaSeconds, 5.0f);
+	CardAlpha = FMath::FInterpConstantTo(CardAlpha, FocusedNode && !IsRevealing() ? 1.0f : 0.0f, DeltaSeconds, 4.0f);
 	if (Widget)
 	{
 		Widget->SetCardNode(CardNode);
@@ -2170,6 +2175,28 @@ void AChaosImpactWorldMap::UpdateInput(AChaosImpactCharacter* Player)
 	if (!PC->IsUsingGamepad() && !PC->bShowMouseCursor)
 	{
 		PC->SetShowMouseCursor(true);
+	}
+	// Just arrived (or the loading screen still fading out): nothing counts until the map has been up a moment and
+	// every confirm button has been let go once.
+	const UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this);
+	const double Now = FPlatformTime::Seconds();
+	if (Loading && Loading->IsShowing())
+	{
+		InputReadyAt = -1.0;
+	}
+	else if (InputReadyAt < 0.0)
+	{
+		InputReadyAt = Now + 0.5;
+		bInputReleasedSinceArrival = false;
+	}
+	if (!bInputReleasedSinceArrival)
+	{
+		const bool bAnyDown = PC->IsInputKeyDown(EKeys::LeftMouseButton) || PC->IsInputKeyDown(EKeys::Enter) || PC->IsInputKeyDown(EKeys::SpaceBar)
+			|| PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Bottom) || ChaosImpactSettings::IsActionDown(PC, EChaosImpactAction::Throw);
+		bInputReleasedSinceArrival = InputReadyAt >= 0.0 && Now >= InputReadyAt && !bAnyDown;
+		bConfirmHeld = true;
+		bClickHeld = true;
+		return;
 	}
 	const bool bClick = PC->IsInputKeyDown(EKeys::LeftMouseButton);
 	const bool bClickEdge = (bClick && !bClickHeld) || PC->WasInputKeyJustPressed(EKeys::LeftMouseButton);
@@ -2300,6 +2327,7 @@ void AChaosImpactWorldMap::UpdateInput(AChaosImpactCharacter* Player)
 			{
 				AutoRoute = MoveTemp(Route);
 				AutoIndex = 0;
+				AutoWalkTime = 0.0f;
 				AutoGoalNode = 0;
 			}
 		}
@@ -2499,6 +2527,7 @@ void AChaosImpactWorldMap::WalkTo(const int32 Id)
 		Route.Add(GetNodeLocation(Id));
 		AutoRoute = MoveTemp(Route);
 		AutoIndex = 0;
+		AutoWalkTime = 0.0f;
 		AutoGoalNode = Id;
 	}
 }
@@ -2518,8 +2547,7 @@ void AChaosImpactWorldMap::WarpToNode(const int32 Id)
 	{
 		Movement->StopMovementImmediately();
 	}
-	CameraFocus = Spot;
-	bCameraFocusSet = false;
+	// (The camera glides over to it: UpdateCamera sees its target jump.)
 	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::StageWarp);
 }
 
@@ -2549,7 +2577,17 @@ void AChaosImpactWorldMap::UpdateAutoWalk(AChaosImpactCharacter* Player)
 		AutoRoute.Reset();
 		return;
 	}
-	Player->AddMovementInput((AutoRoute[AutoIndex] - Here).GetSafeNormal2D(), 1.0f);
+	// The walk eases too: gathering speed as it sets off, slowing as it comes up to where it is going (the camera
+	// following it then eases in and out with it instead of sliding along at one speed).
+	AutoWalkTime += GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.0f;
+	float Left = static_cast<float>(FVector::Dist2D(Here, AutoRoute[AutoIndex]));
+	for (int32 Index = AutoIndex + 1; Index < AutoRoute.Num(); ++Index)
+	{
+		Left += static_cast<float>(FVector::Dist2D(AutoRoute[Index - 1], AutoRoute[Index]));
+	}
+	const float SetOff = FMath::Lerp(0.3f, 1.0f, ChaosImpactEase::InOut(AutoWalkTime / 0.5f));
+	const float Arrive = FMath::Lerp(0.3f, 1.0f, ChaosImpactEase::InOut(Left / 420.0f));
+	Player->AddMovementInput((AutoRoute[AutoIndex] - Here).GetSafeNormal2D(), FMath::Min(SetOff, Arrive));
 }
 
 void AChaosImpactWorldMap::UpdateCamera(AChaosImpactCharacter* Player, const float DeltaSeconds)
@@ -2558,20 +2596,43 @@ void AChaosImpactWorldMap::UpdateCamera(AChaosImpactCharacter* Player, const flo
 	{
 		return;
 	}
+	// Following the player the focus rides a soft spring (it lags as they set off and settles after they stop); a long
+	// move is a clear イージーイーズ glide instead (never a constant-speed slide).
 	FVector Want = CameraFocus;
-	float Speed = 6.0f;
 	if (RevealStep == ERevealStep::Travel || RevealStep == ERevealStep::Clear)
 	{
 		Want = RevealTarget;
-		Speed = 3.2f;
 	}
 	else if (Player && RevealStep != ERevealStep::Wait)
 	{
 		Want = Player->GetActorLocation() + FVector(450.0f, 0.0f, 0.0f);
-		Speed = RevealStep == ERevealStep::Return ? 3.2f : 6.0f;
 	}
 	Want.Z = GetActorLocation().Z + 60.0f;
-	CameraFocus = bCameraFocusSet ? FMath::VInterpTo(CameraFocus, Want, DeltaSeconds, Speed) : Want;
+	if (bCameraFocusSet && !IsCameraGliding() && FVector::Dist2D(Want, LastWant) > 500.0f && FVector::Dist2D(Want, CameraFocus) > 500.0f)
+	{
+		// The target jumped (a new stage to show, back to the player, a warp): glide there, longer the further it is.
+		TweenFrom = CameraFocus;
+		TweenTime = 0.0f;
+		TweenSeconds = FMath::Clamp(static_cast<float>(FVector::Dist2D(Want, CameraFocus)) / 2600.0f, 0.8f, 1.6f);
+	}
+	LastWant = Want;
+	if (bCameraFocusSet && IsCameraGliding())
+	{
+		TweenTime += DeltaSeconds;
+		CameraFocus = FMath::Lerp(TweenFrom, Want, ChaosImpactEase::InOutStrong(TweenTime / TweenSeconds));
+		CameraFocusVelocity = FVector::ZeroVector;
+	}
+	else if (bCameraFocusSet)
+	{
+		CameraFocus = ChaosImpactEase::SpringTo(CameraFocus, Want, CameraFocusVelocity, DeltaSeconds, 0.45f);
+	}
+	else
+	{
+		CameraFocus = Want;
+		CameraFocusVelocity = FVector::ZeroVector;
+		LastWant = Want;
+		TweenTime = -1.0f;
+	}
 	bCameraFocusSet = true;
 	const FRotator View(-55.0f, 0.0f, 0.0f);
 	const float Distance = 4300.0f;
@@ -2591,12 +2652,22 @@ void AChaosImpactWorldMap::UpdateCamera(AChaosImpactCharacter* Player, const flo
 		const float HalfWide = (NodeBounds.GetExtent().X + 1500.0f) / HalfTan;
 		const float HalfTall = (NodeBounds.GetExtent().Y + 1500.0f) * FMath::Sin(FMath::DegreesToRadians(68.0f)) / (HalfTan / Aspect);
 		const FVector Center = GetActorTransform().TransformPosition(FVector(NodeBounds.GetCenter(), 0.0f));
-		const FVector AboveAt = Center - Above.Vector() * FMath::Max(HalfWide, HalfTall);
-		const float A = FMath::InterpEaseInOut(0.0f, 1.0f, OverviewBlend, 2.0f);
-		Location = FMath::Lerp(Location, AboveAt, A);
+		// OverviewBlend is already eased. The look-at point and the turn go across with it; the distance changes by
+		// the same ratio each moment, so the pull-back reads as one even zoom instead of rushing off and crawling in.
+		const float A = OverviewBlend;
+		const float AboveDistance = FMath::Max(FMath::Max(HalfWide, HalfTall), Distance);
+		const FVector Focus = FMath::Lerp(CameraFocus, Center, A);
 		Rotation = FQuat::Slerp(View.Quaternion(), Above.Quaternion(), A).Rotator();
+		Location = Focus - Rotation.Vector() * (Distance * FMath::Pow(AboveDistance / Distance, A));
 	}
 	MapCamera->SetActorLocationAndRotation(Location, Rotation);
+	// Development: -CIMapCamLog writes the camera's path each frame (to check its easing).
+	static const bool bLogCamera = FParse::Param(FCommandLine::Get(), TEXT("CIMapCamLog"));
+	if (bLogCamera)
+	{
+		UE_LOG(LogTemp, Display, TEXT("MAPCAM t=%.4f x=%.1f y=%.1f z=%.1f glide=%d over=%.3f"), GetWorld()->GetTimeSeconds(), Location.X, Location.Y,
+			Location.Z, IsCameraGliding() ? 1 : 0, OverviewBlend);
+	}
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
 	{
 		const AChaosImpactPlayerController* Menu = Cast<AChaosImpactPlayerController>(PC);
@@ -2631,7 +2702,7 @@ void AChaosImpactWorldMap::UpdateReveal(const float DeltaSeconds)
 		}
 		break;
 	case ERevealStep::Travel:
-		if (RevealTime > (FVector::Dist2D(CameraFocus, RevealTarget) < 300.0f ? 0.25f : 1.0f))
+		if (RevealTime > 0.25f && !IsCameraGliding() && FVector::Dist2D(CameraFocus, RevealTarget) < 300.0f)
 		{
 			RevealStep = ERevealStep::Clear;
 			RevealTime = 0.0f;
@@ -2668,7 +2739,7 @@ void AChaosImpactWorldMap::UpdateReveal(const float DeltaSeconds)
 		break;
 	}
 	case ERevealStep::Return:
-		if (RevealTime > 0.9f)
+		if (RevealTime > 0.6f && !IsCameraGliding())
 		{
 			RevealStep = ERevealStep::None;
 			SetPlayerFrozen(false);

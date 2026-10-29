@@ -35,6 +35,18 @@ public:
 	void PlayReady();
 	UTextureRenderTarget2D* GetPicture() const { return Picture; }
 	/**
+	 * An icon face: films into a picture half as wide and tall (an icon shows a small part of it) and only when
+	 * asked (FilmNextFrame), not every frame. Call before taking GetPicture().
+	 */
+	void UseAsPortrait();
+	/** Films one frame (a portrait is filmed in turns, not every frame). */
+	void FilmNextFrame();
+	/**
+	 * Films now, on its own: for the select screen, which stops drawing the level behind it (the deferred filming
+	 * rides on the level's drawing). Also turns off filming every frame, so the caller films each frame it wants.
+	 */
+	void FilmNow();
+	/**
 	 * Stops filming and hands the picture over, moved out of this actor's level: it keeps its last frame and outlives
 	 * the level (the VS card shows it while the next level loads). The caller keeps it referenced.
 	 */
@@ -64,6 +76,11 @@ protected:
 private:
 	void RebuildModel(int32 CharacterIndex);
 	void ReturnToIdle();
+	/**
+	 * The model's textures at full resolution. The streamer sizes textures by distance from the player's camera,
+	 * and this stage is filmed far off the level: left to it, the model is drawn with its lowest, blurred mips.
+	 */
+	void KeepTexturesSharp();
 
 	UPROPERTY()
 	TObjectPtr<USceneComponent> Stage;
@@ -76,10 +93,16 @@ private:
 	TObjectPtr<UStaticMeshComponent> Floor;
 
 	UPROPERTY()
+	TObjectPtr<UStaticMeshComponent> FloorRing;
+
+	UPROPERTY()
 	TObjectPtr<UStaticMeshComponent> Backdrop;
 
 	UPROPERTY()
 	TObjectPtr<UPointLightComponent> KeyLight;
+
+	UPROPERTY()
+	TObjectPtr<UPointLightComponent> FillLight;
 
 	UPROPERTY()
 	TObjectPtr<UPointLightComponent> RimLight;
@@ -95,6 +118,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> FloorMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> FloorRingMaterial;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> BackdropMaterial;

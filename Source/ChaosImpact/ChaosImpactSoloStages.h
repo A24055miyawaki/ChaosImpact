@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ChaosImpactMatchTypes.h"
 #include "GameFramework/SaveGame.h"
 #include "ChaosImpactSoloStages.generated.h"
 
@@ -50,6 +51,24 @@ namespace ChaosImpactSolo
 	CHAOSIMPACT_API FString GetLevelPackage(int32 Number);
 	/** The world map level for map 1 or 2. */
 	CHAOSIMPACT_API FString GetMapPackage(int32 Map);
+
+	/**
+	 * How hard a stage's room is (its minions and the room's boss; a stage's own boss, like the shima-enaga, keeps
+	 * its level's settings). It rises along each road on the map: the first stage is a gentle start, the far end of
+	 * map 2 the hardest. Minions come in waves: at most MaxAlive at once, the next stepping in as one goes down.
+	 */
+	struct FDifficulty
+	{
+		int32 Minions = 5;
+		int32 MaxAlive = 3;
+		/** Of the minions, how many are weak and how many strong (the rest normal). */
+		int32 Weak = 0;
+		int32 Strong = 0;
+		EChaosImpactCPULevel BossLevel = EChaosImpactCPULevel::Strong;
+	};
+	/** How far along its road a stage is (0 for stage 1). */
+	CHAOSIMPACT_API int32 GetTier(int32 Number);
+	CHAOSIMPACT_API FDifficulty GetDifficulty(int32 Number);
 }
 
 /**

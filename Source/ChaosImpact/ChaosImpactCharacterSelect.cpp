@@ -39,14 +39,14 @@ namespace
 	constexpr double StartDelay = 0.55;
 
 	// Layout in the 1600 x 900 design space: icons on the left, player windows on the right, guide bar below.
-	constexpr float IconSize = 192.0f;
-	constexpr float IconGap = 12.0f;
-	constexpr float GridLeft = 76.0f;
+	constexpr float IconSize = 142.0f;
+	constexpr float IconGap = 10.0f;
+	constexpr float GridLeft = 96.0f;
 	constexpr float GridTop = 180.0f;
-	constexpr float SelectPanelTop = 140.0f;
-	constexpr float SelectPanelBottom = 790.0f;
-	constexpr float WindowsLeft = 930.0f;
-	constexpr float WindowsWidth = 614.0f;
+	constexpr float SelectPanelTop = 136.0f;
+	constexpr float SelectPanelBottom = 792.0f;
+	constexpr float WindowsLeft = 770.0f;
+	constexpr float WindowsWidth = 774.0f;
 	constexpr float WindowGap = 20.0f;
 	constexpr float BarTop = 806.0f;
 
@@ -175,17 +175,12 @@ void UChaosImpactCharacterSelect::Open(AChaosImpactPlayerController* InControlle
 			FRotator::ZeroRotator, Parameters);
 	};
 
-	// Icon faces: every roster character in its first colour, filmed far away from the level.
-	for (int32 Character = 0; Character < ChaosImpactRoster::Num(); ++Character)
-	{
-		AChaosImpactCharacterPreview* Portrait = SpawnStage(FVector(Character * 1600.0f, -96000.0f, 40000.0f));
-		if (Portrait)
-		{
-			Portrait->ShowLoadout(Character, 0, Paper);
-		}
-		Portraits.Add(Portrait);
-		PortraitBrushes.Add(MakePictureBrush(Portrait));
-	}
+	// Icon faces: every roster character in its first colour, filmed far away from the level. They are made a
+	// couple per frame in Tick (all at once held the screen up for most of a second as it opened).
+	Portraits.Init(nullptr, ChaosImpactRoster::Num());
+	PortraitBrushes.Init(FSlateBrush(), ChaosImpactRoster::Num());
+	PortraitPendingSeconds.Init(0.0f, ChaosImpactRoster::Num());
+	PortraitsMade = 0;
 
 	const int32 PlayerCount = FMath::Clamp(InController->GetRequestedLocalPlayerCount(), 1, 4);
 	Slots.SetNum(PlayerCount);
@@ -232,6 +227,10 @@ void UChaosImpactCharacterSelect::Close()
 	}
 	Previews.Reset();
 	Portraits.Reset();
+	PortraitPendingSeconds.Reset();
+	PortraitBornAt.Reset();
+	PortraitFrame = 0;
+	PortraitsMade = 0;
 	PictureBrushes.Reset();
 	PortraitBrushes.Reset();
 	Slots.Reset();
@@ -464,13 +463,53 @@ void UChaosImpactCharacterSelect::Tick(const float DeltaSeconds)
 			if (IsValid(Stage))
 			{
 				Stage->Animate(Step);
+				Stage->FilmNow();
 			}
 		}
-		for (AChaosImpactCharacterPreview* Stage : Portraits)
+		// The icon faces, two more each frame until all are made.
+		for (int32 Made = 0; Made < 2 && PortraitsMade < Portraits.Num(); ++Made, ++PortraitsMade)
 		{
-			if (IsValid(Stage))
+			FActorSpawnParameters Parameters;
+			Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			Parameters.ObjectFlags |= RF_Transient;
+			AChaosImpactCharacterPreview* Portrait = Controller.IsValid() && Controller->GetWorld()
+				? Controller->GetWorld()->SpawnActor<AChaosImpactCharacterPreview>(AChaosImpactCharacterPreview::StaticClass(),
+					FVector(PortraitsMade * 1600.0f, -96000.0f, 40000.0f), FRotator::ZeroRotator, Parameters)
+				: nullptr;
+			if (Portrait)
 			{
-				Stage->Animate(Step);
+				Portrait->ShowLoadout(PortraitsMade, 0, Paper);
+				Portrait->UseAsPortrait();
+			}
+			Portraits[PortraitsMade] = Portrait;
+			PortraitBrushes[PortraitsMade] = MakePictureBrush(Portrait);
+			PortraitBornAt.Add(PortraitsMade, FPlatformTime::Seconds());
+		}
+		// Each icon face is a whole scene filmed: only the faces the players' cursors are on keep moving (filmed every
+		// other frame, with the time they missed). The rest hold still after their first second, when their textures
+		// have arrived; a tile left keeps its last frame.
+		++PortraitFrame;
+		const double NowSeconds = FPlatformTime::Seconds();
+		for (int32 Index = 0; Index < Portraits.Num(); ++Index)
+		{
+			PortraitPendingSeconds[Index] += Step;
+			AChaosImpactCharacterPreview* Stage = Portraits[Index];
+			if (!IsValid(Stage))
+			{
+				continue;
+			}
+			bool bHovered = false;
+			for (const FSlot& Slot : Slots)
+			{
+				bHovered |= Slot.Cursor == Index;
+			}
+			const double* Born = PortraitBornAt.Find(Index);
+			const bool bSettling = Born && NowSeconds - *Born < 1.2;
+			if ((bHovered || bSettling) && (PortraitFrame + Index) % (bHovered ? 2 : 4) == 0)
+			{
+				Stage->Animate(FMath::Min(PortraitPendingSeconds[Index], 0.1f));
+				Stage->FilmNow();
+				PortraitPendingSeconds[Index] = 0.0f;
 			}
 		}
 	}
@@ -718,20 +757,58 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 	const double Now = FPlatformTime::Seconds();
 	const float T = static_cast<float>(Now - OpenedAt);
 	const AChaosImpactPlayerController* Owner = Controller.Get();
+	const float Shimmer = 0.5f + 0.5f * FMath::Sin(static_cast<float>(Now) * 3.2f);
 
 	// ---- Heading ------------------------------------------------------------------------------
 	{
 		const float In = EaseOut(T / 0.35f);
-		const FPainter Title{Design, Elements, Layer + 1, In};
-		Title.Text(TEXT("CHARACTER SELECT"), 64.0f - (1.0f - In) * 60.0f, 24.0f, 44.0f, Paper, ETextAlign::Left,
+		const float HeadX = 56.0f - (1.0f - In) * 70.0f;
+		const FGeometry SkewHead = MakeSkewed(Design, HeadX, 20.0f, 850.0f, 102.0f, -0.22f);
+		const FPainter HBack{SkewHead, Elements, Layer + 1, In};
+		RoundBox(HBack, 0.0f, 8.0f, 640.0f, 82.0f, 18.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
+		HBack.Box(12.0f, 16.0f, 10.0f, 66.0f, Ice);
+		HBack.Box(28.0f, 16.0f, 4.0f, 66.0f, Fire);
+		HBack.Box(12.0f, 84.0f, 420.0f * In, 6.0f, Ice);
+		HBack.Box(440.0f * In, 84.0f, 150.0f * In, 6.0f, Fire);
+		for (int32 Chev = 0; Chev < 4; ++Chev)
+		{
+			const float Pulse = 0.25f + 0.55f * FMath::Max(0.0f, FMath::Sin(static_cast<float>(Now) * 5.0f - Chev * 0.7f));
+			HBack.Box(535.0f + Chev * 20.0f, 26.0f, 10.0f, 46.0f, WithAlpha(Ice, Pulse));
+		}
+
+		const FPainter Title{Design, Elements, Layer + 2, In};
+		Title.Text(TEXT("CHARACTER SELECT"), HeadX + 42.0f, 22.0f, 44.0f, Paper, ETextAlign::Left,
 			TEXT("BlackItalic"), 3.0f, Ink);
+		Title.Text(TEXT("ファイターセレクト  //  CHOOSE YOUR FIGHTER"), HeadX + 46.0f, 75.0f, 15.0f,
+			FMath::Lerp(Ice, Paper, 0.55f), ETextAlign::Left, TEXT("Bold"), 1.0f, Ink);
+
+		// Active player count status pill on the right side of the header
+		const FGeometry StatusSkew = MakeSkewed(Design, 1250.0f + (1.0f - In) * 50.0f, 36.0f, 294.0f, 54.0f, -0.2f);
+		const FPainter Status{StatusSkew, Elements, Layer + 1, In};
+		RoundBox(Status, 0.0f, 0.0f, 294.0f, 54.0f, 16.0f, FLinearColor(0.015f, 0.025f, 0.055f, 0.9f));
+		RoundFrame(Status, 0.0f, 0.0f, 294.0f, 54.0f, 16.0f, WithAlpha(Ice, 0.45f), 2.5f);
+		int32 ReadyCount = 0;
+		for (const FSlot& S : Slots) { if (S.Step == EStep::Done) { ++ReadyCount; } }
+		const FPainter StatusText{Design, Elements, Layer + 2, In};
+		StatusText.Text(FString::Printf(TEXT("%dP BATTLE  •  %d/%d READY"), Slots.Num(), ReadyCount, Slots.Num()),
+			1397.0f + (1.0f - In) * 50.0f, 49.0f, 18.0f, ReadyCount == Slots.Num() ? Gold : Paper,
+			ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 	}
 
 	// ---- Icon grid ----------------------------------------------------------------------------
 	{
 		const float In = EaseOut((T - 0.05f) / 0.3f);
 		const FPainter Panel{Design, Elements, Layer + 1, In};
-		RoundBox(Panel, 56.0f, SelectPanelTop, 850.0f, SelectPanelBottom - SelectPanelTop, 30.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.88f));
+		const float PanelW = 688.0f;
+		const float PanelH = SelectPanelBottom - SelectPanelTop;
+		RoundBox(Panel, 56.0f, SelectPanelTop, PanelW, PanelH, 30.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
+		RoundBox(Panel, 64.0f, SelectPanelTop + 8.0f, PanelW - 16.0f, 36.0f, 18.0f, FLinearColor(0.04f, 0.09f, 0.22f, 0.45f));
+		RoundFrame(Panel, 56.0f, SelectPanelTop, PanelW, PanelH, 30.0f, FLinearColor(0.14f, 0.32f, 0.68f, 0.55f), 3.0f);
+		// Corner tech accents on the roster container
+		Panel.Box(86.0f, SelectPanelTop + 2.0f, 140.0f, 4.0f, WithAlpha(Ice, 0.85f));
+		Panel.Box(56.0f + PanelW - 226.0f, SelectPanelBottom - 6.0f, 140.0f, 4.0f, WithAlpha(Fire, 0.85f));
+		Panel.Text(FString::Printf(TEXT("ROSTER // %d FIGHTERS"), ChaosImpactRoster::Num()), 86.0f, SelectPanelTop + 12.0f, 14.0f,
+			WithAlpha(Ice, 0.8f), ETextAlign::Left, TEXT("BlackItalic"));
 	}
 	for (int32 Tile = 0; Tile < GetTileCount(); ++Tile)
 	{
@@ -739,14 +816,24 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FVector2D Origin = TileOrigin(Tile);
 		const bool bUnlocked = IsTileUnlocked(Tile);
 		TArray<int32, TInlineAllocator<4>> Here;
+		bool bAnyLockedInHere = false;
+		FLinearColor ActiveAccent = Ice;
 		for (int32 Player = 0; Player < Slots.Num(); ++Player)
 		{
 			if (Slots[Player].Cursor == Tile)
 			{
 				Here.Add(Player);
+				if (Slots[Player].Step != EStep::Character)
+				{
+					bAnyLockedInHere = true;
+				}
 			}
 		}
-		const float Pop = Here.IsEmpty() ? 1.0f : 1.05f;
+		if (!Here.IsEmpty())
+		{
+			ActiveAccent = SlotAccent(Here[0]);
+		}
+		const float Pop = Here.IsEmpty() ? 1.0f : 1.055f;
 		const FGeometry IconSpace = MakeSkewed(Design, Origin.X, Origin.Y + (1.0f - In) * 40.0f, IconSize, IconSize, 0.0f, Pop * In);
 		const int32 IconLayer = Layer + 2 + (Here.IsEmpty() ? 0 : 3);
 		const FPainter I{IconSpace, Elements, IconLayer, In};
@@ -754,31 +841,55 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter ILabel{IconSpace, Elements, IconLayer + 2, In};
 		if (bUnlocked)
 		{
-			const auto ModelKind=ChaosImpactRoster::Get(Tile).Kind;
-			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 22.0f, FLinearColor(0.08f, 0.2f, 0.52f, 1.0f));
-			RoundBox(I, 0.0f, IconSize * 0.5f, IconSize, IconSize * 0.5f, 22.0f, FLinearColor(0.03f, 0.1f, 0.3f, 1.0f));
-			if (PortraitBrushes.IsValidIndex(Tile))
+			const auto ModelKind = ChaosImpactRoster::Get(Tile).Kind;
+			const FLinearColor TopCard = Here.IsEmpty()
+				? FLinearColor(0.06f, 0.16f, 0.42f, 1.0f)
+				: FMath::Lerp(FLinearColor(0.09f, 0.24f, 0.58f, 1.0f), ActiveAccent, bAnyLockedInHere ? 0.45f : 0.22f);
+			const FLinearColor BotCard = Here.IsEmpty()
+				? FLinearColor(0.02f, 0.065f, 0.2f, 1.0f)
+				: FMath::Lerp(FLinearColor(0.03f, 0.1f, 0.28f, 1.0f), ActiveAccent, 0.15f);
+			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 22.0f, TopCard);
+			RoundBox(I, 0.0f, IconSize * 0.45f, IconSize, IconSize * 0.55f, 22.0f, BotCard);
+			// Subtle inner highlight studio rim
+			RoundBox(I, 6.0f, 6.0f, IconSize - 12.0f, IconSize * 0.38f, 16.0f, FLinearColor(0.25f, 0.55f, 1.0f, Here.IsEmpty() ? 0.12f : 0.24f));
+			RoundFrame(I, 1.5f, 1.5f, IconSize - 3.0f, IconSize - 3.0f, 21.0f,
+				Here.IsEmpty() ? FLinearColor(0.2f, 0.45f, 0.88f, 0.42f) : WithAlpha(Paper, 0.75f), 2.0f);
+			// Fighter number tag in top-left corner
+			I.Text(FString::Printf(TEXT("%02d"), Tile + 1), 13.0f, 8.0f, 13.0f,
+				WithAlpha(Paper, Here.IsEmpty() ? 0.38f : 0.75f), ETextAlign::Left, TEXT("BlackItalic"));
+
+			if (PortraitBrushes.IsValidIndex(Tile) && PortraitBrushes[Tile].GetResourceObject())
 			{
 				FSlateBrush& Face = PortraitBrushes[Tile];
 				// Nicola's face is below its waist: the normal upper-body crop would show only its raised feet.
 				const bool bWholeBody = ModelKind == EChaosImpactModelKind::Authored || ModelKind == EChaosImpactModelKind::Handstand;
+				const bool bMugCarp = Tile == ChaosImpactRoster::CapIndex;
 				Face.SetUVRegion(bWholeBody
 					? FBox2f(FVector2f(0.03f, 0.2f), FVector2f(0.97f, 0.8f))
-					: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f)));
-				PaintPicture(IFace, Face, 16.0f, 8.0f, IconSize - 32.0f, IconSize - 50.0f);
+					: bMugCarp
+						? FBox2f(FVector2f(0.14f, 0.06f), FVector2f(0.86f, 0.62f))
+						: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f)));
+				PaintPicture(IFace, Face, 10.0f, 4.0f, IconSize - 20.0f, IconSize - 38.0f);
 			}
 			if (*ChaosImpactRoster::Get(Tile).Name)
 			{
-				RoundBox(ILabel, 10.0f, IconSize - 44.0f, IconSize - 20.0f, 36.0f, 12.0f, WithAlpha(Ink, 0.85f));
-				ILabel.Text(ChaosImpactRoster::Get(Tile).Name, IconSize * 0.5f, IconSize - 44.0f,
-					ModelKind == EChaosImpactModelKind::Handstand ? 17.5f : 21.0f, Paper,
-					ETextAlign::Center, TEXT("Black"));
+				const float PlateY = IconSize - 34.0f;
+				RoundBox(ILabel, 6.0f, PlateY, IconSize - 12.0f, 28.0f, 10.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.92f));
+				ILabel.Box(14.0f, PlateY + 1.0f, IconSize - 28.0f, 2.5f, Here.IsEmpty() ? WithAlpha(Ice, 0.65f) : ActiveAccent);
+				const int32 NameLen = FCString::Strlen(ChaosImpactRoster::Get(Tile).Name);
+				const float FontSize = NameLen >= 9 ? 11.5f : (ModelKind == EChaosImpactModelKind::Handstand || NameLen >= 6 ? 13.5f : 16.0f);
+				ILabel.Text(ChaosImpactRoster::Get(Tile).Name, IconSize * 0.5f, PlateY + (NameLen >= 9 ? 5.0f : NameLen >= 6 ? 3.5f : 1.5f),
+					FontSize, Here.IsEmpty() ? Paper : FMath::Lerp(Paper, ActiveAccent, 0.2f),
+					ETextAlign::Center, TEXT("Black"), 1.5f, Ink);
 			}
 		}
 		else
 		{
-			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 22.0f, FLinearColor(0.05f, 0.06f, 0.09f, 0.95f));
-			I.Text(TEXT("?"), IconSize * 0.5f, 44.0f, 76.0f, WithAlpha(Muted, 0.4f), ETextAlign::Center, TEXT("Black"));
+			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 20.0f, FLinearColor(0.025f, 0.032f, 0.058f, 0.95f));
+			RoundFrame(I, 2.0f, 2.0f, IconSize - 4.0f, IconSize - 4.0f, 18.0f, FLinearColor(0.12f, 0.16f, 0.26f, 0.5f), 2.0f);
+			I.Ring(FVector2D(IconSize * 0.5f, IconSize * 0.44f), 32.0f, WithAlpha(Muted, 0.18f), 2.0f);
+			I.Text(TEXT("?"), IconSize * 0.5f, 24.0f, 56.0f, WithAlpha(Muted, 0.35f + 0.1f * Shimmer), ETextAlign::Center, TEXT("BlackItalic"));
+			I.Text(TEXT("LOCKED"), IconSize * 0.5f, IconSize - 28.0f, 12.0f, WithAlpha(Muted, 0.3f), ETextAlign::Center, TEXT("BlackItalic"));
 		}
 
 		// Cursors: a thick rounded frame per player, the later ones outside the earlier, and a name tag.
@@ -792,8 +903,11 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			const int32 Player = Here[Order];
 			const float Moved = static_cast<float>(Now - Slots[Player].MovedAt);
 			const float Grow = Moved < 0.15f ? 8.0f * (1.0f - Moved / 0.15f) : 0.0f;
-			const float Out = 6.0f + Order * 9.0f + Grow;
-			RoundFrame(F, -Out, -Out, IconSize + Out * 2.0f, IconSize + Out * 2.0f, 26.0f + Out, SlotAccent(Player), 6.0f);
+			const float Out = 5.0f + Order * 9.0f + Grow;
+			const FLinearColor PCol = SlotAccent(Player);
+			RoundFrame(F, -Out - 2.0f, -Out - 2.0f, IconSize + (Out + 2.0f) * 2.0f, IconSize + (Out + 2.0f) * 2.0f,
+				28.0f + Out, WithAlpha(PCol, 0.32f), 9.0f);
+			RoundFrame(F, -Out, -Out, IconSize + Out * 2.0f, IconSize + Out * 2.0f, 26.0f + Out, PCol, 5.5f);
 		}
 		for (int32 Order = 0; Order < Here.Num(); ++Order)
 		{
@@ -803,6 +917,7 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			const float Bob = bChosen ? 0.0f : 3.0f * FMath::Sin(static_cast<float>(Now) * 6.0f + Player);
 			const float TagX = -8.0f + Order * 60.0f;
 			// A chosen player's tag turns white with their colour on it.
+			RoundBox(Tags, TagX - 2.0f, TagY + Bob - 2.0f, 58.0f, 36.0f, 14.0f, WithAlpha(Ink, 0.85f));
 			RoundBox(Tags, TagX, TagY + Bob, 54.0f, 32.0f, 12.0f, bChosen ? Paper : SlotAccent(Player));
 			TagText.Text(FString::Printf(TEXT("%dP"), Player + 1), TagX + 27.0f, TagY - 1.0f + Bob, 20.0f,
 				bChosen ? SlotAccent(Player) : Ink, ETextAlign::Center, TEXT("BlackItalic"));
@@ -826,22 +941,29 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 	{
 		const float Since = static_cast<float>(Now - AllReadyAt);
 		const float In = EaseOut(Since / 0.25f);
-		const FGeometry Bar = MakeSkewed(Design, 56.0f, BarTop + (1.0f - In) * 60.0f, 1488.0f, 78.0f, 0.0f, 0.9f + 0.1f * In);
+		const FGeometry Bar = MakeSkewed(Design, 56.0f, BarTop + (1.0f - In) * 60.0f, 1488.0f, 78.0f, -0.14f, 0.92f + 0.08f * In);
 		const FPainter B{Bar, Elements, Layer + 16, In};
-		RoundBox(B, 0.0f, 0.0f, 1488.0f, 78.0f, 30.0f, Gold);
+		RoundBox(B, -4.0f, -4.0f, 1496.0f, 86.0f, 32.0f, WithAlpha(Fire, 0.55f));
+		RoundBox(B, 0.0f, 0.0f, 1488.0f, 78.0f, 28.0f, Gold);
+		RoundBox(B, 10.0f, 6.0f, 1468.0f, 30.0f, 18.0f, WithAlpha(Paper, 0.28f));
 		const float Pulse = 0.7f + 0.3f * FMath::Sin(static_cast<float>(Now) * 6.0f);
+		for (int32 Stripe = 0; Stripe < 6; ++Stripe)
+		{
+			B.Box(340.0f + Stripe * 32.0f, 14.0f, 14.0f, 50.0f, WithAlpha(Ink, 0.12f + 0.08f * Pulse));
+		}
 		if (bStarting)
 		{
 			const float Go = static_cast<float>(Now - (StartAt - StartDelay));
-			RoundBox(B, 0.0f, 0.0f, 1488.0f, 78.0f, 30.0f, WithAlpha(Paper, 0.7f * FMath::Clamp(1.0f - Go / 0.25f, 0.0f, 1.0f)));
-			B.Text(TEXT("GO!"), 744.0f, -6.0f, 60.0f * (1.0f + 0.3f * FMath::Exp(-10.0f * Go)), Ink, ETextAlign::Center,
+			RoundBox(B, 0.0f, 0.0f, 1488.0f, 78.0f, 28.0f, WithAlpha(Paper, 0.75f * FMath::Clamp(1.0f - Go / 0.25f, 0.0f, 1.0f)));
+			B.Text(TEXT("GO!"), 744.0f, -6.0f, 62.0f * (1.0f + 0.3f * FMath::Exp(-10.0f * Go)), Ink, ETextAlign::Center,
 				TEXT("BlackItalic"));
 		}
 		else
 		{
-			B.Text(TEXT("READY!"), 40.0f, -2.0f, 56.0f, Ink, ETextAlign::Left, TEXT("BlackItalic"));
-			B.Text(Owner && Owner->IsKeyboardMouseJoined() ? TEXT("A / Enter でスタート") : TEXT("Aボタンでスタート"),
-				1450.0f, 18.0f, 32.0f, WithAlpha(Ink, Pulse), ETextAlign::Right, TEXT("Black"));
+			B.Text(TEXT("READY TO BATTLE!"), 44.0f, -1.0f, 52.0f, Ink, ETextAlign::Left, TEXT("BlackItalic"));
+			RoundBox(B, 1040.0f, 14.0f, 424.0f, 50.0f, 18.0f, WithAlpha(Ink, 0.88f));
+			B.Text(Owner && Owner->IsKeyboardMouseJoined() ? TEXT("A / Enter でスタート!") : TEXT("Aボタンでスタート!"),
+				1252.0f, 18.0f, 30.0f, FMath::Lerp(Gold, Paper, Pulse * 0.5f), ETextAlign::Center, TEXT("Black"));
 		}
 	}
 	else
@@ -849,11 +971,12 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter B{Design, Elements, Layer + 16, BarIn};
 		const FPainter BKeys{Design, Elements, Layer + 17, BarIn};
 		const FPainter KeyText{Design, Elements, Layer + 18, BarIn};
-		RoundBox(B, 56.0f, BarTop, 1488.0f, 64.0f, 30.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.88f));
+		RoundBox(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
+		RoundFrame(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.14f, 0.3f, 0.62f, 0.45f), 2.0f);
 		struct FGuide { const TCHAR* Key; const TCHAR* Label; };
 		static const FGuide Guides[] = {{TEXT("十字 / WASD"), TEXT("いどう")}, {TEXT("A / Enter"), TEXT("けってい")},
-			{TEXT("B / Esc"), TEXT("もどる")}, {TEXT("← → / LB RB"), TEXT("カラー")}};
-		float X = 90.0f;
+			{TEXT("B / Esc"), TEXT("もどる")}, {TEXT("Y / N"), TEXT("ニックネーム")}, {TEXT("← → / LB RB"), TEXT("カラー")}};
+		float X = 86.0f;
 		for (const FGuide& Guide : Guides)
 		{
 			if (FCString::Strcmp(Guide.Label,TEXT("カラー")) == 0
@@ -863,10 +986,11 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			{
 				KeyWidth += *Char > 0x2000 ? 22.0f : 12.5f;
 			}
-			RoundBox(BKeys, X, BarTop + 14.0f, KeyWidth, 36.0f, 12.0f, Paper);
-			KeyText.Text(Guide.Key, X + KeyWidth * 0.5f, BarTop + 15.0f, 20.0f, Ink, ETextAlign::Center, TEXT("Black"));
-			BKeys.Text(Guide.Label, X + KeyWidth + 12.0f, BarTop + 15.0f, 22.0f, Paper, ETextAlign::Left, TEXT("Black"));
-			X += KeyWidth + 150.0f;
+			RoundBox(BKeys, X, BarTop + 13.0f, KeyWidth, 38.0f, 11.0f, FLinearColor(0.1f, 0.24f, 0.55f, 0.95f));
+			RoundBox(BKeys, X + 2.0f, BarTop + 15.0f, KeyWidth - 4.0f, 34.0f, 9.0f, Paper);
+			KeyText.Text(Guide.Key, X + KeyWidth * 0.5f, BarTop + 16.0f, 19.0f, Ink, ETextAlign::Center, TEXT("Black"));
+			BKeys.Text(Guide.Label, X + KeyWidth + 10.0f, BarTop + 16.0f, 21.0f, Paper, ETextAlign::Left, TEXT("Black"));
+			X += KeyWidth + 132.0f;
 		}
 	}
 	return Layer + 20;
@@ -893,8 +1017,11 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	const bool bOnLockedTile = Slot.Step == EStep::Character && !IsTileUnlocked(Slot.Cursor);
 
 	// Window: dark, rounded, lit in the player's colour once they are done.
-	RoundBox(Back, 0.0f, 0.0f, W, H, 30.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.92f));
-	RoundBox(Back, 0.0f, 0.0f, W, H, 30.0f, WithAlpha(Swatch, bDone ? 0.18f : 0.06f));
+	RoundBox(Back, 0.0f, 0.0f, W, H, 30.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.94f));
+	RoundBox(Back, 0.0f, 0.0f, W, H, 30.0f, WithAlpha(Swatch, bDone ? 0.22f : 0.08f));
+	RoundBox(Back, 8.0f, 8.0f, W - 16.0f, 52.0f, 20.0f, WithAlpha(Accent, 0.16f));
+	RoundFrame(Back, 0.0f, 0.0f, W, H, 30.0f, WithAlpha(Accent, bDone ? 0.95f : 0.38f), bDone ? 5.5f : 2.5f);
+
 	const bool bWide = W > H * 1.3f;
 	RoundBox(C, 14.0f, 12.0f, 70.0f, 38.0f, 12.0f, Accent);
 	C.Text(FString::Printf(TEXT("%dP"), Player + 1), 49.0f, 10.0f, 26.0f, Ink, ETextAlign::Center, TEXT("BlackItalic"));
@@ -903,27 +1030,29 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		const float TagW = static_cast<float>(Tag.GetSize().X);
 		const bool bGuest = Slot.Profile <= 0;
 		const FPainter TagText{Space, Elements, Layer + 3, In};
-		RoundBox(C, 92.0f, 12.0f, TagW, 38.0f, 12.0f, bGuest ? FLinearColor(0.0f, 0.0f, 0.0f, 0.5f) : WithAlpha(Accent, 0.28f));
+		RoundBox(C, 92.0f, 12.0f, TagW, 38.0f, 12.0f, bGuest ? FLinearColor(0.01f, 0.015f, 0.035f, 0.72f) : WithAlpha(Accent, 0.32f));
+		RoundFrame(C, 92.0f, 12.0f, TagW, 38.0f, 12.0f, WithAlpha(Accent, bGuest ? 0.25f : 0.6f), 1.5f);
 		TagText.Text(ChaosImpactSettings::GetProfile(Slot.Profile).Name, 104.0f, 16.0f, 20.0f, bGuest ? Muted : Paper,
 			ETextAlign::Left, TEXT("Black"));
 		// Which button opens the list: N on a keyboard, the top face button (Y / △ / X) on a controller.
 		const FString Hint = Slot.bKeyboard ? FString(TEXT("N")) : ChaosImpactSettings::GetKeyName(EKeys::Gamepad_FaceButton_Top,
 			ChaosImpactSettings::DetectPadDevice(LocalPlayerController(Controller.Get(), Player)));
-		RoundBox(TagText, 92.0f + TagW - 34.0f, 18.0f, 26.0f, 26.0f, 8.0f, WithAlpha(Paper, 0.85f));
+		RoundBox(TagText, 92.0f + TagW - 34.0f, 18.0f, 26.0f, 26.0f, 8.0f, WithAlpha(Paper, 0.9f));
 		const FPainter HintText{Space, Elements, Layer + 4, In};
 		HintText.Text(Hint, 92.0f + TagW - 21.0f, 19.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
 	}
 	if (bWide || W > 400.0f)
 	{
-		C.Text(Slot.bKeyboard ? TEXT("キーボード") : TEXT("コントローラー"), W - 22.0f, 20.0f, 16.0f, Muted,
-			ETextAlign::Right, TEXT("Bold"));
+		RoundBox(C, W - 148.0f, 15.0f, 132.0f, 32.0f, 10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		C.Text(Slot.bKeyboard ? TEXT("キーボード") : TEXT("コントローラー"), W - 82.0f, 19.0f, 15.0f, Muted,
+			ETextAlign::Center, TEXT("Bold"));
 	}
 
 	// Picture: the character under the cursor idling in this player's colour. Wide windows put it on the left.
 	const float AreaTop = 58.0f;
 	const bool bTall = !bWide && W > 400.0f;
-	// Tall windows keep the bottom for the name and the hint or colour row, so nothing lies on the picture.
-	const float AreaHeight = H - AreaTop - (bWide ? 14.0f : bTall ? 176.0f : 92.0f);
+	// Tall windows keep the bottom for the name, character description, and the hint or colour row.
+	const float AreaHeight = H - AreaTop - (bWide ? 14.0f : bTall ? 210.0f : 114.0f);
 	float PictureW = AreaHeight * 0.75f;
 	float PictureH = AreaHeight;
 	float VisibleTop = 0.0f;
@@ -932,9 +1061,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	{
 		// Crop to the upper body so the character is not tiny in a short window.
 		VisibleHeight = 0.72f;
-		const auto ModelKind=ChaosImpactRoster::Get(Slot.Character).Kind;
+		const auto ModelKind = ChaosImpactRoster::Get(Slot.Character).Kind;
 		VisibleTop = ModelKind == EChaosImpactModelKind::Authored ? 0.14f : 0.02f;
-		if (ModelKind == EChaosImpactModelKind::Handstand) { VisibleHeight=.94f; VisibleTop=.03f; }
+		if (ModelKind == EChaosImpactModelKind::Handstand) { VisibleHeight = 0.94f; VisibleTop = 0.03f; }
 		PictureW = AreaHeight * 0.75f / VisibleHeight;
 	}
 	else if (PictureW > W - 28.0f)
@@ -944,6 +1073,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	}
 	const float PictureX = bWide ? 18.0f : (W - PictureW) * 0.5f;
 	const float PictureY = AreaTop;
+	// Framed 3D viewport card behind the character render
+	RoundBox(Back, PictureX - 4.0f, PictureY - 2.0f, PictureW + 8.0f, PictureH + 4.0f, 20.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.85f));
+	RoundFrame(C, PictureX - 4.0f, PictureY - 2.0f, PictureW + 8.0f, PictureH + 4.0f, 20.0f, WithAlpha(Accent, 0.32f), 2.0f);
 	if (PictureBrushes.IsValidIndex(Player))
 	{
 		FSlateBrush& Picture = PictureBrushes[Player];
@@ -952,19 +1084,58 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 			bOnLockedTile ? FLinearColor(0.2f, 0.2f, 0.25f) : FLinearColor::White);
 	}
 
-	// Name.
+	// Name, fighter number banner & character description lines.
 	const FChaosImpactCharacterInfo& Info = ChaosImpactRoster::Get(Slot.Character);
 	const bool bBigWindow = W > 400.0f;
-	const float NameX = bWide ? PictureX + PictureW + 26.0f : bBigWindow ? W * 0.5f : W - 18.0f;
-	const float NameY = bWide ? 70.0f : bBigWindow ? H - 166.0f : 14.0f;
-	const ETextAlign NameAlign = bWide ? ETextAlign::Left : bBigWindow ? ETextAlign::Center : ETextAlign::Right;
-	C.Text(bOnLockedTile ? FString(TEXT("？？？")) : FString(Info.Name), NameX, NameY, bWide || bBigWindow ? 34.0f : 24.0f,
+	const float NameX = bWide ? PictureX + PictureW + 26.0f : W * 0.5f;
+	const float NameY = bWide ? 68.0f : bBigWindow ? H - 202.0f : H - 110.0f;
+	const ETextAlign NameAlign = bWide ? ETextAlign::Left : ETextAlign::Center;
+	const bool bHasDesc1 = !bOnLockedTile && Info.DescriptionLine1 && *Info.DescriptionLine1;
+	const bool bHasDesc2 = !bOnLockedTile && Info.DescriptionLine2 && *Info.DescriptionLine2;
+	if (bBigWindow || bWide)
+	{
+		const float BannerX = bWide ? NameX - 10.0f : 28.0f;
+		const float BannerW = bWide ? W - BannerX - 18.0f : W - 56.0f;
+		const float BannerH = bHasDesc1 ? (bHasDesc2 ? 98.0f : 76.0f) : 50.0f;
+		RoundBox(Back, BannerX, NameY - 4.0f, BannerW, BannerH, 14.0f, FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
+		C.Box(BannerX + 10.0f, NameY + 42.0f, BannerW - 20.0f, 2.5f, WithAlpha(Accent, 0.75f));
+		C.Text(bOnLockedTile ? FString(TEXT("NO.??")) : FString::Printf(TEXT("FIGHTER NO.%02d"), Slot.Character + 1),
+			bWide ? NameX : W * 0.5f, NameY - 19.0f, 12.5f, WithAlpha(Accent, 0.9f), NameAlign, TEXT("BlackItalic"));
+	}
+	else
+	{
+		RoundBox(Back, 10.0f, NameY - 2.0f, W - 20.0f, bHasDesc1 ? 70.0f : 32.0f, 10.0f, FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
+	}
+	C.Text(bOnLockedTile ? FString(TEXT("？？？")) : FString(Info.Name), NameX, NameY, bWide || bBigWindow ? 32.0f : 20.0f,
 		bOnLockedTile ? Muted : Paper, NameAlign, TEXT("Black"), 2.0f, Ink);
+	if (bHasDesc1)
+	{
+		const float DescFontSize = bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f;
+		const float DescY1 = NameY + (bWide || bBigWindow ? 48.0f : 26.0f);
+		const float DescY2 = DescY1 + (bWide || bBigWindow ? 21.0f : 16.0f);
+		const FLinearColor DescCol = FMath::Lerp(Paper, Muted, 0.2f);
+		C.Text(Info.DescriptionLine1, NameX, DescY1, DescFontSize, DescCol, NameAlign, TEXT("Bold"), 1.0f, Ink);
+		if (bHasDesc2)
+		{
+			C.Text(Info.DescriptionLine2, NameX, DescY2, DescFontSize, DescCol, NameAlign, TEXT("Bold"), 1.0f, Ink);
+		}
+	}
 	if (!bWide && Slot.Step == EStep::Character)
 	{
 		// Before a pick the bottom band says how to pick.
+		const float HintY = H - (bBigWindow ? 46.0f : 34.0f);
+		if (!bOnLockedTile)
+		{
+			RoundBox(Back, W * 0.5f - 110.0f, HintY - 4.0f, 220.0f, 32.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		}
 		C.Text(bOnLockedTile ? FString() : Slot.bKeyboard ? FString(TEXT("Enter でけってい"))
-			: FString(TEXT("A でけってい")), W * 0.5f, H - (bBigWindow ? 70.0f : 58.0f), 18.0f,
+			: FString(TEXT("A でけってい")), W * 0.5f, HintY, 17.0f,
+			WithAlpha(Paper, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Now) * 4.0f)), ETextAlign::Center, TEXT("Bold"));
+	}
+	else if (bWide && Slot.Step == EStep::Character && !bOnLockedTile)
+	{
+		RoundBox(Back, NameX - 6.0f, H - 50.0f, 210.0f, 34.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		C.Text(Slot.bKeyboard ? TEXT("Enter でけってい") : TEXT("A でけってい"), NameX + 99.0f, H - 46.0f, 17.0f,
 			WithAlpha(Paper, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Now) * 4.0f)), ETextAlign::Center, TEXT("Bold"));
 	}
 
@@ -977,10 +1148,11 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		const float Spacing = FMath::Min(62.0f, (W - 120.0f) / Count);
 		const float RowWidth = Spacing * Count + 70.0f;
 		const float RowX = bWide ? NameX - 8.0f : (W - RowWidth) * 0.5f;
-		const float RowY = bWide ? H - 110.0f : bBigWindow ? H - 110.0f : H - 98.0f;
+		const float RowY = bWide ? H - 102.0f : bBigWindow ? H - 102.0f : H - 96.0f;
 		const FPainter Row{Space, Elements, Layer + 3, In * (bDone ? 1.0f : Open)};
 		// The colour's name sits inside the row, above the colours.
-		RoundBox(Row, RowX, RowY, RowWidth, 94.0f, 22.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.72f));
+		RoundBox(Row, RowX, RowY, RowWidth, 94.0f, 22.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.85f));
+		RoundFrame(Row, RowX, RowY, RowWidth, 94.0f, 22.0f, WithAlpha(Swatch, 0.55f), 2.0f);
 		Row.Text(ChaosImpactRoster::ColourNames[Slot.Colour], RowX + RowWidth * 0.5f, RowY + 4.0f, 18.0f, Swatch,
 			ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 		if (!bDone)
@@ -1000,7 +1172,7 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 			Row.Disc(Centre, (bChosen ? 19.0f : 14.0f) * Pop, WithAlpha(ChaosImpactRoster::GetColourSwatch(Colour), bTaken ? 0.25f : 1.0f));
 			if (bChosen)
 			{
-				Row.Ring(Centre, 25.0f * Pop, Paper, 3.0f);
+				Row.Ring(Centre, 25.0f * Pop, Paper, 3.5f);
 			}
 			if (bTaken)
 			{
@@ -1015,10 +1187,12 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		RoundFrame(C, 0.0f, 0.0f, W, H, 30.0f, Accent, 6.0f);
 		const float Stamp = 1.0f + 0.45f * FMath::Exp(-16.0f * StepAge);
 		const float StampX = bWide ? W - 230.0f : W * 0.5f - 110.0f;
-		const float StampY = !Info.bColourVariants ? H - 100.0f : bWide ? 30.0f : PictureY + PictureH * 0.32f;
+		const float StampY = bWide ? 36.0f : PictureY + PictureH * 0.30f;
 		const FGeometry StampSpace = MakeSkewed(Space, StampX, StampY, 220.0f, 100.0f, -0.18f, Stamp);
 		const FPainter S{StampSpace, Elements, Layer + 4, In * FMath::Clamp(StepAge / 0.06f, 0.0f, 1.0f)};
+		RoundBox(S, -4.0f, 10.0f, 228.0f, 80.0f, 24.0f, WithAlpha(Ink, 0.85f));
 		RoundBox(S, 0.0f, 14.0f, 220.0f, 72.0f, 22.0f, Accent);
+		RoundFrame(S, 0.0f, 14.0f, 220.0f, 72.0f, 22.0f, Paper, 3.0f);
 		S.Text(TEXT("OK!"), 110.0f, 2.0f, 74.0f, Paper, ETextAlign::Center, TEXT("BlackItalic"), 5.0f, Ink);
 	}
 }

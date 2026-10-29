@@ -1,9 +1,10 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactPrisonBall.h"
+#include "ChaosImpactCrashBall.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactTrainingTarget.h"
@@ -26,6 +27,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Components/SphereComponent.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
@@ -1154,6 +1156,7 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 		UpdateContactPresentation(DeltaSeconds);
 		UpdateBallTypePresentation(DeltaSeconds);
 		UpdateExpiryPresentation(DeltaSeconds);
+		UpdateSpeedStretch(DeltaSeconds);
 		TraceLocalThrow();
 		return;
 	}
@@ -1228,6 +1231,7 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 	UpdateContactPresentation(DeltaSeconds);
 	UpdateBallTypePresentation(DeltaSeconds);
 	UpdateExpiryPresentation(DeltaSeconds);
+	UpdateSpeedStretch(DeltaSeconds);
 	TraceLocalThrow();
 }
 
@@ -1264,6 +1268,37 @@ void AChaosImpactBall::UpdateExpiryPresentation(const float DeltaSeconds)
 	{
 		BallMesh->SetRelativeScale3D(BallMeshBaseScale * Scale);
 		ExpiryScale = Scale;
+	}
+}
+
+void AChaosImpactBall::UpdateSpeedStretch(const float DeltaSeconds)
+{
+	if (!BallMesh || GetNetMode() == NM_DedicatedServer || DeltaSeconds <= 0.0f)
+	{
+		return;
+	}
+	const FVector Shown = BallMesh->GetComponentLocation();
+	const FVector Moved = StretchLastLocation.IsZero() ? FVector::ZeroVector : (Shown - StretchLastLocation) / DeltaSeconds;
+	StretchLastLocation = Shown;
+	const bool bPlain = !NovaLook.IsBuilt() && !SimaeLook.IsBuilt() && !DriveLook.IsBuilt();
+	const bool bFlying = bPlain && IsFlyingForPresentation() && !IsHidden() && !bDetonated && !GetAttachParentActor();
+	const float Speed = bFlying ? static_cast<float>(Moved.Size()) : 0.0f;
+	// Up to a third longer at the fastest throws; eased in and out so it never pops.
+	const float Wanted = bFlying && Speed < 8000.0f ? FMath::Clamp((Speed - 900.0f) / 2200.0f, 0.0f, 1.0f) * 0.32f : 0.0f;
+	StretchAmount = FMath::FInterpTo(StretchAmount, Wanted, DeltaSeconds, 18.0f);
+	if (StretchAmount > 0.01f && !Moved.IsNearlyZero())
+	{
+		bStretched = true;
+		BallMesh->SetWorldRotation(Moved.Rotation());
+		BallMesh->SetRelativeScale3D(BallMeshBaseScale * ExpiryScale
+			* FVector(1.0f + StretchAmount, 1.0f - StretchAmount * 0.3f, 1.0f - StretchAmount * 0.3f));
+	}
+	else if (bStretched)
+	{
+		bStretched = false;
+		StretchAmount = 0.0f;
+		BallMesh->SetRelativeRotation(FRotator::ZeroRotator);
+		BallMesh->SetRelativeScale3D(BallMeshBaseScale * ExpiryScale);
 	}
 }
 
@@ -1677,6 +1712,26 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 		// A dash is untouchable: meeting a ball mid-dash is no hit at all (no flash, and the ball flies on).
 		return;
 	}
+	if (AChaosImpactCrashBall* CrashBall = Cast<AChaosImpactCrashBall>(OtherActor))
+	{
+		if (CrashBall->ApplyBallHit(this, Hit))
+		{
+			if (!IsSpecialBall() || BallType == EChaosImpactBallType::Thunder)
+			{
+				MulticastContactBurst(Hit.ImpactPoint, Hit.ImpactNormal.Rotation());
+			}
+			else if (BallType == EChaosImpactBallType::Beam)
+			{
+				MulticastBeamStrike(Hit.ImpactPoint);
+			}
+			else if (BallType == EChaosImpactBallType::Prison)
+			{
+				// Prison balls never capture the Giant Ball; they burst harmlessly after applying their small push.
+				Detonate(Hit.ImpactPoint, nullptr);
+			}
+		}
+		return;
+	}
 	const bool bHitPawn = OtherActor->IsA<APawn>() || OtherActor->IsA<AChaosImpactBuddyBall>();
 	const bool bHitTrainingTarget = OtherActor->IsA<AChaosImpactTrainingTarget>();
 	if (const AChaosImpactCharacter* HitCharacter = Cast<AChaosImpactCharacter>(OtherActor);
@@ -1768,7 +1823,8 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 			* FMath::Min(static_cast<float>(Rebound.Size()) * ChaosImpactBallTypes::ThunderBounceSpeedUp, ChaosImpactBallTypes::ThunderMaxSpeed);
 	}
 	if (ActiveFlightMode == EChaosImpactBallFlightMode::Arc
-		&& ImpactResult.ImpactNormal.Z > 0.65f)
+		&& ImpactResult.ImpactNormal.Z > 0.65f
+		&& (!ImpactResult.GetActor() || !ImpactResult.GetActor()->IsA<AChaosImpactCrashBall>()))
 	{
 		SetActorLocation(ImpactResult.ImpactPoint
 			+ ImpactResult.ImpactNormal * CollisionSphere->GetScaledSphereRadius());
@@ -2199,12 +2255,27 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		{
 			SetEffectFloat(TypeAuraEffect, TEXT("Spark Spawn Rate"), 60.0f);
 		}
-		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-		const auto MakeShaft = [this, Cylinder](UMaterialInstanceDynamic* Look) -> UStaticMeshComponent*
+		// The shaft: soft streaks (the FX kit's), bright at the head and fading away along the tail, soft across:
+		// no hard tube end ever shows. Flat planes turned to the camera, placed in the world each frame.
+		UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+		UMaterialInterface* StreakLook = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Streak.M_CIFX_Streak"));
+		const auto MakeStreak = [this, StreakLook](const FLinearColor& Color, const FLinearColor& Core) -> UMaterialInstanceDynamic*
 		{
-			// Placed in the world each frame, from where it was thrown to where it is.
+			if (!StreakLook)
+			{
+				return MakeAdditive(this, Color, 0.0f);
+			}
+			UMaterialInstanceDynamic* Look = UMaterialInstanceDynamic::Create(StreakLook, this);
+			Look->SetVectorParameterValue(TEXT("Color"), Color);
+			Look->SetVectorParameterValue(TEXT("CoreColor"), Core);
+			Look->SetScalarParameterValue(TEXT("Erode"), 0.0f);
+			Look->SetScalarParameterValue(TEXT("Intensity"), 0.0f);
+			return Look;
+		};
+		const auto MakeShaft = [this, Plane](UMaterialInstanceDynamic* Look) -> UStaticMeshComponent*
+		{
 			UStaticMeshComponent* Shaft = NewObject<UStaticMeshComponent>(this);
-			Shaft->SetStaticMesh(Cylinder);
+			Shaft->SetStaticMesh(Plane);
 			Shaft->SetMaterial(0, Look);
 			Shaft->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 			Shaft->SetGenerateOverlapEvents(false);
@@ -2213,8 +2284,8 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 			Shaft->RegisterComponent();
 			return Shaft;
 		};
-		BeamCoreMaterial = MakeAdditive(this, FLinearColor(1.0f, 0.82f, 0.97f), 0.0f);
-		BeamGlowMaterial = MakeAdditive(this, Pink, 0.0f, 1.0f);
+		BeamCoreMaterial = MakeStreak(FLinearColor(1.0f, 0.6f, 0.92f), FLinearColor(1.0f, 0.95f, 1.0f));
+		BeamGlowMaterial = MakeStreak(Pink, FLinearColor(1.0f, 0.7f, 0.95f));
 		BeamCore = MakeShaft(BeamCoreMaterial);
 		BeamGlow = MakeShaft(BeamGlowMaterial);
 		LightColor = Pink;
@@ -2415,6 +2486,11 @@ void AChaosImpactBall::UpdateBallTypePresentation(const float DeltaSeconds)
 	{
 		UpdateBeamShaft(DeltaSeconds, bFlying);
 	}
+	if (BallType == EChaosImpactBallType::Prison && TypeVisual)
+	{
+		// The cage turns round the ball and its lock band glows (the ball itself rolls inside it).
+		ChaosImpactPrison::UpdateCage(Cast<UProceduralMeshComponent>(TypeVisual), 31.0f, ChaosImpactBallTypes::PrisonSeconds, TypeFxTime, false);
+	}
 	for (int32 Index = 0; Index < TypeRings.Num(); ++Index)
 	{
 		if (UStaticMeshComponent* Ring = TypeRings[Index])
@@ -2572,6 +2648,20 @@ void AChaosImpactBall::UpdateBeamHits()
 			ResolveDamagingHit(Character, Struck, (Character->GetActorLocation() - Struck).GetSafeNormal2D());
 		}
 	}
+	for (TActorIterator<AChaosImpactCrashBall> It(World); It; ++It)
+	{
+		AChaosImpactCrashBall* CrashBall = *It;
+		FVector Struck;
+		if (IsValid(CrashBall) && !BeamStruck.Contains(CrashBall)
+			&& BeamTouches(From, To, CrashBall->GetActorLocation(), CrashBall->GetBallRadius(), CrashBall->GetBallRadius(), Struck))
+		{
+			BeamStruck.Add(CrashBall);
+			if (CrashBall->ApplySpecialEffectPush(this, ThrowingPawn.Get(), Struck, GetBallVelocity().GetSafeNormal2D(), 1.1f, false))
+			{
+				MulticastBeamStrike(Struck);
+			}
+		}
+	}
 	for (TActorIterator<AChaosImpactTrainingTarget> It(World); It; ++It)
 	{
 		FVector Struck;
@@ -2626,21 +2716,31 @@ void AChaosImpactBall::UpdateBeamShaft(const float DeltaSeconds, const bool bFly
 		return;
 	}
 	Along = (BeamShaftHead - Tail).GetSafeNormal();
-	const FRotator Facing = FRotationMatrix::MakeFromZ(Along).Rotator();
-	const FVector Middle = (BeamShaftHead + Tail) * 0.5f;
+	// Reaching a little past the ball, so its bright head sits on the ball rather than behind it.
+	const FVector Head = BeamShaftHead + Along * 40.0f;
+	Length += 40.0f;
+	const FVector Middle = (Head + Tail) * 0.5f;
+	FVector Camera = Middle + FVector(-800.0f, 0.0f, 1400.0f);
+	if (const APlayerController* Viewer = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+	{
+		FRotator Unused;
+		Viewer->GetPlayerViewPoint(Camera, Unused);
+	}
+	// Lying along the flight (U runs tail to head), its face turned to the camera as far as it can.
+	const FQuat Facing = FRotationMatrix::MakeFromXZ(Along, Camera - Middle).ToQuat();
 	const float Shimmer = 0.85f + 0.15f * FMath::Sin(TypeFxTime * 37.0f);
-	// A thin white-hot core inside a wider pink glow that thins toward its edges.
+	// A thin white-hot core inside a wider pink glow, both thinning as the shaft fades.
 	BeamCore->SetWorldLocationAndRotation(Middle, Facing);
-	BeamCore->SetWorldScale3D(FVector(0.2f * BeamShaftFade, 0.2f * BeamShaftFade, Length / 100.0f));
+	BeamCore->SetWorldScale3D(FVector(Length / 100.0f, 0.22f * FMath::Lerp(0.3f, 1.0f, BeamShaftFade), 1.0f));
 	BeamGlow->SetWorldLocationAndRotation(Middle, Facing);
-	BeamGlow->SetWorldScale3D(FVector(1.0f * Shimmer, 1.0f * Shimmer, Length / 100.0f));
+	BeamGlow->SetWorldScale3D(FVector(Length / 100.0f, 1.0f * Shimmer * FMath::Lerp(0.5f, 1.0f, BeamShaftFade), 1.0f));
 	if (BeamCoreMaterial)
 	{
-		BeamCoreMaterial->SetScalarParameterValue(TEXT("Intensity"), 7.0f * BeamShaftFade);
+		BeamCoreMaterial->SetScalarParameterValue(TEXT("Intensity"), 8.0f * BeamShaftFade);
 	}
 	if (BeamGlowMaterial)
 	{
-		BeamGlowMaterial->SetScalarParameterValue(TEXT("Intensity"), 2.2f * BeamShaftFade * Shimmer);
+		BeamGlowMaterial->SetScalarParameterValue(TEXT("Intensity"), 3.0f * BeamShaftFade * Shimmer);
 	}
 }
 

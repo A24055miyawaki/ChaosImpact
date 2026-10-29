@@ -42,7 +42,12 @@ struct FChaosImpactMatchRules
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	int32 CPULevel = 2;
 
-	bool IsTeamBattle() const { return TeamCount >= 2; }
+	/** True when the VS rule is クラッシュボール (2-team 5-minute Giant Ball push battle). */
+	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
+	bool bCrashBall = false;
+
+	bool IsTeamBattle() const { return bCrashBall || TeamCount >= 2; }
+	bool IsCrashBall() const { return bCrashBall; }
 };
 
 namespace ChaosImpactMatch
@@ -169,13 +174,17 @@ namespace ChaosImpactMatch
 		return Rules.bSpectate ? 0 : FMath::Max(Humans, 1);
 	}
 
+	inline constexpr int32 CrashBallMinutes = 5;
+	/** Overtime: how long the trailing team may go without hitting the giant ball (the HUD drains it). */
+	inline constexpr float CrashOvertimeGraceSeconds = 4.0f;
+
 	inline FChaosImpactMatchRules Sanitize(FChaosImpactMatchRules Rules, int32 Humans)
 	{
 		Humans = GetCompetingHumans(Rules, Humans);
-		Rules.Minutes = SanitizeMinutes(Rules.Minutes);
+		Rules.Minutes = Rules.bCrashBall ? CrashBallMinutes : SanitizeMinutes(Rules.Minutes);
 		Rules.StageIndex = SanitizeStage(Rules.StageIndex);
 		Rules.CPULevel = SanitizeCPULevel(Rules.CPULevel);
-		Rules.TeamCount = Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0;
+		Rules.TeamCount = Rules.bCrashBall ? 2 : (Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0);
 		Rules.CPUCount = FMath::Clamp(Rules.CPUCount, GetMinCPUCount(Humans, Rules.TeamCount), GetMaxCPUCount(Humans));
 		return Rules;
 	}
@@ -211,11 +220,16 @@ namespace ChaosImpactMatch
 		return TeamCount >= 2 ? FString::Printf(TEXT("チーム戦  %dチーム"), TeamCount) : FString(TEXT("個人戦"));
 	}
 
+	inline FString DescribeRule(const FChaosImpactMatchRules& Rules)
+	{
+		return Rules.bCrashBall ? FString(TEXT("クラッシュボール  2チーム")) : DescribeTeams(Rules.TeamCount);
+	}
+
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d"),
-			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel);
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d"),
+			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -230,6 +244,12 @@ namespace ChaosImpactMatch
 		OutRules.bSpectate = FCString::Atoi(URL.GetOption(TEXT("CISpectate="), TEXT("0"))) != 0;
 		OutRules.StageIndex = SanitizeStage(FCString::Atoi(URL.GetOption(TEXT("CIStage="), TEXT("0"))));
 		OutRules.CPULevel = SanitizeCPULevel(FCString::Atoi(URL.GetOption(TEXT("CICPULevel="), TEXT("2"))));
+		OutRules.bCrashBall = FCString::Atoi(URL.GetOption(TEXT("CICrashBall="), TEXT("0"))) != 0;
+		if (OutRules.bCrashBall)
+		{
+			OutRules.TeamCount = 2;
+			OutRules.Minutes = CrashBallMinutes;
+		}
 		return true;
 	}
 }

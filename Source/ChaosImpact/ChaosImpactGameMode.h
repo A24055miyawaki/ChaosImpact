@@ -11,6 +11,7 @@ class AChaosImpactBallSpawner;
 class AChaosImpactPlayerState;
 class AChaosImpactStageBase;
 class AChaosImpactSpectatorPawn;
+class AChaosImpactCrashGoal;
 enum class EChaosImpactOnlinePhase : uint8;
 
 /**
@@ -41,6 +42,15 @@ public:
 	 * team battle or straight to the opening. Calling it again restarts with the new rules.
 	 */
 	void ConfigureVersusMatch(const FChaosImpactMatchRules& InRules);
+	/**
+	 * クラッシュボール, server: a thrown ball pushed the giant ball. A push toward the opponents' goal earns the
+	 * thrower a point; the attacking team's hits keep overtime going.
+	 */
+	void NotifyCrashBallHit(APawn* Thrower, int32 TeamIndex, bool bCharged, const FVector& PushDirection);
+	void NotifyCrashBallRecovered();
+	FVector GetCrashPushDirection(int32 TeamIndex, const FVector& Location) const;
+	/** クラッシュボール: the stage's spawn points on Team's own half (its goal's side), or all of them if none. */
+	TArray<FVector> GetCrashTeamSpawnPoints(int32 Team) const;
 	/** Team select: moves a human to the next team in Direction that still has room. */
 	void ChangeMemberTeam(AChaosImpactPlayerState* Member, int32 Direction);
 	/** Team select is over: CPUs fill the smallest teams and the opening starts. */
@@ -137,6 +147,21 @@ private:
 	/** Players whose machine reported the current opening finished. */
 	TSet<FObjectKey> IntroFinishedMembers;
 	void EndMatch();
+	void SetupCrashMatch();
+	void ClearCrashMatch();
+	void UpdateCrashMatch();
+	void HandleMatchTimeExpired();
+	FTimerHandle CrashMatchTimer;
+	UPROPERTY(Transient) TArray<TObjectPtr<AChaosImpactCrashGoal>> CrashGoals;
+	/** How long an attacking team can go without a direct hit (or with the ball back in its own half) in overtime. */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Crash Ball", meta=(ClampMin="0.5"))
+	float CrashOvertimeGraceSeconds = ChaosImpactMatch::CrashOvertimeGraceSeconds;
+	/** Overtime ends after this long whatever happens (the leader wins). */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Crash Ball", meta=(ClampMin="10"))
+	float CrashOvertimeMaxSeconds = 60.f;
+	double CrashLastDirectHit[2] = {-100., -100.};
+	/** Overtime: since when the ball has been back in the overtime team's own half (-1 while it is not). */
+	double CrashOvertimeRetreatSince = -1.;
 	/** Online: everyone returns to the room's lobby after the results. */
 	void ReturnToLobbyAfterMatch();
 	void ClearMatchBalls();

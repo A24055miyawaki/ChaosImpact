@@ -1,6 +1,8 @@
 #include "ChaosImpactMatchAnnouncerWidget.h"
 
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactCrashBall.h"
+#include "EngineUtils.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactResults.h"
@@ -123,6 +125,135 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 	}
 }
 
+void UChaosImpactMatchAnnouncerWidget::PaintCrashScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements,
+	const int32 BaseLayer, const AChaosImpactGameState& Match, const double ServerNow, const float Time) const
+{
+	using namespace ChaosImpactPaint;
+	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
+	const auto TeamFill = [](const int32 Team)
+	{
+		const FLinearColor Color = ChaosImpactMatch::GetTeamColor(Team);
+		return MakeFill(FMath::Lerp(Color, Paper, 0.45f), Color * FLinearColor(0.5f, 0.5f, 0.5f, 1.0f));
+	};
+	const auto Since = [ServerNow](const double When) { return When > 0.0 ? static_cast<float>(ServerNow - When) : 100.0f; };
+	const int32 Leader = Match.GetCrashLeader();
+	// Laid out the way the field is seen: when the camera has the blue goal on the left, so has the scoreboard.
+	// (Every view of a match looks the same way, so the first player's camera stands for all.)
+	float Flip = 1.0f;
+	FVector GoalAt[2];
+	int32 GoalsFound = 0;
+	for (TActorIterator<AChaosImpactCrashGoal> It(GetWorld()); It; ++It)
+	{
+		GoalAt[FMath::Clamp(It->GetTeamIndex(), 0, 1)] = It->GetActorLocation();
+		++GoalsFound;
+	}
+	if (const APlayerController* Viewer = GetOwningPlayer(); Viewer && GoalsFound >= 2)
+	{
+		FVector Camera;
+		FRotator Rotation;
+		Viewer->GetPlayerViewPoint(Camera, Rotation);
+		const FVector Right = FRotationMatrix(Rotation).GetUnitAxis(EAxis::Y);
+		Flip = FVector::DotProduct(Right, GoalAt[1] - GoalAt[0]) < 0.0 ? -1.0f : 1.0f;
+	}
+	// -1 for the team shown on the left, +1 for the right.
+	const auto SideOf = [Flip](const int32 Team) { return (Team == 0 ? -1.0f : 1.0f) * Flip; };
+
+	// The counts: a plate each side of the clock. A count that just went down punches out and flashes.
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		const float X = SideOf(Team) < 0.0f ? -374.f : 180.f;
+		const FLinearColor Accent = ChaosImpactMatch::GetTeamColor(Team);
+		const float Drop = Since(Match.Crash.CountDroppedAt[Team]);
+		const float Punch = Drop >= 0.0f && Drop < 1.0f ? FMath::Exp(-9.0f * Drop) : 0.0f;
+		const FPainter Plate{TopCenter, OutDrawElements, BaseLayer + 3};
+		HudShard(Plate, {At(X, 6), At(X + 194, 6), At(X + 182, 82), At(X - 14, 82)},
+			Leader == Team ? MakeFill(FMath::Lerp(NightFill.Top, Accent, 0.35f), NightFill.Bottom) : NightFill, 3.f, FVector2D(4, 5),
+			FMath::Lerp(Navy, Paper, Punch * 0.8f));
+		const FPainter Face = HudAbove(Plate);
+		HudStroke(Face, {At(X + 3, 79), At(X + 179, 79)}, FMath::Lerp(Accent, Paper, Punch), Leader == Team ? 7.f : 5.f);
+		Face.Text(ChaosImpactMatch::GetTeamName(Team), X + 12, 13, 17, Paper, ETextAlign::Left, TEXT("Bold"), 1.f, Ink);
+		if (Leader == Team)
+		{
+			Face.Text(TEXT("リード"), X + 12, 44, 16, FMath::Lerp(Accent, Paper, 0.25f + 0.25f * FMath::Sin(Time * 5.0f)),
+				ETextAlign::Left, TEXT("Black"), 1.f, Ink);
+		}
+		const float Size = 43.0f * (1.0f + 0.45f * Punch);
+		HudText3D(HudAbove(Face), FString::FromInt(Match.GetCrashCount(Team)), X + 162 + Size * 0.05f, 24 - (Size - 43.0f) * 0.55f, Size,
+			FMath::Lerp(Paper, Accent, Punch * 0.6f), ETextAlign::Right);
+	}
+
+	// The gauge: the red goal on the left, the blue goal on the right, as the counts sit.
+	constexpr float G = 300.0f;
+	constexpr float Y = 106.0f;
+	const FPainter Track{TopCenter, OutDrawElements, BaseLayer + 5};
+	HudShard(Track, {At(-G, Y - 9), At(G + 7, Y - 9), At(G, Y + 9), At(-G - 7, Y + 9)}, NightFill, 2.f, FVector2D(2, 3));
+	const FPainter OnTrack = HudAbove(Track);
+	// How far each team has got: red's bar runs right towards the blue goal, blue's left towards the red goal.
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		const int32 Count = Match.GetCrashCount(Team);
+		const float Reach = FMath::Clamp((100 - Count) / 99.0f, 0.0f, 1.0f) * G;
+		if (Reach > 1.0f)
+		{
+			// Each team's bar runs from the middle towards the other team's goal.
+			const float Tip = -SideOf(Team) * Reach;
+			const float From = FMath::Min(0.0f, Tip);
+			const float To = FMath::Max(0.0f, Tip);
+			HudPoly(OnTrack, {At(From, Y - 5), At(To, Y - 5), At(To, Y + 5), At(From, Y + 5)}, TeamFill(Team), 2);
+			OnTrack.Box(Tip - 1.5f, Y - 9, 3, 18, WithAlpha(Paper, 0.85f));
+		}
+	}
+	for (int32 Tick = -3; Tick <= 3; ++Tick)
+	{
+		const float TX = Tick * G / 4.0f;
+		HudAbove(OnTrack).Box(TX - (Tick == 0 ? 1.5f : 1.0f), Y - (Tick == 0 ? 12 : 4), Tick == 0 ? 3.f : 2.f, Tick == 0 ? 24.f : 8.f,
+			WithAlpha(Paper, Tick == 0 ? 0.75f : 0.3f));
+	}
+	// The goals at either end throb faster the closer the giant ball gets to them.
+	const float Progress = FMath::Clamp(Match.Crash.Progress, -1.0f, 1.0f);
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		const float Side = SideOf(Team);
+		const float Danger = FMath::Clamp((Progress * (Team == 0 ? -1.0f : 1.0f) - 0.55f) / 0.45f, 0.0f, 1.0f);
+		const float Throb = Danger * (0.5f + 0.5f * FMath::Sin(Time * FMath::Lerp(6.0f, 16.0f, Danger)));
+		const FLinearColor Color = FMath::Lerp(ChaosImpactMatch::GetTeamColor(Team), Paper, Throb * 0.6f);
+		const float GX = Side * (G + 34.0f);
+		const float Scale = 1.0f + 0.22f * Throb;
+		const FPainter Goal{TopCenter, OutDrawElements, BaseLayer + 6};
+		if (Danger > 0.0f)
+		{
+			Goal.Disc(At(GX, Y), 26.0f * Scale, WithAlpha(ChaosImpactMatch::GetTeamColor(Team), 0.35f * Throb));
+		}
+		const float W = 15.0f * Scale;
+		const float H = 15.0f * Scale;
+		HudPoly(HudAbove(Goal, 1), {At(GX - W, Y - H + 4), At(GX + W, Y - H + 4), At(GX + W, Y + H), At(GX - W, Y + H)},
+			SolidFill(WithAlpha(Navy, 0.85f)), 1);
+		// Posts and crossbar, the net in lines behind.
+		const FPainter Frame = HudAbove(Goal, 2);
+		for (int32 Strand = 1; Strand < 4; ++Strand)
+		{
+			const float SX = GX - W + 2.0f * W * Strand / 4.0f;
+			HudStroke(Frame, {At(SX, Y - H + 6), At(SX, Y + H)}, WithAlpha(Color, 0.45f), 1.5f);
+		}
+		HudStroke(HudAbove(Frame, 1), {At(GX - W, Y + H), At(GX - W, Y - H + 2), At(GX + W, Y - H + 2), At(GX + W, Y + H)}, Color, 4.0f);
+	}
+	// The giant ball itself, in the colour of the team that pushed it last.
+	const float BX = Progress * G * Flip;
+	const int32 Pusher = Match.Crash.LastPushTeam;
+	const FLinearColor BallColor = Pusher == 0 || Pusher == 1 ? ChaosImpactMatch::GetTeamColor(Pusher) : Gold;
+	const float Recovered = Since(Match.Crash.LastRecoveryAt);
+	const float Flash = Recovered >= 0.0f && Recovered < 0.8f ? 1.0f - Recovered / 0.8f : 0.0f;
+	const FPainter Marker{TopCenter, OutDrawElements, BaseLayer + 10};
+	Marker.Disc(At(BX + 2, Y + 3), 14.0f, WithAlpha(Extrude, 0.9f));
+	Marker.Disc(At(BX, Y), 14.0f, Navy);
+	HudAbove(Marker, 1).Disc(At(BX, Y), 11.0f, FMath::Lerp(BallColor, Paper, Flash * 0.8f));
+	HudAbove(Marker, 2).Disc(At(BX - 3.5f, Y - 4), 3.5f, WithAlpha(Paper, 0.85f));
+	if (Flash > 0.0f)
+	{
+		HudAbove(Marker, 2).Ring(At(BX, Y), 14.0f + 22.0f * (1.0f - Flash), WithAlpha(Paper, Flash), 2.0f);
+	}
+}
+
 int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
@@ -235,7 +366,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
 		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
 		const float Total = FMath::Max(Elapsed + Remaining, 1.0f);
-		const bool bHurry = Remaining <= 10.0f;
+		const bool bHurry = Remaining <= 10.0f && !Match->Crash.bOvertime;
 		const float Beat = bHurry ? 1.0f - FMath::Frac(Remaining) : 0.0f;
 		const float Kick = Beat * Beat;
 		const float Shake = bHurry ? FMath::Sin(Beat * 40.0f) * Kick * 6.0f : 0.0f;
@@ -254,16 +385,48 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		const TArray<FVector2D> Blade{At(-86.0f + Shake, 62.0f), At(80.0f + Shake, 62.0f), At(94.0f + Shake, 66.0f), At(80.0f + Shake, 70.0f),
 			At(-90.0f + Shake, 70.0f)};
 		HudPoly(OnSlab, HudInflate(Blade, 2.0f), SolidFill(Navy), 1);
-		HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + Shake + 184.0f * FMath::Clamp(Remaining / Total, 0.0f, 1.0f), false, true),
-			bHurry ? FireFill : IceFill, 2);
+		// クラッシュボール overtime: the blade is the overtime team's grace, refilled by each of its hits on the giant ball.
+		const bool bOvertime = Match->Rules.bCrashBall && Match->Crash.bOvertime;
+		const auto TeamFill = [](const int32 Team)
+		{
+			const FLinearColor Color = ChaosImpactMatch::GetTeamColor(Team);
+			return MakeFill(FMath::Lerp(Color, Paper, 0.45f), Color * FLinearColor(0.5f, 0.5f, 0.5f, 1.0f));
+		};
+		const float BladeFill = bOvertime
+			? 1.0f - static_cast<float>(ServerNow - FMath::Max(Match->Crash.OvertimeHitAt, Match->Crash.OvertimeStartedAt))
+				/ ChaosImpactMatch::CrashOvertimeGraceSeconds
+			: Remaining / Total;
+		HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + Shake + 184.0f * FMath::Clamp(BladeFill, 0.0f, 1.0f), false, true),
+			bOvertime ? TeamFill(Match->Crash.OvertimeTeam) : bHurry ? FireFill : IceFill, 2);
 		const float Bob = FMath::Sin(Time * 2.2f) * 3.0f;
 		HudShard(OnSlab, {At(-170.0f, 14.0f + Bob), At(-150.0f, 20.0f + Bob), At(-160.0f, 40.0f + Bob)}, bHurry ? FireFill : IceFill, 2.0f,
 			FVector2D(3.0, 4.0));
 		HudShard(OnSlab, {At(156.0f, 44.0f - Bob), At(176.0f, 34.0f - Bob), At(170.0f, 58.0f - Bob)}, FireFill, 2.0f, FVector2D(3.0, 4.0));
 		const FPainter Digits{MakeSkewed(TopCenter, -120.0f + Shake, 2.0f, 240.0f, 66.0f, -0.12f, 1.0f + 0.25f * Kick), OutDrawElements,
 			BaseLayer + 9};
-		HudText3D(Digits, FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 120.0f, -6.0f, 46.0f,
-			bHurry ? FireFill.Top : bMinuteCall ? Gold : Paper, ETextAlign::Center);
+		HudText3D(Digits, bOvertime ? FString(TEXT("延長")) : FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 120.0f, -6.0f, 46.0f,
+			bOvertime ? FMath::Lerp(ChaosImpactMatch::GetTeamColor(Match->Crash.OvertimeTeam), Paper, 0.35f + 0.25f * FMath::Sin(Time * 9.0f))
+				: bHurry ? FireFill.Top : bMinuteCall ? Gold : Paper, ETextAlign::Center);
+		if (Match->Rules.bCrashBall)
+		{
+			PaintCrashScoreboard(TopCenter, OutDrawElements, BaseLayer, *Match, ServerNow, Time);
+			// Big moments only: who took the lead, and overtime starting.
+			const int32 Leader = Match->GetCrashLeader();
+			const double LeadAge = ServerNow - Match->Crash.LastLeadChangedAt;
+			if (Leader != INDEX_NONE && LeadAge >= 0. && LeadAge < 1.5 && Elapsed > 1.1f && !bOvertime)
+			{
+				PaintCallout(FString::Printf(TEXT("%s リード！"), ChaosImpactMatch::GetTeamName(Leader)), 66, 1.f + .2f * FMath::Exp(-8.f * LeadAge),
+					FMath::Min(1.f, static_cast<float>((1.5 - LeadAge) * 3.)), ChaosImpactMatch::GetTeamColor(Leader), BaseLayer + 12);
+			}
+			const double OvertimeAge = ServerNow - Match->Crash.OvertimeStartedAt;
+			if (bOvertime && OvertimeAge >= 0. && OvertimeAge < 1.8)
+			{
+				const float Age = static_cast<float>(OvertimeAge);
+				const FHudFill Blast = TeamFill(Match->Crash.OvertimeTeam);
+				PaintCallout(TEXT("延長戦！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age),
+					EaseOut(Age / 0.12f) * (1.0f - FMath::Clamp((Age - 1.4f) / 0.4f, 0.0f, 1.0f)), Paper, BaseLayer + 12, &Blast);
+			}
+		}
 		if (bMinuteCall)
 		{
 			// Like Ready?: the words alone, no band over the play field, and gone quickly.
@@ -295,10 +458,15 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	const FPainter Full{AllottedGeometry, OutDrawElements, BaseLayer + 1};
 	if (Elapsed < 1.7f)
 	{
-		// The whistle moment: a flash, then FINISH slams in over the frozen field.
-		Full.Box(0.0f, 0.0f, Size.X, Size.Y, WithAlpha(Paper, 0.45f * FMath::Clamp(1.0f - Elapsed / 0.25f, 0.0f, 1.0f)));
-		PaintCallout(TEXT("FINISH"), 120.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Elapsed / 0.2f)),
-			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 3, &FireFill);
+		// The whistle moment: a flash, then FINISH slams in over the frozen field. A giant ball in the goal is a
+		// KNOCKOUT, in the scoring team's colour.
+		const bool bKnockout = Match->Rules.bCrashBall && Match->Crash.bKnockout && Match->Crash.Winner != INDEX_NONE;
+		Full.Box(0.0f, 0.0f, Size.X, Size.Y, WithAlpha(bKnockout ? FMath::Lerp(Paper, ChaosImpactMatch::GetTeamColor(Match->Crash.Winner), 0.3f) : Paper,
+			(bKnockout ? 0.6f : 0.45f) * FMath::Clamp(1.0f - Elapsed / 0.25f, 0.0f, 1.0f)));
+		const FLinearColor KnockoutColor = bKnockout ? ChaosImpactMatch::GetTeamColor(Match->Crash.Winner) : Paper;
+		const FHudFill KnockoutBlast = MakeFill(FMath::Lerp(KnockoutColor, Paper, 0.5f), KnockoutColor * FLinearColor(0.55f, 0.55f, 0.55f, 1.0f));
+		PaintCallout(bKnockout ? TEXT("KNOCKOUT!") : TEXT("FINISH"), bKnockout ? 128.0f : 120.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Elapsed / 0.2f)),
+			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 3, bKnockout ? &KnockoutBlast : &FireFill);
 	}
 	return BaseLayer + 8;
 }

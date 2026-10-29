@@ -1,4 +1,5 @@
 #include "ChaosImpactSimaeBoss.h"
+#include "ChaosImpactFxKit.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
@@ -1199,6 +1200,7 @@ void AChaosImpactSimaeBoss::PlayDefeat()
 	AuraTarget = 0.0f;
 	AuraStrength = 0.0f;
 	AuraFlames->SetVisibility(false);
+	UpdateAuraShell(false, 0.0f);
 	AuraLight->SetIntensity(0.0f);
 	GetMesh()->SetOverlayMaterial(nullptr);
 	if (Embers)
@@ -1256,7 +1258,9 @@ void AChaosImpactSimaeBoss::BuildPresentation()
 	{
 		return;
 	}
-	if (UMaterialInterface* Flame = LoadSimaeMaterial(TEXT("/Game/ChaosImpact/FX/M_CI_SimaeAuraFlame.M_CI_SimaeAuraFlame")))
+	// The aura's flame cards: smoky tongues of red rising from the ground round the feet and wrapping the whole body
+	// (M_CIFX_AuraFlame: every card edge fades out, so none is ever cut off).
+	if (UMaterialInterface* Flame = LoadSimaeMaterial(TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_AuraFlame.M_CIFX_AuraFlame")))
 	{
 		FlameMaterial = UMaterialInstanceDynamic::Create(Flame, this);
 	}
@@ -1334,14 +1338,17 @@ void AChaosImpactSimaeBoss::UpdateAura(const float DeltaSeconds)
 	const bool bVisible = Shown > 0.02f;
 	const float Time = GetWorld()->GetTimeSeconds();
 	AuraFlames->SetVisibility(bVisible);
+	UpdateAuraShell(bVisible, Shown);
 	if (bVisible)
 	{
 		RebuildAuraFlames(Time);
 		if (FlameMaterial)
 		{
-			FlameMaterial->SetScalarParameterValue(TEXT("Intensity"), 4.5f * Shown);
-			FlameMaterial->SetScalarParameterValue(TEXT("Speed"), 1.6f + 0.6f * AuraBurst);
+			FlameMaterial->SetScalarParameterValue(TEXT("Intensity"), 2.2f + 1.0f * AuraBurst);
+			FlameMaterial->SetScalarParameterValue(TEXT("Opacity"), 0.9f * FMath::Min(Shown, 1.0f));
+			FlameMaterial->SetScalarParameterValue(TEXT("Speed"), 1.7f + 0.8f * AuraBurst);
 		}
+		FeedAura(DeltaSeconds, Shown);
 	}
 	const float Flicker = 0.85f + 0.1f * FMath::Sin(Time * 17.0f) + 0.05f * FMath::Sin(Time * 41.0f);
 	AuraLight->SetIntensity(bVisible ? 26000.0f * Shown * Flicker : 0.0f);
@@ -1362,10 +1369,131 @@ void AChaosImpactSimaeBoss::UpdateAura(const float DeltaSeconds)
 	}
 }
 
+void AChaosImpactSimaeBoss::UpdateAuraShell(const bool bVisible, const float Shown)
+{
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!bVisible)
+	{
+		if (AuraShell)
+		{
+			AuraShell->SetVisibility(false);
+		}
+		return;
+	}
+	if (!AuraShell && Body)
+	{
+		UMaterialInterface* Look = LoadSimaeMaterial(TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_AuraShell.M_CIFX_AuraShell"));
+		if (!Look)
+		{
+			return;
+		}
+		AuraShellMaterial = UMaterialInstanceDynamic::Create(Look, this);
+		AuraShell = NewObject<USkeletalMeshComponent>(this, TEXT("AuraShell"));
+		AuraShell->SetupAttachment(Body);
+		AuraShell->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		AuraShell->SetGenerateOverlapEvents(false);
+		AuraShell->SetCastShadow(false);
+		AuraShell->bReceivesDecals = false;
+		AuraShell->RegisterComponent();
+	}
+	if (!AuraShell)
+	{
+		return;
+	}
+	// Always the body it wraps (it changes model as it powers up), in the body's pose.
+	if (AuraShell->GetSkeletalMeshAsset() != Body->GetSkeletalMeshAsset())
+	{
+		AuraShell->SetSkeletalMeshAsset(Body->GetSkeletalMeshAsset());
+		for (int32 Slot = 0; Slot < AuraShell->GetNumMaterials(); ++Slot)
+		{
+			AuraShell->SetMaterial(Slot, AuraShellMaterial);
+		}
+		AuraShell->SetLeaderPoseComponent(Body);
+	}
+	AuraShell->SetVisibility(true);
+	const float Time = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const float Flicker = 0.88f + 0.08f * FMath::Sin(Time * 17.0f) + 0.04f * FMath::Sin(Time * 41.0f);
+	AuraShellMaterial->SetScalarParameterValue(TEXT("Opacity"), 0.55f * FMath::Min(Shown, 1.0f) * Flicker);
+	AuraShellMaterial->SetScalarParameterValue(TEXT("Intensity"), 1.8f + 0.8f * AuraBurst);
+	AuraShellMaterial->SetScalarParameterValue(TEXT("Inflate"), (6.0f + 4.0f * AuraBurst) * BossScale);
+	AuraShellMaterial->SetScalarParameterValue(TEXT("NoiseScale"), 0.006f / FMath::Max(BossScale / 2.25f, 0.3f));
+}
+
+bool AChaosImpactSimaeBoss::IsAuraDrawn() const
+{
+	const AChaosImpactFxKit* Fx = AuraFx.Get();
+	return Fx && Fx->GetPieceCount() > 0;
+}
+
+void AChaosImpactSimaeBoss::FeedAura(const float DeltaSeconds, const float Shown)
+{
+	AChaosImpactFxKit* Fx = AuraFx.Get();
+	if (!Fx && !FlameCards.IsEmpty())
+	{
+		Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+		if (Fx)
+		{
+			Fx->AttachToActor(this, FAttachmentTransformRules::KeepWorldTransform);
+			AuraStream.Initialize(FMath::Rand());
+			AuraFx = Fx;
+		}
+	}
+	if (!Fx)
+	{
+		return;
+	}
+	const FVector Base = Fx->GetActorLocation();
+	const float Strength = FMath::Min(Shown, 1.6f);
+	const FLinearColor Deep(0.78f, 0.02f, 0.07f);
+	const FLinearColor Hot(1.0f, 0.42f, 0.36f);
+	// Its pressure on the floor: the ground glowing red under it and waves pulsing out, slower than the flames.
+	AuraPulseOwed += DeltaSeconds * 1.2f * Strength;
+	if (AuraPulseOwed >= 1.0f)
+	{
+		AuraPulseOwed -= 1.0f;
+		const FVector Floor = ChaosImpactSimaeFx::FindGround(GetWorld(), GetActorLocation(), this) + FVector(0.0f, 0.0f, 4.0f) - Base;
+		FChaosImpactFxPiece Wave;
+		Wave.Look = EChaosImpactFxLook::SolidRing;
+		Wave.Location = Floor;
+		Wave.Life = 0.95f;
+		Wave.SizeFrom = Wave.SizeTo = 260.0f * BossScale;
+		Wave.RingFrom = 0.25f;
+		Wave.RingTo = 0.95f;
+		Wave.RingWidth = 0.05f;
+		Wave.Color = Deep;
+		Wave.CoreColor = Hot;
+		Wave.Intensity = 1.0f;
+		Wave.Opacity = 0.5f * FMath::Min(Strength, 1.0f);
+		Wave.Attack = 0.15f;
+		Wave.ErodeTo = 0.8f;
+		Wave.NoiseScale = 2.5f;
+		Fx->Add(Wave);
+		FChaosImpactFxPiece Lit;
+		Lit.Look = EChaosImpactFxLook::GroundFlame;
+		Lit.Location = Floor + FVector(0.0f, 0.0f, -1.0f);
+		Lit.Life = 1.4f;
+		Lit.SizeFrom = 150.0f * BossScale;
+		Lit.SizeTo = 175.0f * BossScale;
+		Lit.Color = Deep;
+		Lit.CoreColor = FLinearColor(1.0f, 0.3f, 0.2f);
+		Lit.Intensity = 1.0f;
+		Lit.Opacity = 0.3f * FMath::Min(Strength, 1.0f);
+		Lit.Attack = 0.3f;
+		Lit.NoiseScale = 2.0f;
+		Lit.NoiseSpeed = 0.6f;
+		Lit.NoiseAmount = 0.6f;
+		Lit.Softness = 0.8f;
+		Lit.Spin = 30.0f;
+		Fx->Add(Lit);
+	}
+}
+
 void AChaosImpactSimaeBoss::RebuildAuraFlames(const float Time)
 {
-	// Smoky flames: see-through cards turned to face the camera, rising up the screen, each flickering and swaying on its
-	// own (the material burns them away in rising noise).
+	// Flame cards turned to the camera, rooted on the ground in a ring round the feet and rising past the head: the
+	// aura wraps the whole body from below. Two rings: a wide outer one, deep red, tall behind the body and low in front
+	// of it (the body stays in view), and a narrow inner one, hotter. Each licks, sways and leans on its own, the
+	// tops streaming back when it runs.
 	FVector CameraLocation = GetActorLocation() - GetActorForwardVector() * 1000.0f + FVector(0, 0, 800.0f);
 	FRotator CameraRotation = (GetActorLocation() - CameraLocation).Rotation();
 	if (const APlayerController* Viewer = GetWorld()->GetFirstPlayerController(); Viewer && Viewer->PlayerCameraManager)
@@ -1376,58 +1504,71 @@ void AChaosImpactSimaeBoss::RebuildAuraFlames(const float Time)
 	const FRotationMatrix Axes(CameraRotation);
 	const FVector Ahead = Axes.GetUnitAxis(EAxis::X);
 	const FVector Right = Axes.GetUnitAxis(EAxis::Y);
-	const FVector Up = Axes.GetUnitAxis(EAxis::Z);
-	const FVector Middle = Bone(TEXT("SPINE2"));
-	// Running, the flames stream out behind.
-	const FVector Trail = -GetVelocity() * FVector(1.0f, 1.0f, 0.0f) * 0.12f;
+	// World up, turned flat to the camera (up the screen, as near world up as a card facing the camera can be).
+	FVector Up = FVector::UpVector - Ahead * FVector::DotProduct(FVector::UpVector, Ahead);
+	Up = Up.IsNearlyZero() ? Axes.GetUnitAxis(EAxis::Z) : Up.GetSafeNormal();
+	const FVector Feet = ChaosImpactSimaeFx::FindGround(GetWorld(), GetActorLocation(), this);
+	const float Tall = FMath::Max(Bone(TEXT("HEAD")).Z - Feet.Z, 150.0f);
+	const float K = BossScale / 2.25f;
+	const FVector Trail = -GetVelocity() * FVector(1.0f, 1.0f, 0.0f) * 0.15f;
 	const float Shown = AuraStrength + AuraBurst;
-	const float Grow = FMath::Clamp(0.55f + 0.45f * Shown + 0.35f * AuraBurst, 0.3f, 1.6f);
+	const float Grow = FMath::Clamp(0.6f + 0.4f * Shown + 0.35f * AuraBurst, 0.3f, 1.6f);
+	const FVector ToCamera2D = (-Ahead * FVector(1.0f, 1.0f, 0.0f)).GetSafeNormal();
 
 	TArray<FVector> Vertices;
 	TArray<int32> Triangles;
 	TArray<FVector> Normals;
 	TArray<FVector2D> UVs;
 	TArray<FLinearColor> Colors;
-	Vertices.Reserve(FlameCards.Num() * 9);
-	for (const FFlameCard& Card : FlameCards)
+	constexpr int32 Rows = 6;
+	constexpr int32 Columns = 3;
+	const auto Card = [&](const FVector& Root, const float Width, const float Height, const float Seed, const float Strength, const float Lean)
 	{
-		const FVector At = Bone(Card.Bone);
-		// Out to the side of the body the bone is on (bones on the middle keep their offset as it is).
-		const float SideOfBody = FVector::DotProduct(At - Middle, Right);
-		const float X = FMath::Abs(SideOfBody) > 12.0f ? FMath::Abs(Card.Offset.X) * FMath::Sign(SideOfBody) : Card.Offset.X;
-		const FVector Root = At + Right * X + Ahead * Card.Offset.Y + FVector::UpVector * Card.Offset.Z;
-		const float Seed = Card.Seed * 37.0f;
-		const float Height = Card.Height * Grow * (0.84f + 0.2f * FMath::Sin(Time * 5.3f + Seed) + 0.07f * FMath::Sin(Time * 13.1f + Seed * 1.7f));
-		const float Width = Card.Width * (0.9f + 0.1f * FMath::Sin(Time * 4.1f + Seed * 2.3f)) * FMath::Lerp(0.85f, 1.1f, Shown / 1.6f);
-		const FVector Sway = Right * FMath::Sin(Time * 2.7f + Seed) * Width * 0.18f + Trail;
-		const float Strength = FMath::Clamp(0.75f + 0.25f * FMath::Sin(Time * 9.0f + Seed * 3.0f), 0.0f, 1.0f);
 		const int32 Base = Vertices.Num();
-		for (int32 Row = 0; Row < 3; ++Row)
+		for (int32 Row = 0; Row < Rows; ++Row)
 		{
-			const float V = Row * 0.5f;
-			// Narrowing as it rises, and leaning more the higher it goes.
-			const float Half = Width * 0.5f * (1.0f - 0.35f * V);
-			const FVector Centre = Root + Up * Height * V + Sway * V * V;
-			for (int32 Column = 0; Column < 3; ++Column)
+			const float V = static_cast<float>(Row) / (Rows - 1);
+			// Leaning and swaying more the higher it goes; narrowing a little toward its tip.
+			const FVector Centre = Root + Up * Height * V + (Right * Lean * Width + Trail) * V * V;
+			const float Half = Width * 0.5f * (1.0f - 0.4f * V);
+			for (int32 Column = 0; Column < Columns; ++Column)
 			{
-				const float U = Column * 0.5f;
-				Vertices.Add(Centre + Right * (U * 2.0f - 1.0f) * Half - Middle);
+				const float U = static_cast<float>(Column) / (Columns - 1);
+				Vertices.Add(Centre + Right * (U * 2.0f - 1.0f) * Half - Feet);
 				Normals.Add(-Ahead);
 				UVs.Add(FVector2D(U, V));
-				// The flame material reads its seed from red and its strength from green.
-				Colors.Add(FLinearColor(Card.Seed, Strength, 0.0f, 1.0f));
+				Colors.Add(FLinearColor(Seed, Strength, 0.0f, 1.0f));
 			}
 		}
-		for (int32 Row = 0; Row < 2; ++Row)
+		for (int32 Row = 0; Row < Rows - 1; ++Row)
 		{
-			for (int32 Column = 0; Column < 2; ++Column)
+			for (int32 Column = 0; Column < Columns - 1; ++Column)
 			{
-				const int32 A = Base + Row * 3 + Column;
-				Triangles.Append({A, A + 3, A + 4, A, A + 4, A + 1});
+				const int32 A = Base + Row * Columns + Column;
+				Triangles.Append({A, A + Columns, A + Columns + 1, A, A + Columns + 1, A + 1});
 			}
 		}
-	}
-	AuraFlames->SetWorldLocationAndRotation(Middle, FRotator::ZeroRotator);
+	};
+	const auto Ring = [&](const int32 Count, const float Radius, const float Width, const float Height, const float Strength, const float SeedBase)
+	{
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Seed = FMath::Frac(SeedBase + Index * 0.618f);
+			const float Angle = (Index + 0.5f * Seed) * UE_TWO_PI / Count + Time * 0.35f;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			// In front of the body (toward the camera) lower and fainter, behind it full height.
+			const float Front = FMath::Clamp(FVector::DotProduct(Out, ToCamera2D), 0.0f, 1.0f);
+			// Each its own height (some reaching higher), licking up and down: the tops never line up.
+			const float Lick = 0.8f + 0.2f * FMath::Sin(Time * 6.1f + Seed * 37.0f) + 0.1f * FMath::Sin(Time * 14.3f + Seed * 11.0f);
+			const float H = Height * Grow * Lick * FMath::Lerp(0.7f, 1.2f, FMath::Frac(Seed * 7.31f)) * FMath::Lerp(1.0f, 0.6f, Front);
+			const float W = Width * (0.9f + 0.15f * FMath::Sin(Time * 4.3f + Seed * 23.0f));
+			const float Lean = 0.22f * FMath::Sin(Time * 2.3f + Seed * 17.0f) + FVector::DotProduct(Out, Right) * 0.18f;
+			Card(Feet + Out * Radius * K, W * K, H, Seed, Strength * FMath::Lerp(1.0f, 0.75f, Front), Lean);
+		}
+	};
+	Ring(14, 115.0f, 210.0f, Tall * 1.55f, 1.0f, 0.13f);
+	Ring(9, 55.0f, 120.0f, Tall * 1.3f, 0.85f, 0.71f);
+	AuraFlames->SetWorldLocationAndRotation(Feet, FRotator::ZeroRotator);
 	AuraFlames->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, Colors, TArray<FProcMeshTangent>(), false);
 }
 

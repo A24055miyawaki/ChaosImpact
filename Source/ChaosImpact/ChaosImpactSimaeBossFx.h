@@ -5,6 +5,7 @@
 #include "ChaosImpactSimaeBossFx.generated.h"
 
 class AChaosImpactBall;
+class AChaosImpactFxKit;
 class AChaosImpactSimaeBoss;
 class UAudioComponent;
 class UMaterialInstanceDynamic;
@@ -70,19 +71,17 @@ public:
 
 private:
 	void Rebuild();
+	/** A lane stops at the first wall in its way (it is not drawn running under the scenery). */
+	float TrimToWalls(const FVector& Start, float WantedLength) const;
 
+	/**
+	 * The whole area on one soft plane (M_CIFX_Warn): see-through red, deeper toward a soft bright rim, filling as it
+	 * comes due (full: it goes off); a lane has chevrons running along it. No hard edge anywhere.
+	 */
 	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> Outline;
+	TObjectPtr<UStaticMeshComponent> Plane;
 	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> Fill;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> OutlineMaterial;
-	/** The whole area, a pale see-through red (so it is plain where is inside). */
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> FillMaterial;
-	/** The part filled so far, a little deeper (full: it goes off). */
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> ProgressMaterial;
+	TObjectPtr<UMaterialInstanceDynamic> Look;
 
 	bool bLane = false;
 	float Radius = 300.0f;
@@ -95,7 +94,7 @@ private:
 	FLinearColor Color = FLinearColor::Red;
 };
 
-/** A blast on the ground (cosmetic): shock rings racing out, cracks, clods of snow flung about and a cloud of powder. */
+/** A blast on the ground (cosmetic): soft shock rings racing out, a flash, cracks, clods of snow and powder flung about. */
 UCLASS(NotBlueprintable, Transient)
 class AChaosImpactSimaeBlast : public AActor
 {
@@ -112,12 +111,9 @@ public:
 private:
 	void Rebuild();
 
-	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> Rings;
+	/** The shock itself (rings, flash, powder) is soft FX-kit pieces; the cracks and clods are kept here. */
 	UPROPERTY()
 	TObjectPtr<UProceduralMeshComponent> Cracks;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> RingMaterial;
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> HotMaterial;
 	UPROPERTY()
@@ -158,39 +154,26 @@ public:
 
 private:
 	void Stop(const FVector& Where);
-	void RebuildWind();
 
-	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> Wind;
-	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> Furrow;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> WindMaterial;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> StreakMaterial;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> FurrowMaterial;
 	UPROPERTY()
 	TObjectPtr<UPointLightComponent> Glow;
 	UPROPERTY()
 	TObjectPtr<UAudioComponent> Roar;
-	/** A blazing core round the ball and a shell of pressed air round that. */
-	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> Core;
-	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> Shell;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> CoreMaterial;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> ShellMaterial;
 	/** Its light streak, the sparks it sheds and (full power) its trail of fire. */
 	UPROPERTY()
 	TArray<TObjectPtr<UNiagaraComponent>> Trails;
+	/**
+	 * Soft FX-kit pieces: Around rides with the ball (its glow, the air streaming off it); Wake stays where it passed
+	 * (the shock rings it throws off over the snow, the ploughed track).
+	 */
+	TWeakObjectPtr<AChaosImpactFxKit> Around;
+	TWeakObjectPtr<AChaosImpactFxKit> Wake;
+	FLinearColor WindColor = FLinearColor::White;
+	float NextTrackAt = 0.0f;
 
 	TWeakObjectPtr<AChaosImpactSimaeBoss> Boss;
 	TWeakObjectPtr<AChaosImpactBall> Ball;
-	/** Where along its path a shock ring burst off it (they hang there, widening, as it races on). */
-	TArray<float> Booms;
+	/** Where along its path the next shock ring bursts off it. */
 	float NextBoomAt = 120.0f;
 	float NextShakeAt = 0.0f;
 	TArray<TWeakObjectPtr<AActor>> AlreadyHit;
@@ -269,12 +252,6 @@ public:
 	static AChaosImpactSimaeFlameBurst* Play(UWorld* World, const FVector& Ground, float Height, int32 Blobs = 26, bool bColumn = true);
 
 private:
-	void Rebuild();
-
-	UPROPERTY()
-	TObjectPtr<UProceduralMeshComponent> Flames;
-	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> FlameMaterial;
 	UPROPERTY()
 	TObjectPtr<UPointLightComponent> Flash;
 

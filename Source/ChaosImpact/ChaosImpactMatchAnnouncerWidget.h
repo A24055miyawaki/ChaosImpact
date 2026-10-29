@@ -5,6 +5,7 @@
 #include "ChaosImpactMatchAnnouncerWidget.generated.h"
 
 class UChaosImpactResultsView;
+class AChaosImpactGameState;
 
 /**
  * VS call-outs that belong to the whole screen rather than to one player: Ready?, GO!, the final
@@ -29,6 +30,13 @@ protected:
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactResultsView> ResultsView;
+
+	/**
+	 * クラッシュボール: both teams' counts beside the clock, and under it the gauge from the red goal to the blue
+	 * goal: how far each team has pushed (its count) and where the giant ball is now.
+	 */
+	void PaintCrashScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
+		const AChaosImpactGameState& Match, double ServerNow, float Time) const;
 
 	/** The call-outs' sounds (the countdown's ticks, GO!, the last minute, FINISH, the podium), as each arrives. */
 	void UpdateSounds();

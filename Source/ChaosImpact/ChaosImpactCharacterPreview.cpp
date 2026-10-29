@@ -1,6 +1,7 @@
 #include "ChaosImpactCharacterPreview.h"
 
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPuppetComponent.h"
 #include "Animation/AnimSequenceBase.h"
@@ -13,6 +14,7 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "ContentStreaming.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -55,6 +57,15 @@ AChaosImpactCharacterPreview::AChaosImpactCharacterPreview()
 	Floor->SetCastShadow(false);
 	Floor->PrimaryComponentTick.bTickEvenWhenPaused = true;
 
+	FloorRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FloorRing"));
+	FloorRing->SetupAttachment(Stage);
+	FloorRing->SetStaticMesh(Cylinder.Object);
+	FloorRing->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FloorRing->SetRelativeLocation(FVector(0.0f, 0.0f, -4.5f));
+	FloorRing->SetRelativeScale3D(FVector(2.65f, 2.65f, 0.03f));
+	FloorRing->SetCastShadow(false);
+	FloorRing->PrimaryComponentTick.bTickEvenWhenPaused = true;
+
 	Backdrop = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Backdrop"));
 	Backdrop->SetupAttachment(Stage);
 	Backdrop->SetStaticMesh(Cube.Object);
@@ -68,15 +79,23 @@ AChaosImpactCharacterPreview::AChaosImpactCharacterPreview()
 	KeyLight->SetupAttachment(Stage);
 	KeyLight->SetUsingAbsoluteRotation(true);
 	KeyLight->SetRelativeLocation(FVector(-150.0f, 240.0f, 240.0f));
-	KeyLight->SetIntensity(9000.0f);
+	KeyLight->SetIntensity(11000.0f);
 	KeyLight->SetAttenuationRadius(900.0f);
 	KeyLight->SetCastShadows(false);
+
+	FillLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("FillLight"));
+	FillLight->SetupAttachment(Stage);
+	FillLight->SetUsingAbsoluteRotation(true);
+	FillLight->SetRelativeLocation(FVector(170.0f, 220.0f, 130.0f));
+	FillLight->SetIntensity(5200.0f);
+	FillLight->SetAttenuationRadius(800.0f);
+	FillLight->SetCastShadows(false);
 
 	RimLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("RimLight"));
 	RimLight->SetupAttachment(Stage);
 	RimLight->SetUsingAbsoluteRotation(true);
 	RimLight->SetRelativeLocation(FVector(110.0f, -120.0f, 200.0f));
-	RimLight->SetIntensity(16000.0f);
+	RimLight->SetIntensity(18500.0f);
 	RimLight->SetAttenuationRadius(700.0f);
 	RimLight->SetCastShadows(false);
 
@@ -121,11 +140,45 @@ void AChaosImpactCharacterPreview::BeginPlay()
 	Camera->TextureTarget = Picture;
 	Camera->ShowOnlyActors.Add(this);
 
-	FloorMaterial = ChaosImpactBallTypes::MakeEmissive(this, FLinearColor(0.05f, 0.06f, 0.1f), 1.0f);
-	BackdropMaterial = ChaosImpactBallTypes::MakeEmissive(this, FLinearColor(0.02f, 0.025f, 0.05f), 1.0f);
+	FloorMaterial = ChaosImpactBallTypes::MakeEmissive(this, FLinearColor(0.04f, 0.055f, 0.11f), 1.0f);
+	FloorRingMaterial = ChaosImpactBallTypes::MakeEmissive(this, FLinearColor(0.15f, 0.45f, 0.95f), 2.2f);
+	BackdropMaterial = ChaosImpactBallTypes::MakeEmissive(this, FLinearColor(0.015f, 0.022f, 0.048f), 1.0f);
 	Floor->SetMaterial(0, FloorMaterial);
+	if (FloorRing)
+	{
+		FloorRing->SetMaterial(0, FloorRingMaterial);
+	}
 	Backdrop->SetMaterial(0, BackdropMaterial);
 	ReturnToIdle();
+}
+
+void AChaosImpactCharacterPreview::UseAsPortrait()
+{
+	Picture = NewObject<UTextureRenderTarget2D>(this);
+	Picture->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8_SRGB;
+	Picture->ClearColor = FLinearColor::Black;
+	Picture->InitAutoFormat(PictureWidth / 2, PictureHeight / 2);
+	Picture->UpdateResourceImmediate(true);
+	Camera->TextureTarget = Picture;
+	Camera->bCaptureEveryFrame = false;
+	FilmNextFrame();
+}
+
+void AChaosImpactCharacterPreview::FilmNextFrame()
+{
+	if (Picture && Camera)
+	{
+		Camera->CaptureSceneDeferred();
+	}
+}
+
+void AChaosImpactCharacterPreview::FilmNow()
+{
+	if (Picture && Camera)
+	{
+		Camera->bCaptureEveryFrame = false;
+		Camera->CaptureScene();
+	}
 }
 
 void AChaosImpactCharacterPreview::UseAsFigure()
@@ -135,8 +188,16 @@ void AChaosImpactCharacterPreview::UseAsFigure()
 	Camera->Deactivate();
 	Picture = nullptr;
 	Floor->SetVisibility(false);
+	if (FloorRing)
+	{
+		FloorRing->SetVisibility(false);
+	}
 	Backdrop->SetVisibility(false);
 	KeyLight->SetVisibility(false);
+	if (FillLight)
+	{
+		FillLight->SetVisibility(false);
+	}
 	RimLight->SetVisibility(false);
 }
 
@@ -201,11 +262,36 @@ void AChaosImpactCharacterPreview::RebuildModel(const int32 CharacterIndex)
 		Camera->FOVAngle = 36.0f;
 		Model->PlaySelectionAppeal();
 	}
+	else if (CharacterIndex == ChaosImpactRoster::CapIndex)
+	{
+		// Elevated camera angle for Mug Carp so the coffee inside the mug cup is clearly visible!
+		Camera->SetRelativeLocation(FVector(0.0f, 345.0f, 185.0f));
+		Camera->SetWorldRotation(FRotator(-14.0f, -90.0f, 0.0f));
+		Camera->FOVAngle = 30.0f;
+	}
 	else
 	{
 		Camera->SetRelativeLocation(FVector(0.0f, 380.0f, 104.0f));
 		Camera->SetWorldRotation(FRotator(-2.0f, -90.0f, 0.0f));
 		Camera->FOVAngle = 30.0f;
+	}
+}
+
+void AChaosImpactCharacterPreview::KeepTexturesSharp()
+{
+	TArray<UMeshComponent*> Meshes;
+	GetComponents(Meshes, true);
+	for (UMeshComponent* Mesh : Meshes)
+	{
+		if (Mesh && !Mesh->bForceMipStreaming)
+		{
+			Mesh->bForceMipStreaming = true;
+			IStreamingManager::Get().NotifyPrimitiveUpdated(Mesh);
+		}
+		if (Mesh)
+		{
+			Mesh->PrestreamTextures(5.0f, true);
+		}
 	}
 }
 
@@ -217,19 +303,33 @@ void AChaosImpactCharacterPreview::ShowLoadout(const int32 CharacterIndex, const
 	{
 		Model->SetColourIndex(Colour);
 	}
+	KeepTexturesSharp();
 	// The stage takes the colour: a dim wash behind, a lit rim on the floor and the rim light.
 	const FLinearColor Swatch = ChaosImpactMatch::GetTeamColor(Colour);
+	const FLinearColor StageTint = FMath::Lerp(Accent, Swatch, 0.55f);
 	if (BackdropMaterial)
 	{
-		BackdropMaterial->SetVectorParameterValue(TEXT("Color"), Swatch * 0.08f + FLinearColor(0.01f, 0.012f, 0.025f));
-		BackdropMaterial->SetVectorParameterValue(TEXT("Base Color"), Swatch * 0.08f + FLinearColor(0.01f, 0.012f, 0.025f));
+		const FLinearColor BackCol = StageTint * 0.075f + FLinearColor(0.012f, 0.016f, 0.035f);
+		BackdropMaterial->SetVectorParameterValue(TEXT("Color"), BackCol);
+		BackdropMaterial->SetVectorParameterValue(TEXT("Base Color"), BackCol);
 	}
 	if (FloorMaterial)
 	{
-		FloorMaterial->SetVectorParameterValue(TEXT("Color"), Swatch * 0.25f);
-		FloorMaterial->SetVectorParameterValue(TEXT("Base Color"), Swatch * 0.25f);
+		const FLinearColor FloorCol = StageTint * 0.16f + FLinearColor(0.02f, 0.028f, 0.055f);
+		FloorMaterial->SetVectorParameterValue(TEXT("Color"), FloorCol);
+		FloorMaterial->SetVectorParameterValue(TEXT("Base Color"), FloorCol);
+	}
+	if (FloorRingMaterial)
+	{
+		const FLinearColor RingCol = StageTint * 0.85f + FLinearColor(0.1f, 0.12f, 0.18f);
+		FloorRingMaterial->SetVectorParameterValue(TEXT("Color"), RingCol);
+		FloorRingMaterial->SetVectorParameterValue(TEXT("Base Color"), RingCol);
 	}
 	RimLight->SetLightColor(FMath::Lerp(Accent, Swatch, 0.5f));
+	if (FillLight)
+	{
+		FillLight->SetLightColor(FMath::Lerp(FLinearColor(0.55f, 0.75f, 1.0f), StageTint, 0.35f));
+	}
 	KeyLight->SetLightColor(FLinearColor(1.0f, 0.97f, 0.92f));
 	// A quick turn so the change is felt, not just seen.
 	SpinKick += bNewCharacter ? 360.0f : 70.0f;

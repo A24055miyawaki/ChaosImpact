@@ -77,6 +77,8 @@ private:
 	double SlotJoinedAt[4] = {};
 	EChaosImpactScreen Screen = EChaosImpactScreen::Title;
 	int32 SelectedIndex = 0;
+	/** This menu turned the level's drawing off (the select screen); it turns it back on. */
+	bool bLevelHiddenByMenu = false;
 	/** Stage select: the card the cursor came down from (going back up returns to it). */
 	int32 LastStageCard = 0;
 	/** What the cursor was on last frame (a move to another entry clicks). */

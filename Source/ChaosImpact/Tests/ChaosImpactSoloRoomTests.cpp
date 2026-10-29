@@ -53,6 +53,11 @@ namespace
 				return false;
 			}
 			AChaosImpactSoloRoom* Room = RoomPtr.Get();
+			if (Step > 0 && RoomPtr.IsStale())
+			{
+				Test->AddError(FString::Printf(TEXT("The room went away at step %d."), Step));
+				return true;
+			}
 			const auto Shot = [](const TCHAR* Name)
 			{
 				FScreenshotRequest::RequestScreenshot(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SoloRoomQA"), Name), true, false);

@@ -26,6 +26,8 @@ public class ChaosImpact : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
+			"RHI",
+			"RenderCore",
 			"JoyShockLibrary4Unreal",
 			"NetCore",
 			"ProceduralMeshComponent",

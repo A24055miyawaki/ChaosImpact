@@ -327,6 +327,9 @@ protected:
 	 */
 	void UpdateSpeedStretch(float DeltaSeconds);
 	FVector StretchLastLocation = FVector::ZeroVector;
+	/** A fast throw tears the air: soft white streaks left along its path (FX kit, this machine only). */
+	TWeakObjectPtr<class AChaosImpactFxKit> WindFx;
+	float WindOwed = 0.0f;
 	float StretchAmount = 0.0f;
 	bool bStretched = false;
 	FVector BallMeshBaseScale = FVector(0.48f);

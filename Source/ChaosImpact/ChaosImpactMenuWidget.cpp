@@ -146,6 +146,20 @@ namespace
 			Render, FVector2f(0.5f, 0.5f));
 	}
 
+	/** Tips shown one after another while waiting online (a few seconds each). */
+	const TCHAR* OnlineWaitTip(const float Time)
+	{
+		static const TCHAR* Tips[] = {
+			TEXT("ためて投げると、速くて重い一球になる"),
+			TEXT("ダッシュ中はボールをすり抜けられる"),
+			TEXT("ボール化すると、味方に投げてもらえる"),
+			TEXT("同じあいことばの人だけが、同じ部屋に入れる"),
+			TEXT("ロビーではボールで遊びながら待てる"),
+			TEXT("特殊ボールは、拾うまで何が出るかわからない"),
+		};
+		return Tips[FMath::FloorToInt(Time / 4.0f) % UE_ARRAY_COUNT(Tips)];
+	}
+
 	enum class ETextAlign : uint8 { Left, Center, Right };
 
 	struct FMenuPainter
@@ -2064,19 +2078,23 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			180.0f, 14.0f, 30.0f, Paper, ETextAlign::Center);
 		if (Sessions && Sessions->GetRoomListings().IsEmpty())
 		{
-			// Nothing yet: keep looking, with a small spinner.
-			const FMenuPainter Waiting{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
-			Waiting.Text(Sessions->HasSearchedOnce() ? TEXT("このあいことばの部屋はまだありません") : TEXT("部屋をさがしています"),
-				800.0f, 380.0f, 40.0f, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
-			Waiting.Text(TEXT("見つかると ここに出ます"), 800.0f, 446.0f, 24.0f, Muted, ETextAlign::Center);
-			const FVector2D SpinCenter(800.0f, 540.0f);
-			for (int32 Dot = 0; Dot < 8; ++Dot)
-			{
-				const float Angle = T * 6.0f + Dot * UE_TWO_PI / 8.0f;
-				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
-				Waiting.Line(SpinCenter + Direction * 18.0f, SpinCenter + Direction * 32.0f,
-					WithAlpha(Paper, 0.15f + 0.85f * Dot / 7.0f), 6.0f);
-			}
+			// Nothing yet: keep looking. A panel with the balls hopping, how long it has been, and a tip.
+			const float In = EaseOut((T - 0.2f) / 0.3f);
+			const FMenuPainter Card{MakeSkewed(DesignGeometry, 380.0f, 300.0f + (1.0f - In) * 40.0f, 840.0f, 330.0f, -0.08f),
+				OutDrawElements, BaseLayer + 3, In};
+			Card.Box(12.0f, 14.0f, 840.0f, 330.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+			Card.Box(0.0f, 0.0f, 840.0f, 330.0f, FLinearColor(0.015f, 0.02f, 0.04f, 0.94f));
+			Card.Box(0.0f, 0.0f, 840.0f, 6.0f, Fire);
+			const bool bNone = Sessions->HasSearchedOnce();
+			Card.Text(bNone ? TEXT("このあいことばの部屋はまだありません") : TEXT("部屋をさがしています"),
+				420.0f, 30.0f, 38.0f, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+			Card.Text(bNone ? TEXT("だれかが部屋をつくると、ここに出ます") : TEXT("見つかると ここに出ます"), 420.0f, 86.0f, 22.0f, Muted,
+				ETextAlign::Center);
+			ChaosImpactPaint::HudWaitBalls(ChaosImpactPaint::FPainter{Card.Geometry, Card.Elements, Card.Layer + 1, Card.Alpha},
+				FVector2D(420.0, 222.0), T, 36.0f);
+			Card.Text(FString::Printf(TEXT("けいか %s"), *ChaosImpactPaint::HudElapsed(T)), 812.0f, 288.0f, 20.0f, Muted, ETextAlign::Right,
+				TEXT("Bold"));
+			Card.Text(FString::Printf(TEXT("ヒント：%s"), OnlineWaitTip(T)), 28.0f, 288.0f, 20.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::OnlinePassword)
@@ -2138,13 +2156,9 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			800.0f, 450.0f, 30.0f, Muted, ETextAlign::Center);
 		if (Error.IsEmpty())
 		{
-			for (int32 Dot = 0; Dot < 8; ++Dot)
-			{
-				const float Angle = T * 5.0f + Dot * UE_TWO_PI / 8.0f;
-				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
-				Label.Line(FVector2D(800.0f, 610.0f) + Direction * 26.0f, FVector2D(800.0f, 610.0f) + Direction * 44.0f,
-					WithAlpha(Dot == 0 ? Fire : Paper, 0.25f + 0.75f * Dot / 7.0f), 6.0f);
-			}
+			ChaosImpactPaint::HudWaitBalls(ChaosImpactPaint::FPainter{Label.Geometry, Label.Elements, Label.Layer + 1, Label.Alpha},
+				FVector2D(800.0, 618.0), T, 34.0f);
+			Label.Text(FString::Printf(TEXT("ヒント：%s"), OnlineWaitTip(T)), 800.0f, 494.0f, 22.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::Pause)

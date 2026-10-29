@@ -2,6 +2,8 @@
 
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactEase.h"
+#include "ChaosImpactFxKit.h"
+#include "Components/PoseableMeshComponent.h"
 #include "ChaosImpactGameFeel.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
@@ -1226,31 +1228,15 @@ void AChaosImpactCharacter::UpdateAimGuidePresentation(const bool bVisible)
 
 void AChaosImpactCharacter::UpdateDashTrailPresentation(const bool bVisible)
 {
+	// A dash shows afterimages only (UpdateDashGhosts): the old trail of thin lines stays hidden.
 	for (UStaticMeshComponent* Piece : DashTrailPieces)
 	{
 		if (Piece)
 		{
-			Piece->SetHiddenInGame(!bVisible);
+			Piece->SetHiddenInGame(true);
 		}
 	}
-	if (!bVisible || DashTrailPieces.IsEmpty())
-	{
-		return;
-	}
-
-	const FVector Direction = DashDirection.GetSafeNormal2D();
-	const FVector Side = FVector::CrossProduct(FVector::UpVector, Direction).GetSafeNormal();
-	const FVector Center = GetPresentationLocation() + FVector::UpVector * 48.0f;
-	for (int32 PieceIndex = 0; PieceIndex < DashTrailPieces.Num(); ++PieceIndex)
-	{
-		const int32 LineIndex = PieceIndex - DashTrailPieces.Num() / 2;
-		const float Length = 135.0f + FMath::Abs(LineIndex) * 22.0f;
-		const FVector Offset = Side * (LineIndex * 22.0f) + FVector::UpVector * (LineIndex * 5.0f);
-		UStaticMeshComponent* Piece = DashTrailPieces[PieceIndex];
-		Piece->SetWorldLocation(Center + Offset - Direction * (40.0f + Length * 0.5f));
-		Piece->SetWorldRotation(Direction.Rotation());
-		Piece->SetWorldScale3D(FVector(Length / 100.0f, 0.035f, 0.025f));
-	}
+	(void)bVisible;
 }
 
 void AChaosImpactCharacter::ReleaseChargedThrow()
@@ -5623,9 +5609,200 @@ void AChaosImpactCharacter::PlayHitFeel(const bool bKnockout)
 			Seen->AddCameraShake((bKnockout ? 0.42f : 0.26f) * Near, bKnockout ? 0.32f : 0.2f);
 		}
 	}
+	// The impact, drawn like a comic's: a white flash and lines bursting out round the one hit (a knockout bigger,
+	// with a ring of it).
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		if (AChaosImpactFxKit* Fx = GetFeelFx())
+		{
+			const FVector Chest = GetActorLocation() + FVector(0.0f, 0.0f, 30.0f) - Fx->GetActorLocation();
+			const float Big = bKnockout ? 1.5f : 1.0f;
+			const FLinearColor Gold(1.0f, 0.75f, 0.2f);
+			const FLinearColor White(1.0f, 0.97f, 0.9f);
+			FChaosImpactFxPiece Flash;
+			Flash.Location = Chest;
+			Flash.Life = 0.14f;
+			Flash.SizeFrom = 160.0f * Big;
+			Flash.SizeTo = 380.0f * Big;
+			Flash.Color = Gold;
+			Flash.CoreColor = White;
+			Flash.Intensity = 5.0f;
+			Flash.Attack = 0.03f;
+			Flash.NoiseAmount = 0.15f;
+			Fx->Add(Flash);
+			const int32 Lines = bKnockout ? 16 : 10;
+			const float Turn = FMath::FRandRange(0.0f, UE_TWO_PI);
+			for (int32 Index = 0; Index < Lines; ++Index)
+			{
+				const float Angle = Turn + (Index + FMath::FRandRange(-0.3f, 0.3f)) * UE_TWO_PI / Lines;
+				const FVector Out = FVector(FMath::Cos(Angle), FMath::Sin(Angle), FMath::FRandRange(-0.25f, 0.6f)).GetSafeNormal();
+				FChaosImpactFxPiece Line;
+				Line.Look = EChaosImpactFxLook::Streak;
+				Line.Location = Chest + Out * 40.0f;
+				Line.Velocity = Out * FMath::FRandRange(1300.0f, 2000.0f) * Big;
+				Line.Drag = 6.0f;
+				Line.Life = FMath::FRandRange(0.12f, 0.2f);
+				Line.SizeFrom = 240.0f * Big;
+				Line.SizeTo = 60.0f;
+				Line.Width = 18.0f * Big;
+				Line.Color = Gold;
+				Line.CoreColor = White;
+				Line.Intensity = 4.0f;
+				Line.Attack = 0.03f;
+				Line.ErodeTo = 0.0f;
+				Fx->Add(Line);
+			}
+			if (bKnockout)
+			{
+				FChaosImpactFxPiece Ring;
+				Ring.Look = EChaosImpactFxLook::Ring;
+				Ring.Location = Chest - FVector(0.0f, 0.0f, 100.0f);
+				Ring.Life = 0.4f;
+				Ring.SizeFrom = Ring.SizeTo = 700.0f;
+				Ring.RingFrom = 0.1f;
+				Ring.RingTo = 0.9f;
+				Ring.RingWidth = 0.05f;
+				Ring.Color = Gold;
+				Ring.CoreColor = White;
+				Ring.Intensity = 2.5f;
+				Ring.Attack = 0.04f;
+				Ring.ErodeTo = 0.7f;
+				Fx->Add(Ring);
+			}
+		}
+	}
 	// A low thud under the hit's own sound.
 	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f),
 		bKnockout ? 0.9f : 0.6f, bKnockout ? 0.45f : 0.55f);
+}
+
+void AChaosImpactCharacter::SpawnDashGhost()
+{
+	USkeletalMeshComponent* Body = GetMesh();
+	static TWeakObjectPtr<UMaterialInterface> GhostLook;
+	if (!GhostLook.IsValid())
+	{
+		GhostLook = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_AuraShell.M_CIFX_AuraShell"));
+	}
+	if (!Body || !GhostLook.IsValid())
+	{
+		return;
+	}
+	// A see-through copy of the body in this very pose, pale blue and brightest at its outline, left where it is.
+	UMaterialInstanceDynamic* Look = UMaterialInstanceDynamic::Create(GhostLook.Get(), this);
+	Look->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.15f, 0.55f, 1.0f));
+	Look->SetVectorParameterValue(TEXT("CoreColor"), FLinearColor(0.8f, 0.95f, 1.0f));
+	Look->SetScalarParameterValue(TEXT("Inflate"), 0.0f);
+	Look->SetScalarParameterValue(TEXT("Speed"), 0.0f);
+	Look->SetScalarParameterValue(TEXT("Intensity"), 2.2f);
+	FDashGhost& Ghost = DashGhosts.AddDefaulted_GetRef();
+	Ghost.Look = Look;
+	TArray<USceneComponent*> Parts;
+	Body->GetChildrenComponents(true, Parts);
+	Parts.Insert(Body, 0);
+	const auto Solid = [](const UPrimitiveComponent* Part)
+	{
+		// The body's own solid parts (not glows, shells or other effects riding on it).
+		const UMaterialInterface* Material = Part->GetMaterial(0);
+		const EBlendMode Blend = Material ? Material->GetBlendMode() : BLEND_Opaque;
+		return Part->IsVisible() && !Part->bHiddenInGame && (Blend == BLEND_Opaque || Blend == BLEND_Masked);
+	};
+	const auto Finish = [this, Look, &Ghost](UMeshComponent* Copy, const FTransform& Where)
+	{
+		Copy->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Copy->SetGenerateOverlapEvents(false);
+		Copy->SetCastShadow(false);
+		Copy->bReceivesDecals = false;
+		Copy->SetUsingAbsoluteLocation(true);
+		Copy->SetUsingAbsoluteRotation(true);
+		Copy->SetUsingAbsoluteScale(true);
+		Copy->RegisterComponent();
+		Copy->SetWorldTransform(Where);
+		for (int32 Slot = 0; Slot < Copy->GetNumMaterials(); ++Slot)
+		{
+			Copy->SetMaterial(Slot, Look);
+		}
+		Ghost.Parts.Add(Copy);
+	};
+	for (USceneComponent* Scene : Parts)
+	{
+		if (DashTrailPieces.Contains(Scene))
+		{
+			continue;
+		}
+		if (USkeletalMeshComponent* Skin = Cast<USkeletalMeshComponent>(Scene); Skin && Skin->GetSkeletalMeshAsset() && Solid(Skin))
+		{
+			UPoseableMeshComponent* Copy = NewObject<UPoseableMeshComponent>(this);
+			Copy->SetSkinnedAssetAndUpdate(Skin->GetSkeletalMeshAsset());
+			Finish(Copy, Skin->GetComponentTransform());
+			Copy->CopyPoseFromSkeletalComponent(Skin);
+		}
+		else if (UPoseableMeshComponent* Pose = Cast<UPoseableMeshComponent>(Scene); Pose && Pose->GetSkinnedAsset() && Solid(Pose))
+		{
+			UPoseableMeshComponent* Copy = NewObject<UPoseableMeshComponent>(this);
+			Copy->SetSkinnedAssetAndUpdate(Pose->GetSkinnedAsset());
+			Finish(Copy, Pose->GetComponentTransform());
+			for (int32 Bone = 0; Bone < Pose->GetNumBones(); ++Bone)
+			{
+				Copy->SetBoneTransformByName(Pose->GetBoneName(Bone), Pose->GetBoneTransform(Bone), EBoneSpaces::WorldSpace);
+			}
+		}
+		else if (UStaticMeshComponent* Rigid = Cast<UStaticMeshComponent>(Scene); Rigid && Rigid->GetStaticMesh() && Solid(Rigid))
+		{
+			UStaticMeshComponent* Copy = NewObject<UStaticMeshComponent>(this);
+			Copy->SetStaticMesh(Rigid->GetStaticMesh());
+			Finish(Copy, Rigid->GetComponentTransform());
+		}
+	}
+}
+
+void AChaosImpactCharacter::UpdateDashGhosts(const float DeltaSeconds, const bool bDashing)
+{
+	// Through a dash an afterimage is left every few hundredths of a second; each fades out with イージーイーズ.
+	constexpr float GhostSeconds = 0.3f;
+	if (bDashing)
+	{
+		GhostOwed += DeltaSeconds;
+		if (GhostOwed >= 0.045f || !bGhostDashing)
+		{
+			GhostOwed = 0.0f;
+			SpawnDashGhost();
+		}
+	}
+	bGhostDashing = bDashing;
+	for (int32 Index = DashGhosts.Num() - 1; Index >= 0; --Index)
+	{
+		FDashGhost& Ghost = DashGhosts[Index];
+		Ghost.Age += DeltaSeconds;
+		const float Left = 1.0f - ChaosImpactEase::InOut(Ghost.Age / GhostSeconds);
+		if (UMaterialInstanceDynamic* Look = Ghost.Look.Get())
+		{
+			Look->SetScalarParameterValue(TEXT("Opacity"), 1.3f * Left);
+		}
+		if (Ghost.Age >= GhostSeconds)
+		{
+			for (const TWeakObjectPtr<UMeshComponent>& Part : Ghost.Parts)
+			{
+				if (UMeshComponent* Copy = Part.Get())
+				{
+					Copy->DestroyComponent();
+				}
+			}
+			DashGhosts.RemoveAtSwap(Index);
+		}
+	}
+}
+
+AChaosImpactFxKit* AChaosImpactCharacter::GetFeelFx()
+{
+	AChaosImpactFxKit* Fx = FeelFx.Get();
+	if (!Fx)
+	{
+		// One per character, standing where it was made (pieces are placed in the world relative to it).
+		Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+		FeelFx = Fx;
+	}
+	return Fx;
 }
 
 void AChaosImpactCharacter::UpdateFeelPresentation(const float DeltaSeconds)
@@ -5684,6 +5861,7 @@ void AChaosImpactCharacter::UpdateFeelPresentation(const float DeltaSeconds)
 		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharDash, Location + GetActorForwardVector() * 60.0f,
 			0.25f + 0.4f * Charge, 1.3f + 0.35f * Charge);
 	}
+	UpdateDashGhosts(DeltaSeconds, bDashing && bAlive);
 	bFeelWasDashing = bDashing;
 	bFeelWasThrowing = bThrowing;
 

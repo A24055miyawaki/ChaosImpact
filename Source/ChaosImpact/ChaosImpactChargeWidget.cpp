@@ -16,6 +16,7 @@
 #include "ChaosImpactStageBase.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactSoloStages.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactSimaeBird.h"
@@ -2414,7 +2415,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			RowTop = FMath::Max(16.0f, 92.0f * ScreenScale / S + 4.0f);
 		}
 		const auto PaintRow = [&](const int32 Row, const int32 Rank, const FLinearColor& Accent, const FString& Label,
-			const int32 Points, const bool bOwn)
+			const int32 Points, const bool bOwn, const AChaosImpactPlayerState* Player = nullptr)
 		{
 			constexpr float RowLeft = 18.0f;
 			constexpr float RowWidth = 270.0f;
@@ -2437,6 +2438,16 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			HudText3D(Words, Rank > 0 ? FString::FromInt(Rank) : FString(TEXT("-")), RowLeft + 14.0f, Y - 2.0f, 20.0f, Paper, ETextAlign::Center);
 			Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, 15.0f, bOwn ? Paper : WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
 			HudText3D(Words, FString::FromInt(Points), RowLeft + RowWidth - 16.0f, Y - 3.0f, 22.0f, bOwn ? IceFill.Top : Paper, ETextAlign::Right);
+			// Online: their connection, small, just past the strip (the host's own machine has none).
+			if (Player && Match->bOnlineRoom && !Player->IsABot())
+			{
+				const float PingMs = Player->GetPingInMilliseconds();
+				const FString PingText = Player->bHostMachine ? FString(TEXT("HOST")) : PingMs > 0.0f ? FString::Printf(TEXT("%dms"), FMath::RoundToInt(PingMs))
+					: FString(TEXT("--ms"));
+				const FLinearColor PingColor = Player->bHostMachine || PingMs <= 60.0f ? FLinearColor(0.2f, 0.95f, 0.45f)
+					: PingMs <= 120.0f ? FLinearColor(0.65f, 0.95f, 0.3f) : PingMs <= 200.0f ? Gold : Fire;
+				Words.Text(PingText, RowLeft + RowWidth + 8.0f, Y + 7.0f, 12.0f, WithAlpha(PingColor, 0.9f), ETextAlign::Left, TEXT("Bold"), 1.5f, Navy);
+			}
 		};
 		int32 OwnRow = INDEX_NONE;
 		if (bTeams)
@@ -2459,7 +2470,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			if (Own)
 			{
 				OwnRow = Teams.Num();
-				PaintRow(OwnRow, 0, ColorOf(Own), NameOf(Own), Own->Points, true);
+				PaintRow(OwnRow, 0, ColorOf(Own), NameOf(Own), Own->Points, true, Own);
 			}
 		}
 		else
@@ -2470,7 +2481,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			{
 				Rank = Index == 0 || Ranking[Index]->Points != Ranking[Index - 1]->Points ? Index + 1 : Rank;
 				PaintRow(Index, Rank, ColorOf(Ranking[Index]), NameOf(Ranking[Index]), Ranking[Index]->Points,
-					Ranking[Index] == Own);
+					Ranking[Index] == Own, Ranking[Index]);
 				OwnRow = Ranking[Index] == Own ? Index : OwnRow;
 			}
 			// This player's own place when outside the top three.
@@ -2481,7 +2492,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 				{
 					OwnRank += Other->Points > Own->Points ? 1 : 0;
 				}
-				PaintRow(3, OwnRank, ColorOf(Own), NameOf(Own), Own->Points, true);
+				PaintRow(3, OwnRank, ColorOf(Own), NameOf(Own), Own->Points, true, Own);
 				OwnRow = 3;
 			}
 		}
@@ -2670,96 +2681,141 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 	// Member list: host at the top, then everyone in the order they came in.
 	if (!Room->bVersusMatch && (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting))
 	{
-		const FGeometry Header = MakeSkewed(TopLeft, 40.0f, 36.0f, 380.0f, 56.0f, -0.25f);
+		// The room card: its name, the password on a gold tag, how full it is (a pip per place, lit when taken).
+		constexpr float ListW = 500.0f;
+		const FGeometry Header = MakeSkewed(TopLeft, 40.0f, 36.0f, ListW, 84.0f, -0.12f);
 		const FPainter H{Header, OutDrawElements, BaseLayer};
-		H.Box(0.0f, 0.0f, 380.0f, 56.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
-		H.Box(0.0f, 52.0f, 380.0f, 4.0f, Ice);
+		H.Box(7.0f, 8.0f, ListW, 84.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		H.Box(0.0f, 0.0f, ListW, 84.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.94f));
+		H.Box(0.0f, 0.0f, ListW, 4.0f, Ice);
+		H.Box(0.0f, 80.0f, ListW, 4.0f, Fire);
 		H.Text(Room->RoomName.IsEmpty() ? FString::Printf(TEXT("へや  %s"), *Room->RoomPassword) : Room->RoomName,
-			24.0f, 3.0f, 24.0f, Paper);
-		H.Text(FString::Printf(TEXT("あいことば %s"), *Room->RoomPassword), 26.0f, 33.0f, 13.0f, Muted);
+			22.0f, 8.0f, 28.0f, Paper, ETextAlign::Left, TEXT("Black"));
+		H.Box(22.0f, 50.0f, 150.0f, 24.0f, Gold);
+		H.Text(FString::Printf(TEXT("あいことば %s"), *Room->RoomPassword), 97.0f, 51.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
+		H.Text(FString::Printf(TEXT("%d/%d"), Members.Num(), AChaosImpactGameState::MaxMembers), ListW - 22.0f, 6.0f, 34.0f,
+			Members.Num() >= AChaosImpactGameState::MaxMembers ? Fire : Gold, ETextAlign::Right, TEXT("Black"));
+		for (int32 Place = 0; Place < AChaosImpactGameState::MaxMembers; ++Place)
+		{
+			const bool bTaken = Place < Members.Num();
+			H.Box(ListW - 22.0f - (AChaosImpactGameState::MaxMembers - Place) * 17.0f + 3.0f, 58.0f, 12.0f, 12.0f,
+				bTaken ? (Members.Num() >= AChaosImpactGameState::MaxMembers ? Fire : Gold) : WithAlpha(Paper, 0.14f));
+		}
 		if (Room->bRecruitmentClosed)
 		{
-			// Sits just outside the header so it never covers the password or member count.
-			H.Box(396.0f, 8.0f, 112.0f, 40.0f, Fire);
-			H.Text(TEXT("募集終了"), 452.0f, 10.0f, 24.0f, Paper, ETextAlign::Center);
+			// A red tag beside the password (inside the card: nothing else is ever under it).
+			H.Box(182.0f, 50.0f, 96.0f, 24.0f, Fire);
+			H.Text(TEXT("募集終了"), 230.0f, 51.0f, 16.0f, Paper, ETextAlign::Center, TEXT("Black"));
 		}
-		H.Text(FString::Printf(TEXT("%d/%d"), Members.Num(), AChaosImpactGameState::MaxMembers), 360.0f, 6.0f, 32.0f,
-			Members.Num() >= AChaosImpactGameState::MaxMembers ? Fire : Gold, ETextAlign::Right);
 
+		// One card per member (like the adventure's member list): their colour, name, the character they play, tags
+		// for the host and this machine's players, 準備OK, and the connection as bars and milliseconds.
+		constexpr float RowH = 58.0f;
+		constexpr float RowGap = 6.0f;
+		const float RowsTop = 132.0f;
 		for (int32 Index = 0; Index < Members.Num(); ++Index)
 		{
 			const AChaosImpactPlayerState* Member = Members[Index];
 			const double* SeenAt = MemberSeenAt.Find(Member);
 			const float Age = SeenAt ? static_cast<float>(Clock - *SeenAt) : 1.0f;
 			const float In = EaseOut(Age / 0.3f);
-			const FLinearColor Color = MemberColors[FMath::Abs(Member->JoinOrder) % 8];
-			const FGeometry Row = MakeSkewed(TopLeft, 40.0f - (1.0f - In) * 420.0f, 104.0f + Index * 52.0f,
-				380.0f, 44.0f, -0.25f);
+			const FLinearColor Color = Member->ColourChoice >= 0 ? ChaosImpactRoster::GetColourSwatch(Member->ColourChoice)
+				: MemberColors[FMath::Abs(Member->JoinOrder) % 8];
+			const bool bMine = LocalStates.Contains(Member);
+			const FGeometry Row = MakeSkewed(TopLeft, 40.0f - (1.0f - In) * 480.0f, RowsTop + Index * (RowH + RowGap), ListW, RowH, -0.12f);
 			const FPainter R{Row, OutDrawElements, BaseLayer, In};
-			R.Box(6.0f, 6.0f, 380.0f, 44.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
-			R.Box(0.0f, 0.0f, 380.0f, 44.0f, FLinearColor(0.02f, 0.026f, 0.045f, 0.9f));
-			R.Box(0.0f, 0.0f, 16.0f, 44.0f, Color);
-			R.Text(Member->GetPlayerName(), 34.0f, 5.0f, 26.0f, Paper);
+			R.Box(6.0f, 6.0f, ListW, RowH, FLinearColor(0.0f, 0.0f, 0.0f, 0.42f));
+			R.Box(0.0f, 0.0f, ListW, RowH, bMine ? FLinearColor(0.03f, 0.05f, 0.09f, 0.94f) : FLinearColor(0.02f, 0.026f, 0.045f, 0.9f));
+			R.Box(0.0f, 0.0f, 12.0f, RowH, Color);
+			R.Box(12.0f, 0.0f, 4.0f, RowH, WithAlpha(Color, 0.4f));
+			// The order they came in.
+			R.Text(FString::FromInt(Index + 1), 36.0f, 13.0f, 26.0f, WithAlpha(Paper, 0.35f), ETextAlign::Center, TEXT("Black"));
+			const FString Name = Member->GetPlayerName();
+			// A long name is set smaller, so the tags after it always fit.
+			const float NameSize = 24.0f * FMath::Min(1.0f, 160.0f / FMath::Max(HudMeasure(Name, 24.0f, TEXT("Black")), 1.0f));
+			R.Text(Name, 58.0f, 3.0f + (24.0f - NameSize) * 0.6f, NameSize, Paper, ETextAlign::Left, TEXT("Black"));
+			float ChipX = 58.0f + FMath::Min(HudMeasure(Name, NameSize, TEXT("Black")), 160.0f) + 10.0f;
+			const auto Chip = [&R, &ChipX](const TCHAR* Word, const FLinearColor& Fill, const FLinearColor& Ink2)
+			{
+				const float W = 14.0f + HudMeasure(Word, 13.0f, TEXT("Black"));
+				R.Box(ChipX, 8.0f, W, 20.0f, Fill);
+				R.Text(Word, ChipX + W * 0.5f, 8.0f, 13.0f, Ink2, ETextAlign::Center, TEXT("Black"));
+				ChipX += W + 5.0f;
+			};
 			if (Member->bRoomHost)
 			{
-				R.Box(296.0f, 9.0f, 70.0f, 26.0f, Gold);
-				R.Text(TEXT("HOST"), 331.0f, 8.0f, 18.0f, Ink, ETextAlign::Center);
+				Chip(TEXT("ホスト"), Gold, Ink);
 			}
+			if (bMine)
+			{
+				Chip(TEXT("あなた"), Ice, Paper);
+			}
+			R.Text(ChaosImpactRoster::Get(Member->CharacterIndex).Name, 58.0f, 33.0f, 15.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 			if (Room->bRulesDecided)
 			{
 				// 準備OK at a glance: a lit green check, or an empty box while still waiting.
-				const float BoxLeft = Member->bRoomHost ? 252.0f : 326.0f;
+				constexpr float BoxLeft = 352.0f;
 				if (Member->bReadyForMatch)
 				{
-					R.Box(BoxLeft, 5.0f, 34.0f, 34.0f, FLinearColor(0.12f, 0.85f, 0.35f, 1.0f));
-					R.Line(FVector2D(BoxLeft + 7.0f, 22.0f), FVector2D(BoxLeft + 15.0f, 31.0f), Paper, 5.0f);
-					R.Line(FVector2D(BoxLeft + 14.0f, 31.0f), FVector2D(BoxLeft + 28.0f, 11.0f), Paper, 5.0f);
+					R.Box(BoxLeft, 12.0f, 34.0f, 34.0f, FLinearColor(0.12f, 0.85f, 0.35f, 1.0f));
+					R.Line(FVector2D(BoxLeft + 7.0f, 29.0f), FVector2D(BoxLeft + 15.0f, 38.0f), Paper, 5.0f);
+					R.Line(FVector2D(BoxLeft + 14.0f, 38.0f), FVector2D(BoxLeft + 28.0f, 18.0f), Paper, 5.0f);
 				}
 				else
 				{
-					R.Box(BoxLeft, 5.0f, 34.0f, 34.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
-					R.Outline(BoxLeft, 5.0f, 34.0f, 34.0f, WithAlpha(Paper, 0.35f), 2.0f);
+					R.Box(BoxLeft, 12.0f, 34.0f, 34.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+					R.Outline(BoxLeft, 12.0f, 34.0f, 34.0f, WithAlpha(Paper, 0.35f), 2.0f);
 				}
 			}
-			if (!Member->bSecondOfMachine)
+			// The connection: bars, and the round trip in milliseconds under them. A pair shares one connection;
+			// the host's own machine has no delay at all.
+			const float PingMs = Member->GetPingInMilliseconds();
+			const bool bLocalToHost = Member->bHostMachine;
+			const int32 Level = bLocalToHost || PingMs <= 60.0f ? 4 : PingMs <= 120.0f ? 3 : PingMs <= 200.0f ? 2 : 1;
+			const FLinearColor SignalColor = Level == 4 ? FLinearColor(0.2f, 0.95f, 0.45f)
+				: Level == 3 ? FLinearColor(0.65f, 0.95f, 0.3f) : Level == 2 ? Gold : Fire;
+			const bool bMeasured = bLocalToHost || PingMs > 0.0f;
+			for (int32 Bar = 0; Bar < 4; ++Bar)
 			{
-				// Connection quality from the round-trip time. A pair shares one connection, so only its
-				// first player shows it; players on the host's machine have no network delay at all.
-				const float PingMs = Member->GetPingInMilliseconds();
-				const bool bMeasured = Member->bHostMachine || PingMs > 0.0f;
-				const int32 Level = Member->bHostMachine || PingMs <= 60.0f ? 4
-					: PingMs <= 120.0f ? 3 : PingMs <= 200.0f ? 2 : 1;
-				const FLinearColor SignalColor = Level == 4 ? FLinearColor(0.2f, 0.95f, 0.45f)
-					: Level == 3 ? FLinearColor(0.65f, 0.95f, 0.3f) : Level == 2 ? Gold : Fire;
-				R.Box(392.0f, 2.0f, 56.0f, 40.0f, FLinearColor(0.02f, 0.026f, 0.045f, 0.9f));
-				for (int32 Bar = 0; Bar < 4; ++Bar)
-				{
-					const float BarHeight = 8.0f + Bar * 8.0f;
-					const bool bLit = bMeasured && Bar < Level;
-					R.Box(400.0f + Bar * 11.0f, 36.0f - BarHeight, 8.0f, BarHeight,
-						bLit ? SignalColor : WithAlpha(Paper, 0.16f));
-				}
+				const float BarHeight = 6.0f + Bar * 6.0f;
+				R.Box(412.0f + Bar * 10.0f, 30.0f - BarHeight, 7.0f, BarHeight,
+					bMeasured && Bar < Level ? SignalColor : WithAlpha(Paper, 0.16f));
 			}
-			if (LocalStates.Contains(Member))
+			const FString PingText = bLocalToHost ? FString(TEXT("ホスト")) : !bMeasured ? FString(TEXT("--ms"))
+				: FString::Printf(TEXT("%dms"), FMath::RoundToInt(PingMs));
+			R.Text(PingText, 432.0f, 34.0f, 13.0f, bLocalToHost ? Muted : SignalColor, ETextAlign::Center, TEXT("Bold"));
+			if (bMine)
 			{
-				R.Outline(-3.0f, -3.0f, 386.0f, 50.0f, WithAlpha(Paper, 0.85f), 2.0f);
+				R.Outline(-3.0f, -3.0f, ListW + 6.0f, RowH + 6.0f, WithAlpha(Paper, 0.85f), 2.0f);
 			}
 			if (Age < 0.45f)
 			{
-				R.Box(0.0f, 0.0f, 380.0f, 44.0f, WithAlpha(Paper, 0.8f * (1.0f - Age / 0.45f)));
+				R.Box(0.0f, 0.0f, ListW, RowH, WithAlpha(Paper, 0.8f * (1.0f - Age / 0.45f)));
 			}
+		}
+		float ListBottom = RowsTop + Members.Num() * (RowH + RowGap);
+		// While places are open: an empty card waiting for the next member, the balls hopping on it.
+		if (!Room->bRecruitmentClosed && Members.Num() < AChaosImpactGameState::MaxMembers)
+		{
+			const FPainter E{MakeSkewed(TopLeft, 40.0f, ListBottom, ListW, 44.0f, -0.12f), OutDrawElements, BaseLayer,
+				0.75f + 0.25f * FMath::Sin(static_cast<float>(Clock) * 2.5f)};
+			E.Box(0.0f, 0.0f, ListW, 44.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.55f));
+			E.Outline(0.0f, 0.0f, ListW, 44.0f, WithAlpha(Paper, 0.22f), 2.0f);
+			E.Text(TEXT("メンバーを待っています"), 26.0f, 8.0f, 20.0f, WithAlpha(Paper, 0.75f), ETextAlign::Left, TEXT("Bold"));
+			HudWaitBalls(FPainter{E.Geometry, E.Elements, E.Layer + 1, E.Alpha}, FVector2D(ListW - 70.0, 36.0), static_cast<float>(Clock), 13.0f);
+			ListBottom += 50.0f;
 		}
 
 		// Spectators under the players, and the key that switches between playing and watching.
 		const TArray<AChaosImpactPlayerState*> Watchers = Room->GetSpectators();
-		const float WatchTop = 104.0f + Members.Num() * 52.0f + 6.0f;
-		const FPainter W{MakeSkewed(TopLeft, 40.0f, WatchTop, 380.0f, 36.0f, -0.25f), OutDrawElements, BaseLayer};
+		const float WatchTop = ListBottom + 4.0f;
+		const FPainter W{MakeSkewed(TopLeft, 40.0f, WatchTop, ListW, 36.0f, -0.12f), OutDrawElements, BaseLayer};
 		TArray<FString> WatcherNames;
 		for (const AChaosImpactPlayerState* Watcher : Watchers)
 		{
 			WatcherNames.Add(Watcher->GetPlayerName());
 		}
-		W.Box(0.0f, 0.0f, 380.0f, 36.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.8f));
+		W.Box(0.0f, 0.0f, ListW, 36.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.8f));
 		W.Box(0.0f, 0.0f, 8.0f, 36.0f, Gold);
 		W.Text(FString::Printf(TEXT("観戦 %d/%d  %s"), Watchers.Num(), AChaosImpactGameState::MaxSpectators,
 			*FString::Join(WatcherNames, TEXT("・"))), 22.0f, 4.0f, 20.0f, Watchers.IsEmpty() ? Muted : Gold,
@@ -2772,7 +2828,6 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				24.0f, 42.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Regular"));
 		}
 
-		const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, 0.0f, S);
 		if (Room->bRulesDecided)
 		{
 			// The decided rules, who is ready, and how long until the match starts by itself.
@@ -2782,7 +2837,11 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			const float WaitLeft = Room->ReadyDeadline > 0.0
 				? FMath::Max(0.0f, static_cast<float>(Room->ReadyDeadline - ServerNow)) : 0.0f;
 			const bool bStartingNow = Room->Phase == EChaosImpactOnlinePhase::Starting;
-			const FGeometry Panel = MakeSkewed(TopRight, -460.0f, 36.0f, 420.0f, 250.0f, -0.12f);
+			// Top centre, clear of the member list and the buttons in the top-right corner; under the list when the view
+			// is too narrow for that (a split screen).
+			const bool bNarrow = Size.X / S < 2.0f * (40.0f + ListW + 30.0f + 210.0f);
+			const FGeometry Panel = bNarrow ? MakeSkewed(TopLeft, 40.0f, WatchTop + 76.0f, 420.0f, 250.0f, -0.12f)
+				: MakeSkewed(TopCenter, -210.0f, 36.0f, 420.0f, 250.0f, -0.12f);
 			const FPainter P{Panel, OutDrawElements, BaseLayer};
 			P.Box(8.0f, 9.0f, 420.0f, 250.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
 			P.Box(0.0f, 0.0f, 420.0f, 250.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
@@ -2792,13 +2851,9 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			P.Text(ChaosImpactMatch::GetStageLabel(Rules.StageIndex), 232.0f, 11.0f, 22.0f, Ink, ETextAlign::Center, TEXT("Bold"));
 			P.Text(ChaosImpactMatch::DescribeTeams(Rules.TeamCount), 26.0f, 62.0f, 28.0f,
 				Rules.IsTeamBattle() ? Gold : Paper, ETextAlign::Left, TEXT("Bold"));
-			P.Text(FString::Printf(TEXT("CPU %d人"), Rules.CPUCount), 396.0f, 62.0f, 28.0f,
-				Rules.CPUCount > 0 ? Fire : Muted, ETextAlign::Right, TEXT("Bold"));
-			if (Rules.CPUCount > 0)
-			{
-				P.Text(FString::Printf(TEXT("強さ：%s"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel)), 396.0f, 93.0f, 17.0f,
-					Muted, ETextAlign::Right, TEXT("Bold"));
-			}
+			// The CPUs and how strong, on one line (nothing under it to run into).
+			P.Text(Rules.CPUCount > 0 ? FString::Printf(TEXT("CPU %d人（%s）"), Rules.CPUCount, ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
+				: FString(TEXT("CPU なし")), 396.0f, 66.0f, 22.0f, Rules.CPUCount > 0 ? Fire : Muted, ETextAlign::Right, TEXT("Bold"));
 
 			// One pip per member, lit when ready.
 			P.Text(TEXT("準備OK"), 26.0f, 112.0f, 24.0f, Paper, ETextAlign::Left, TEXT("Bold"));
@@ -2852,11 +2907,12 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		}
 		else if (Room->bRecruitmentClosed && Room->Phase == EChaosImpactOnlinePhase::Lobby)
 		{
-			const FGeometry Chip = MakeSkewed(TopRight, -460.0f, 36.0f, 420.0f, 60.0f, -0.25f);
+			const FGeometry Chip = MakeSkewed(TopCenter, -210.0f, 36.0f, 420.0f, 60.0f, -0.12f);
 			const FPainter P{Chip, OutDrawElements, BaseLayer, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Clock) * 4.0f)};
 			P.Box(0.0f, 0.0f, 420.0f, 60.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
 			P.Box(0.0f, 0.0f, 10.0f, 60.0f, Gold);
 			P.Text(TEXT("ホストがルールを決めています"), 30.0f, 12.0f, 26.0f, Paper);
+			HudWaitBalls(FPainter{P.Geometry, P.Elements, P.Layer + 1, P.Alpha}, FVector2D(380.0, 48.0), static_cast<float>(Clock), 12.0f);
 		}
 	}
 

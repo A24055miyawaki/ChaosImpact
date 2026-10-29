@@ -12,6 +12,7 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
+#include "ChaosImpactFxKit.h"
 #include "ChaosImpactSfx.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
@@ -1299,6 +1300,45 @@ void AChaosImpactBall::UpdateSpeedStretch(const float DeltaSeconds)
 		StretchAmount = 0.0f;
 		BallMesh->SetRelativeRotation(FRotator::ZeroRotator);
 		BallMesh->SetRelativeScale3D(BallMeshBaseScale * ExpiryScale);
+	}
+	// The faster it flies, the more streaks of torn air it leaves, lying along its path and fading at once.
+	const float Tear = bFlying && Speed < 8000.0f ? FMath::Clamp((Speed - 1600.0f) / 1800.0f, 0.0f, 1.0f) : 0.0f;
+	if (Tear <= 0.0f)
+	{
+		WindOwed = 0.0f;
+		return;
+	}
+	WindOwed += DeltaSeconds * 40.0f * Tear;
+	AChaosImpactFxKit* Fx = WindFx.Get();
+	if (!Fx && WindOwed >= 1.0f)
+	{
+		Fx = AChaosImpactFxKit::Spawn(this, Shown);
+		WindFx = Fx;
+	}
+	const FVector Along = Moved.GetSafeNormal();
+	FVector Across = FVector::CrossProduct(Along, FVector::UpVector).GetSafeNormal();
+	Across = Across.IsNearlyZero() ? FVector::RightVector : Across;
+	while (Fx && WindOwed >= 1.0f)
+	{
+		WindOwed -= 1.0f;
+		FChaosImpactFxPiece Streak;
+		Streak.Look = EChaosImpactFxLook::Streak;
+		const float Angle = FMath::FRandRange(0.0f, UE_TWO_PI);
+		Streak.Location = Shown - Along * FMath::FRandRange(20.0f, 70.0f)
+			+ (Across * FMath::Cos(Angle) + FVector::UpVector * FMath::Sin(Angle)) * FMath::FRandRange(18.0f, 42.0f) - Fx->GetActorLocation();
+		// Moving a little along the way it flies, so the streak lies along the path.
+		Streak.Velocity = Along * 400.0f;
+		Streak.Drag = 6.0f;
+		Streak.Life = FMath::FRandRange(0.1f, 0.16f);
+		Streak.SizeFrom = 200.0f + 220.0f * Tear;
+		Streak.SizeTo = 60.0f;
+		Streak.Width = 11.0f;
+		Streak.Color = FLinearColor(0.6f, 0.85f, 1.0f);
+		Streak.CoreColor = FLinearColor(1.0f, 1.0f, 1.0f);
+		Streak.Intensity = 1.2f + 1.3f * Tear;
+		Streak.Attack = 0.1f;
+		Streak.ErodeTo = 0.0f;
+		Fx->Add(Streak);
 	}
 }
 

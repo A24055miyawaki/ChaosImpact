@@ -476,4 +476,47 @@ namespace ChaosImpactPaint
 			P.Geometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
 			&RoundedBrush(FMath::Min(Radius, FMath::Min(W, H) * 0.5f)), ESlateDrawEffect::None, WithAlpha(Color, P.Alpha));
 	}
+
+	/**
+	 * The waiting animation (searching for a room, making one, waiting for players): three balls, ice, fire and gold,
+	 * hopping in turn with an ease in and out, squashing as they land, their shadows growing and shrinking under them.
+	 * Center is where they stand; Size a ball's diameter.
+	 */
+	inline void HudWaitBalls(const FPainter& P, const FVector2D& Center, const float Time, const float Size = 34.0f)
+	{
+		static const FHudFill Fills[] = {IceFill, FireFill, MakeFill(FLinearColor(1.0f, 0.93f, 0.5f, 1.0f), FLinearColor(0.9f, 0.45f, 0.02f, 1.0f))};
+		constexpr float Period = 1.2f;
+		for (int32 Ball = 0; Ball < 3; ++Ball)
+		{
+			// Each hop: up with an ease out, down with an ease in; the next ball a third of a beat later.
+			const float Phase = FMath::Frac(Time / Period - Ball * 0.16f);
+			const float Hop = Phase < 0.55f ? FMath::Sin(Phase / 0.55f * UE_PI) : 0.0f;
+			const float Land = Phase >= 0.55f && Phase < 0.7f ? FMath::Sin((Phase - 0.55f) / 0.15f * UE_PI) : 0.0f;
+			const float Height = Hop * Hop * (3.0f - 2.0f * Hop) * Size * 1.9f;
+			const float SquashX = 1.0f + 0.22f * Land - 0.08f * Hop;
+			const float SquashY = 1.0f - 0.24f * Land + 0.1f * Hop;
+			const FVector2D Foot = Center + FVector2D((Ball - 1) * Size * 1.6f, 0.0);
+			// The shadow: smaller and fainter the higher it is.
+			const float ShadowW = Size * (0.95f - 0.4f * Hop / 1.0f);
+			P.Box(Foot.X - ShadowW * 0.5f, Foot.Y - 3.0f, ShadowW, 6.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.35f - 0.2f * Hop));
+			TArray<FVector2D> Disc;
+			for (int32 Point = 0; Point < 20; ++Point)
+			{
+				const float A = Point * UE_TWO_PI / 20.0f;
+				Disc.Add(Foot + FVector2D(FMath::Cos(A) * Size * 0.5f * SquashX, -Size * 0.5f * SquashY + FMath::Sin(A) * Size * 0.5f * SquashY - Height));
+			}
+			HudPoly(P, HudInflate(Disc, 2.5f), SolidFill(Navy), 1);
+			HudPoly(FPainter{P.Geometry, P.Elements, P.Layer + 1, P.Alpha}, Disc, Fills[Ball], 5);
+			// A glint on top.
+			const FVector2D Glint = Foot + FVector2D(-Size * 0.16f * SquashX, -Size * 0.72f * SquashY - Height);
+			P.Line(Glint, Glint + FVector2D(Size * 0.14f, -Size * 0.06f), WithAlpha(Paper, 0.9f), 3.0f);
+		}
+	}
+
+	/** Minutes and seconds since a wait began ("0:07"). */
+	inline FString HudElapsed(const float Seconds)
+	{
+		const int32 Whole = FMath::Max(0, FMath::FloorToInt(Seconds));
+		return FString::Printf(TEXT("%d:%02d"), Whole / 60, Whole % 60);
+	}
 }

@@ -787,6 +787,21 @@ protected:
 	float BaseFieldOfView = -1.0f;
 	/** The charge of this screen's own last throw (how hard the camera kicks and the throw whooshes). */
 	float FeelThrowCharge = 0.0f;
+	/** Soft FX-kit pieces for a hit's burst. */
+	TWeakObjectPtr<class AChaosImpactFxKit> FeelFx;
+	class AChaosImpactFxKit* GetFeelFx();
+	/** A dash's afterimages: see-through copies of the body, each in the pose it was left in, fading out. */
+	struct FDashGhost
+	{
+		TArray<TWeakObjectPtr<UMeshComponent>> Parts;
+		TWeakObjectPtr<UMaterialInstanceDynamic> Look;
+		float Age = 0.0f;
+	};
+	TArray<FDashGhost> DashGhosts;
+	float GhostOwed = 0.0f;
+	bool bGhostDashing = false;
+	void SpawnDashGhost();
+	void UpdateDashGhosts(float DeltaSeconds, bool bDashing);
 	FVector CameraMoveLead = FVector::ZeroVector;
 	FVector FeelLastLocation = FVector::ZeroVector;
 	FVector FeelVelocity = FVector::ZeroVector;

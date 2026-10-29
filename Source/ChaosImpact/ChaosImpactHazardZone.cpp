@@ -1,4 +1,5 @@
 #include "ChaosImpactHazardZone.h"
+#include "ChaosImpactDuelBallBalance.h"
 #include "ChaosImpactFxKit.h"
 
 #include "ChaosImpact.h"
@@ -751,12 +752,17 @@ void AChaosImpactHazardZone::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 
 float AChaosImpactHazardZone::GetRadius() const
 {
+	if (!bVisualOnly && ChaosImpactDuelBallBalance::IsDuel(GetWorld()))
+	{
+		if (ZoneType == EChaosImpactBallType::Black) { return ChaosImpactDuelBallBalance::BlackRadius; }
+		if (ZoneType == EChaosImpactBallType::Smoke) { return ChaosImpactDuelBallBalance::SmokeRadius; }
+	}
 	return VisualRadius > 0.0f ? VisualRadius : GetTypeRadius(ZoneType, bFireTrail, BurstScale);
 }
 
 float AChaosImpactHazardZone::GetVisualScale() const
 {
-	return VisualRadius > 0.0f ? VisualRadius / FMath::Max(GetTypeRadius(ZoneType, bFireTrail, BurstScale), 1.0f) : 1.0f;
+	return GetRadius() / FMath::Max(GetTypeRadius(ZoneType, bFireTrail, BurstScale), 1.0f);
 }
 
 float AChaosImpactHazardZone::GetTypeRadius(const EChaosImpactBallType Type, const bool bTrail, const float Scale)
@@ -785,6 +791,10 @@ float AChaosImpactHazardZone::GetAge() const
 
 float AChaosImpactHazardZone::GetActiveSeconds() const
 {
+	if (!bVisualOnly && ZoneType == EChaosImpactBallType::Black && ChaosImpactDuelBallBalance::IsDuel(GetWorld()))
+	{
+		return ChaosImpactDuelBallBalance::BlackSeconds;
+	}
 	if (VisualSeconds > 0.0f)
 	{
 		return VisualSeconds;
@@ -807,7 +817,8 @@ float AChaosImpactHazardZone::GetActiveSeconds() const
 }
 
 AChaosImpactHazardZone* AChaosImpactHazardZone::Detonate(UWorld* World, const EChaosImpactBallType Type,
-	const FVector& Location, APawn* Source, AActor* Victim, const float Scale)
+	const FVector& Location, APawn* Source, AActor* Victim, const float Scale,
+	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage)
 {
 	if (!World || Type == EChaosImpactBallType::Normal)
 	{
@@ -830,6 +841,7 @@ AChaosImpactHazardZone* AChaosImpactHazardZone::Detonate(UWorld* World, const EC
 		return nullptr;
 	}
 	Zone->ZoneType = Type;
+	Zone->DuelThrowDamage = ThrowDamage ? ThrowDamage : FChaosImpactDuelThrowDamage::Create(World);
 	Zone->BurstHeight = FMath::Clamp(static_cast<float>(Location.Z - Ground.Z), 0.0f, 400.0f);
 	Zone->SourcePawn = Source;
 	Zone->DirectVictim = Victim;
@@ -884,7 +896,7 @@ void AChaosImpactHazardZone::EndVisual()
 }
 
 AChaosImpactHazardZone* AChaosImpactHazardZone::SpawnFireTrail(UWorld* World, const FVector& BallLocation, APawn* Source,
-	AChaosImpactHazardZone* Leader)
+	AChaosImpactHazardZone* Leader, TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage)
 {
 	if (!World)
 	{
@@ -907,6 +919,8 @@ AChaosImpactHazardZone* AChaosImpactHazardZone::SpawnFireTrail(UWorld* World, co
 	}
 	Zone->ZoneType = EChaosImpactBallType::Fire;
 	Zone->bFireTrail = true;
+	Zone->DuelThrowDamage = ThrowDamage ? ThrowDamage
+		: Leader ? Leader->DuelThrowDamage : FChaosImpactDuelThrowDamage::Create(World);
 	Zone->BurstHeight = 0.0f;
 	Zone->SourcePawn = Source;
 	Zone->TrailLeader = Leader;
@@ -951,7 +965,7 @@ FVector AChaosImpactHazardZone::GetBlackHolePullOffset(const UWorld* World, AAct
 	{
 		AChaosImpactHazardZone* Zone = *It;
 		const float Age = static_cast<float>(Now - Zone->SpawnedAt);
-		if (Zone->bVisualOnly || Zone->ZoneType != EChaosImpactBallType::Black || Age > BlackHoleSeconds || Character == Zone->SourcePawn
+		if (Zone->bVisualOnly || Zone->ZoneType != EChaosImpactBallType::Black || Age > Zone->GetActiveSeconds() || Character == Zone->SourcePawn
 			|| AChaosImpactGameState::AreTeammates(Zone->GetWorld(), Zone->SourcePawn, Character))
 		{
 			continue;
@@ -959,13 +973,15 @@ FVector AChaosImpactHazardZone::GetBlackHolePullOffset(const UWorld* World, AAct
 		const FVector ToCentre = Zone->GetActorLocation() - Character->GetActorLocation();
 		const FVector Flat(ToCentre.X, ToCentre.Y, 0.0f);
 		const float Distance = static_cast<float>(Flat.Size());
-		if (Distance > BlackHoleRadius || Distance < 6.0f || FMath::Abs(ToCentre.Z) > 320.0f)
+		if (Distance > Zone->GetRadius() || Distance < 6.0f || FMath::Abs(ToCentre.Z) > 320.0f)
 		{
 			continue;
 		}
 		// Takes hold as it opens and lets go as it closes; gentler at the core so nobody shoots past the centre.
-		const float Strength = FMath::Clamp(Age / 0.35f, 0.0f, 1.0f) * FMath::Clamp((BlackHoleSeconds - Age) / 0.25f, 0.0f, 1.0f);
-		const float Speed = FMath::Lerp(BlackHoleCoreSpeed, BlackHolePullSpeed, Distance / BlackHoleRadius) * Strength;
+		const float Strength = FMath::Clamp(Age / 0.35f, 0.0f, 1.0f) * FMath::Clamp((Zone->GetActiveSeconds() - Age) / 0.25f, 0.0f, 1.0f);
+		const bool bDuel = ChaosImpactDuelBallBalance::IsDuel(World);
+		const float Speed = FMath::Lerp(bDuel ? ChaosImpactDuelBallBalance::BlackCorePull : BlackHoleCoreSpeed,
+			bDuel ? ChaosImpactDuelBallBalance::BlackEdgePull : BlackHolePullSpeed, Distance / Zone->GetRadius()) * Strength;
 		Offset += Flat / Distance * FMath::Min(Speed * DeltaSeconds, Distance);
 	}
 	return Offset;
@@ -1247,7 +1263,7 @@ void AChaosImpactHazardZone::Tick(const float DeltaSeconds)
 	{
 		TickBurning(GetRadius());
 	}
-	else if (bGameplay && ZoneType == EChaosImpactBallType::Black && Age > 0.35f && Age < BlackHoleSeconds)
+	else if (bGameplay && ZoneType == EChaosImpactBallType::Black && Age > 0.35f && Age < GetActiveSeconds())
 	{
 		// Once it has opened, whoever it draws into the very centre burns.
 		TickBurning(BlackHoleBurnRadius);

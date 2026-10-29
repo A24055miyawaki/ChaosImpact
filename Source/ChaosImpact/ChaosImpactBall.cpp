@@ -17,6 +17,7 @@
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactSimaeBird.h"
+#include "ChaosImpactDuelBallBalance.h"
 #include "ChaosImpactDriveBall.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactTornado.h"
@@ -773,6 +774,15 @@ void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 	{
 		return;
 	}
+	if (BallType == EChaosImpactBallType::Drive
+		&& (Thrower->IsThrowReleasePending() || GetDriveControlLeft() < 0.0f))
+	{
+		// The server trims the release delay by ping and can launch before the owner's hand cue.
+		// Consuming/destroying that still-held preview prevents CompleteAnimatedThrow from starting
+		// the owner's drive controls. Keep it until the cue and the authoritative drive deadline arrive.
+		bAwaitingLaunchAdoption = true;
+		return;
+	}
 	if (AChaosImpactBall* Predicted = Thrower->TakePredictedThrowBall())
 	{
 		// Continue from the ball this screen has been showing since the release.
@@ -809,6 +819,11 @@ void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 		UE_LOG(LogChaosImpact, Log, TEXT("Predicted throw adopted (offset %.0f, along flight %.0f) lead %.3fs"),
 			ClientErrorOffset.Size(), FVector::DotProduct(ClientErrorOffset, FVector(NetState.Velocity).GetSafeNormal()),
 			ClientTimeLead);
+	}
+	else if (BallType == EChaosImpactBallType::Drive)
+	{
+		// An expired local preview must not make the real drive ball uncontrollable.
+		Thrower->OnDriveBallAdopted(nullptr, this);
 	}
 }
 
@@ -1368,10 +1383,20 @@ void AChaosImpactBall::TraceLocalThrow() const
 #endif
 }
 
+TSharedPtr<FChaosImpactDuelThrowDamage> AChaosImpactBall::GetDuelThrowDamage()
+{
+	if (!DuelThrowDamage && IsSpecialBall() && HasAuthority())
+	{
+		DuelThrowDamage = FChaosImpactDuelThrowDamage::Create(GetWorld());
+	}
+	return DuelThrowDamage;
+}
+
 void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	const EChaosImpactBallFlightMode FlightMode, const float ArcUpwardSpeed)
 {
 	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	DuelThrowDamage = IsSpecialBall() && HasAuthority() ? FChaosImpactDuelThrowDamage::Create(GetWorld()) : nullptr;
 	ResetContactPresentation();
 	if (BallType == EChaosImpactBallType::Wind)
 	{
@@ -2029,7 +2054,7 @@ void AChaosImpactBall::UpdateFireTrail()
 	}
 	LastFireTrailLocation = Location;
 	if (AChaosImpactHazardZone* Fire = AChaosImpactHazardZone::SpawnFireTrail(GetWorld(), Location, ThrowingPawn.Get(),
-		FireTrailLeader.Get()))
+		FireTrailLeader.Get(), GetDuelThrowDamage()))
 	{
 		++FireTrailCount;
 		if (!FireTrailLeader.IsValid())
@@ -2144,7 +2169,7 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 	}
 	else if (BallType == EChaosImpactBallType::Simae)
 	{
-		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim);
+		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim, GetDuelThrowDamage());
 		DetonationZone = nullptr;
 	}
 	else if (BallType == EChaosImpactBallType::Drive)
@@ -2157,7 +2182,7 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 	else
 	{
 		DetonationZone = AChaosImpactHazardZone::Detonate(GetWorld(), BallType, Location, ThrowingPawn.Get(), DirectVictim,
-			BallType == EChaosImpactBallType::Snow || BallType == EChaosImpactBallType::Nova ? SnowScale : 1.0f);
+			BallType == EChaosImpactBallType::Snow || BallType == EChaosImpactBallType::Nova ? SnowScale : 1.0f, GetDuelThrowDamage());
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("%s ball detonated at %s (direct victim %s)"),
 		ChaosImpactBallTypes::GetInternalName(BallType), *Location.ToCompactString(), *GetNameSafe(DirectVictim));

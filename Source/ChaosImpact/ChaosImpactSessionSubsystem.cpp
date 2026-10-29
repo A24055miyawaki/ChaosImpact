@@ -3,6 +3,9 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactLoadingScreen.h"
+#include "ChaosImpactRelay.h"
+#include "Dom/JsonObject.h"
+#include "Engine/EngineBaseTypes.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "GameFramework/PlayerController.h"
@@ -28,6 +31,45 @@ namespace
 	const TCHAR* NameConfigKey = TEXT("PlayerName");
 	/** How often the room list is refreshed while it is shown. */
 	constexpr float RoomListRefreshSeconds = 2.0f;
+	const TCHAR* TokenConfigKey = TEXT("PlayerToken");
+	/** The search asks the relay this often; a matched guest asks faster, for the host to be ready. */
+	constexpr double QueuePollSeconds = 1.0;
+	constexpr double QueueMatchedPollSeconds = 0.5;
+	/** MATCH FOUND stays on screen this long before the match's room is opened or joined. */
+	constexpr double QueueFoundHoldSeconds = 1.8;
+	/** A ランクマッチ result is asked about this often while the relay waits for the other player's (up to ~90 s). */
+	constexpr float RankReportRetrySeconds = 2.0f;
+	constexpr int32 RankReportMaxTries = 45;
+
+	const TCHAR* QueueModeKey(const EChaosImpactQueueMode Mode)
+	{
+		return Mode == EChaosImpactQueueMode::Rank ? TEXT("rank") : TEXT("random");
+	}
+
+	void ReadRankInfo(const TSharedPtr<FJsonObject>& From, FChaosImpactRankInfo& Info)
+	{
+		if (!From.IsValid())
+		{
+			return;
+		}
+		Info.bKnown = true;
+		Info.Mmr = static_cast<int32>(From->GetNumberField(TEXT("mmr")));
+		Info.Games = static_cast<int32>(From->GetNumberField(TEXT("games")));
+		Info.Wins = static_cast<int32>(From->GetNumberField(TEXT("wins")));
+		Info.Losses = static_cast<int32>(From->GetNumberField(TEXT("losses")));
+		Info.Draws = static_cast<int32>(From->GetNumberField(TEXT("draws")));
+		Info.Best = static_cast<int32>(From->GetNumberField(TEXT("best")));
+		Info.Placement = static_cast<int32>(From->GetNumberField(TEXT("placement")));
+		Info.Recent.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Recent = nullptr;
+		if (From->TryGetArrayField(TEXT("recent"), Recent))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Recent)
+			{
+				Info.Recent.Add(Value.IsValid() ? Value->AsString() : FString());
+			}
+		}
+	}
 }
 
 void UChaosImpactSessionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -46,6 +88,13 @@ void UChaosImpactSessionSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 void UChaosImpactSessionSubsystem::Deinitialize()
 {
 	CancelRefresh();
+	CancelQueue();
+	if (RankReportTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RankReportTicker);
+		RankReportTicker.Reset();
+	}
+	StopRelayHosting();
 	if (GEngine)
 	{
 		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
@@ -159,8 +208,21 @@ void UChaosImpactSessionSubsystem::BindSessionDelegates()
 
 void UChaosImpactSessionSubsystem::CreateRoom(const FString& InPassword, const FString& InRoomName)
 {
-	IOnlineSessionPtr Sessions = GetSessions();
 	CreateError.Reset();
+	CancelQueue();
+	MatchmadeMode = EChaosImpactQueueMode::None;
+	MatchmadeOptions.Reset();
+	if (IsInternet())
+	{
+		StopRelayHosting();
+		Password = InPassword;
+		const FString Trimmed = InRoomName.TrimStartAndEnd().Left(MaxRoomNameLength);
+		RoomName = Trimmed.IsEmpty() ? GetDefaultRoomName() : Trimmed;
+		State = EChaosImpactRoomState::Creating;
+		RelayCreate();
+		return;
+	}
+	IOnlineSessionPtr Sessions = GetSessions();
 	if (!Sessions)
 	{
 		CreateError = TEXT("通信の準備ができていません");
@@ -181,6 +243,25 @@ void UChaosImpactSessionSubsystem::CreateRoom(const FString& InPassword, const F
 
 void UChaosImpactSessionSubsystem::StartSearch(const FString& InPassword)
 {
+	if (IsInternet())
+	{
+		if (State == EChaosImpactRoomState::Searching && Password == InPassword)
+		{
+			return;
+		}
+		Password = InPassword;
+		State = EChaosImpactRoomState::Searching;
+		Listings.Reset();
+		bSearchedOnce = false;
+		bRelayUnreachableShown = false;
+		++ListingsVersion;
+		++RelayGeneration;
+		FString AutoRoom;
+		bDevAutoJoin = FParse::Value(FCommandLine::Get(), TEXT("CIAutoRoom="), AutoRoom) && AutoRoom.StartsWith(TEXT("search"));
+		DevAutoJoinAt = 0.0;
+		BeginFind();
+		return;
+	}
 	if (!GetSessions())
 	{
 		PostNotice(TEXT("通信の準備ができていません"));
@@ -246,6 +327,8 @@ void UChaosImpactSessionSubsystem::CancelCreate()
 		return;
 	}
 	State = EChaosImpactRoomState::None;
+	// (An internet room still being made is closed on the relay when its reply comes.)
+	++RelayGeneration;
 	if (IOnlineSessionPtr Sessions = GetSessions())
 	{
 		if (Sessions->GetNamedSession(NAME_GameSession))
@@ -257,6 +340,11 @@ void UChaosImpactSessionSubsystem::CancelCreate()
 
 void UChaosImpactSessionSubsystem::BeginFind()
 {
+	if (IsInternet())
+	{
+		RelaySearch();
+		return;
+	}
 	IOnlineSessionPtr Sessions = GetSessions();
 	if (!Sessions || State != EChaosImpactRoomState::Searching)
 	{
@@ -303,14 +391,20 @@ void UChaosImpactSessionSubsystem::HandleFindComplete(const bool bWasSuccessful)
 			}
 		}
 	}
+	UE_LOG(LogChaosImpact, Log, TEXT("LAN room search finished: success=%d rooms with the password=%d (of %d)"),
+		bWasSuccessful, Found.Num(), Search.IsValid() ? Search->SearchResults.Num() : -1);
+	FinishSearch(MoveTemp(Found), bWasSuccessful);
+}
+
+void UChaosImpactSessionSubsystem::FinishSearch(TArray<FChaosImpactRoomListing>&& Found, const bool bWasSuccessful)
+{
 	// Rooms that can be joined first, then the best connection.
 	Found.StableSort([](const FChaosImpactRoomListing& A, const FChaosImpactRoomListing& B)
 	{
 		return A.bOpen != B.bOpen ? A.bOpen : A.PingMs < B.PingMs;
 	});
-	UE_LOG(LogChaosImpact, Log, TEXT("Room search finished: success=%d rooms with the password=%d (of %d)"),
-		bWasSuccessful, Found.Num(), Search.IsValid() ? Search->SearchResults.Num() : -1);
 	Listings = MoveTemp(Found);
+	(void)bWasSuccessful;
 	bSearchedOnce = true;
 	++ListingsVersion;
 
@@ -335,7 +429,7 @@ void UChaosImpactSessionSubsystem::HandleFindComplete(const bool bWasSuccessful)
 bool UChaosImpactSessionSubsystem::JoinRoomListing(const int32 Index)
 {
 	IOnlineSessionPtr Sessions = GetSessions();
-	if (!Sessions || State != EChaosImpactRoomState::Searching || !Listings.IsValidIndex(Index))
+	if (State != EChaosImpactRoomState::Searching || !Listings.IsValidIndex(Index))
 	{
 		return false;
 	}
@@ -350,6 +444,28 @@ bool UChaosImpactSessionSubsystem::JoinRoomListing(const int32 Index)
 	}
 	bJoinAsSpectator = WouldJoinAsSpectator(Listing);
 	CancelRefresh();
+	if (Listing.RelayPort > 0)
+	{
+		// An internet room: straight to its port on the relay, which carries everything to the host.
+		FString Host;
+		FString PortText;
+		const FString Server = ChaosImpactRelay::GetServer();
+		if (!Server.Split(TEXT(":"), &Host, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+		{
+			Host = Server;
+		}
+		++RelayGeneration;
+		RoomName = Listing.RoomName;
+		State = EChaosImpactRoomState::Joining;
+		UE_LOG(LogChaosImpact, Log, TEXT("Joining internet room \"%s\" hosted by %s%s"), *Listing.RoomName, *Listing.HostName,
+			bJoinAsSpectator ? TEXT(" as a spectator") : TEXT(""));
+		TravelToRoom(FString::Printf(TEXT("%s:%d"), *Host, Listing.RelayPort));
+		return true;
+	}
+	if (!Sessions)
+	{
+		return false;
+	}
 	if (Search.IsValid() && Search->SearchState == EOnlineAsyncTaskState::InProgress)
 	{
 		Sessions->CancelFindSessions();
@@ -433,11 +549,16 @@ void UChaosImpactSessionSubsystem::HandleCreateComplete(FName SessionName, const
 		CreateError = TEXT("へやをつくれませんでした");
 		return;
 	}
+	OpenRoomAsHost();
+}
+
+void UChaosImpactSessionSubsystem::OpenRoomAsHost()
+{
 	State = EChaosImpactRoomState::Hosting;
 	MemberCount = 1;
 	SpectatorCount = 0;
 	bRecruitmentOpen = true;
-	FString Options = FString::Printf(TEXT("listen?CITraining=1?CIOnline=1?%s"), *LocalSetupOptions);
+	FString Options = FString::Printf(TEXT("listen?CITraining=1?CIOnline=1?%s%s"), *LocalSetupOptions, *MatchmadeOptions);
 	// Development: -CIRoomCPU=N adds CPUs to the room so network hits can be tested without a second person.
 	int32 DevRoomCPUs = 0;
 	if (FParse::Value(FCommandLine::Get(), TEXT("CIRoomCPU="), DevRoomCPUs) && DevRoomCPUs > 0)
@@ -470,6 +591,19 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 		BeginFind();
 		return;
 	}
+	TravelToRoom(ConnectString);
+}
+
+void UChaosImpactSessionSubsystem::TravelToRoom(const FString& ConnectString)
+{
+	APlayerController* Controller = GetGameInstance() ? GetGameInstance()->GetFirstLocalPlayerController() : nullptr;
+	if (!Controller)
+	{
+		PostNotice(TEXT("へやに入れませんでした"));
+		State = EChaosImpactRoomState::Searching;
+		BeginFind();
+		return;
+	}
 	State = EChaosImpactRoomState::InRoom;
 	UE_LOG(LogChaosImpact, Log, TEXT("Joining room at %s"), *ConnectString);
 	// CIPlayers lets the host reserve a place for this machine's second player, who joins right after.
@@ -487,7 +621,17 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 
 void UChaosImpactSessionSubsystem::LeaveRoom()
 {
+	// Leaving a ランクマッチ that is under way gives it to the other player.
+	if (MatchmadeMode == EChaosImpactQueueMode::Rank && bMatchmadeStarted)
+	{
+		ReportRankResult(TEXT("lose"));
+	}
+	MatchmadeMode = EChaosImpactQueueMode::None;
+	MatchmadeOptions.Reset();
+	bMatchmadeStarted = false;
+	CancelQueue();
 	StopSearch();
+	StopRelayHosting();
 	State = EChaosImpactRoomState::None;
 	if (IOnlineSessionPtr Sessions = GetSessions(); Sessions && Sessions->GetNamedSession(NAME_GameSession))
 	{
@@ -535,6 +679,11 @@ void UChaosImpactSessionSubsystem::SetRoomName(const FString& Name)
 
 void UChaosImpactSessionSubsystem::PublishRoomSettings()
 {
+	if (!RelayRoomId.IsEmpty())
+	{
+		RelayHeartbeat();
+		return;
+	}
 	IOnlineSessionPtr Sessions = GetSessions();
 	FOnlineSessionSettings* Current = Sessions ? Sessions->GetSessionSettings(NAME_GameSession) : nullptr;
 	if (State != EChaosImpactRoomState::Hosting || !Current)
@@ -582,6 +731,22 @@ void UChaosImpactSessionSubsystem::ReturnAfterDisconnect(const FString& ErrorStr
 		return;
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Left online room: %s"), *ErrorString);
+	if (MatchmadeMode != EChaosImpactQueueMode::None)
+	{
+		// A matched room: the other side went away. Mid-ランクマッチ that is this player's win (the host reports it too).
+		if (MatchmadeMode == EChaosImpactQueueMode::Rank && bMatchmadeStarted)
+		{
+			ReportRankResult(TEXT("win"));
+		}
+		PostNotice(bMatchmadeStarted ? TEXT("対戦相手との接続が切れました") : TEXT("対戦相手と接続できませんでした"));
+		ShowQueueMenu = MatchmadeMode;
+		MatchmadeMode = EChaosImpactQueueMode::None;
+		MatchmadeOptions.Reset();
+		bMatchmadeStarted = false;
+		State = EChaosImpactRoomState::None;
+		bReturnToTraining = true;
+		return;
+	}
 	PostNotice(ErrorString.Contains(TEXT("CISPECFULL")) ? TEXT("観戦の枠がいっぱいです")
 		: ErrorString.Contains(TEXT("CIFULL")) ? TEXT("へやが満員です")
 		: ErrorString.Contains(TEXT("CICLOSED")) ? TEXT("メンバー募集が終了しています")
@@ -594,4 +759,683 @@ void UChaosImpactSessionSubsystem::ReturnAfterDisconnect(const FString& ErrorStr
 	// The engine browses to the default (title) map after a failure; the title world then
 	// sends the player straight back to their own training arena.
 	bReturnToTraining = true;
+}
+
+// ---------------------------------------------------------------------------------------------------- Internet rooms
+
+bool UChaosImpactSessionSubsystem::IsInternet() const
+{
+	return ChaosImpactRelay::IsEnabled();
+}
+
+bool UChaosImpactSessionSubsystem::IsRelayConnected() const
+{
+	return Tunnel.IsValid() && Tunnel->IsConnected();
+}
+
+void UChaosImpactSessionSubsystem::RelayCreate()
+{
+	const int32 Generation = ++RelayGeneration;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("create"));
+	Message->SetStringField(TEXT("ver"), ChaosImpactRelay::GetNetVersion());
+	Message->SetStringField(TEXT("password"), Password);
+	Message->SetStringField(TEXT("name"), RoomName);
+	Message->SetStringField(TEXT("host"), GetPlayerName());
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Generation](
+		TSharedPtr<FJsonObject> Reply, int32)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		const bool bOk = Reply.IsValid() && Reply->GetBoolField(TEXT("ok"));
+		if (Generation != Self->RelayGeneration || (Self->State != EChaosImpactRoomState::Creating && Self->State != EChaosImpactRoomState::Hosting))
+		{
+			// Given up on meanwhile: the room made for it is closed again.
+			if (bOk)
+			{
+				TSharedRef<FJsonObject> Close = MakeShared<FJsonObject>();
+				Close->SetStringField(TEXT("op"), TEXT("close"));
+				Close->SetStringField(TEXT("room"), Reply->GetStringField(TEXT("room")));
+				Close->SetStringField(TEXT("key"), Reply->GetStringField(TEXT("key")));
+				ChaosImpactRelay::Request(Close, [](TSharedPtr<FJsonObject>, int32) {});
+			}
+			return;
+		}
+		if (!bOk)
+		{
+			const FString Error = Reply.IsValid() ? Reply->GetStringField(TEXT("error")) : FString();
+			UE_LOG(LogChaosImpact, Warning, TEXT("Internet room not made: %s"), Reply.IsValid() ? *Error : TEXT("no answer from the relay"));
+			if (Self->State == EChaosImpactRoomState::Hosting)
+			{
+				Self->PostNotice(TEXT("中継サーバーとの接続が切れました"));
+				return;
+			}
+			Self->State = EChaosImpactRoomState::None;
+			Self->CreateError = !Reply.IsValid() ? TEXT("中継サーバーにつながりません")
+				: Error == TEXT("full") ? TEXT("へやがいっぱいでつくれません") : TEXT("へやをつくれませんでした");
+			return;
+		}
+		Self->RelayRoomId = Reply->GetStringField(TEXT("room"));
+		Self->RelayRoomKey = Reply->GetStringField(TEXT("key"));
+		Self->RelayRoomPort = static_cast<int32>(Reply->GetNumberField(TEXT("port")));
+		UE_LOG(LogChaosImpact, Log, TEXT("Internet room %s made on relay port %d"), *Self->RelayRoomId, Self->RelayRoomPort);
+		Self->StartTunnel();
+		if (!Self->HeartbeatTicker.IsValid())
+		{
+			Self->HeartbeatTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(Self, [Self](float)
+			{
+				Self->RelayHeartbeat();
+				return true;
+			}), 3.0f);
+		}
+		if (Self->State == EChaosImpactRoomState::Creating)
+		{
+			Self->OpenRoomAsHost();
+		}
+		else
+		{
+			// Made again after the relay lost it (restarted): the same room, at a new port.
+			Self->RelayHeartbeat();
+		}
+	});
+}
+
+void UChaosImpactSessionSubsystem::StartTunnel()
+{
+	FString Host;
+	FString PortText;
+	const FString Server = ChaosImpactRelay::GetServer();
+	if (!Server.Split(TEXT(":"), &Host, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+	{
+		Host = Server;
+	}
+	Tunnel.Reset();
+	// This game's listen server takes the room's players on the usual game port.
+	Tunnel = MakeUnique<FChaosImpactRelayTunnel>(Host, RelayRoomPort, RelayRoomKey, FURL::UrlConfig.DefaultPort);
+	if (!Tunnel->Start())
+	{
+		Tunnel.Reset();
+		PostNotice(TEXT("中継サーバーにつながりません"));
+	}
+}
+
+void UChaosImpactSessionSubsystem::RelayHeartbeat()
+{
+	if (RelayRoomId.IsEmpty() || State != EChaosImpactRoomState::Hosting)
+	{
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("update"));
+	Message->SetStringField(TEXT("room"), RelayRoomId);
+	Message->SetStringField(TEXT("key"), RelayRoomKey);
+	Message->SetNumberField(TEXT("members"), MemberCount);
+	Message->SetNumberField(TEXT("spectators"), SpectatorCount);
+	Message->SetBoolField(TEXT("open"), bRecruitmentOpen);
+	Message->SetStringField(TEXT("name"), RoomName);
+	const FString Room = RelayRoomId;
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Room](
+		TSharedPtr<FJsonObject> Reply, int32)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self || Self->RelayRoomId != Room || Self->State != EChaosImpactRoomState::Hosting || !Reply.IsValid())
+		{
+			return;
+		}
+		if (!Reply->GetBoolField(TEXT("ok")))
+		{
+			// The relay no longer knows the room (it restarted): make it again.
+			UE_LOG(LogChaosImpact, Warning, TEXT("Internet room %s lost by the relay: making it again"), *Room);
+			Self->RelayRoomId.Reset();
+			Self->RelayCreate();
+		}
+	});
+}
+
+void UChaosImpactSessionSubsystem::StopRelayHosting()
+{
+	if (HeartbeatTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(HeartbeatTicker);
+		HeartbeatTicker.Reset();
+	}
+	Tunnel.Reset();
+	if (!RelayRoomId.IsEmpty())
+	{
+		TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+		Message->SetStringField(TEXT("op"), TEXT("close"));
+		Message->SetStringField(TEXT("room"), RelayRoomId);
+		Message->SetStringField(TEXT("key"), RelayRoomKey);
+		ChaosImpactRelay::Request(Message, [](TSharedPtr<FJsonObject>, int32) {});
+		UE_LOG(LogChaosImpact, Log, TEXT("Internet room %s closed"), *RelayRoomId);
+	}
+	RelayRoomId.Reset();
+	RelayRoomKey.Reset();
+	RelayRoomPort = 0;
+}
+
+void UChaosImpactSessionSubsystem::RelaySearch()
+{
+	if (State != EChaosImpactRoomState::Searching || bRelaySearchInFlight)
+	{
+		return;
+	}
+	bRelaySearchInFlight = true;
+	const int32 Generation = RelayGeneration;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("search"));
+	Message->SetStringField(TEXT("ver"), ChaosImpactRelay::GetNetVersion());
+	Message->SetStringField(TEXT("password"), Password);
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Generation](
+		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		Self->bRelaySearchInFlight = false;
+		if (Generation != Self->RelayGeneration || Self->State != EChaosImpactRoomState::Searching)
+		{
+			return;
+		}
+		TArray<FChaosImpactRoomListing> Found;
+		const TArray<TSharedPtr<FJsonValue>>* Rooms = nullptr;
+		if (Reply.IsValid() && Reply->TryGetArrayField(TEXT("rooms"), Rooms))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Rooms)
+			{
+				const TSharedPtr<FJsonObject> Room = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!Room.IsValid())
+				{
+					continue;
+				}
+				FChaosImpactRoomListing& Listing = Found.AddDefaulted_GetRef();
+				Listing.RoomName = Room->GetStringField(TEXT("name"));
+				Listing.HostName = Room->GetStringField(TEXT("host"));
+				Listing.Members = static_cast<int32>(Room->GetNumberField(TEXT("members")));
+				Listing.Spectators = static_cast<int32>(Room->GetNumberField(TEXT("spectators")));
+				Listing.bOpen = Room->GetBoolField(TEXT("open"));
+				Listing.RelayPort = static_cast<int32>(Room->GetNumberField(TEXT("port")));
+				// (The round trip to the relay; the host's own leg adds to it.)
+				Listing.PingMs = RoundTripMs;
+				if (Listing.RoomName.IsEmpty())
+				{
+					Listing.RoomName = TEXT("へや");
+				}
+			}
+		}
+		else if (!Self->bRelayUnreachableShown)
+		{
+			Self->bRelayUnreachableShown = true;
+			Self->PostNotice(TEXT("中継サーバーにつながりません"));
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Internet room search finished: answered=%d rooms=%d (%d ms)"), Reply.IsValid(), Found.Num(),
+			RoundTripMs);
+		Self->FinishSearch(MoveTemp(Found), Reply.IsValid());
+	});
+}
+
+// ---------------------------------------------------------------------------------------------------- Matchmaking
+
+FString UChaosImpactSessionSubsystem::GetPlayerToken() const
+{
+	if (!CachedPlayerToken.IsEmpty())
+	{
+		return CachedPlayerToken;
+	}
+	if (FParse::Value(FCommandLine::Get(), TEXT("CIPlayerToken="), CachedPlayerToken) && !CachedPlayerToken.IsEmpty())
+	{
+		return CachedPlayerToken;
+	}
+	if (GConfig && GConfig->GetString(ConfigSection, TokenConfigKey, CachedPlayerToken, GGameUserSettingsIni)
+		&& CachedPlayerToken.Len() >= 16)
+	{
+		return CachedPlayerToken;
+	}
+	// Made once per PC: the relay keeps this player's rank under it.
+	CachedPlayerToken = FGuid::NewGuid().ToString(EGuidFormats::Digits) + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	if (GConfig)
+	{
+		GConfig->SetString(ConfigSection, TokenConfigKey, *CachedPlayerToken, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	return CachedPlayerToken;
+}
+
+bool UChaosImpactSessionSubsystem::StartQueue(const EChaosImpactQueueMode Mode)
+{
+	if (Mode == EChaosImpactQueueMode::None)
+	{
+		return false;
+	}
+	if (!IsInternet())
+	{
+		PostNotice(TEXT("インターネット対戦の中継サーバーが設定されていません"));
+		return false;
+	}
+	if (Mode == EChaosImpactQueueMode::Rank && LocalPlayerCount > 1)
+	{
+		PostNotice(TEXT("ランクマッチは1人で参加してください"));
+		return false;
+	}
+	if (State == EChaosImpactRoomState::Hosting || State == EChaosImpactRoomState::InRoom
+		|| State == EChaosImpactRoomState::Joining || State == EChaosImpactRoomState::Creating)
+	{
+		return false;
+	}
+	StopSearch();
+	CancelQueue();
+	QueueMode = Mode;
+	QueueStartedAt = FPlatformTime::Seconds();
+	QueueWaiting = LocalPlayerCount;
+	QueueStartsIn = -1.0f;
+	QueueFailures = 0;
+	ResetQueueMatch();
+	QueueJoin();
+	QueueTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+	{
+		QueueTick();
+		return true;
+	}), 0.25f);
+	UE_LOG(LogChaosImpact, Log, TEXT("Queue %s: searching (%d player(s) on this machine)"), QueueModeKey(Mode), LocalPlayerCount);
+	return true;
+}
+
+void UChaosImpactSessionSubsystem::CancelQueue()
+{
+	if (QueueMode == EChaosImpactQueueMode::None)
+	{
+		return;
+	}
+	if (!QueueTicket.IsEmpty())
+	{
+		TSharedRef<FJsonObject> Leave = MakeShared<FJsonObject>();
+		Leave->SetStringField(TEXT("op"), TEXT("mm_leave"));
+		Leave->SetStringField(TEXT("ticket"), QueueTicket);
+		ChaosImpactRelay::Request(Leave, [](TSharedPtr<FJsonObject>, int32) {});
+	}
+	// A match found but not yet opened as its host: the room on the relay goes too.
+	if (bQueueMatched && bQueueHost && State == EChaosImpactRoomState::Creating)
+	{
+		StopRelayHosting();
+		MatchmadeMode = EChaosImpactQueueMode::None;
+		MatchmadeOptions.Reset();
+		State = EChaosImpactRoomState::None;
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Queue %s: stopped"), QueueModeKey(QueueMode));
+	QueueMode = EChaosImpactQueueMode::None;
+	QueueTicket.Reset();
+	ResetQueueMatch();
+	StopQueueTicker();
+	++QueueGeneration;
+}
+
+void UChaosImpactSessionSubsystem::StopQueueTicker()
+{
+	if (QueueTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(QueueTicker);
+		QueueTicker.Reset();
+	}
+}
+
+void UChaosImpactSessionSubsystem::ResetQueueMatch()
+{
+	bQueueMatched = false;
+	bQueueHost = false;
+	bQueueHostReady = false;
+	bQueueRequestInFlight = false;
+	QueuePort = 0;
+	QueueMatchId.Reset();
+	QueueExpected = 0;
+	QueueNames.Reset();
+	QueueOpponentName.Reset();
+	QueueOpponentRank = FChaosImpactRankInfo();
+	QueueMatchedAt = 0.0;
+}
+
+void UChaosImpactSessionSubsystem::QueueJoin()
+{
+	const int32 Generation = ++QueueGeneration;
+	bQueueRequestInFlight = true;
+	QueueLastPollAt = FPlatformTime::Seconds();
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("mm_join"));
+	Message->SetStringField(TEXT("ver"), ChaosImpactRelay::GetNetVersion());
+	Message->SetStringField(TEXT("mode"), QueueModeKey(QueueMode));
+	Message->SetStringField(TEXT("token"), GetPlayerToken());
+	Message->SetStringField(TEXT("name"), GetPlayerName());
+	Message->SetNumberField(TEXT("players"), LocalPlayerCount);
+	Message->SetNumberField(TEXT("rtt"), LastRelayRtt > 0 ? LastRelayRtt : 999);
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Generation](
+		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self || Generation != Self->QueueGeneration)
+		{
+			return;
+		}
+		Self->bQueueRequestInFlight = false;
+		if (!Reply.IsValid() || !Reply->GetBoolField(TEXT("ok")))
+		{
+			const FString Error = Reply.IsValid() ? Reply->GetStringField(TEXT("error")) : FString();
+			Self->PostNotice(!Reply.IsValid() ? TEXT("中継サーバーにつながりません")
+				: Error == TEXT("solo only") ? TEXT("ランクマッチは1人で参加してください") : TEXT("マッチングを始められませんでした"));
+			Self->CancelQueue();
+			return;
+		}
+		Self->LastRelayRtt = RoundTripMs;
+		Self->QueueTicket = Reply->GetStringField(TEXT("ticket"));
+	});
+}
+
+void UChaosImpactSessionSubsystem::QueueTick()
+{
+	if (QueueMode == EChaosImpactQueueMode::None)
+	{
+		return;
+	}
+	const double Now = FPlatformTime::Seconds();
+	if (bQueueMatched && Now - QueueMatchedAt >= QueueFoundHoldSeconds)
+	{
+		if (bQueueHost && State == EChaosImpactRoomState::Creating)
+		{
+			// MATCH FOUND has been shown: this machine opens the match's room and the others come to it.
+			UE_LOG(LogChaosImpact, Log, TEXT("Match %s: opening its room as the host (%d expected)"), *QueueMatchId, QueueExpected);
+			QueueMode = EChaosImpactQueueMode::None;
+			QueueTicket.Reset();
+			StopQueueTicker();
+			OpenRoomAsHost();
+			return;
+		}
+		if (!bQueueHost && bQueueHostReady)
+		{
+			FString Host;
+			FString PortText;
+			const FString Server = ChaosImpactRelay::GetServer();
+			if (!Server.Split(TEXT(":"), &Host, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+			{
+				Host = Server;
+			}
+			UE_LOG(LogChaosImpact, Log, TEXT("Match %s: joining the host's room on relay port %d"), *QueueMatchId, QueuePort);
+			MatchmadeMode = QueueMode;
+			MatchmadeId = QueueMatchId;
+			bMatchmadeStarted = false;
+			const int32 Port = QueuePort;
+			QueueMode = EChaosImpactQueueMode::None;
+			QueueTicket.Reset();
+			StopQueueTicker();
+			bJoinAsSpectator = false;
+			RoomName = MatchmadeMode == EChaosImpactQueueMode::Rank ? TEXT("ランクマッチ") : TEXT("ランダムマッチ");
+			State = EChaosImpactRoomState::Joining;
+			++RelayGeneration;
+			TravelToRoom(FString::Printf(TEXT("%s:%d"), *Host, Port));
+			return;
+		}
+	}
+	const double Interval = bQueueMatched ? QueueMatchedPollSeconds : QueuePollSeconds;
+	if (!bQueueRequestInFlight && !QueueTicket.IsEmpty() && Now - QueueLastPollAt >= Interval
+		&& !(bQueueMatched && bQueueHost))
+	{
+		QueuePoll();
+	}
+}
+
+void UChaosImpactSessionSubsystem::QueuePoll()
+{
+	const int32 Generation = QueueGeneration;
+	bQueueRequestInFlight = true;
+	QueueLastPollAt = FPlatformTime::Seconds();
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("mm_poll"));
+	Message->SetStringField(TEXT("ticket"), QueueTicket);
+	if (LastRelayRtt > 0)
+	{
+		Message->SetNumberField(TEXT("rtt"), LastRelayRtt);
+	}
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Generation](
+		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self || Generation != Self->QueueGeneration || Self->QueueMode == EChaosImpactQueueMode::None)
+		{
+			return;
+		}
+		Self->bQueueRequestInFlight = false;
+		if (!Reply.IsValid())
+		{
+			// A lost answer or two is nothing; a relay gone for good ends the search.
+			if (++Self->QueueFailures >= 4)
+			{
+				Self->PostNotice(TEXT("中継サーバーとの接続が切れました"));
+				Self->CancelQueue();
+			}
+			return;
+		}
+		Self->QueueFailures = 0;
+		Self->LastRelayRtt = RoundTripMs;
+		const FString Step = Reply->GetStringField(TEXT("state"));
+		if (Step == TEXT("waiting"))
+		{
+			Self->QueueWaiting = static_cast<int32>(Reply->GetNumberField(TEXT("waiting")));
+			Self->QueueStartsIn = static_cast<float>(Reply->GetNumberField(TEXT("starts_in")));
+		}
+		else if (Step == TEXT("matched"))
+		{
+			if (!Self->bQueueMatched)
+			{
+				Self->HandleQueueMatched(Reply);
+			}
+			Self->bQueueHostReady = Reply->GetBoolField(TEXT("host_ready"));
+		}
+		else
+		{
+			// Gone: the ticket expired, or the match fell through before it began. Search again.
+			const EChaosImpactQueueMode Mode = Self->QueueMode;
+			const bool bWasMatched = Self->bQueueMatched;
+			UE_LOG(LogChaosImpact, Log, TEXT("Queue %s: the relay dropped this search (%s); searching again"), QueueModeKey(Mode),
+				bWasMatched ? TEXT("the match fell through") : TEXT("expired"));
+			if (bWasMatched)
+			{
+				Self->PostNotice(TEXT("マッチングをやりなおします"));
+			}
+			Self->QueueTicket.Reset();
+			Self->ResetQueueMatch();
+			Self->QueueMode = Mode;
+			Self->QueueJoin();
+		}
+	});
+}
+
+void UChaosImpactSessionSubsystem::HandleQueueMatched(const TSharedPtr<FJsonObject>& Reply)
+{
+	bQueueMatched = true;
+	QueueMatchedAt = FPlatformTime::Seconds();
+	QueueMatchId = Reply->GetStringField(TEXT("match"));
+	QueuePort = static_cast<int32>(Reply->GetNumberField(TEXT("port")));
+	QueueExpected = static_cast<int32>(Reply->GetNumberField(TEXT("expect")));
+	bQueueHost = Reply->GetStringField(TEXT("role")) == TEXT("host");
+	QueueNames.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* Names = nullptr;
+	if (Reply->TryGetArrayField(TEXT("names"), Names))
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Names)
+		{
+			QueueNames.Add(Value.IsValid() ? Value->AsString() : FString());
+		}
+	}
+	const TSharedPtr<FJsonObject>* Opponent = nullptr;
+	if (Reply->TryGetObjectField(TEXT("opponent"), Opponent) && Opponent && Opponent->IsValid())
+	{
+		QueueOpponentName = (*Opponent)->GetStringField(TEXT("name"));
+		ReadRankInfo(*Opponent, QueueOpponentRank);
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Match %s found (%s): %d player(s), this machine is the %s"), *QueueMatchId,
+		QueueModeKey(QueueMode), QueueExpected, bQueueHost ? TEXT("host") : TEXT("guest"));
+	if (!bQueueHost)
+	{
+		return;
+	}
+	// The host takes the match's room on the relay now and opens it once MATCH FOUND has been shown.
+	StopRelayHosting();
+	RelayRoomId = Reply->GetStringField(TEXT("room"));
+	RelayRoomKey = Reply->GetStringField(TEXT("key"));
+	RelayRoomPort = QueuePort;
+	MatchmadeMode = QueueMode;
+	MatchmadeId = QueueMatchId;
+	bMatchmadeStarted = false;
+	MatchmadeOptions = FString::Printf(TEXT("?CIMatchmade=%s?CIExpect=%d"), QueueModeKey(QueueMode), FMath::Max(2, QueueExpected));
+	Password.Reset();
+	RoomName = QueueMode == EChaosImpactQueueMode::Rank ? TEXT("ランクマッチ") : TEXT("ランダムマッチ");
+	State = EChaosImpactRoomState::Creating;
+	StartTunnel();
+	if (!HeartbeatTicker.IsValid())
+	{
+		HeartbeatTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+		{
+			RelayHeartbeat();
+			return true;
+		}), 3.0f);
+	}
+}
+
+void UChaosImpactSessionSubsystem::NotifyMatchmadeMatchStarted()
+{
+	if (MatchmadeMode != EChaosImpactQueueMode::None && !bMatchmadeStarted)
+	{
+		bMatchmadeStarted = true;
+		UE_LOG(LogChaosImpact, Log, TEXT("Match %s under way"), *MatchmadeId);
+	}
+}
+
+void UChaosImpactSessionSubsystem::FinishMatchmade()
+{
+	if (MatchmadeMode == EChaosImpactQueueMode::None)
+	{
+		return;
+	}
+	// The match is over: leaving now forfeits nothing.
+	bMatchmadeStarted = false;
+	ShowQueueMenu = MatchmadeMode;
+	LeaveRoom();
+}
+
+EChaosImpactQueueMode UChaosImpactSessionSubsystem::ConsumeShowQueueMenu()
+{
+	const EChaosImpactQueueMode Mode = ShowQueueMenu;
+	ShowQueueMenu = EChaosImpactQueueMode::None;
+	return Mode;
+}
+
+// ---------------------------------------------------------------------------------------------------- Rank
+
+void UChaosImpactSessionSubsystem::RefreshRankInfo()
+{
+	if (!IsInternet() || bRankInfoPending)
+	{
+		return;
+	}
+	bRankInfoPending = true;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("rank_info"));
+	Message->SetStringField(TEXT("token"), GetPlayerToken());
+	Message->SetStringField(TEXT("name"), GetPlayerName());
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this)](
+		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		Self->bRankInfoPending = false;
+		if (Reply.IsValid() && Reply->GetBoolField(TEXT("ok")))
+		{
+			Self->LastRelayRtt = RoundTripMs;
+			ReadRankInfo(Reply, Self->RankInfo);
+		}
+	});
+}
+
+void UChaosImpactSessionSubsystem::ReportRankResult(const FString& Result)
+{
+	if (MatchmadeId.IsEmpty() || RankReportMatch == MatchmadeId)
+	{
+		return;
+	}
+	RankReportMatch = MatchmadeId;
+	RankReportResult = Result;
+	RankReportTries = 0;
+	RankReport = FChaosImpactRankReport();
+	RankReport.State = EChaosImpactRankReportState::Sending;
+	RankReport.Result = Result;
+	RankReport.ChangedAt = FPlatformTime::Seconds();
+	UE_LOG(LogChaosImpact, Log, TEXT("Rank match %s: reporting %s"), *RankReportMatch, *Result);
+	SendRankReport();
+}
+
+void UChaosImpactSessionSubsystem::SendRankReport()
+{
+	++RankReportTries;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("rank_report"));
+	Message->SetStringField(TEXT("match"), RankReportMatch);
+	Message->SetStringField(TEXT("token"), GetPlayerToken());
+	Message->SetStringField(TEXT("result"), RankReportResult);
+	const FString Match = RankReportMatch;
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Match](
+		TSharedPtr<FJsonObject> Reply, int32)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self || Self->RankReportMatch != Match)
+		{
+			return;
+		}
+		const FString Step = Reply.IsValid() && Reply->GetBoolField(TEXT("ok")) ? Reply->GetStringField(TEXT("state")) : FString();
+		FChaosImpactRankReport& Report = Self->RankReport;
+		if (Step == TEXT("done"))
+		{
+			Report.State = EChaosImpactRankReportState::Done;
+			Report.Before = static_cast<int32>(Reply->GetNumberField(TEXT("before")));
+			Report.After = static_cast<int32>(Reply->GetNumberField(TEXT("after")));
+			Report.Delta = static_cast<int32>(Reply->GetNumberField(TEXT("delta")));
+			Report.ChangedAt = FPlatformTime::Seconds();
+			ReadRankInfo(Reply, Self->RankInfo);
+			UE_LOG(LogChaosImpact, Log, TEXT("Rank match %s recorded: %d -> %d"), *Match, Report.Before, Report.After);
+			return;
+		}
+		if (Step == TEXT("void"))
+		{
+			Report.State = EChaosImpactRankReportState::Void;
+			Report.ChangedAt = FPlatformTime::Seconds();
+			UE_LOG(LogChaosImpact, Warning, TEXT("Rank match %s not counted (the reports disagreed)"), *Match);
+			return;
+		}
+		if (Step == TEXT("pending") && Report.State != EChaosImpactRankReportState::Pending)
+		{
+			Report.State = EChaosImpactRankReportState::Pending;
+			Report.ChangedAt = FPlatformTime::Seconds();
+		}
+		if (Self->RankReportTries >= (Step.IsEmpty() ? 6 : RankReportMaxTries))
+		{
+			Report.State = EChaosImpactRankReportState::Failed;
+			Report.ChangedAt = FPlatformTime::Seconds();
+			UE_LOG(LogChaosImpact, Warning, TEXT("Rank match %s: the relay never settled it"), *Match);
+			return;
+		}
+		// Asked again a little later: the other player's report, or the relay's own wait, settles it.
+		Self->RankReportTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(Self, [Self, Match](float)
+		{
+			Self->RankReportTicker.Reset();
+			if (Self->RankReportMatch == Match)
+			{
+				Self->SendRankReport();
+			}
+			return false;
+		}), RankReportRetrySeconds);
+	});
 }

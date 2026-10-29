@@ -78,6 +78,10 @@ namespace ChaosImpactRoster
 			TEXT("西暦1923生産のアンティーク物。"), TEXT("広島のファン。")},
 		{TEXT("究極電子生命体 セル"), TEXT("/Game/ChaosImpact/Cell"), TEXT("Cell"), EChaosImpactModelKind::Skinned, false,
 			TEXT("「ボク、セル！」が口癖の電子体。"), TEXT("データを取り込むことで際限なく強くなれる。")},
+		{TEXT("人々の子守歌"), TEXT("/Game/ChaosImpact/Cat"), TEXT("Cat"), EChaosImpactModelKind::Skinned, false,
+			TEXT("黒目に見えるところは空洞。ハイライトはすべて目。"), TEXT("将来の夢は、この世すべての人間を救済すること。")},
+		{TEXT("バードストライカー"), TEXT("/Game/ChaosImpact/Kawaii"), TEXT("Kawaii"), EChaosImpactModelKind::Authored, false,
+			TEXT("かつて名を馳せたが、ドッチ・ボール大統領に"), TEXT("クチバシを縮められ引退を決意。油淋鶏が好き。")},
 	};
 	inline constexpr int32 HeroIndex = 6;
 	inline constexpr int32 RoboIndex = 7;
@@ -85,6 +89,8 @@ namespace ChaosImpactRoster
 	inline constexpr int32 ReverseIndex = 9;
 	inline constexpr int32 CapIndex = 10;
 	inline constexpr int32 CellIndex = 11;
+	inline constexpr int32 CatIndex = 12;
+	inline constexpr int32 BirdIndex = 13;
 
 	/** Tiles on the select screen; the ones past the roster show as locked, so it reads as a roster that grows. */
 	inline constexpr int32 TileCount = ((UE_ARRAY_COUNT(Characters) + 3) / 4) * 4;

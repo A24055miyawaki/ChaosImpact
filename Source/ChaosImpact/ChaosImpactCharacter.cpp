@@ -21,6 +21,8 @@
 #include "ChaosImpactSfx.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
+#include "ChaosImpactDuelBallBalance.h"
+#include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
@@ -374,6 +376,17 @@ void AChaosImpactCharacter::BeginPlay()
 #endif
 }
 
+FRotator AChaosImpactCharacter::GetTopDownCameraRotation() const
+{
+	FRotator View = SavedCameraBoomRotation;
+	const auto* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Match && Match->IsDuel() && Match->Duel.SideOf(GetPlayerState()) == 1)
+	{
+		View.Yaw = FRotator::NormalizeAxis(View.Yaw + 180.f);
+	}
+	return View;
+}
+
 void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -423,6 +436,16 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	if (ShoulderCamera) { ShoulderCamera->UpdateCamera(DeltaSeconds); }
 	if (CameraBoom)
 	{
+		const FRotator TopDownRotation = GetTopDownCameraRotation();
+		const float DuelYawOffset = FMath::FindDeltaAngleDegrees(SavedCameraBoomRotation.Yaw, TopDownRotation.Yaw);
+		if (!FMath::IsNearlyEqual(DuelYawOffset, AppliedDuelCameraYawOffset))
+		{
+			// Switch sides before movement/aim polling, behind the opening transition. A long 180-degree orbit
+			// would rotate the controls during play. The lobby restores the original angle in the same way.
+			AppliedDuelCameraYawOffset = DuelYawOffset;
+			CameraTurnVelocity = FVector::ZeroVector;
+			CameraBoom->SetWorldRotation(TopDownRotation);
+		}
 		const bool bNovaOverview = IsLocallyControlled() && IsChargingNova() && !bTrainingMenuCameraActive;
 		const bool bShoulder = IsShoulderViewActive();
 		FVector NovaStageCenter = GetActorLocation();
@@ -438,7 +461,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		const FVector DesiredSocketOffset = bTrainingMenuCameraActive
 			? TrainingMenuCameraSocketOffset : bShoulder ? ShoulderCamera->SocketOffset : SavedCameraSocketOffset;
 		const FRotator DesiredBoomRotation = bNovaOverview
-			? FRotator(-90.0f, SavedCameraBoomRotation.Yaw, 0.0f) : bShoulder ? ShoulderCamera->GetViewRotation() : SavedCameraBoomRotation;
+			? FRotator(-90.0f, TopDownRotation.Yaw, 0.0f) : bShoulder ? ShoulderCamera->GetViewRotation() : TopDownRotation;
 		// Steering a drive ball, the camera follows the ball (and sits a little further out to see round it).
 		const AChaosImpactBall* Driven = IsLocallyControlled() && !bTrainingMenuCameraActive && IsDriving() ? DrivenBall.Get() : nullptr;
 		FVector DriveOffset = Driven ? Driven->GetActorLocation() - GetActorLocation() : FVector::ZeroVector;
@@ -1691,7 +1714,7 @@ void AChaosImpactCharacter::UpdateNovaTargeting(const float DeltaSeconds)
 	}
 	if (bNovaTargetValid && !CursorInput.IsNearlyZero() && DeltaSeconds > 0.0f)
 	{
-		const FRotator CameraYaw(0.0f, SavedCameraBoomRotation.Yaw, 0.0f);
+		const FRotator CameraYaw(0.0f, GetTopDownCameraRotation().Yaw, 0.0f);
 		const FVector CameraForward = FRotationMatrix(CameraYaw).GetUnitAxis(EAxis::X);
 		const FVector CameraRight = FRotationMatrix(CameraYaw).GetUnitAxis(EAxis::Y);
 		const FVector CursorVelocity = CameraForward * CursorInput.Y + CameraRight * CursorInput.X;
@@ -1976,9 +1999,11 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	{
 		SourcePawn = SourceZone->GetSourcePawn();
 	}
-	// VS: nobody is hurt outside the match itself, and teammates never hurt each other.
+	// VS: nobody is hurt outside the match itself (in a duel, outside a round being fought), and teammates never
+	// hurt each other.
 	if (AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, this)
-		|| (Match && Match->bVersusMatch && Match->Phase != EChaosImpactOnlinePhase::Match))
+		|| (Match && Match->bVersusMatch && Match->Phase != EChaosImpactOnlinePhase::Match)
+		|| (Match && Match->IsDuel() && !Match->IsDuelLive()))
 	{
 		return 0.0f;
 	}
@@ -1988,7 +2013,18 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		return 0.0f;
 	}
 
-	const float AppliedDamage = FMath::Min(Health, DamageAmount);
+	float AllowedDamage = DamageAmount;
+	if (Match && Match->IsDuel())
+	{
+		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage;
+		if (auto* Ball = Cast<AChaosImpactBall>(DamageCauser)) { ThrowDamage = Ball->GetDuelThrowDamage(); }
+		else if (SourceZone) { ThrowDamage = SourceZone->GetDuelThrowDamage(); }
+		else if (const auto* Bird = Cast<AChaosImpactSimaeBird>(DamageCauser)) { ThrowDamage = Bird->GetDuelThrowDamage(); }
+		else if (const auto* Wind = Cast<AChaosImpactTornado>(DamageCauser)) { ThrowDamage = Wind->GetDuelThrowDamage(); }
+		if (ThrowDamage) { AllowedDamage = ThrowDamage->Consume(this, FMath::Min(Health, DamageAmount)); }
+	}
+	if (AllowedDamage <= 0.f) { return 0.f; }
+	const float AppliedDamage = FMath::Min(Health, AllowedDamage);
 	if (AppliedDamage > 0.0f && IsInBallForm()) { BallForm->Restore(); }
 	Health = FMath::Clamp(Health - AppliedDamage, 0.0f, MaxHealth);
 	LastDamageCauser = DamageCauser;
@@ -2007,6 +2043,13 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 				ScoringMode->AwardMatchPoints(SourcePawn->GetPlayerState(), Points, bKnockout);
 			}
 			ScoringMode->RecordHit(SourcePawn, this, DamageCauser);
+		}
+	}
+	if (Match && Match->IsDuel() && AppliedDamage > 0.0f)
+	{
+		if (AChaosImpactGameMode* DuelMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
+		{
+			DuelMode->NotifyDuelHit(this);
 		}
 	}
 
@@ -2069,6 +2112,13 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		StartEliminationEffect();
 		OnPlayerEliminated();
 		OnEliminated.Broadcast(this);
+		if (Match && Match->IsDuel())
+		{
+			if (AChaosImpactGameMode* DuelMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
+			{
+				DuelMode->NotifyDuelKnockout(this);
+			}
+		}
 
 		AChaosImpactCharacter* Eliminator = EventInstigator
 			? Cast<AChaosImpactCharacter>(EventInstigator->GetPawn()) : nullptr;
@@ -2104,6 +2154,11 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 void AChaosImpactCharacter::BeginRespawnCountdown()
 {
 	if (!bEliminated || !GetWorld())
+	{
+		return;
+	}
+	// A duel: whoever goes down stays down; the next round puts both back (AChaosImpactGameMode::PlaceDuelists).
+	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>(); Match && Match->IsDuel())
 	{
 		return;
 	}
@@ -4229,8 +4284,15 @@ void AChaosImpactCharacter::ApplyIceFreeze(const float Seconds)
 	{
 		return;
 	}
-	IceFrozenUntilServerTime = FMath::Max(IceFrozenUntilServerTime, GetSharedServerTime() + Seconds);
-	UE_LOG(LogChaosImpact, Log, TEXT("%s frozen for %.1fs"), *GetName(), Seconds);
+	const double Now = GetSharedServerTime();
+	const bool bDuel = ChaosImpactDuelBallBalance::IsDuel(GetWorld());
+	// A second ice ball may still hurt, but cannot keep the opponent permanently unable to move.
+	if (bDuel && IceFrozenUntilServerTime > 0.0
+		&& Now < IceFrozenUntilServerTime + ChaosImpactDuelBallBalance::IceSlowSeconds
+			+ ChaosImpactDuelBallBalance::IceRepeatGraceSeconds) { return; }
+	const float Duration = bDuel ? FMath::Min(Seconds, ChaosImpactDuelBallBalance::IceFreezeSeconds) : Seconds;
+	IceFrozenUntilServerTime = FMath::Max(IceFrozenUntilServerTime, Now + Duration);
+	UE_LOG(LogChaosImpact, Log, TEXT("%s frozen for %.1fs"), *GetName(), Duration);
 	UpdateIceStatus(0.0f);
 	ForceNetUpdate();
 }
@@ -4810,9 +4872,13 @@ void AChaosImpactCharacter::UpdateSnowball()
 	}
 	if (BaseMaxWalkSpeed > 0.0f)
 	{
+		const double Now = GetSharedServerTime();
+		const bool bDuelIceSlow = ChaosImpactDuelBallBalance::IsDuel(GetWorld()) && IceFrozenUntilServerTime > 0.0
+			&& Now >= IceFrozenUntilServerTime && Now < IceFrozenUntilServerTime + ChaosImpactDuelBallBalance::IceSlowSeconds;
+		const float IceSpeed = bDuelIceSlow ? ChaosImpactDuelBallBalance::IceSlowMultiplier : 1.f;
 		// Charging a nova roots its thrower to the spot.
 		GetCharacterMovement()->MaxWalkSpeed = IsChargingNova() || IsDriving() ? 0.0f
-			: BaseMaxWalkSpeed * (1.0f - ChaosImpactBallTypes::SnowMaxSlowdown * Heaviest) * ExplorationSpeed;
+			: BaseMaxWalkSpeed * (1.0f - ChaosImpactBallTypes::SnowMaxSlowdown * Heaviest) * ExplorationSpeed * IceSpeed;
 	}
 }
 
@@ -5978,9 +6044,11 @@ void AChaosImpactCharacter::SetAIDriveSteer(const FVector& Direction)
 
 void AChaosImpactCharacter::OnDriveBallAdopted(AChaosImpactBall* Predicted, AChaosImpactBall* Adopted)
 {
-	if (Adopted && Adopted->GetBallType() == EChaosImpactBallType::Drive && DriveEndsAt > 0.0
-		&& (!DrivenBall.IsValid() || DrivenBall.Get() == Predicted))
+	if (Adopted && Adopted->GetBallType() == EChaosImpactBallType::Drive && Adopted->GetDriveControlLeft() > 0.f
+		&& (!DrivenBall.IsValid() || DrivenBall.Get() == Predicted || DrivenBall.Get() == Adopted))
 	{
+		// Use the actual server lifetime, including when the preview expired during a network delay.
+		DriveEndsAt = GetSharedServerTime() + Adopted->GetDriveControlLeft() * ChaosImpactBallTypes::DriveControlSeconds;
 		DrivenBall = Adopted;
 		Adopted->SetDriveSteer(DriveSteer);
 	}
@@ -6027,7 +6095,7 @@ void AChaosImpactCharacter::UpdateDriving(const float DeltaSeconds)
 			}
 		}
 	}
-	if (!Ball || Ball->HasDetonated() || bEliminated || Now >= DriveEndsAt + 0.1)
+	if ((!Ball && HasAuthority()) || (Ball && Ball->HasDetonated()) || bEliminated || Now >= DriveEndsAt + 0.1)
 	{
 		EndDriving(false);
 		return;
@@ -6035,7 +6103,7 @@ void AChaosImpactCharacter::UpdateDriving(const float DeltaSeconds)
 	if (IsLocallyControlled())
 	{
 		if (const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetController());
-			PC && PC->IsGameplayActive() && !bTrainingMenuFrozen
+			PC && Ball && PC->IsGameplayActive() && !bTrainingMenuFrozen
 			&& ChaosImpactSettings::IsMouseOnlyScheme(ChaosImpactSettings::GetPlayerControlScheme(PC)))
 		{
 			FVector Point;
@@ -6050,7 +6118,8 @@ void AChaosImpactCharacter::UpdateDriving(const float DeltaSeconds)
 		{
 			DriveSteer = FVector::ZeroVector;
 		}
-		Ball->SetDriveSteer(DriveSteer);
+		// Keep forwarding input even in the short gap between an expired preview and the server actor.
+		if (Ball) { Ball->SetDriveSteer(DriveSteer); }
 		if (!HasAuthority() && (FVector::DistSquared(DriveSteer, LastSentDriveSteer) > 0.0004 || Now >= NextDriveSendAt))
 		{
 			ServerDriveSteer(DriveSteer);

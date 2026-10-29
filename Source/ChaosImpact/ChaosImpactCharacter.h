@@ -96,6 +96,8 @@ public:
 	float GetVerticalImpulseTempo() const { return AppliedJumpTempo; }
 	bool IsShoulderViewActive() const;
 	UChaosImpactShoulderCameraComponent* GetShoulderCamera() const { return ShoulderCamera; }
+	/** Duel side 1 looks from the opposite end; never changes the saved BP camera or world-space throws. */
+	FRotator GetTopDownCameraRotation() const;
 	void SetGameplayUIVisible(bool bVisible);
 	void CancelChargingThrow();
 	/** Server: knocked loose: every ball carried falls and rolls away (a charge is called off). */
@@ -702,6 +704,7 @@ protected:
 	FVector NovaCameraLead = FVector::ZeroVector;
 	double NovaCameraHoldUntil = 0.0;
 	FRotator SavedCameraBoomRotation = FRotator(-60.0f, 0.0f, 0.0f);
+	float AppliedDuelCameraYawOffset = 0.f;
 
 	/** Whole-stage nova targeting camera and right-stick cursor tuning. */
 	UPROPERTY(EditAnywhere, Category="Chaos Impact|Nova Targeting", meta=(ClampMin="1.0"))

@@ -1,4 +1,5 @@
 #include "ChaosImpactSimaeBird.h"
+#include "ChaosImpactDuelBallBalance.h"
 #include "ChaosImpactFxKit.h"
 
 #include "ChaosImpactBallTypes.h"
@@ -40,7 +41,13 @@ struct FChaosImpactSimaeFlockState
 		TWeakObjectPtr<AChaosImpactSimaeBird> Leader;
 	};
 	TMap<FObjectKey, FTarget> Targets;
+	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage;
 };
+
+TSharedPtr<FChaosImpactDuelThrowDamage> AChaosImpactSimaeBird::GetDuelThrowDamage() const
+{
+	return FlockState ? FlockState->ThrowDamage : nullptr;
+}
 
 namespace
 {
@@ -104,7 +111,8 @@ void AChaosImpactSimaeBird::BeginPlay()
 	SpawnedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 	StateStartedAt = SpawnedAt;
 	NextTargetReviewAt = SpawnedAt + PopOutSeconds + (BirdIndex % 3) * 0.04f;
-	SetLifeSpan(ChaosImpactBallTypes::SimaeLifetimeSeconds);
+	SetLifeSpan(ChaosImpactDuelBallBalance::IsDuel(GetWorld()) ? ChaosImpactDuelBallBalance::SimaeLifetimeSeconds
+		: ChaosImpactBallTypes::SimaeLifetimeSeconds);
 	BuildAppearance();
 	if (HasAuthority() && BirdIndex == 0)
 	{
@@ -123,7 +131,8 @@ void AChaosImpactSimaeBird::ConfigureBird(const int32 InFlockId, const int32 InB
 	FlockState = InFlockState;
 }
 
-void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location, APawn* ThrowingPawn, AActor* DirectVictim)
+void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location, APawn* ThrowingPawn, AActor* DirectVictim,
+	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage)
 {
 	if (!World || World->GetNetMode() == NM_Client)
 	{
@@ -137,7 +146,8 @@ void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location,
 		if (!Candidate || Candidate == ThrowingPawn || Candidate->IsEliminated()
 			|| AChaosImpactGameState::AreTeammates(World, ThrowingPawn, Candidate)
 			|| FVector::DistSquared2D(Location, Candidate->GetActorLocation())
-				> FMath::Square(ChaosImpactBallTypes::SimaeAcquireReach))
+				> FMath::Square(ChaosImpactDuelBallBalance::IsDuel(World) ? ChaosImpactDuelBallBalance::SimaeAcquireReach
+					: ChaosImpactBallTypes::SimaeAcquireReach))
 		{
 			continue;
 		}
@@ -164,6 +174,7 @@ void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location,
 		}
 	}
 	const TSharedPtr<FChaosImpactSimaeFlockState> SharedState = MakeShared<FChaosImpactSimaeFlockState>();
+	SharedState->ThrowDamage = ThrowDamage ? ThrowDamage : FChaosImpactDuelThrowDamage::Create(World);
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::SimaeBirdCount; ++Index)
 	{
 		const float Angle = 360.0f * Index / ChaosImpactBallTypes::SimaeBirdCount + FMath::FRandRange(-10.0f, 10.0f);
@@ -244,7 +255,8 @@ void AChaosImpactSimaeBird::UpdateServer(const float DeltaSeconds)
 		return;
 	}
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now - SpawnedAt >= ChaosImpactBallTypes::SimaeLifetimeSeconds - 1.25f
+	const bool bDuel = ChaosImpactDuelBallBalance::IsDuel(GetWorld());
+	if (Now - SpawnedAt >= (bDuel ? ChaosImpactDuelBallBalance::SimaeLifetimeSeconds : ChaosImpactBallTypes::SimaeLifetimeSeconds) - 1.25f
 		&& BirdState != EChaosImpactSimaeBirdState::Departing)
 	{
 		BeginDeparting((GetActorLocation() - SpawnLocation).GetSafeNormal2D());
@@ -302,7 +314,7 @@ void AChaosImpactSimaeBird::UpdateServer(const float DeltaSeconds)
 		}
 		const float Dot = FMath::Clamp(FVector::DotProduct(Current, Desired), -1.0f, 1.0f);
 		const float Angle = FMath::Acos(Dot);
-		const float MaxStep = FMath::DegreesToRadians(ChaosImpactBallTypes::SimaeTurnDegreesPerSecond) * DeltaSeconds;
+		const float MaxStep = FMath::DegreesToRadians(bDuel ? ChaosImpactDuelBallBalance::SimaeTurnDegrees : ChaosImpactBallTypes::SimaeTurnDegreesPerSecond) * DeltaSeconds;
 		if (Angle > KINDA_SMALL_NUMBER)
 		{
 			FVector Axis = FVector::CrossProduct(Current, Desired).GetSafeNormal();
@@ -313,7 +325,8 @@ void AChaosImpactSimaeBird::UpdateServer(const float DeltaSeconds)
 			}
 			Current = Current.RotateAngleAxis(FMath::RadiansToDegrees(FMath::Min(Angle, MaxStep)), Axis).GetSafeNormal();
 		}
-		const float Speed = FMath::Lerp(ChaosImpactBallTypes::SimaeMinSpeed, ChaosImpactBallTypes::SimaeMaxSpeed,
+		const float Speed = FMath::Lerp(bDuel ? ChaosImpactDuelBallBalance::SimaeMinSpeed : ChaosImpactBallTypes::SimaeMinSpeed,
+			bDuel ? ChaosImpactDuelBallBalance::SimaeMaxSpeed : ChaosImpactBallTypes::SimaeMaxSpeed,
 			static_cast<float>(BirdIndex) / FMath::Max(ChaosImpactBallTypes::SimaeBirdCount - 1, 1));
 		Velocity = Current * Speed;
 		const FVector Previous = GetActorLocation();
@@ -369,7 +382,7 @@ void AChaosImpactSimaeBird::UpdateServer(const float DeltaSeconds)
 				}
 				MulticastChirp(2);
 			}
-			if (Schedule.PecksDelivered >= ChaosImpactBallTypes::SimaeMaxPecksPerTarget || TargetCharacter->IsEliminated())
+			if (Schedule.PecksDelivered >= (bDuel ? 1 : ChaosImpactBallTypes::SimaeMaxPecksPerTarget) || TargetCharacter->IsEliminated())
 			{
 				ReleasePerchedGroup(true);
 			}
@@ -492,6 +505,7 @@ AChaosImpactCharacter* AChaosImpactSimaeBird::FindTarget() const
 
 bool AChaosImpactSimaeBird::IsValidTarget(const AChaosImpactCharacter* Candidate) const
 {
+	if (FlockState && FlockState->ThrowDamage && FlockState->ThrowDamage->HasHit(Candidate)) { return false; }
 	if (FlockState && Candidate)
 	{
 		if (const FChaosImpactSimaeFlockState::FTarget* Record = FlockState->Targets.Find(FObjectKey(Candidate)); Record && Record->bCleared)
@@ -502,7 +516,8 @@ bool AChaosImpactSimaeBird::IsValidTarget(const AChaosImpactCharacter* Candidate
 	return IsValid(Candidate) && Candidate != SourcePawn && !Candidate->IsEliminated()
 		&& !AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, Candidate)
 		&& FVector::DistSquared2D(SpawnLocation, Candidate->GetActorLocation())
-			<= FMath::Square(ChaosImpactBallTypes::SimaeAcquireReach);
+			<= FMath::Square(ChaosImpactDuelBallBalance::IsDuel(GetWorld()) ? ChaosImpactDuelBallBalance::SimaeAcquireReach
+				: ChaosImpactBallTypes::SimaeAcquireReach);
 }
 
 FVector AChaosImpactSimaeBird::GetTargetHeadLocation() const
@@ -560,7 +575,8 @@ bool AChaosImpactSimaeBird::HasPerchedBird(const AChaosImpactCharacter* Characte
 	}
 	if (OutPecksRemaining && NextBird)
 	{
-		*OutPecksRemaining = FMath::Max(0, ChaosImpactBallTypes::SimaeMaxPecksPerTarget - NextBird->PecksDelivered);
+		*OutPecksRemaining = FMath::Max(0, (ChaosImpactDuelBallBalance::IsDuel(Character->GetWorld()) ? 1
+			: ChaosImpactBallTypes::SimaeMaxPecksPerTarget) - NextBird->PecksDelivered);
 	}
 	return true;
 }

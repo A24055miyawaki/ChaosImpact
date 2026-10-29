@@ -38,6 +38,21 @@ private:
 	void PaintCrashScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
 		const AChaosImpactGameState& Match, double ServerNow, float Time) const;
 
+	/**
+	 * The duel (ランクマッチ's rules): both players either side of the round clock, each with the rounds won and the
+	 * health left, and under the clock how every round went so far.
+	 */
+	void PaintDuelScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
+		const AChaosImpactGameState& Match, float Time) const;
+	/**
+	 * The duel's ball slot, before the first round: three reels of special balls spin and stop one by one on the kinds
+	 * this match is played with, then those three are shown together.
+	 */
+	void PaintDuelBallSlot(const FGeometry& Center, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
+		const AChaosImpactGameState& Match, float Time) const;
+	/** The duel's side shown on the left: this player's own (side 0 when watching or sharing the screen). */
+	int32 GetDuelLeftSide(const AChaosImpactGameState& Match) const;
+
 	/** The call-outs' sounds (the countdown's ticks, GO!, the last minute, FINISH, the podium), as each arrives. */
 	void UpdateSounds();
 	int32 SoundPhase = -1;
@@ -45,4 +60,9 @@ private:
 	double SoundReadyAt = 0.0;
 	bool bSoundMinuteCalled = false;
 	bool bSoundPodiumShown = false;
+	/** The duel's step last heard (ROUND, FIGHT!, the round's end). */
+	int32 SoundDuelStep = -1;
+	double SoundDuelStepAt = 0.0;
+	/** The ball slot's reels heard stopping so far. */
+	int32 SoundReelsStopped = 0;
 };

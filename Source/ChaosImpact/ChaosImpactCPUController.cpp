@@ -2365,7 +2365,7 @@ FVector AChaosImpactCPUController::PredictTargetAt(const AChaosImpactCharacter* 
 		}
 		const FVector ToCentre = Zone->GetActorLocation() - Where;
 		const float Distance = static_cast<float>(ToCentre.Size2D());
-		if (Distance < AChaosImpactHazardZone::BlackHoleRadius && Distance > 40.0f)
+		if (Distance < Zone->GetRadius() && Distance > 40.0f)
 		{
 			Motion += ToCentre.GetSafeNormal2D() * FMath::Min(Distance - 40.0f, AChaosImpactHazardZone::BlackHolePullSpeed * Seconds);
 		}
@@ -2944,7 +2944,7 @@ float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, 
 			break;
 		case EChaosImpactBallType::Black:
 			// Its pull is faster than walking: inside it at all means dashing out.
-			Danger += Distance < AChaosImpactHazardZone::BlackHoleRadius + Body
+			Danger += Distance < Reach
 				? 3.0f + (Distance < AChaosImpactHazardZone::BlackHoleBurnRadius + 120.0f ? 4.0f : 0.0f) : 0.0f;
 			break;
 		case EChaosImpactBallType::Smoke:

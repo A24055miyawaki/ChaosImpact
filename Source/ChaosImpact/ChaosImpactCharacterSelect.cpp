@@ -1064,6 +1064,7 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		const auto ModelKind = ChaosImpactRoster::Get(Slot.Character).Kind;
 		VisibleTop = ModelKind == EChaosImpactModelKind::Authored ? 0.14f : 0.02f;
 		if (ModelKind == EChaosImpactModelKind::Handstand) { VisibleHeight = 0.94f; VisibleTop = 0.03f; }
+		if (Slot.Character == ChaosImpactRoster::BirdIndex) { VisibleHeight = 0.94f; VisibleTop = 0.02f; }
 		PictureW = AreaHeight * 0.75f / VisibleHeight;
 	}
 	else if (PictureW > W - 28.0f)

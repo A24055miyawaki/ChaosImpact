@@ -446,6 +446,13 @@ bool UChaosImpactPuppetComponent::GetPalmLocation(const bool bRightHand, FVector
 	}
 	if (AuthoredMesh && bReady)
 	{
+		if (bBirdAuthored)
+		{
+			const FName BoneName = bRightHand ? TEXT("CarryR") : TEXT("CarryL");
+			if (AuthoredMesh->GetBoneIndex(BoneName) == INDEX_NONE) { return false; }
+			OutLocation = AuthoredMesh->GetSocketLocation(BoneName);
+			return true;
+		}
 		// There are no fin joints in Fish.fbx. Carry at the side-fin tips,
 		// skinned to joint4 with the same reference-to-current transform as the body.
 		const int32 Bone = AuthoredMesh->GetBoneIndex(TEXT("joint4"));

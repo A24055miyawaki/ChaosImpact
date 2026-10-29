@@ -24,9 +24,13 @@ namespace
 bool UChaosImpactPuppetComponent::InitializeAuthored(USkeletalMesh* Mesh)
 {
 	const auto& Info = ChaosImpactRoster::Get(CharacterIndex);
+	bBirdAuthored = CharacterIndex == ChaosImpactRoster::BirdIndex;
 	AuthoredClips.Reset();
-	for (const TCHAR* Name : {TEXT("Swim"), TEXT("Appeal"), TEXT("Ball"), TEXT("Nova"), TEXT("Swing")})
+	const TCHAR* FishClips[] = {TEXT("Swim"), TEXT("Appeal"), TEXT("Ball"), TEXT("Nova"), TEXT("Swing")};
+	const TCHAR* BirdClips[] = {TEXT("Idle"), TEXT("Appeal"), TEXT("Idle"), TEXT("Idle"), TEXT("Idle")};
+	for (int32 ClipIndex = 0; ClipIndex < 5; ++ClipIndex)
 	{
+		const TCHAR* Name = bBirdAuthored ? BirdClips[ClipIndex] : FishClips[ClipIndex];
 		const FString Path = FString::Printf(TEXT("%s/A_%s_%s"), Info.AssetFolder, Info.AssetPrefix, Name);
 		UAnimSequenceBase* Clip = LoadObject<UAnimSequenceBase>(nullptr, *Path);
 		if (!Clip || Clip->GetSkeleton() != Mesh->GetSkeleton()) { AuthoredClips.Reset(); return false; }
@@ -36,6 +40,8 @@ bool UChaosImpactPuppetComponent::InitializeAuthored(USkeletalMesh* Mesh)
 	AuthoredMesh->SetupAttachment(this);
 	// Keep the orientation carried by the imported clips; an extra half-turn reverses the fish.
 	AuthoredMesh->SetRelativeRotation(FRotator::ZeroRotator);
+	// A hovering bird: lift only its visible mesh; ordinary movement/collision and jump rules stay shared.
+	AuthoredMesh->SetRelativeLocation(bBirdAuthored ? FVector(0.f, 0.f, 20.f) : FVector::ZeroVector);
 	AuthoredMesh->SetSkeletalMeshAsset(Mesh);
 	AuthoredMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	AuthoredMesh->SetGenerateOverlapEvents(false);
@@ -76,6 +82,12 @@ void UChaosImpactPuppetComponent::PlayAuthoredThrow(const bool bNova, const floa
 	AuthoredThrowAge = 0.0f;
 	AuthoredReleaseDelay = FMath::Max(0.01f, ReleaseDelaySeconds);
 	AuthoredAppealRemaining = 0.0f;
+	if (bBirdAuthored)
+	{
+		// Keep flapping: only the ball travels from the wing to the mouth before release.
+		AuthoredThrowRemaining = AuthoredReleaseDelay;
+		return;
+	}
 	// NOVA holds its charging pose at 75%, then finishes the same authored clip on release.
 	const float Length = AuthoredClips[bNova ? 3 : 4]->GetPlayLength();
 	AuthoredThrowRate = bNova ? FMath::Max(0.1f, Length * 0.15f / FMath::Max(0.01f, ReleaseDelaySeconds)) : 1.0f;
@@ -86,6 +98,12 @@ void UChaosImpactPuppetComponent::PlayAuthoredThrow(const bool bNova, const floa
 bool UChaosImpactPuppetComponent::GetAuthoredMouthLocation(FVector& OutLocation) const
 {
 	if (!AuthoredMesh || !bReady) { return false; }
+	if (bBirdAuthored)
+	{
+		if (AuthoredMesh->GetBoneIndex(TEXT("Mouth")) == INDEX_NONE) { return false; }
+		OutLocation = AuthoredMesh->GetSocketLocation(TEXT("Mouth"));
+		return true;
+	}
 	const int32 Head = AuthoredMesh->GetBoneIndex(TEXT("joint7"));
 	if (Head == INDEX_NONE) { return false; }
 	const FTransform Reference = FAnimationRuntime::GetComponentSpaceTransformRefPose(
@@ -109,13 +127,13 @@ void UChaosImpactPuppetComponent::UpdateAuthoredPose(const float DeltaSeconds)
 		Desired = TEXT("Ball");
 		AuthoredThrowRemaining = AuthoredAppealRemaining = 0.0f;
 	}
-	else if (AuthoredThrowRemaining > 0.0f) { Desired = bAuthoredNovaThrow ? TEXT("NovaThrow") : TEXT("Swing"); }
+	else if (AuthoredThrowRemaining > 0.0f) { Desired = bBirdAuthored ? TEXT("Idle") : bAuthoredNovaThrow ? TEXT("NovaThrow") : TEXT("Swing"); }
 	else if (AuthoredAppealRemaining > 0.0f) { Desired = TEXT("Appeal"); }
 	else if (Character && Character->IsChargingNova()) { Desired = TEXT("NovaCharge"); }
 	else { Desired = Character && Character->GetVelocity().SizeSquared2D() > 9.0f ? TEXT("Swim") : TEXT("Idle"); }
 	SetAuthoredState(Desired);
 	const float Length = AuthoredClips[ClipFor(Desired)]->GetPlayLength();
-	const float Rate = Desired == TEXT("Idle") ? 0.22f
+	const float Rate = Desired == TEXT("Idle") ? (bBirdAuthored ? 1.f : 0.22f)
 		: Desired == TEXT("NovaThrow") || Desired == TEXT("Swing") ? AuthoredThrowRate : 1.0f;
 	AuthoredTime += FMath::Max(0.0f, DeltaSeconds) * Rate;
 	if (AuthoredThrowRemaining > 0.0f) { AuthoredThrowAge += FMath::Max(0.0f, DeltaSeconds); }

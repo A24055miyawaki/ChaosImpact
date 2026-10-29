@@ -12,6 +12,7 @@ class UPointLightComponent;
 class UProceduralMeshComponent;
 class UMaterialInstanceDynamic;
 struct FChaosImpactSimaeFlockState;
+struct FChaosImpactDuelThrowDamage;
 
 UENUM()
 enum class EChaosImpactSimaeBirdState : uint8
@@ -35,7 +36,9 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Server: releases one flock and distributes its birds across nearby viable enemies. */
-	static void ReleaseFlock(UWorld* World, const FVector& Location, APawn* ThrowingPawn, AActor* DirectVictim = nullptr);
+	static void ReleaseFlock(UWorld* World, const FVector& Location, APawn* ThrowingPawn, AActor* DirectVictim = nullptr,
+		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr);
+	TSharedPtr<FChaosImpactDuelThrowDamage> GetDuelThrowDamage() const;
 	/** Used by CPUs and the HUD to know that a dash can shake the flock off. */
 	static bool HasPerchedBird(const AChaosImpactCharacter* Character, float* OutRemainingSeconds = nullptr,
 		float* OutCountdownSeconds = nullptr, int32* OutPecksRemaining = nullptr);

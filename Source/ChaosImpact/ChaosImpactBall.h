@@ -9,6 +9,7 @@
 #include "ChaosImpactBall.generated.h"
 
 class AChaosImpactHazardZone;
+struct FChaosImpactDuelThrowDamage;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
 class UProceduralMeshComponent;
@@ -105,6 +106,9 @@ public:
 	/** Set before BeginPlay on a client-only throw preview: no damage, pickups or replication. */
 	void SetCosmeticPrediction(bool bCosmetic) { bCosmeticPrediction = bCosmetic; }
 	float GetDamage() const { return Damage; }
+	TSharedPtr<FChaosImpactDuelThrowDamage> GetDuelThrowDamage();
+	/** A tornado's redirected and released balls count toward that wind throw's damage limit. */
+	void SetDuelThrowDamage(TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage) { DuelThrowDamage = ThrowDamage; }
 	/** Set before FinishSpawning: what this ball does when it lands. */
 	void SetBallType(EChaosImpactBallType Type);
 	EChaosImpactBallType GetBallType() const { return BallType; }
@@ -161,6 +165,7 @@ public:
 	}
 
 protected:
+	TSharedPtr<FChaosImpactDuelThrowDamage> DuelThrowDamage;
 	virtual void BeginPlay() override;
 
 	UFUNCTION()

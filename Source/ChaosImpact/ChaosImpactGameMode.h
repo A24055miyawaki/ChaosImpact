@@ -13,6 +13,8 @@ class AChaosImpactStageBase;
 class AChaosImpactSpectatorPawn;
 class AChaosImpactCrashGoal;
 enum class EChaosImpactOnlinePhase : uint8;
+enum class EChaosImpactDuelStep : uint8;
+enum class EChaosImpactDuelEnd : uint8;
 
 /**
  *  Simple GameMode for a third person game
@@ -83,6 +85,14 @@ public:
 	bool ChooseMatchRespawn(const AActor* Character, FVector& OutLocation, FRotator& OutRotation) const;
 	/** Server: Location is off the VS stage in use (past its walls or below its floor). False with no stage. */
 	bool IsOutsideStage(const FVector& Location) const;
+	/** ランクマッチ (the duel), server: a competitor was just knocked out (the round ends; both at once: drawn). */
+	void NotifyDuelKnockout(APawn* Victim);
+	/** ランクマッチ, server: Victim was hit (in sudden death the first hit takes the round). */
+	void NotifyDuelHit(APawn* Victim);
+	/** A matched room (ランダムマッチ / ランクマッチ): how long it waits for everyone matched before it starts anyway. */
+	static constexpr float MatchmadeWaitSeconds = 25.0f;
+	/** A matched room closes this long after its results began, whoever is still looking at them. */
+	static constexpr float MatchmadeResultsSeconds = 45.0f;
 
 	/**
 	 * Pairs input devices with this machine's local players using the world URL
@@ -138,8 +148,8 @@ private:
 
 	// VS match flow: [TeamSelect] -> Intro -> Match -> Results -> (online) back to the lobby.
 	void SetMatchPhase(EChaosImpactOnlinePhase NewPhase, float Seconds);
-	/** Makes the stage for StageIndex (0..5) the one in use, replacing a different one. */
-	void EnsureVersusStage(int32 StageIndex);
+	/** Makes the stage for StageIndex (0..5), or the duel arena, the one in use, replacing a different one. */
+	void EnsureVersusStage(int32 StageIndex, bool bDuelStage = false);
 	void StartMatchIntro();
 	/** Every opening has finished (or the wait timed out): Ready?, then GO. */
 	void StartReadyCountdown();
@@ -190,6 +200,40 @@ private:
 	FTimerHandle DevWindTimer;
 	FTimerHandle StartingTimer;
 	FTimerHandle DevAutoLobbyTimer;
+
+	// Matched rooms: everyone matched arrives -> the match starts by itself -> after the results each machine goes home.
+	void UpdateMatchmadeRoom();
+	FChaosImpactMatchRules MakeMatchmadeRules(int32 Humans) const;
+	/** The results are over (or ran too long): every guest is sent home, then the host goes. */
+	void CloseMatchmadeRoom();
+	/** The host goes home once no guest is left (or straight away when Force). */
+	void FinishMatchmadeIfEmpty(bool bForce);
+	FTimerHandle MatchmadeTimer;
+	FTimerHandle MatchmadeCloseTimer;
+	bool bMatchmadeMatchBegun = false;
+	bool bMatchmadeHostDone = false;
+
+	// ランクマッチ (the duel): ROUND N -> FIGHT -> [time up, level: SUDDEN DEATH] -> round over -> ... -> results.
+	void SetDuelStep(EChaosImpactDuelStep Step, float Seconds);
+	void StartDuelRound(int32 Round);
+	void BeginDuelFight();
+	void HandleDuelTimeUp();
+	void EvaluateDuelKnockouts();
+	void EndDuelRound(int32 WinnerSide, EChaosImpactDuelEnd How);
+	void AfterDuelRound();
+	/** Both duellists back at their starts, healed and empty-handed, for a new round. */
+	void PlaceDuelists();
+	/** The ball slot is over: the pads put out the kinds it drew (as often as in a VS match), then ROUND 1. */
+	void FinishDuelBallDraw();
+	/** The pads put out normal balls and the duel's drawn kinds (only normal balls before the draw is shown). */
+	void ApplyDuelBallChances(bool bWithPicks);
+	/** A duellist left mid-match: the other one wins it. */
+	void ForfeitDuel(int32 LeavingSide);
+	float GetDuelRoundSeconds() const;
+	/** The pawn (alive or knocked out) of a duel side. */
+	APawn* GetDuelPawn(int32 Side) const;
+	FTimerHandle DuelTimer;
+	bool bDuelKnockoutCheckPending = false;
 	FChaosImpactMatchRules DevAutoLobbyRules;
 	/** Development: -CIReadyWaitSeconds= shortens the wait before a decided match starts by itself. */
 	float ReadyWaitSecondsOverride = 0.0f;
@@ -225,6 +269,9 @@ private:
 	/** ステージ6 (the molten core foundry). */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
 	TSubclassOf<AChaosImpactStageBase> ForgeStageClass;
+	/** ランクマッチ's arena (デュエルアリーナ), used by every duel whatever stage is chosen. */
+	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
+	TSubclassOf<AChaosImpactStageBase> DuelStageClass;
 
 	/** Where that stage is spawned. X/Y as set; Z follows the players' floor. Far from the training arena. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))

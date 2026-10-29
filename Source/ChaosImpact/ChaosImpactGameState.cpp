@@ -64,6 +64,32 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, RoomName);
 	DOREPLIFETIME(AChaosImpactGameState, bRulesDecided);
 	DOREPLIFETIME(AChaosImpactGameState, ReadyDeadline);
+	DOREPLIFETIME(AChaosImpactGameState, Matchmade);
+	DOREPLIFETIME(AChaosImpactGameState, MatchmadeExpected);
+	DOREPLIFETIME(AChaosImpactGameState, MatchmadeDeadline);
+	DOREPLIFETIME(AChaosImpactGameState, Duel);
+}
+
+bool AChaosImpactGameState::IsDuelLive() const
+{
+	return IsDuel() && Phase == EChaosImpactOnlinePhase::Match
+		&& (Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath);
+}
+
+float AChaosImpactGameState::GetDuelStepRemaining() const
+{
+	return Duel.StepEndsAt > 0.0 ? FMath::Max(0.0f, static_cast<float>(Duel.StepEndsAt - GetServerWorldTimeSeconds())) : 0.0f;
+}
+
+float AChaosImpactGameState::GetDuelStepElapsed() const
+{
+	return FMath::Max(0.0f, static_cast<float>(GetServerWorldTimeSeconds() - Duel.StepStartedAt));
+}
+
+APlayerState* AChaosImpactGameState::GetDuelOpponent(const APlayerState* Member) const
+{
+	const int32 Side = Duel.SideOf(Member);
+	return Side == INDEX_NONE ? nullptr : Duel.Sides[1 - Side].Get();
 }
 
 float AChaosImpactGameState::GetIntroElapsedSeconds() const
@@ -173,8 +199,16 @@ TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetCompetitors(const boo
 TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetRanking() const
 {
 	TArray<AChaosImpactPlayerState*> Ranking = GetCompetitors(true);
-	Ranking.StableSort([](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B)
+	const bool bDuel = IsDuel();
+	Ranking.StableSort([this, bDuel](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B)
 	{
+		// A duel goes by the rounds won first.
+		const int32 SideA = bDuel ? Duel.SideOf(&A) : INDEX_NONE;
+		const int32 SideB = bDuel ? Duel.SideOf(&B) : INDEX_NONE;
+		if (SideA != INDEX_NONE && SideB != INDEX_NONE && Duel.Wins[SideA] != Duel.Wins[SideB])
+		{
+			return Duel.Wins[SideA] > Duel.Wins[SideB];
+		}
 		if (A.Points != B.Points)
 		{
 			return A.Points > B.Points;
@@ -206,9 +240,18 @@ float AChaosImpactGameState::GetPhaseElapsedSeconds() const
 
 bool AChaosImpactGameState::IsMatchInputLocked() const
 {
+	// A matched room waits behind its own screen until the match, and closes after it: nobody plays in its lobby.
+	if (IsMatchmade() && (!bVersusMatch || Phase == EChaosImpactOnlinePhase::Lobby || Phase == EChaosImpactOnlinePhase::Starting))
+	{
+		return true;
+	}
 	if (!bVersusMatch)
 	{
 		return false;
+	}
+	if (Rules.bDuel && Phase == EChaosImpactOnlinePhase::Match && !IsDuelLive())
+	{
+		return true;
 	}
 	switch (Phase)
 	{

@@ -5,6 +5,7 @@
 #include "ChaosImpactTornado.generated.h"
 
 class AChaosImpactBall;
+struct FChaosImpactDuelThrowDamage;
 class AChaosImpactCharacter;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
@@ -52,6 +53,7 @@ public:
 	bool TryApplyReportedHit(AChaosImpactCharacter* Victim);
 
 	APawn* GetSourcePawn() const { return SourcePawn; }
+	TSharedPtr<FChaosImpactDuelThrowDamage> GetDuelThrowDamage() const { return DuelThrowDamage; }
 	/** The way it is heading now (before its weave), on this machine. */
 	FVector GetTravelDirection() const { return PathHeading; }
 	/** The foot of the funnel now, on this machine. */
@@ -69,6 +71,7 @@ public:
 	static constexpr int32 MaxCarriedBalls = 8;
 
 private:
+	TSharedPtr<FChaosImpactDuelThrowDamage> DuelThrowDamage;
 	void StepPath(float Seconds);
 	void CatchCharacters();
 	bool CanCatch(const AActor* Victim) const;

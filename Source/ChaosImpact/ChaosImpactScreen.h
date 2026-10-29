@@ -44,7 +44,9 @@ enum class EChaosImpactScreen : uint8
 	// --- ソロモード用（末尾に追加） ---
 	SoloStageSelect,
 	/** Settings: screen, picture, controls (per nickname and device) and the rest. */
-	Settings
+	Settings,
+	/** Rank match (online, 1 v 1): the rank, the record and the search button. */
+	RankTop
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

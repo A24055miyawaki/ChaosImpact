@@ -38,6 +38,8 @@ public:
 	/** How likely (0-1) a new ball from this pad is of this kind, from the weights. */
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Ball Chances")
 	float GetChance(EChaosImpactBallType Type) const;
+	/** One kind's weight as set (compared with the others; 0: never). */
+	float GetChanceWeight(const EChaosImpactBallType Type) const { const float* Weight = WeightFor(Type); return Weight ? *Weight : 0.0f; }
 	/** Changes one kind's weight (0: never). */
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Ball Chances")
 	void SetChanceWeight(EChaosImpactBallType Type, float Weight);

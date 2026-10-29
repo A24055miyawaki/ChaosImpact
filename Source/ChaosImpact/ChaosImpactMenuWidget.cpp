@@ -1647,17 +1647,24 @@ void UChaosImpactMenuWidget::BuildEntries()
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const FChaosImpactMatchRules Rules = Controller ? Controller->GetPendingMatchRules() : FChaosImpactMatchRules();
 		// クラッシュボール always lasts five minutes: the time row stays, greyed out.
-		FMenuEntry Minutes{FSlateRect(430, 206, 1170, 270), Rules.bCrashBall
+		FMenuEntry Minutes{FSlateRect(430, 206, 1170, 270), Rules.bDuel
+				? FString::Printf(TEXT("試合時間　1ラウンド%d秒（固定）"), FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds))
+				: Rules.bCrashBall
 				? FString::Printf(TEXT("試合時間　%d分（固定）"), Rules.Minutes)
 				: FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
 			TEXT(""), TEXT(""), Ice};
-		Minutes.bDisabled = Rules.bCrashBall;
+		Minutes.bDisabled = Rules.bCrashBall || Rules.bDuel;
 		Entries.Add(Minutes);
 		Entries.Add({FSlateRect(430, 282, 1170, 346),
 			FString::Printf(TEXT("ルール　＜  %s  ＞"), *ChaosImpactMatch::DescribeRule(Rules)),
-			TEXT(""), TEXT(""), Rules.bCrashBall ? Violet : Rules.IsTeamBattle() ? Gold : Fire});
-		Entries.Add({FSlateRect(430, 358, 1170, 422), FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
-			TEXT(""), TEXT(""), Rules.CPUCount > 0 ? Fire : Muted});
+			TEXT(""), TEXT(""), Rules.bDuel ? Ice : Rules.bCrashBall ? Violet : Rules.IsTeamBattle() ? Gold : Fire});
+		// The duel: one player faces a CPU, two players face each other (fixed).
+		FMenuEntry CPUs{FSlateRect(430, 358, 1170, 422), Rules.bDuel
+				? FString(Rules.CPUCount > 0 ? TEXT("相手　CPU（固定）") : TEXT("相手　プレイヤー同士（固定）"))
+				: FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
+			TEXT(""), TEXT(""), Rules.CPUCount > 0 ? Fire : Muted};
+		CPUs.bDisabled = Rules.bDuel;
+		Entries.Add(CPUs);
 		// Only with CPUs in the match; otherwise shown greyed out and skipped by the cursor.
 		FMenuEntry Strength{FSlateRect(430, 434, 1170, 498), Rules.CPUCount > 0
 				? FString::Printf(TEXT("CPUの強さ　＜  %s  ＞"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
@@ -1667,7 +1674,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 				: Rules.CPULevel == ChaosImpactMatch::CPULevelStrong ? Fire : FLinearColor(0.78f, 0.36f, 1.0f, 1.0f)};
 		Strength.bDisabled = Rules.CPUCount <= 0;
 		Entries.Add(Strength);
-		Entries.Add({FSlateRect(1030, 712, 1454, 800), TEXT("決定"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(1030, 712, 1454, 800), Rules.bDuel ? TEXT("試合開始") : TEXT("決定"), TEXT(""), TEXT(""), Gold});
 		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
@@ -2192,20 +2199,34 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			Info.Box(12.0f, 14.0f, 740.0f, 156.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
 			Info.Box(0.0f, 0.0f, 740.0f, 156.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
 			Info.Box(0.0f, 0.0f, 10.0f, 156.0f, Rules.bSpectate ? Ice : Gold);
-			Info.Text(Rules.bSpectate
-				? FString::Printf(TEXT("観戦：CPU %d人の試合をカメラで見る"), Rules.CPUCount)
-				: FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
-				36.0f, 14.0f, 30.0f, Paper);
-			Info.Text(Rules.bCrashBall
-				? FString::Printf(TEXT("レッド 対 ブルー・1チーム最大 %d人"), ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
-				: Rules.IsTeamBattle()
-				? FString::Printf(TEXT("1チーム最大 %d人・チームの合計ポイントで勝負"),
-					ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
-				: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Rules.bCrashBall ? Violet : Gold);
-			if (!Rules.bSpectate)
+			if (Rules.bDuel)
 			{
-				Info.Text(Rules.bCrashBall ? TEXT("巨大球に当てる +1pt　　敵に当てる +1pt") : TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"),
-					38.0f, 110.0f, 24.0f, Muted);
+				// The duel: who faces whom, and how a round and the match are won.
+				Info.Box(0.0f, 0.0f, 10.0f, 156.0f, Ice);
+				Info.Text(Rules.CPUCount > 0 ? FString::Printf(TEXT("1対1：あなた 対 CPU（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
+					: FString(TEXT("1対1：プレイヤー同士")), 36.0f, 14.0f, 30.0f, Paper);
+				Info.Text(FString::Printf(TEXT("%d本先取・体力3・特殊ボールは毎試合スロットで%d種類"), ChaosImpactMatch::DuelRoundsToWin,
+					ChaosImpactMatch::DuelBallPicks), 38.0f, 66.0f, 24.0f, Ice);
+				Info.Text(FString::Printf(TEXT("時間切れは体力の多いほう、同じなら%d秒のサドンデス"), FMath::RoundToInt(ChaosImpactMatch::DuelSuddenDeathSeconds)),
+					38.0f, 110.0f, 22.0f, Muted);
+			}
+			else
+			{
+				Info.Text(Rules.bSpectate
+					? FString::Printf(TEXT("観戦：CPU %d人の試合をカメラで見る"), Rules.CPUCount)
+					: FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
+					36.0f, 14.0f, 30.0f, Paper);
+				Info.Text(Rules.bCrashBall
+					? FString::Printf(TEXT("レッド 対 ブルー・1チーム最大 %d人"), ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
+					: Rules.IsTeamBattle()
+					? FString::Printf(TEXT("1チーム最大 %d人・チームの合計ポイントで勝負"),
+						ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
+					: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Rules.bCrashBall ? Violet : Gold);
+				if (!Rules.bSpectate)
+				{
+					Info.Text(Rules.bCrashBall ? TEXT("巨大球に当てる +1pt　　敵に当てる +1pt") : TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"),
+						38.0f, 110.0f, 24.0f, Muted);
+				}
 			}
 			if (Rules.bCrashBall)
 			{

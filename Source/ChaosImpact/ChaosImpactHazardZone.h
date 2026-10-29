@@ -8,6 +8,7 @@
 #include "ChaosImpactHazardZone.generated.h"
 
 class AChaosImpactCharacter;
+struct FChaosImpactDuelThrowDamage;
 class APawn;
 class UMaterialInstanceDynamic;
 class UNiagaraComponent;
@@ -47,14 +48,15 @@ public:
 	 * burst's look (a snowball's size); gameplay reach does not change with it.
 	 */
 	static AChaosImpactHazardZone* Detonate(UWorld* World, EChaosImpactBallType Type, const FVector& Location,
-		APawn* SourcePawn, AActor* DirectVictim, float Scale = 1.0f);
+		APawn* SourcePawn, AActor* DirectVictim, float Scale = 1.0f,
+		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr);
 	/**
 	 * Server: a small fire on the ground under a flying fire ball (its trail). No blast; it burns like the fire
 	 * zone. Leader is the first fire of the same trail, which keeps one burn clock for all of them so standing
 	 * where two touch does not burn twice. Returns nullptr over a drop with no ground near.
 	 */
 	static AChaosImpactHazardZone* SpawnFireTrail(UWorld* World, const FVector& BallLocation, APawn* SourcePawn,
-		AChaosImpactHazardZone* Leader);
+		AChaosImpactHazardZone* Leader, TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr);
 	/** Any machine: true on active frozen ground. Each machine applies the slide to the characters it moves. */
 	static bool IsSlipperyAt(const UWorld* World, const FVector& FeetLocation);
 	/**
@@ -84,6 +86,7 @@ public:
 	bool IsFireTrail() const { return bFireTrail; }
 	APawn* GetSourcePawn() const { return SourcePawn; }
 	float GetRadius() const;
+	TSharedPtr<FChaosImpactDuelThrowDamage> GetDuelThrowDamage() const { return DuelThrowDamage; }
 	float GetActiveSeconds() const;
 	/** Nova: how far its ball of fire reaches now (0 before it goes off and once it is gone). */
 	float GetNovaFireRadius() const;
@@ -136,6 +139,7 @@ public:
 	static constexpr float ZoneDamage = 1.0f;
 
 protected:
+	TSharedPtr<FChaosImpactDuelThrowDamage> DuelThrowDamage;
 	virtual void BeginPlay() override;
 
 	void ApplyDetonationEffects();

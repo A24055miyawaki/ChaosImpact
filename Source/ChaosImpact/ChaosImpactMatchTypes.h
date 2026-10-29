@@ -46,8 +46,16 @@ struct FChaosImpactMatchRules
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	bool bCrashBall = false;
 
-	bool IsTeamBattle() const { return bCrashBall || TeamCount >= 2; }
+	/**
+	 * ランクマッチ: one against one in rounds (first to ChaosImpactMatch::DuelRoundsToWin), 3 HP a round, normal balls
+	 * only, on the duel arena (AChaosImpactDuelStage). No teams, no CPUs, no Minutes.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
+	bool bDuel = false;
+
+	bool IsTeamBattle() const { return !bDuel && (bCrashBall || TeamCount >= 2); }
 	bool IsCrashBall() const { return bCrashBall; }
+	bool IsDuel() const { return bDuel; }
 };
 
 namespace ChaosImpactMatch
@@ -121,6 +129,24 @@ namespace ChaosImpactMatch
 		return Best;
 	}
 
+	// ---- ランクマッチ (the duel): rounds of 3 HP each, first to two rounds.
+	inline constexpr int32 DuelRoundsToWin = 2;
+	inline constexpr int32 DuelMaxRounds = 3;
+	inline constexpr float DuelRoundSeconds = 90.0f;
+	/** Level on health when a round's time runs out: the first hit within this long wins it, else it is drawn. */
+	inline constexpr float DuelSuddenDeathSeconds = 30.0f;
+	/** ROUND N, then FIGHT! (the first round: after the opening's Ready?). */
+	inline constexpr float DuelRoundIntroSeconds = 2.0f;
+	/** The round's end held on screen before the next one (or the results). */
+	inline constexpr float DuelRoundOverSeconds = 3.4f;
+	inline const TCHAR* GetDuelStageName() { return TEXT("デュエルアリーナ"); }
+	/** The special balls of a duel: this many kinds, drawn by the ball slot at the start of every match. */
+	inline constexpr int32 DuelBallPicks = 3;
+	/** The ball slot: its reels spin and stop one by one, then the kinds drawn are shown before ROUND 1. */
+	inline constexpr float DuelBallDrawSeconds = 4.8f;
+	/** When each reel stops, from the start of the draw. */
+	inline constexpr float DuelReelStopSeconds[DuelBallPicks] = {1.4f, 2.1f, 2.8f};
+
 	/** Opening: the camera flies over the stage, dives down to the player's own view, then Ready? until GO. */
 	inline constexpr float FlyoverSeconds = 4.4f;
 	inline constexpr float DiveSeconds = 1.3f;
@@ -180,6 +206,19 @@ namespace ChaosImpactMatch
 
 	inline FChaosImpactMatchRules Sanitize(FChaosImpactMatchRules Rules, int32 Humans)
 	{
+		// The duel is for one or two players (more cannot share it): otherwise it falls back to a free-for-all.
+		Rules.bDuel = Rules.bDuel && GetCompetingHumans(Rules, Humans) <= 2;
+		if (Rules.bDuel)
+		{
+			// Two players and nobody else (a lone player gets a CPU to face).
+			Rules.bCrashBall = false;
+			Rules.bSpectate = false;
+			Rules.TeamCount = 0;
+			Rules.Minutes = 3;
+			Rules.CPUCount = Humans >= 2 ? 0 : 1;
+			Rules.CPULevel = SanitizeCPULevel(Rules.CPULevel);
+			return Rules;
+		}
 		Humans = GetCompetingHumans(Rules, Humans);
 		Rules.Minutes = Rules.bCrashBall ? CrashBallMinutes : SanitizeMinutes(Rules.Minutes);
 		Rules.StageIndex = SanitizeStage(Rules.StageIndex);
@@ -222,14 +261,19 @@ namespace ChaosImpactMatch
 
 	inline FString DescribeRule(const FChaosImpactMatchRules& Rules)
 	{
+		if (Rules.bDuel)
+		{
+			return FString::Printf(TEXT("1対1  %d本先取"), DuelRoundsToWin);
+		}
 		return Rules.bCrashBall ? FString(TEXT("クラッシュボール  2チーム")) : DescribeTeams(Rules.TeamCount);
 	}
 
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d"),
-			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0);
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d"),
+			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0,
+			Rules.bDuel ? 1 : 0);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -245,6 +289,7 @@ namespace ChaosImpactMatch
 		OutRules.StageIndex = SanitizeStage(FCString::Atoi(URL.GetOption(TEXT("CIStage="), TEXT("0"))));
 		OutRules.CPULevel = SanitizeCPULevel(FCString::Atoi(URL.GetOption(TEXT("CICPULevel="), TEXT("2"))));
 		OutRules.bCrashBall = FCString::Atoi(URL.GetOption(TEXT("CICrashBall="), TEXT("0"))) != 0;
+		OutRules.bDuel = FCString::Atoi(URL.GetOption(TEXT("CIDuel="), TEXT("0"))) != 0;
 		if (OutRules.bCrashBall)
 		{
 			OutRules.TeamCount = 2;

@@ -1,0 +1,22 @@
+[Unit]
+Description=Chaos Impact online relay (password rooms, random and rank matches over the internet)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cirelay
+ExecStart=/usr/bin/python3 -u /opt/ci-relay/ci_relay.py --bind 0.0.0.0 --port 7700 --room-ports 7701-7760 --data /var/lib/ci-relay/ranks.json
+Restart=always
+RestartSec=3
+# The preseason's ranks (ranks.json) live in /var/lib/ci-relay, the one place it may write.
+StateDirectory=ci-relay
+# Nothing here needs more than this.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

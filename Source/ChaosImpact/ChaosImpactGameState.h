@@ -50,6 +50,77 @@ enum class EChaosImpactOnlinePhase : uint8
 	Starting
 };
 
+/** A room the relay made for a ランダムマッチ or ランクマッチ (not a 合言葉 room): it starts by itself and ends with the match. */
+UENUM(BlueprintType)
+enum class EChaosImpactMatchmade : uint8
+{
+	None,
+	Random,
+	Rank
+};
+
+/** Where a ランクマッチ round stands (only while the match phase runs). */
+UENUM(BlueprintType)
+enum class EChaosImpactDuelStep : uint8
+{
+	None,
+	/** The ball slot, before the first round: which special balls this match is played with. */
+	BallDraw,
+	/** ROUND N, then FIGHT!: nobody can act. */
+	RoundIntro,
+	Fight,
+	/** The time ran out with the health level: the next hit wins the round. */
+	SuddenDeath,
+	/** The round is decided; shown for a moment before the next. */
+	RoundOver,
+	/** The match is decided (the results follow). */
+	Finished
+};
+
+/** How a ランクマッチ round was decided. */
+UENUM(BlueprintType)
+enum class EChaosImpactDuelEnd : uint8
+{
+	None,
+	Knockout,
+	/** The time ran out: more health left wins. */
+	Time,
+	/** Sudden death: the first hit. */
+	SuddenDeath,
+	/** Sudden death ran out with no hit. */
+	Draw,
+	DoubleKnockout,
+	/** The other player left the match. */
+	Forfeit
+};
+
+/** One ランクマッチ, replicated: the two sides, the rounds and their results. */
+USTRUCT()
+struct FChaosImpactDuelState
+{
+	GENERATED_BODY()
+	/** Side 0 and side 1 (the host machine's player is side 0). */
+	UPROPERTY() TObjectPtr<APlayerState> Sides[2];
+	/** 1-based; 0 before the first round. */
+	UPROPERTY() int32 Round = 0;
+	UPROPERTY() int32 Wins[2] = {0, 0};
+	UPROPERTY() EChaosImpactDuelStep Step = EChaosImpactDuelStep::None;
+	/** Server time the step began and ends (0: no end). */
+	UPROPERTY() double StepStartedAt = 0.0;
+	UPROPERTY() double StepEndsAt = 0.0;
+	/** The round just decided: its winner's side (INDEX_NONE for a drawn round) and how. */
+	UPROPERTY() int32 RoundWinner = INDEX_NONE;
+	UPROPERTY() EChaosImpactDuelEnd RoundEnd = EChaosImpactDuelEnd::None;
+	/** Every decided round's winner in order (-1: drawn), for the pips. */
+	UPROPERTY() TArray<int8> RoundResults;
+	/** Once Finished: the winner's side, or INDEX_NONE for a drawn match. */
+	UPROPERTY() int32 MatchWinner = INDEX_NONE;
+	/** The special balls drawn for this match (EChaosImpactBallType values; the pads put them out besides normal balls). */
+	UPROPERTY() TArray<uint8> BallPicks;
+
+	int32 SideOf(const APlayerState* Member) const { return Member && Sides[0] == Member ? 0 : Member && Sides[1] == Member ? 1 : INDEX_NONE; }
+};
+
 /** Room member or VS competitor. Display name comes from APlayerState::GetPlayerName; CPUs are bots. */
 UCLASS()
 class AChaosImpactPlayerState : public APlayerState
@@ -245,6 +316,28 @@ public:
 	static constexpr int32 MaxMembers = 8;
 	/** Spectators a room takes on top of its players. */
 	static constexpr int32 MaxSpectators = 4;
+
+	/** A ランダムマッチ / ランクマッチ room: it starts once everyone matched has arrived, and closes after the results. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	EChaosImpactMatchmade Matchmade = EChaosImpactMatchmade::None;
+	/** Players the relay matched into this room (a split-screen pair counts two). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	int32 MatchmadeExpected = 0;
+	/** Server time the match starts with whoever has arrived (0 once it has started). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	double MatchmadeDeadline = 0.0;
+	bool IsMatchmade() const { return Matchmade != EChaosImpactMatchmade::None; }
+
+	UPROPERTY(Replicated)
+	FChaosImpactDuelState Duel;
+	bool IsDuel() const { return bVersusMatch && Rules.bDuel; }
+	/** A ランクマッチ round is being fought (hits count). */
+	bool IsDuelLive() const;
+	/** Seconds left of the duel's current step (0 when it has no end). */
+	float GetDuelStepRemaining() const;
+	float GetDuelStepElapsed() const;
+	/** The player's side's opponent in the duel (null outside one). */
+	APlayerState* GetDuelOpponent(const APlayerState* Member) const;
 
 private:
 	/** This machine's own clock for the opening it is playing (see GetIntroElapsedSeconds). */

@@ -21,6 +21,8 @@
 #include "ChaosImpactCyberStage.h"
 #include "ChaosImpactSnowStage.h"
 #include "ChaosImpactForgeStage.h"
+#include "ChaosImpactDuelStage.h"
+#include "ChaosImpactPlayerController.h"
 #include "GameFramework/GameSession.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
@@ -50,6 +52,7 @@ AChaosImpactGameMode::AChaosImpactGameMode()
 	CyberStageClass = AChaosImpactCyberStage::StaticClass();
 	SnowStageClass = AChaosImpactSnowStage::StaticClass();
 	ForgeStageClass = AChaosImpactForgeStage::StaticClass();
+	DuelStageClass = AChaosImpactDuelStage::StaticClass();
 }
 
 void AChaosImpactGameMode::BeginPlay()
@@ -148,6 +151,16 @@ void AChaosImpactGameMode::BeginPlay()
 			RoomState->RoomPassword = Sessions->GetPassword();
 			RoomState->RoomName = Sessions->GetRoomName();
 		}
+		// A room the relay matched (ランダムマッチ / ランクマッチ): it starts by itself once everyone matched is in.
+		if (const TCHAR* Kind = GetWorld() ? GetWorld()->URL.GetOption(TEXT("CIMatchmade="), nullptr) : nullptr)
+		{
+			RoomState->Matchmade = FCString::Stricmp(Kind, TEXT("rank")) == 0 ? EChaosImpactMatchmade::Rank : EChaosImpactMatchmade::Random;
+			RoomState->MatchmadeExpected = FMath::Clamp(FCString::Atoi(GetWorld()->URL.GetOption(TEXT("CIExpect="), TEXT("2"))), 2,
+				AChaosImpactGameState::MaxMembers);
+			RoomState->MatchmadeDeadline = RoomState->GetServerWorldTimeSeconds() + MatchmadeWaitSeconds;
+			GetWorldTimerManager().SetTimer(MatchmadeTimer, this, &AChaosImpactGameMode::UpdateMatchmadeRoom, 0.25f, true);
+			UE_LOG(LogChaosImpact, Log, TEXT("Matched room (%s): waiting for %d players"), Kind, RoomState->MatchmadeExpected);
+		}
 		GetWorldTimerManager().SetTimer(LobbyReadyTimer, this, &AChaosImpactGameMode::UpdateLobbyReady, 0.25f, true);
 		FParse::Value(FCommandLine::Get(), TEXT("CIReadyWaitSeconds="), ReadyWaitSecondsOverride);
 		FString AutoLobby;
@@ -186,6 +199,8 @@ void AChaosImpactGameMode::BeginPlay()
 			AutoVersus.ParseIntoArray(Parts, TEXT(":"));
 			DevAutoVersusRules.TeamCount = Parts.IsValidIndex(0) ? FCString::Atoi(*Parts[0]) : 0;
 			DevAutoVersusRules.CPUCount = Parts.IsValidIndex(1) ? FCString::Atoi(*Parts[1]) : 1;
+			// A fourth part "duel": the rules of ランクマッチ (against a CPU when alone).
+			DevAutoVersusRules.bDuel = Parts.IsValidIndex(3) && Parts[3] == TEXT("duel");
 			const float Delay = Parts.IsValidIndex(2) ? FMath::Max(1.0f, FCString::Atof(*Parts[2])) : 20.0f;
 			GetWorldTimerManager().SetTimer(DevAutoVersusTimer, this, &AChaosImpactGameMode::RunDevAutoVersus, Delay, false);
 		}
@@ -751,10 +766,25 @@ void AChaosImpactGameMode::PostLogin(APlayerController* NewPlayer)
 
 void AChaosImpactGameMode::Logout(AController* Exiting)
 {
+	// A duellist leaving mid-match gives it to the other.
+	if (const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>(); Match && Exiting && Match->IsDuel()
+		&& (Match->Phase == EChaosImpactOnlinePhase::Intro || Match->Phase == EChaosImpactOnlinePhase::Match))
+	{
+		const int32 Side = Match->Duel.SideOf(Exiting->PlayerState);
+		if (Side != INDEX_NONE)
+		{
+			ForfeitDuel(Side);
+		}
+	}
 	Super::Logout(Exiting);
 	if (IsOnlineRoom())
 	{
 		GetWorldTimerManager().SetTimerForNextTick(this, &AChaosImpactGameMode::UpdateRoomMemberCount);
+		if (bMatchmadeHostDone)
+		{
+			// The host is only waiting for the guests to leave their results.
+			GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]() { FinishMatchmadeIfEmpty(false); }));
+		}
 	}
 }
 
@@ -1092,14 +1122,15 @@ void AChaosImpactGameMode::SetMatchPhase(const EChaosImpactOnlinePhase NewPhase,
 	Match->ForceNetUpdate();
 }
 
-void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex)
+void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex, const bool bDuelStage)
 {
 	if (!GetWorld())
 	{
 		return;
 	}
 	const int32 Stage = ChaosImpactMatch::SanitizeStage(StageIndex);
-	UClass* Wanted = Stage == 1
+	UClass* Wanted = bDuelStage ? (DuelStageClass ? DuelStageClass.Get() : AChaosImpactDuelStage::StaticClass())
+		: Stage == 1
 		? (SplashStageClass ? SplashStageClass.Get() : AChaosImpactSplashStage::StaticClass())
 		: Stage == 2 ? (TempleStageClass ? TempleStageClass.Get() : AChaosImpactTempleStage::StaticClass())
 		: Stage == 3 ? (CyberStageClass ? CyberStageClass.Get() : AChaosImpactCyberStage::StaticClass())
@@ -1108,7 +1139,8 @@ void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex)
 		: (VersusStageClass ? VersusStageClass.Get() : AChaosImpactVersusStage::StaticClass());
 	// The stages are told apart by their C++ family, so a Blueprint of one (or one placed in the level, as in
 	// each stage's own level) still counts as that stage.
-	UClass* Family = Stage == 1 ? AChaosImpactSplashStage::StaticClass()
+	UClass* Family = bDuelStage ? AChaosImpactDuelStage::StaticClass()
+		: Stage == 1 ? AChaosImpactSplashStage::StaticClass()
 		: Stage == 2 ? AChaosImpactTempleStage::StaticClass()
 		: Stage == 3 ? AChaosImpactCyberStage::StaticClass()
 		: Stage == 4 ? AChaosImpactSnowStage::StaticClass()
@@ -1169,7 +1201,8 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
-	EnsureVersusStage(InRules.StageIndex);
+	GetWorldTimerManager().ClearTimer(DuelTimer);
+	EnsureVersusStage(InRules.StageIndex, InRules.bDuel);
 	if (!VersusStage)
 	{
 		return;
@@ -1235,6 +1268,36 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 		{
 			Member->TeamIndex = INDEX_NONE;
 		}
+	}
+	// The two sides of the duel: the host machine's player (or the first) on the red half, the other on the blue.
+	Match->Duel = FChaosImpactDuelState();
+	if (Rules.bDuel)
+	{
+		const TArray<AChaosImpactPlayerState*> Duellists = Match->GetCompetitors(true);
+		for (int32 Side = 0; Side < 2 && Side < Duellists.Num(); ++Side)
+		{
+			Match->Duel.Sides[Side] = Duellists[Side];
+		}
+		// The special balls of this match, drawn now and shown by the ball slot before the first round. Every kind
+		// but the nova and the prison (decisive one against one) may come up; three different ones.
+		TArray<uint8> Pool;
+		for (int32 Type = 1; Type < ChaosImpactBallTypes::Count; ++Type)
+		{
+			const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(Type);
+			if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison)
+			{
+				Pool.Add(static_cast<uint8>(Type));
+			}
+		}
+		for (int32 Pick = 0; Pick < ChaosImpactMatch::DuelBallPicks && !Pool.IsEmpty(); ++Pick)
+		{
+			Match->Duel.BallPicks.Add(Pool[FMath::RandRange(0, Pool.Num() - 1)]);
+			Pool.Remove(Match->Duel.BallPicks.Last());
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Duel balls drawn: %s, %s, %s"),
+			Match->Duel.BallPicks.IsValidIndex(0) ? ChaosImpactBallTypes::GetInternalName(static_cast<EChaosImpactBallType>(Match->Duel.BallPicks[0])) : TEXT("-"),
+			Match->Duel.BallPicks.IsValidIndex(1) ? ChaosImpactBallTypes::GetInternalName(static_cast<EChaosImpactBallType>(Match->Duel.BallPicks[1])) : TEXT("-"),
+			Match->Duel.BallPicks.IsValidIndex(2) ? ChaosImpactBallTypes::GetInternalName(static_cast<EChaosImpactBallType>(Match->Duel.BallPicks[2])) : TEXT("-"));
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("VS match configured: %d min, teams=%d, humans=%d, CPUs=%d"),
 		Rules.Minutes, Rules.TeamCount, Humans.Num(), Rules.CPUCount);
@@ -1390,6 +1453,11 @@ void AChaosImpactGameMode::StartMatchIntro()
 			ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
 		{
 			Spawner->SetAlwaysActive(true);
+			// The duel: normal balls only until the ball slot has shown what this match is played with.
+			for (int32 Type = 1; Match->Rules.bDuel && Type < ChaosImpactBallTypes::Count; ++Type)
+			{
+				Spawner->SetChanceWeight(static_cast<EChaosImpactBallType>(Type), 0.0f);
+			}
 			Spawner->FinishSpawning(SpawnTransform);
 			StageBallSpawners.Add(Spawner);
 		}
@@ -1423,6 +1491,12 @@ void AChaosImpactGameMode::StartMatchIntro()
 			continue;
 		}
 		FVector Floor = SpawnPoints[Index % SpawnPoints.Num()];
+		// The duel: each side at its own start (the stage lists them first), facing the other.
+		if (const int32 Side = Match->Duel.SideOf(Competitors[Index]); Match->Rules.bDuel && Side != INDEX_NONE)
+		{
+			const TArray<FVector> Starts = VersusStage->GetSpawnPoints();
+			Floor = Starts.IsValidIndex(Side) ? Starts[Side] : Floor;
+		}
 		const int32 Team = Competitors[Index]->TeamIndex;
 		if (Match->Rules.bCrashBall && (Team == 0 || Team == 1) && !TeamPoints[Team].IsEmpty())
 		{
@@ -1489,6 +1563,23 @@ void AChaosImpactGameMode::BeginMatchPlay()
 	{
 		return;
 	}
+	if (Match->Rules.bDuel)
+	{
+		// The clock of the duel is its rounds: the match phase itself has no end.
+		SetMatchPhase(EChaosImpactOnlinePhase::Match, 0.0f);
+		for (AChaosImpactPlayerState* Member : Match->GetCompetitors(true))
+		{
+			Member->PointsHistory.Reset();
+		}
+		SampleMatchHistory();
+		GetWorldTimerManager().SetTimer(HistoryTimer, this, &AChaosImpactGameMode::SampleMatchHistory,
+			ChaosImpactMatch::HistoryStepSeconds, true);
+		// First the ball slot, then ROUND 1.
+		SetDuelStep(EChaosImpactDuelStep::BallDraw, ChaosImpactMatch::DuelBallDrawSeconds);
+		GetWorldTimerManager().SetTimer(DuelTimer, this, &AChaosImpactGameMode::FinishDuelBallDraw, ChaosImpactMatch::DuelBallDrawSeconds, false);
+		UE_LOG(LogChaosImpact, Log, TEXT("Duel GO: first to %d rounds, %.0f s each"), ChaosImpactMatch::DuelRoundsToWin, GetDuelRoundSeconds());
+		return;
+	}
 	const float Seconds = MatchDurationOverride > 0.0f ? MatchDurationOverride : Match->Rules.Minutes * 60.0f;
 	SetMatchPhase(EChaosImpactOnlinePhase::Match, Seconds);
 	GetWorldTimerManager().SetTimer(MatchPhaseTimer, this, &AChaosImpactGameMode::HandleMatchTimeExpired, Seconds, false);
@@ -1509,6 +1600,7 @@ void AChaosImpactGameMode::BeginMatchPlay()
 
 void AChaosImpactGameMode::EndMatch()
 {
+	GetWorldTimerManager().ClearTimer(DuelTimer);
 	GetWorldTimerManager().ClearTimer(CrashMatchTimer);
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
 	// The last point of the graph is the final score; every number goes out now for the results.
@@ -1544,6 +1636,12 @@ void AChaosImpactGameMode::EndMatch()
 		UE_LOG(LogChaosImpact, Log, TEXT("VS match finished: winner %s with %d pt"),
 			Ranking.IsEmpty() ? TEXT("-") : *Ranking[0]->GetPlayerName(), Ranking.IsEmpty() ? 0 : Ranking[0]->Points);
 	}
+	// A matched room ends with its results: everyone goes home from them (see ReturnFromResults).
+	if (const AChaosImpactGameState* Room = GetGameState<AChaosImpactGameState>(); Room && Room->IsMatchmade() && IsOnlineRoom())
+	{
+		GetWorldTimerManager().SetTimer(MatchmadeCloseTimer, this, &AChaosImpactGameMode::CloseMatchmadeRoom, MatchmadeResultsSeconds, false);
+		return;
+	}
 	// A local match stays on its results until the players choose a rematch or leave.
 	if (IsOnlineRoom())
 	{
@@ -1565,9 +1663,18 @@ void AChaosImpactGameMode::ReturnToLobbyAfterMatch()
 	ClearMatchBalls();
 	Match->bVersusMatch = false;
 	SetMatchPhase(EChaosImpactOnlinePhase::Lobby, 0.0f);
-	// The same group plays on: recruitment stays as it was, the last rules stand, and everyone readies up again.
+	// Password rooms return to recruiting. Retain the last rule choices, but require the host to close recruitment
+	// and confirm them again; no old ready deadline may automatically launch a rematch.
+	GetWorldTimerManager().ClearTimer(StartingTimer);
 	ClearReady();
-	if (Match->bRulesDecided)
+	if (!Match->IsMatchmade())
+	{
+		Match->bRecruitmentClosed = false;
+		Match->bRulesDecided = false;
+		Match->ReadyDeadline = 0.0;
+		Match->ForceNetUpdate();
+	}
+	else if (Match->bRulesDecided)
 	{
 		Match->ReadyDeadline = Match->GetServerWorldTimeSeconds() + GetReadyWaitSeconds();
 	}
@@ -1709,6 +1816,24 @@ void AChaosImpactGameMode::ReturnFromResults(APlayerState* Member)
 	Viewer->bViewingResults = false;
 	Viewer->ForceNetUpdate();
 	UE_LOG(LogChaosImpact, Log, TEXT("%s is back from the results"), *Viewer->GetPlayerName());
+	if (Match->IsMatchmade() && IsOnlineRoom())
+	{
+		// A matched room: that machine goes home (a guest at once; the host once its guests have gone).
+		APlayerController* ViewerController = Cast<APlayerController>(Viewer->GetOwner());
+		if (ViewerController && !ViewerController->IsLocalController())
+		{
+			if (AChaosImpactPlayerController* Guest = Cast<AChaosImpactPlayerController>(ViewerController))
+			{
+				Guest->ClientLeaveMatchmade();
+			}
+		}
+		else if (Viewer->bRoomHost)
+		{
+			bMatchmadeHostDone = true;
+			FinishMatchmadeIfEmpty(false);
+		}
+		return;
+	}
 	// The first one back opens the lobby for everyone (the others stay on their results meanwhile).
 	if (Match->Phase == EChaosImpactOnlinePhase::Results && Match->GetPhaseElapsedSeconds() >= ChaosImpactMatch::ResultsRevealSeconds)
 	{
@@ -1943,4 +2068,365 @@ int32 AChaosImpactGameMode::PickCPUCharacter(const APlayerState* NewCPU) const
 		}
 	}
 	return Candidates.IsEmpty() ? 0 : Candidates[FMath::RandRange(0, Candidates.Num() - 1)];
+}
+
+// ---------------------------------------------------------------------------------------------------- Matched rooms
+
+void AChaosImpactGameMode::UpdateMatchmadeRoom()
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->IsMatchmade() || bMatchmadeMatchBegun || Match->Phase != EChaosImpactOnlinePhase::Lobby)
+	{
+		return;
+	}
+	const int32 Humans = Match->CountHumanMembers();
+	const bool bEveryone = Humans >= Match->MatchmadeExpected && GetReservedRoomSlots() == 0;
+	const bool bTimeUp = Match->GetServerWorldTimeSeconds() >= Match->MatchmadeDeadline;
+	if (!bEveryone && !bTimeUp)
+	{
+		return;
+	}
+	if (Humans < 2)
+	{
+		// Nobody came: back to this machine's training, where the search can start again.
+		UE_LOG(LogChaosImpact, Log, TEXT("Matched room: nobody arrived in %.0f s; closing it"), MatchmadeWaitSeconds);
+		bMatchmadeMatchBegun = true;
+		GetWorldTimerManager().ClearTimer(MatchmadeTimer);
+		FinishMatchmadeIfEmpty(true);
+		return;
+	}
+	bMatchmadeMatchBegun = true;
+	GetWorldTimerManager().ClearTimer(MatchmadeTimer);
+	Match->Rules = MakeMatchmadeRules(Humans);
+	Match->bRulesDecided = true;
+	Match->MatchmadeDeadline = 0.0;
+	CloseRecruitment();
+	UE_LOG(LogChaosImpact, Log, TEXT("Matched room starting with %d of %d players (%s)"), Humans, Match->MatchmadeExpected,
+		*ChaosImpactMatch::DescribeRule(Match->Rules));
+	BeginStartingCountdown();
+}
+
+FChaosImpactMatchRules AChaosImpactGameMode::MakeMatchmadeRules(const int32 Humans) const
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	FChaosImpactMatchRules Rules;
+	Rules.CPULevel = ChaosImpactMatch::CPULevelNormal;
+	if (Match && Match->Matchmade == EChaosImpactMatchmade::Rank)
+	{
+		Rules.bDuel = true;
+		return ChaosImpactMatch::Sanitize(Rules, Humans);
+	}
+	// ランダムマッチ: everyone for themselves on a stage picked at random, three minutes, CPUs making up the eight.
+	Rules.Minutes = 3;
+	Rules.TeamCount = 0;
+	Rules.StageIndex = FMath::RandRange(0, ChaosImpactMatch::StageCount - 1);
+	Rules.CPUCount = ChaosImpactMatch::MaxCompetitors - Humans;
+	return ChaosImpactMatch::Sanitize(Rules, Humans);
+}
+
+void AChaosImpactGameMode::CloseMatchmadeRoom()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Matched room closing: everyone goes home"));
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		AChaosImpactPlayerController* Member = Cast<AChaosImpactPlayerController>(It->Get());
+		if (Member && !Member->IsLocalController() && !Cast<UChildConnection>(Member->Player))
+		{
+			Member->ClientLeaveMatchmade();
+		}
+	}
+	bMatchmadeHostDone = true;
+	// A moment for the guests to go first, so they leave rather than see the room vanish.
+	FTimerHandle LeaveTimer;
+	GetWorldTimerManager().SetTimer(LeaveTimer, FTimerDelegate::CreateWeakLambda(this, [this]() { FinishMatchmadeIfEmpty(true); }), 1.5f, false);
+}
+
+void AChaosImpactGameMode::FinishMatchmadeIfEmpty(const bool bForce)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	if (!bForce)
+	{
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (const APlayerController* Member = It->Get(); Member && !Member->IsLocalController())
+			{
+				return;
+			}
+		}
+	}
+	GetWorldTimerManager().ClearTimer(MatchmadeCloseTimer);
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Matched room: the host goes home"));
+		Sessions->FinishMatchmade();
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------- The duel
+
+void AChaosImpactGameMode::FinishDuelBallDraw()
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || Match->Duel.Step != EChaosImpactDuelStep::BallDraw)
+	{
+		return;
+	}
+	ApplyDuelBallChances(true);
+	StartDuelRound(1);
+}
+
+void AChaosImpactGameMode::ApplyDuelBallChances(const bool bWithPicks)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match)
+	{
+		return;
+	}
+	// The drawn kinds come out as often as in a VS match (the pads' own weights), the rest never.
+	const AChaosImpactBallSpawner* Defaults = GetDefault<AChaosImpactBallSpawner>();
+	for (AChaosImpactBallSpawner* Spawner : StageBallSpawners)
+	{
+		if (!IsValid(Spawner))
+		{
+			continue;
+		}
+		for (int32 Type = 1; Type < ChaosImpactBallTypes::Count; ++Type)
+		{
+			const bool bDrawn = bWithPicks && Match->Duel.BallPicks.Contains(static_cast<uint8>(Type));
+			const float Weight = Defaults->GetChanceWeight(static_cast<EChaosImpactBallType>(Type));
+			Spawner->SetChanceWeight(static_cast<EChaosImpactBallType>(Type), bDrawn ? FMath::Max(Weight, 0.05f) : 0.0f);
+		}
+	}
+}
+
+float AChaosImpactGameMode::GetDuelRoundSeconds() const
+{
+	return MatchDurationOverride > 0.0f ? MatchDurationOverride : ChaosImpactMatch::DuelRoundSeconds;
+}
+
+APawn* AChaosImpactGameMode::GetDuelPawn(const int32 Side) const
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	const APlayerState* Member = Match && (Side == 0 || Side == 1) ? Match->Duel.Sides[Side].Get() : nullptr;
+	return Member ? Member->GetPawn() : nullptr;
+}
+
+void AChaosImpactGameMode::SetDuelStep(const EChaosImpactDuelStep Step, const float Seconds)
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match)
+	{
+		return;
+	}
+	const double Now = Match->GetServerWorldTimeSeconds();
+	Match->Duel.Step = Step;
+	Match->Duel.StepStartedAt = Now;
+	Match->Duel.StepEndsAt = Seconds > 0.0f ? Now + Seconds : 0.0;
+	Match->ForceNetUpdate();
+}
+
+void AChaosImpactGameMode::StartDuelRound(const int32 Round)
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->IsDuel())
+	{
+		return;
+	}
+	Match->Duel.Round = Round;
+	Match->Duel.RoundWinner = INDEX_NONE;
+	Match->Duel.RoundEnd = EChaosImpactDuelEnd::None;
+	if (Round > 1)
+	{
+		// Every round starts the same: the field cleared, both back at their starts with full health and no balls.
+		ClearMatchBalls();
+		PlaceDuelists();
+	}
+	SetDuelStep(EChaosImpactDuelStep::RoundIntro, ChaosImpactMatch::DuelRoundIntroSeconds);
+	GetWorldTimerManager().SetTimer(DuelTimer, this, &AChaosImpactGameMode::BeginDuelFight, ChaosImpactMatch::DuelRoundIntroSeconds, false);
+	UE_LOG(LogChaosImpact, Log, TEXT("Duel round %d (%d - %d)"), Round, Match->Duel.Wins[0], Match->Duel.Wins[1]);
+}
+
+void AChaosImpactGameMode::PlaceDuelists()
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !IsValid(VersusStage))
+	{
+		return;
+	}
+	const TArray<FVector> Starts = VersusStage->GetSpawnPoints();
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(GetDuelPawn(Side));
+		if (!Character || !Starts.IsValidIndex(Side))
+		{
+			continue;
+		}
+		const FVector Floor = Starts[Side];
+		const FVector Location = Floor + FVector(0.0f, 0.0f, Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 4.0f);
+		Character->ResetForOnlineMatch(Location, FRotator(0.0f, (Match->StageCenter - Floor).Rotation().Yaw, 0.0f));
+	}
+}
+
+void AChaosImpactGameMode::BeginDuelFight()
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || Match->Duel.Step != EChaosImpactDuelStep::RoundIntro)
+	{
+		return;
+	}
+	SetDuelStep(EChaosImpactDuelStep::Fight, GetDuelRoundSeconds());
+	GetWorldTimerManager().SetTimer(DuelTimer, this, &AChaosImpactGameMode::HandleDuelTimeUp, GetDuelRoundSeconds(), false);
+}
+
+void AChaosImpactGameMode::HandleDuelTimeUp()
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || Match->Duel.Step != EChaosImpactDuelStep::Fight)
+	{
+		return;
+	}
+	// The moment the time runs out decides it: more health left wins, level goes to sudden death.
+	float Health[2] = {0.0f, 0.0f};
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(GetDuelPawn(Side));
+		Health[Side] = Character && !Character->IsEliminated() ? Character->GetHealth() : 0.0f;
+	}
+	if (!FMath::IsNearlyEqual(Health[0], Health[1]))
+	{
+		EndDuelRound(Health[0] > Health[1] ? 0 : 1, EChaosImpactDuelEnd::Time);
+		return;
+	}
+	SetDuelStep(EChaosImpactDuelStep::SuddenDeath, ChaosImpactMatch::DuelSuddenDeathSeconds);
+	GetWorldTimerManager().SetTimer(DuelTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		EndDuelRound(INDEX_NONE, EChaosImpactDuelEnd::Draw);
+	}), ChaosImpactMatch::DuelSuddenDeathSeconds, false);
+	UE_LOG(LogChaosImpact, Log, TEXT("Duel round %d: level at the bell, sudden death"), Match->Duel.Round);
+}
+
+void AChaosImpactGameMode::NotifyDuelKnockout(APawn* Victim)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->IsDuelLive() || bDuelKnockoutCheckPending)
+	{
+		return;
+	}
+	// Both may go down in the same moment: judged once this frame's hits are all in.
+	bDuelKnockoutCheckPending = true;
+	GetWorldTimerManager().SetTimerForNextTick(this, &AChaosImpactGameMode::EvaluateDuelKnockouts);
+}
+
+void AChaosImpactGameMode::EvaluateDuelKnockouts()
+{
+	bDuelKnockoutCheckPending = false;
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->IsDuelLive())
+	{
+		return;
+	}
+	bool bDown[2] = {false, false};
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(GetDuelPawn(Side));
+		bDown[Side] = !Character || Character->IsEliminated();
+	}
+	if (bDown[0] && bDown[1])
+	{
+		EndDuelRound(INDEX_NONE, EChaosImpactDuelEnd::DoubleKnockout);
+	}
+	else if (bDown[0] || bDown[1])
+	{
+		EndDuelRound(bDown[0] ? 1 : 0, EChaosImpactDuelEnd::Knockout);
+	}
+}
+
+void AChaosImpactGameMode::NotifyDuelHit(APawn* Victim)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || Match->Duel.Step != EChaosImpactDuelStep::SuddenDeath || !Victim)
+	{
+		return;
+	}
+	const int32 Side = Match->Duel.SideOf(Victim->GetPlayerState());
+	if (Side != INDEX_NONE)
+	{
+		EndDuelRound(1 - Side, EChaosImpactDuelEnd::SuddenDeath);
+	}
+}
+
+void AChaosImpactGameMode::EndDuelRound(const int32 WinnerSide, const EChaosImpactDuelEnd How)
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->IsDuelLive())
+	{
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(DuelTimer);
+	FChaosImpactDuelState& Duel = Match->Duel;
+	Duel.RoundWinner = WinnerSide == 0 || WinnerSide == 1 ? WinnerSide : INDEX_NONE;
+	Duel.RoundEnd = How;
+	if (Duel.RoundWinner != INDEX_NONE)
+	{
+		++Duel.Wins[Duel.RoundWinner];
+	}
+	Duel.RoundResults.Add(static_cast<int8>(Duel.RoundWinner != INDEX_NONE ? Duel.RoundWinner : -1));
+	SetDuelStep(EChaosImpactDuelStep::RoundOver, ChaosImpactMatch::DuelRoundOverSeconds);
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		It->CancelChargingThrow();
+	}
+	GetWorldTimerManager().SetTimer(DuelTimer, this, &AChaosImpactGameMode::AfterDuelRound, ChaosImpactMatch::DuelRoundOverSeconds, false);
+	UE_LOG(LogChaosImpact, Log, TEXT("Duel round %d to %s (%s): %d - %d"), Duel.Round,
+		Duel.RoundWinner == INDEX_NONE ? TEXT("nobody") : Duel.RoundWinner == 0 ? TEXT("side 0") : TEXT("side 1"),
+		*StaticEnum<EChaosImpactDuelEnd>()->GetNameStringByValue(static_cast<int64>(How)), Duel.Wins[0], Duel.Wins[1]);
+}
+
+void AChaosImpactGameMode::AfterDuelRound()
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || Match->Duel.Step != EChaosImpactDuelStep::RoundOver)
+	{
+		return;
+	}
+	FChaosImpactDuelState& Duel = Match->Duel;
+	const bool bDecided = Duel.Wins[0] >= ChaosImpactMatch::DuelRoundsToWin || Duel.Wins[1] >= ChaosImpactMatch::DuelRoundsToWin
+		|| Duel.Round >= ChaosImpactMatch::DuelMaxRounds;
+	if (!bDecided)
+	{
+		StartDuelRound(Duel.Round + 1);
+		return;
+	}
+	Duel.MatchWinner = Duel.Wins[0] > Duel.Wins[1] ? 0 : Duel.Wins[1] > Duel.Wins[0] ? 1 : INDEX_NONE;
+	SetDuelStep(EChaosImpactDuelStep::Finished, 0.0f);
+	UE_LOG(LogChaosImpact, Log, TEXT("Duel over: %d - %d, %s"), Duel.Wins[0], Duel.Wins[1],
+		Duel.MatchWinner == INDEX_NONE ? TEXT("drawn") : Duel.MatchWinner == 0 ? TEXT("side 0 wins") : TEXT("side 1 wins"));
+	EndMatch();
+}
+
+void AChaosImpactGameMode::ForfeitDuel(const int32 LeavingSide)
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->IsDuel() || Match->Duel.Step == EChaosImpactDuelStep::Finished || (LeavingSide != 0 && LeavingSide != 1))
+	{
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(DuelTimer);
+	FChaosImpactDuelState& Duel = Match->Duel;
+	const int32 Winner = 1 - LeavingSide;
+	Duel.Wins[Winner] = FMath::Max(Duel.Wins[Winner], ChaosImpactMatch::DuelRoundsToWin);
+	Duel.RoundWinner = Winner;
+	Duel.RoundEnd = EChaosImpactDuelEnd::Forfeit;
+	Duel.MatchWinner = Winner;
+	SetDuelStep(EChaosImpactDuelStep::Finished, 0.0f);
+	UE_LOG(LogChaosImpact, Log, TEXT("Duel: side %d left, side %d wins"), LeavingSide, Winner);
+	// The results are shown once this frame is over (the leaver is still being removed).
+	GetWorldTimerManager().SetTimerForNextTick(this, &AChaosImpactGameMode::EndMatch);
 }

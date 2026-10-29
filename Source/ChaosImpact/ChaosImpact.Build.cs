@@ -33,6 +33,9 @@ public class ChaosImpact : ModuleRules
 			"ProceduralMeshComponent",
 			"OnlineSubsystem",
 			"OnlineSubsystemUtils",
+			// Internet rooms through the relay (ChaosImpactRelay).
+			"Sockets",
+			"Json",
 			"MoviePlayer",
 			"MediaAssets",
 			// The exploration map's terrain builder (OpenWorld/).

@@ -99,6 +99,7 @@ private:
 	float AuthoredThrowAge = 0.0f;
 	float AuthoredReleaseDelay = 0.18f;
 	bool bAuthoredNovaThrow = false;
+	bool bBirdAuthored = false;
 	uint64 AuthoredAdvancedFrame = MAX_uint64;
 	bool bBallPose = false;
 	float TackleWeight = 0;

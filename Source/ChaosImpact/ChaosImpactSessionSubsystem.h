@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ChaosImpactRank.h"
+#include "ChaosImpactRelay.h"
 #include "Containers/Ticker.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Interfaces/OnlineSessionInterface.h"
@@ -26,6 +28,15 @@ enum class EChaosImpactRoomState : uint8
 	InRoom
 };
 
+/** ランダムマッチ (up to 8 players, free-for-all) or ランクマッチ (1 v 1), matched by the relay. */
+UENUM(BlueprintType)
+enum class EChaosImpactQueueMode : uint8
+{
+	None,
+	Random,
+	Rank
+};
+
 /** A room found by へやをさがす. */
 struct FChaosImpactRoomListing
 {
@@ -35,14 +46,19 @@ struct FChaosImpactRoomListing
 	/** Watching members, up to AChaosImpactGameState::MaxSpectators. */
 	int32 Spectators = 0;
 	bool bOpen = true;
-	/** Round trip of the LAN search reply, for the connection bars. */
+	/** Round trip of the search reply, for the connection bars. */
 	int32 PingMs = 0;
+	/** A LAN room. */
 	FOnlineSessionSearchResult Result;
+	/** An internet room: its port on the relay (0 for a LAN room). */
+	int32 RelayPort = 0;
 };
 
 /**
- * Room lifecycle for the LAN multiplayer mode. Lives on the GameInstance so it survives map travel.
+ * Room lifecycle for the 合言葉 (password) rooms. Lives on the GameInstance so it survives map travel.
  * The password is a group password: several rooms may share it, and searching lists all of them.
+ * With a relay server set (ChaosImpactRelay), rooms are listed and played over the internet through it; without one,
+ * they are found on the LAN as before.
  */
 UCLASS()
 class UChaosImpactSessionSubsystem : public UGameInstanceSubsystem
@@ -103,6 +119,10 @@ public:
 	double GetNoticeTime() const { return NoticeAt; }
 	/** True once after a disconnect, so the title world can send the player back to training. */
 	bool ConsumeReturnToTraining();
+	/** Rooms go over the internet through the relay (else the LAN). */
+	bool IsInternet() const;
+	/** Hosting an internet room and the relay is answering. */
+	bool IsRelayConnected() const;
 
 	/**
 	 * This machine's split-screen setup for VS online (CILocalPlayers / CIKeyboardPlayer / CIPadDevice options).
@@ -115,7 +135,115 @@ public:
 	static FString GetTrainingMapName();
 	FString GetOfflineTrainingOptions() const;
 
+	// ---- ランダムマッチ / ランクマッチ (internet only: the relay keeps the queues and makes the matches)
+	/**
+	 * Joins the queue; the player then waits in their own training (the opponents are only met in the match).
+	 * False, with a notice, when it cannot (no relay, a pair in ランクマッチ, already in a room).
+	 */
+	bool StartQueue(EChaosImpactQueueMode Mode);
+	void CancelQueue();
+	EChaosImpactQueueMode GetQueueMode() const { return QueueMode; }
+	bool IsQueueing() const { return QueueMode != EChaosImpactQueueMode::None; }
+	/** The relay has matched this machine: it is about to open (host) or join the match's room. */
+	bool IsQueueMatched() const { return bQueueMatched; }
+	/** FPlatformTime seconds the search began / the match was found. */
+	double GetQueueStartedAt() const { return QueueStartedAt; }
+	double GetQueueMatchedAt() const { return QueueMatchedAt; }
+	/** Players searching in this mode now, this machine's included. */
+	int32 GetQueueWaitingCount() const { return QueueWaiting; }
+	/** ランダムマッチ: seconds until the players gathered so far are matched (negative while fewer than two wait). */
+	float GetQueueStartsIn() const { return QueueStartsIn; }
+	int32 GetQueueExpected() const { return QueueExpected; }
+	const TArray<FString>& GetQueueNames() const { return QueueNames; }
+	/** ランクマッチ: who was matched against this player, and their rank. */
+	const FString& GetQueueOpponentName() const { return QueueOpponentName; }
+	const FChaosImpactRankInfo& GetQueueOpponentRank() const { return QueueOpponentRank; }
+	/** The kind of matched room this machine is in or heading to (None for a 合言葉 room or outside rooms). */
+	EChaosImpactQueueMode GetMatchmadeMode() const { return MatchmadeMode; }
+	/** This machine's matched room's match has reached GO (leaving it from now on forfeits a ランクマッチ). */
+	void NotifyMatchmadeMatchStarted();
+	/** After a matched room's results: back to this machine's own training, where the menu to search again comes up. */
+	void FinishMatchmade();
+	/** Once, in the training a matched room returned to: which menu to bring up there (None: none). */
+	EChaosImpactQueueMode ConsumeShowQueueMenu();
+
+	// ---- Rank (the preseason, kept by the relay)
+	void RefreshRankInfo();
+	const FChaosImpactRankInfo& GetRankInfo() const { return RankInfo; }
+	bool IsRankInfoPending() const { return bRankInfoPending; }
+	/** This machine's side of the ランクマッチ just played ("win", "lose" or "draw"), sent once; see GetRankReport. */
+	void ReportRankResult(const FString& Result);
+	const FChaosImpactRankReport& GetRankReport() const { return RankReport; }
+	/** Names this player to the relay's ranks: made once per PC and kept secret (-CIPlayerToken= for tests on one PC). */
+	FString GetPlayerToken() const;
+
 private:
+	void QueueJoin();
+	void QueueTick();
+	void QueuePoll();
+	void HandleQueueMatched(const TSharedPtr<FJsonObject>& Reply);
+	void ResetQueueMatch();
+	void StopQueueTicker();
+	void SendRankReport();
+	EChaosImpactQueueMode QueueMode = EChaosImpactQueueMode::None;
+	FString QueueTicket;
+	double QueueStartedAt = 0.0;
+	double QueueMatchedAt = 0.0;
+	double QueueLastPollAt = 0.0;
+	int32 QueueWaiting = 0;
+	float QueueStartsIn = -1.0f;
+	int32 QueueFailures = 0;
+	bool bQueueRequestInFlight = false;
+	bool bQueueMatched = false;
+	bool bQueueHost = false;
+	bool bQueueHostReady = false;
+	int32 QueuePort = 0;
+	FString QueueMatchId;
+	int32 QueueExpected = 0;
+	TArray<FString> QueueNames;
+	FString QueueOpponentName;
+	FChaosImpactRankInfo QueueOpponentRank;
+	/** Bumped on every join and cancel: replies to older queue requests are ignored. */
+	int32 QueueGeneration = 0;
+	FTSTicker::FDelegateHandle QueueTicker;
+	/** The last round trip to the relay (the host of a match is the machine with the quickest). */
+	int32 LastRelayRtt = 0;
+	EChaosImpactQueueMode MatchmadeMode = EChaosImpactQueueMode::None;
+	FString MatchmadeId;
+	/** Options the matched room's host opens it with (who and how many are coming). */
+	FString MatchmadeOptions;
+	bool bMatchmadeStarted = false;
+	EChaosImpactQueueMode ShowQueueMenu = EChaosImpactQueueMode::None;
+	FChaosImpactRankInfo RankInfo;
+	bool bRankInfoPending = false;
+	FChaosImpactRankReport RankReport;
+	FString RankReportMatch;
+	FString RankReportResult;
+	int32 RankReportTries = 0;
+	FTSTicker::FDelegateHandle RankReportTicker;
+	mutable FString CachedPlayerToken;
+
+	// ---- Internet rooms (the relay)
+	void RelayCreate();
+	void RelaySearch();
+	void RelayHeartbeat();
+	void StartTunnel();
+	void StopRelayHosting();
+	/** The room is ready (made on the LAN or on the relay): opens it as its host. */
+	void OpenRoomAsHost();
+	/** The search has its rooms (from the LAN or the relay). */
+	void FinishSearch(TArray<FChaosImpactRoomListing>&& Found, bool bWasSuccessful);
+	void TravelToRoom(const FString& ConnectString);
+	TUniquePtr<FChaosImpactRelayTunnel> Tunnel;
+	FString RelayRoomId;
+	FString RelayRoomKey;
+	int32 RelayRoomPort = 0;
+	/** Bumped whenever a room is made, searched for or left: replies to older requests are ignored. */
+	int32 RelayGeneration = 0;
+	bool bRelaySearchInFlight = false;
+	bool bRelayUnreachableShown = false;
+	FTSTicker::FDelegateHandle HeartbeatTicker;
+
 	IOnlineSessionPtr GetSessions() const;
 	void BindSessionDelegates();
 	void BeginFind();

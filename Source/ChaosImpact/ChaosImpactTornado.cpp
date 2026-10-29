@@ -1,4 +1,5 @@
 #include "ChaosImpactTornado.h"
+#include "ChaosImpactDuelBallBalance.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
@@ -136,6 +137,7 @@ AChaosImpactTornado* AChaosImpactTornado::Release(UWorld* World, const FVector& 
 	const AGameStateBase* GameState = World->GetGameState();
 	Tornado->StartServerTime = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
 	Tornado->SourcePawn = Source;
+	Tornado->DuelThrowDamage = FChaosImpactDuelThrowDamage::Create(World);
 	Tornado->Seed = FMath::Rand();
 	Tornado->FinishSpawning(SpawnTransform);
 	UE_LOG(LogChaosImpact, Log, TEXT("Wind tornado released at %s heading %s by %s"), *Floor.ToCompactString(),
@@ -239,6 +241,7 @@ void AChaosImpactTornado::CatchBalls(const float DeltaSeconds)
 			// It is the tornado owner's ball from here on, whoever threw it.
 			if (Ball->DeflectByWind(NewVelocity, SourcePawn))
 			{
+				Ball->SetDuelThrowDamage(DuelThrowDamage);
 				UE_LOG(LogChaosImpact, Log, TEXT("Tornado turned a %s ball from %s to %s"),
 					ChaosImpactBallTypes::GetInternalName(Ball->GetBallType()), *OldVelocity.ToCompactString(), *NewVelocity.ToCompactString());
 				MulticastGust(Ball->GetActorLocation(), false);
@@ -309,6 +312,7 @@ void AChaosImpactTornado::ReleaseCarriedBalls()
 		}
 		// Flung out as the tornado owner's throw.
 		Ball->ReleaseFromWind(Ground, (Outward + FVector::CrossProduct(FVector::UpVector, Outward) * 0.6f) * 900.0f, SourcePawn);
+		Ball->SetDuelThrowDamage(DuelThrowDamage);
 	}
 	CarriedBalls.Reset();
 	if (World && !IsActorBeingDestroyed())

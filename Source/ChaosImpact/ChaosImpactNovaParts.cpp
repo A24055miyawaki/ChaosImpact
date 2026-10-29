@@ -358,7 +358,8 @@ void UChaosImpactNovaDirector::Tick(const float DeltaTime)
 	if (Match && Match->bVersusMatch)
 	{
 		// One set a match: each part once, at its own random time in the first two thirds or so.
-		if (Match->Phase != EChaosImpactOnlinePhase::Match)
+		// The duel (ランクマッチ) is played with normal balls only: no nova there.
+		if (Match->Phase != EChaosImpactOnlinePhase::Match || Match->Rules.bDuel)
 		{
 			return;
 		}

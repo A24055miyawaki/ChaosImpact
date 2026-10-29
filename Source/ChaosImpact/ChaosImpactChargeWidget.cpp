@@ -1172,9 +1172,11 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		ProgressPainter.Box(0.0f, 0.0f, 416.0f * Remaining, 9.0f, FMath::Lerp(Ice, Fire, Remaining));
 	}
 
-	// KO banner: two slashes cut across the top-right corner, then the KO stamp lands on them.
+	// KO banner: two slashes cut across the top-right corner, then the KO stamp lands on them. (A duel calls its
+	// knockouts in the middle of the screen instead, under its scoreboard.)
 	const float KnockoutAge = static_cast<float>(Clock - KnockoutAt);
-	if (KnockoutAge < 2.2f)
+	const AChaosImpactGameState* KnockoutMatch = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (KnockoutAge < 2.2f && !(KnockoutMatch && KnockoutMatch->IsDuel()))
 	{
 		const float S = GetHudScale(Size.X, Size.Y);
 		const float Leave = FMath::Clamp((KnockoutAge - 1.8f) / 0.4f, 0.0f, 1.0f);
@@ -2383,12 +2385,15 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			// Plain type over the flyover, rising slightly into place.
 			const float Rise = (1.0f - In) * 16.0f;
 			const FPainter Words{Center, OutDrawElements, BaseLayer + 2, Alpha};
-			Words.Text(Match->Rules.bCrashBall ? TEXT("巨大球を相手のゴールへ押し込め！") : bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！"), 0.0f, -74.0f + Rise, 60.0f,
+			Words.Text(Match->Rules.bDuel ? TEXT("相手を3回当てて倒せ！") : Match->Rules.bCrashBall ? TEXT("巨大球を相手のゴールへ押し込め！")
+				: bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！"), 0.0f, -74.0f + Rise, 60.0f,
 				Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 			Words.Box(-150.0f * In, 18.0f + Rise, 300.0f * In, 2.0f, WithAlpha(Paper, 0.6f));
-			Words.Text(FString::Printf(TEXT("%s ・ %d分"), *ChaosImpactMatch::DescribeRule(Match->Rules),
-				Match->Rules.Minutes), 0.0f, 30.0f + Rise, 22.0f, WithAlpha(Paper, 0.85f), ETextAlign::Center,
-				TEXT("Regular"), 2.0f, Ink);
+			Words.Text(Match->Rules.bDuel
+				? FString::Printf(TEXT("%s ・ 1ラウンド%d秒 ・ %s"), *ChaosImpactMatch::DescribeRule(Match->Rules),
+					FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::GetDuelStageName())
+				: FString::Printf(TEXT("%s ・ %d分"), *ChaosImpactMatch::DescribeRule(Match->Rules), Match->Rules.Minutes),
+				0.0f, 30.0f + Rise, 22.0f, WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Regular"), 2.0f, Ink);
 		}
 		// Ready? is drawn once for the whole screen by UChaosImpactMatchAnnouncerWidget.
 		return;
@@ -2399,6 +2404,11 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 		if (Match->Rules.bCrashBall)
 		{
 			PaintCrashMarkers(AllottedGeometry, OutDrawElements, BaseLayer, *Match, S);
+			return;
+		}
+		// The duel's scoreboard (both players, their rounds and health) is drawn once for the whole screen.
+		if (Match->Rules.bDuel)
+		{
 			return;
 		}
 		// The time is shown once for the whole screen by UChaosImpactMatchAnnouncerWidget. Each view keeps
@@ -2707,6 +2717,11 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			H.Box(182.0f, 50.0f, 96.0f, 24.0f, Fire);
 			H.Text(TEXT("募集終了"), 230.0f, 51.0f, 16.0f, Paper, ETextAlign::Center, TEXT("Black"));
 		}
+		else if (!Room->IsMatchmade())
+		{
+			H.Box(182.0f, 50.0f, 96.0f, 24.0f, Ice);
+			H.Text(TEXT("募集中"), 230.0f, 51.0f, 16.0f, Paper, ETextAlign::Center, TEXT("Black"));
+		}
 
 		// One card per member (like the adventure's member list): their colour, name, the character they play, tags
 		// for the host and this machine's players, 準備OK, and the connection as bars and milliseconds.
@@ -2826,6 +2841,31 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			W.Text(FString::Printf(TEXT("%s で%s"), *ChaosImpactSettings::DescribeAction(SwitchController, EChaosImpactAction::LobbySpectate),
 				SwitchController->IsSpectating() ? TEXT("プレイヤーに戻る") : TEXT("観戦にする")),
 				24.0f, 42.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Regular"));
+		}
+
+		if (!Room->bRecruitmentClosed && !Room->IsMatchmade())
+		{
+			const auto* Host = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			if (Host && Host->IsOnlineRoomHost())
+			{
+				const bool bCanClose = Host->CanCloseRecruitment();
+				const float Progress = Host->GetRecruitmentHoldProgress();
+				const bool bNarrow = Size.X / S < 1500.f;
+				const FGeometry Hint = bNarrow ? MakeSkewed(TopLeft, 40.f, WatchTop + 78.f, 420.f, 100.f, -.12f)
+					: MakeSkewed(TopCenter, -210.f, 36.f, 420.f, 100.f, -.12f);
+				const FPainter P{Hint, OutDrawElements, BaseLayer + 2};
+				P.Box(6, 7, 420, 100, WithAlpha(Ink, .55f));
+				P.Box(0, 0, 420, 100, FLinearColor(.012f, .016f, .03f, .94f));
+				P.Box(0, 0, 7, 100, bCanClose ? Gold : Muted);
+				P.Text(bCanClose ? TEXT("長押しで募集終了") : TEXT("メンバーの参加を待っています"), 24, 10, bCanClose ? 28.f : 23.f,
+					Paper, ETextAlign::Left, TEXT("Black"));
+				P.Text(bCanClose ? FString::Printf(TEXT("%s を %.1f秒長押し"),
+					*ChaosImpactSettings::DescribeAction(Host, EChaosImpactAction::LobbyReady), AChaosImpactPlayerController::RecruitmentHoldSeconds)
+					: FString(TEXT("参加者がそろったら、ここから締め切れます")),
+					24, 50, 18, bCanClose ? Paper : Muted, ETextAlign::Left, TEXT("Bold"));
+				P.Box(24, 82, 370, 7, WithAlpha(Paper, .16f));
+				P.Box(24, 82, 370 * Progress, 7, Gold);
+			}
 		}
 
 		if (Room->bRulesDecided)

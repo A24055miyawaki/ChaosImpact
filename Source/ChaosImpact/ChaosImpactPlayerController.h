@@ -21,6 +21,7 @@ class AChaosImpactTitleDemo;
 class SChaosImpactVersusReveal;
 class AChaosImpactCharacterPreview;
 class SWidget;
+enum class EChaosImpactQueueMode : uint8;
 struct FChaosImpactVersusCardInfo;
 
 /**
@@ -182,15 +183,28 @@ public:
 	void SubmitOnlineName(const FString& Name);
 	void SubmitRoomPassword(const FString& Password);
 	void CancelOnlineStatus();
-	/** Host only: メンバー募集終了. Closes the room and starts the match countdown. */
+	/** Host only: closes recruitment and opens the rule selector. */
 	void CloseRecruitment();
+	/** The configured Ready key also closes recruitment when held in the password-room lobby. */
+	static constexpr float RecruitmentHoldSeconds = 1.2f;
+	float GetRecruitmentHoldProgress() const { return FMath::Clamp(RecruitmentHeldSeconds / RecruitmentHoldSeconds, 0.f, 1.f); }
 	void LeaveOnlineRoom();
 	void StopRoomSearch();
 	bool IsOnlineRoom() const { return GetNetMode() != NM_Standalone; }
 	bool IsOnlineRoomHost() const { return GetNetMode() == NM_ListenServer; }
 	bool IsPendingCreateRoom() const { return bPendingCreateRoom; }
+	/** Looking for a 合言葉 room, or waiting in the queue of ランダムマッチ / ランクマッチ. */
 	bool IsSearchingForRoom() const;
 	bool CanCloseRecruitment() const;
+
+	// ランダムマッチ / ランクマッチ
+	/** Joins the queue; the player waits in this machine's own training until the match is found. */
+	void BeginMatchQueue(EChaosImpactQueueMode Mode);
+	/** ランクマッチ's own page (the rank, the record, the search button); asks the relay for the latest rank. */
+	void OpenRankTop();
+	/** The matched room is over for this machine: back to its own training. */
+	UFUNCTION(Client, Reliable)
+	void ClientLeaveMatchmade();
 	/** Room name screen: names a new room, or renames this room from the lobby. */
 	void SubmitRoomName(const FString& Name);
 	void BeginRoomRename();
@@ -407,6 +421,8 @@ protected:
 	bool bRenamingRoom = false;
 	/** The character select / name entry was opened from the room's pause menu (it goes back to the room). */
 	bool bRoomCharacterChange = false;
+	/** A matched room: tells the session when its match is under way, and sends a ランクマッチ's result once. */
+	void UpdateMatchmadeProgress();
 	bool bRenamingPlayer = false;
 	/** へやをつくる: the password waits here while the room name is entered. */
 	FString PendingRoomPassword;
@@ -418,6 +434,10 @@ protected:
 	/** Online rooms and room search accept keyboard and pad alike, following the last one used. */
 	bool bOnlineAnyInput = false;
 	bool bLastInputGamepad = false;
+	void UpdateRecruitmentHold(float DeltaSeconds);
+	float RecruitmentHeldSeconds = 0.f;
+	/** Do not carry a held button across menus, loss of focus, or the next lobby. */
+	bool bRecruitmentHoldNeedsRelease = false;
 
 	// Rumble: pulses waiting for their start time, and the two held channels for sustained rumble.
 	struct FPendingRumble

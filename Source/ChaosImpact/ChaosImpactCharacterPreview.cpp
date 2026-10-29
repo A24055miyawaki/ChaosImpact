@@ -259,7 +259,10 @@ void AChaosImpactCharacterPreview::RebuildModel(const int32 CharacterIndex)
 	if (Model && Model->HasAuthoredAnimations())
 	{
 		Model->SetRelativeRotation(FRotator(0.0f, 65.0f, 0.0f));
-		Camera->FOVAngle = 36.0f;
+		const bool bBird = CharacterIndex == ChaosImpactRoster::BirdIndex;
+		Camera->SetRelativeLocation(bBird ? FVector(0.f, 420.f, 120.f) : FVector(0.f, 380.f, 104.f));
+		Camera->SetWorldRotation(FRotator(-2.f, -90.f, 0.f));
+		Camera->FOVAngle = bBird ? 38.f : 36.f;
 		Model->PlaySelectionAppeal();
 	}
 	else if (CharacterIndex == ChaosImpactRoster::CapIndex)
@@ -397,8 +400,15 @@ void AChaosImpactCharacterPreview::Animate(const float DeltaSeconds)
 			// Imported animation bounds include every clip's travel and are much
 			// larger than this frame's fish. Frame its current skeleton instead.
 			PoseBox = PoseBox.ExpandBy(18.0f);
+			if (ModelCharacter == ChaosImpactRoster::BirdIndex)
+			{
+				// Rigid-part bones sit at pivots: they do not cover the round body or tall head feathers.
+				// Unlike the travelling fish clips, this short hovering loop has tight useful mesh bounds.
+				PoseBox = Fish->Bounds.GetBox().ExpandBy(12.f);
+			}
 			const FVector Focus = PoseBox.GetCenter();
-			const float Distance = FMath::Max(270.0f, static_cast<float>(PoseBox.GetExtent().Size()) * 3.0f);
+			const float Distance = ModelCharacter == ChaosImpactRoster::BirdIndex ? 330.f
+				: FMath::Max(270.0f, static_cast<float>(PoseBox.GetExtent().Size()) * 3.0f);
 			Camera->SetWorldLocation(Focus + FVector(0.0f, Distance, Distance * 0.14f));
 			Camera->SetWorldRotation((Focus-Camera->GetComponentLocation()).Rotation());
 		}

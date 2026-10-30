@@ -228,6 +228,7 @@ private:
 	void RelaySearch();
 	void RelayHeartbeat();
 	void StartTunnel();
+	void JoinRelayRoom(int32 Port);
 	void StopRelayHosting();
 	/** The room is ready (made on the LAN or on the relay): opens it as its host. */
 	void OpenRoomAsHost();
@@ -235,6 +236,7 @@ private:
 	void FinishSearch(TArray<FChaosImpactRoomListing>&& Found, bool bWasSuccessful);
 	void TravelToRoom(const FString& ConnectString);
 	TUniquePtr<FChaosImpactRelayTunnel> Tunnel;
+	TUniquePtr<class FChaosImpactRelayGuestTunnel> GuestTunnel;
 	FString RelayRoomId;
 	FString RelayRoomKey;
 	int32 RelayRoomPort = 0;

@@ -7,6 +7,9 @@ Saved/
 .vs/
 *.sln
 
+# SSH credentials are local only.
+/Key/
+
 # 作業用スクリプトのログ（自動生成・コミット不要）
 *.log
 

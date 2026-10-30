@@ -179,6 +179,9 @@ public:
 	/** VS local: one player watches a CPU-only match (chosen before players and characters; no split screen). */
 	void BeginLocalSpectate();
 	void BeginVersusOnline();
+	void CancelOnlineConnection();
+	bool IsCheckingOnlineConnection() const { return bCheckingOnlineConnection; }
+	const FString& GetOnlineConnectionError() const { return OnlineConnectionError; }
 	EChaosImpactPlayFlow GetPlayFlow() const { return PlayFlow; }
 	void SubmitOnlineName(const FString& Name);
 	void SubmitRoomPassword(const FString& Password);
@@ -418,6 +421,10 @@ protected:
 	bool bTrainingOverlayPresentationActive = false;
 	bool bPendingCreateRoom = true;
 	bool bOnlineNameOnly = false;
+	bool bCheckingOnlineConnection = false;
+	FString OnlineConnectionError;
+	int32 OnlineConnectionGeneration = 0;
+	EChaosImpactScreen OnlineConnectionReturnScreen = EChaosImpactScreen::VSSelect;
 	bool bRenamingRoom = false;
 	/** The character select / name entry was opened from the room's pause menu (it goes back to the room). */
 	bool bRoomCharacterChange = false;

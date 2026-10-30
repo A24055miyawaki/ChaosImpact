@@ -93,6 +93,14 @@ class Room:
         self.packets = 0
         self.bytes = 0
 
+    def send(self, data, addr):
+        """UDP and WSS endpoints may share a room without changing its packet protocol."""
+        peer = self.relay.ws_peers.get(addr)
+        if peer is not None:
+            peer.send(data)
+        elif addr[0] != "wss" and self.transport:
+            self.transport.sendto(data, addr)
+
     def listing(self):
         return {"room": self.id, "name": self.name, "host": self.host_name, "members": self.members,
                 "spectators": self.spectators, "open": self.open, "port": self.port}
@@ -107,7 +115,7 @@ class Room:
                 log.info("room %s: host at %s:%d", self.id, addr[0], addr[1])
             self.host_addr = addr
             self.host_seen = now
-            self.transport.sendto(b"CIHK", addr)
+            self.send(b"CIHK", addr)
             return
         if addr == self.host_addr:
             self.host_seen = now
@@ -115,7 +123,7 @@ class Room:
                 (client_id,) = struct.unpack(">I", data[4:8])
                 target = self.addresses.get(client_id)
                 if target:
-                    self.transport.sendto(data[8:], target)
+                    self.send(data[8:], target)
             return
         if self.host_addr is None:
             return
@@ -129,7 +137,7 @@ class Room:
             self.addresses[entry[0]] = addr
             log.info("room %s: client %d from %s:%d", self.id, entry[0], addr[0], addr[1])
         entry[1] = now
-        self.transport.sendto(b"CIRD" + struct.pack(">I", entry[0]) + data, self.host_addr)
+        self.send(b"CIRD" + struct.pack(">I", entry[0]) + data, self.host_addr)
 
     def sweep(self, now):
         for addr, (client_id, seen) in list(self.clients.items()):
@@ -137,10 +145,14 @@ class Room:
                 del self.clients[addr]
                 self.addresses.pop(client_id, None)
                 if self.host_addr:
-                    self.transport.sendto(b"CIRX" + struct.pack(">I", client_id), self.host_addr)
+                    self.send(b"CIRX" + struct.pack(">I", client_id), self.host_addr)
                 log.info("room %s: client %d dropped (quiet)", self.id, client_id)
 
     def close(self):
+        for addr in [self.host_addr, *self.clients]:
+            peer = self.relay.ws_peers.get(addr)
+            if peer:
+                peer.stop(1001, "room closed")
         if self.transport:
             self.transport.close()
             self.transport = None
@@ -154,7 +166,8 @@ class RoomProtocol(asyncio.DatagramProtocol):
         self.room.transport = transport
 
     def datagram_received(self, data, addr):
-        if len(data) <= MAX_PACKET:
+        limit = MAX_PACKET + 8 if addr == self.room.host_addr and data[:4] == b"CIHD" else MAX_PACKET
+        if len(data) <= limit:
             self.room.datagram(data, addr)
 
 
@@ -315,9 +328,12 @@ class Relay:
         self.gather_since = {}            # version -> when two random players first waited together
         self.ranks = RankBook(data_path)
         self.matchmaking = False
+        self.ws_peers = {}
 
     async def handle(self, request, addr):
         op = request.get("op")
+        if op == "ping":
+            return {"ok": True, "protocol": 1, "transports": ["udp", "wss"]}
         if op == "create":
             return await self.create(request, addr)
         if op == "search":
@@ -586,6 +602,9 @@ async def main():
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7700)
     parser.add_argument("--room-ports", default="7701-7760")
+    parser.add_argument("--ws-bind", default="127.0.0.1")
+    parser.add_argument("--ws-port", type=int, default=0,
+                        help="optional WebSocket listener behind a TLS reverse proxy (0: UDP only)")
     parser.add_argument("--data", default=os.environ.get("STATE_DIRECTORY", ".").split(":")[0] + "/ranks.json",
                         help="where the preseason's ranks are kept (one JSON file)")
     args = parser.parse_args()
@@ -594,7 +613,16 @@ async def main():
     loop = asyncio.get_running_loop()
     await loop.create_datagram_endpoint(lambda: DirectoryProtocol(relay), local_addr=(args.bind, args.port))
     log.info("listening on %s:%d, room ports %d-%d, ranks in %s", args.bind, args.port, first, last, args.data)
-    await relay.sweep()
+    ws_server = None
+    if args.ws_port:
+        from ci_relay_ws import start_server
+        ws_server = await start_server(relay, args.ws_bind, args.ws_port)
+    try:
+        await relay.sweep()
+    finally:
+        if ws_server:
+            ws_server.close()
+            await ws_server.wait_closed()
 
 
 if __name__ == "__main__":

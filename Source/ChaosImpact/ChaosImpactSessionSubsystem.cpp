@@ -4,6 +4,7 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactRelay.h"
+#include "ChaosImpactRelayWebSocket.h"
 #include "Dom/JsonObject.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/Engine.h"
@@ -106,6 +107,7 @@ void UChaosImpactSessionSubsystem::Deinitialize()
 		Sessions->ClearOnCreateSessionCompleteDelegates(this);
 		Sessions->ClearOnJoinSessionCompleteDelegates(this);
 	}
+	ChaosImpactRelay::ShutdownWebSockets();
 	Super::Deinitialize();
 }
 
@@ -459,7 +461,7 @@ bool UChaosImpactSessionSubsystem::JoinRoomListing(const int32 Index)
 		State = EChaosImpactRoomState::Joining;
 		UE_LOG(LogChaosImpact, Log, TEXT("Joining internet room \"%s\" hosted by %s%s"), *Listing.RoomName, *Listing.HostName,
 			bJoinAsSpectator ? TEXT(" as a spectator") : TEXT(""));
-		TravelToRoom(FString::Printf(TEXT("%s:%d"), *Host, Listing.RelayPort));
+		JoinRelayRoom(Listing.RelayPort);
 		return true;
 	}
 	if (!Sessions)
@@ -862,6 +864,26 @@ void UChaosImpactSessionSubsystem::StartTunnel()
 	}
 }
 
+void UChaosImpactSessionSubsystem::JoinRelayRoom(const int32 Port)
+{
+	GuestTunnel.Reset();
+	if (ChaosImpactRelay::UseWebSocket())
+	{
+		GuestTunnel = MakeUnique<FChaosImpactRelayGuestTunnel>(Port);
+		if (!GuestTunnel->Start())
+		{
+			GuestTunnel.Reset(); State = EChaosImpactRoomState::None;
+			PostNotice(TEXT("中継サーバーにつながりません")); return;
+		}
+		TravelToRoom(FString::Printf(TEXT("127.0.0.1:%d"), GuestTunnel->GetLocalPort()));
+		return;
+	}
+	FString Host, PortText;
+	const FString Server = ChaosImpactRelay::GetServer();
+	if (!Server.Split(TEXT(":"), &Host, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd)) { Host = Server; }
+	TravelToRoom(FString::Printf(TEXT("%s:%d"), *Host, Port));
+}
+
 void UChaosImpactSessionSubsystem::RelayHeartbeat()
 {
 	if (RelayRoomId.IsEmpty() || State != EChaosImpactRoomState::Hosting)
@@ -897,6 +919,7 @@ void UChaosImpactSessionSubsystem::RelayHeartbeat()
 
 void UChaosImpactSessionSubsystem::StopRelayHosting()
 {
+	GuestTunnel.Reset();
 	if (HeartbeatTicker.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(HeartbeatTicker);
@@ -1173,7 +1196,7 @@ void UChaosImpactSessionSubsystem::QueueTick()
 			RoomName = MatchmadeMode == EChaosImpactQueueMode::Rank ? TEXT("ランクマッチ") : TEXT("ランダムマッチ");
 			State = EChaosImpactRoomState::Joining;
 			++RelayGeneration;
-			TravelToRoom(FString::Printf(TEXT("%s:%d"), *Host, Port));
+			JoinRelayRoom(Port);
 			return;
 		}
 	}

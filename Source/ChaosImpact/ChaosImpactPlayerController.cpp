@@ -24,6 +24,7 @@
 #include "Misc/App.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactRelay.h"
 #include "ChaosImpactBallTypes.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -1389,7 +1390,40 @@ void AChaosImpactPlayerController::BeginLocalSpectate()
 void AChaosImpactPlayerController::BeginVersusOnline()
 {
 	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
-	ShowMenuScreen(EChaosImpactScreen::OnlinePlayers);
+	if (CurrentScreen != EChaosImpactScreen::OnlineConnecting) { OnlineConnectionReturnScreen = CurrentScreen; }
+	const int32 Generation = ++OnlineConnectionGeneration;
+	bCheckingOnlineConnection = true;
+	OnlineConnectionError.Reset();
+	ShowMenuScreen(EChaosImpactScreen::OnlineConnecting);
+	if (!ChaosImpactRelay::IsEnabled())
+	{
+		bCheckingOnlineConnection = false;
+		OnlineConnectionError = TEXT("接続先の設定を確認してください。");
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("ping"));
+	ChaosImpactRelay::Request(Message, [Weak = TWeakObjectPtr<AChaosImpactPlayerController>(this), Generation](TSharedPtr<FJsonObject> Reply, int32)
+	{
+		auto* Self = Weak.Get();
+		if (!Self || Self->OnlineConnectionGeneration != Generation
+			|| Self->CurrentScreen != EChaosImpactScreen::OnlineConnecting) { return; }
+		Self->bCheckingOnlineConnection = false;
+		bool bOk = false;
+		if (Reply && Reply->TryGetBoolField(TEXT("ok"), bOk) && bOk)
+		{
+			Self->ShowMenuScreen(EChaosImpactScreen::OnlinePlayers);
+		}
+		else { Self->OnlineConnectionError = TEXT("ネットワーク接続を確認して、もう一度お試しください。"); }
+	});
+}
+
+void AChaosImpactPlayerController::CancelOnlineConnection()
+{
+	++OnlineConnectionGeneration;
+	bCheckingOnlineConnection = false;
+	OnlineConnectionError.Reset();
+	ShowMenuScreen(OnlineConnectionReturnScreen);
 }
 
 FString AChaosImpactPlayerController::BuildLocalSetupOptions()

@@ -1432,6 +1432,17 @@ void UChaosImpactMenuWidget::BuildEntries()
 			TEXT(""), TEXT(""), bFailed ? Gold : Muted});
 		break;
 	}
+	case EChaosImpactScreen::OnlineConnecting:
+	{
+		const auto* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		if (Controller && !Controller->IsCheckingOnlineConnection())
+		{
+			Entries.Add({FSlateRect(400, 714, 780, 798), TEXT("もう一度接続する"), TEXT(""), TEXT(""), Ice});
+			Entries.Add({FSlateRect(820, 714, 1200, 798), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		}
+		else { Entries.Add({FSlateRect(560, 714, 1040, 798), TEXT("戻る"), TEXT(""), TEXT(""), Muted}); }
+		break;
+	}
 
 	case EChaosImpactScreen::SoloStageSelect:
 		// ステージ1、ステージ2の選択用カードと、戻るボタン
@@ -1835,6 +1846,16 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 			RefreshEntries();
 		}
 	}
+	if (Screen == EChaosImpactScreen::OnlineConnecting)
+	{
+		const auto* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const FString Error = Controller ? Controller->GetOnlineConnectionError() : FString();
+		if (Error != LastCreateError)
+		{
+			LastCreateError = Error; RefreshEntries();
+			SelectedIndex = FMath::Clamp(SelectedIndex, 0, FMath::Max(0, Entries.Num() - 1));
+		}
+	}
 
 	if (Screen == EChaosImpactScreen::ControllerAssignment)
 	{
@@ -2144,6 +2165,28 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				C.Line(Bottom + FVector2D(-18.0f, -10.0f), Bottom, Paper, 5.0f);
 				C.Line(Bottom, Bottom + FVector2D(18.0f, -10.0f), Paper, 5.0f);
 			}
+		}
+	}
+	else if (Screen == EChaosImpactScreen::OnlineConnecting)
+	{
+		const auto* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const bool bWaiting = Controller && Controller->IsCheckingOnlineConnection();
+		const float E = EaseOut(T / .25f);
+		const FGeometry Band = MakeSkewed(DesignGeometry, -180.f, 300.f, 1960.f, 240.f, -.3f);
+		const FMenuPainter Panel{Band, OutDrawElements, BaseLayer + 2, E};
+		Panel.Box(0, 0, 1960, 240, FLinearColor(.015f, .018f, .035f, .96f));
+		Panel.Box(0, 0, 1960, 7, bWaiting ? Ice : Fire);
+		const FMenuPainter Label{DesignGeometry, OutDrawElements, BaseLayer + 3, E};
+		Label.Text(bWaiting ? TEXT("接続しています…") : TEXT("接続できませんでした"), 800, 350, 54,
+			Paper, ETextAlign::Center, TEXT("Black"), 3, Ink);
+		if (bWaiting)
+		{
+			ChaosImpactPaint::HudWaitBalls(ChaosImpactPaint::FPainter{Label.Geometry, Label.Elements, Label.Layer + 1, Label.Alpha},
+				FVector2D(800, 465), T, 30);
+		}
+		else if (Controller)
+		{
+			Label.Text(Controller->GetOnlineConnectionError(), 800, 458, 26, Paper, ETextAlign::Center);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::OnlineStatus)
@@ -2874,6 +2917,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			GoBack();
 		}
 		break;
+	case EChaosImpactScreen::OnlineConnecting:
+		if (!Controller->IsCheckingOnlineConnection() && SelectedIndex == 0) { Controller->BeginVersusOnline(); }
+		else { Controller->CancelOnlineConnection(); }
+		break;
 	case EChaosImpactScreen::ControllerAssignment:
 		if (SelectedIndex == 0)
 		{
@@ -3236,6 +3283,9 @@ void UChaosImpactMenuWidget::GoBack()
 			break;
 		case EChaosImpactScreen::OnlinePlayers:
 			Controller->ShowMenuScreen(EChaosImpactScreen::VSSelect);
+			break;
+		case EChaosImpactScreen::OnlineConnecting:
+			Controller->CancelOnlineConnection();
 			break;
 		case EChaosImpactScreen::MultiReady:
 			Controller->ShowMenuScreen(EChaosImpactScreen::OnlinePlayers);

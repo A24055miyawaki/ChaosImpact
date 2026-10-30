@@ -1,4 +1,5 @@
 #include "ChaosImpactRelay.h"
+#include "ChaosImpactRelayWebSocket.h"
 
 #include "ChaosImpact.h"
 #include "Async/Async.h"
@@ -23,6 +24,19 @@ namespace
 	constexpr double RelayKeepAliveSeconds = 2.0;
 	/** A remote player's local socket is closed after this long without traffic. */
 	constexpr double RelayClientIdleSeconds = 60.0;
+	bool bAutoWebSocket = false;
+
+	FString RelaySetting(const TCHAR* Key, const TCHAR* Argument)
+	{
+		FString Value;
+		if (FParse::Value(FCommandLine::Get(), Argument, Value)) { return Value.TrimStartAndEnd(); }
+		if (GConfig && GConfig->GetString(RelayConfigSection, Key, Value, GGameUserSettingsIni) && !Value.TrimStartAndEnd().IsEmpty())
+		{
+			return Value.TrimStartAndEnd();
+		}
+		if (GConfig) { GConfig->GetString(RelayConfigSection, Key, Value, GGameIni); }
+		return Value.TrimStartAndEnd();
+	}
 
 	ISocketSubsystem* Sockets()
 	{
@@ -99,7 +113,28 @@ FString ChaosImpactRelay::GetServer()
 
 bool ChaosImpactRelay::IsEnabled()
 {
-	return !GetServer().IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("CILan"));
+	return (!GetServer().IsEmpty() || !GetWebSocketServer().IsEmpty()) && !FParse::Param(FCommandLine::Get(), TEXT("CILan"));
+}
+
+FString ChaosImpactRelay::GetWebSocketServer()
+{
+	FString Url = RelaySetting(TEXT("RelayWebSocketServer"), TEXT("CIRelayWS="));
+	while (Url.EndsWith(TEXT("/"))) { Url.LeftChopInline(1); }
+	// Unencrypted WS is only a loopback test option. Never disable certificate or hostname checks for WSS.
+	const bool bLoopback = Url.StartsWith(TEXT("ws://127.0.0.1:")) || Url.StartsWith(TEXT("ws://localhost:"));
+	return Url.StartsWith(TEXT("wss://")) || bLoopback ? Url : FString();
+}
+
+bool ChaosImpactRelay::UseWebSocket()
+{
+	const FString Mode = RelaySetting(TEXT("RelayTransport"), TEXT("CIRelayTransport="));
+	return !GetWebSocketServer().IsEmpty() && (Mode.Equals(TEXT("wss"), ESearchCase::IgnoreCase)
+		|| (!Mode.Equals(TEXT("udp"), ESearchCase::IgnoreCase) && bAutoWebSocket));
+}
+
+FString ChaosImpactRelay::GetRoomWebSocketUrl(int32 Port)
+{
+	return GetWebSocketServer() + FString::Printf(TEXT("/room/%d"), Port);
 }
 
 FString ChaosImpactRelay::GetNetVersion()
@@ -113,12 +148,24 @@ FString ChaosImpactRelay::GetNetVersion()
 void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(TSharedPtr<FJsonObject>, int32)> OnReply)
 {
 	const FString Server = GetServer();
+	static bool bLoggedConfiguration = false;
+	if (!bLoggedConfiguration)
+	{
+		bLoggedConfiguration = true;
+		UE_LOG(LogChaosImpact, Log, TEXT("Relay configuration: UDP=%s WSS=%s mode=%s gameini=%s"),
+			*Server, *GetWebSocketServer(), *RelaySetting(TEXT("RelayTransport"), TEXT("CIRelayTransport=")), *GGameIni);
+	}
 	static TAtomic<int32> NextRequestId{1};
 	const int32 RequestId = NextRequestId++;
 	Message->SetNumberField(TEXT("rid"), RequestId);
 	FString Body;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
 	FJsonSerializer::Serialize(Message, Writer);
+	if (UseWebSocket() || Server.IsEmpty())
+	{
+		RequestWebSocket(Body, RequestId, MoveTemp(OnReply));
+		return;
+	}
 	Async(EAsyncExecution::ThreadPool, [Server, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
 	{
 		TSharedPtr<FJsonObject> Reply;
@@ -163,8 +210,16 @@ void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(T
 			}
 			Sockets()->DestroySocket(Socket);
 		}
-		AsyncTask(ENamedThreads::GameThread, [Reply, RoundTripMs, OnReply = MoveTemp(OnReply)]()
+		AsyncTask(ENamedThreads::GameThread, [Reply, RoundTripMs, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
 		{
+			const FString Mode = RelaySetting(TEXT("RelayTransport"), TEXT("CIRelayTransport="));
+			if (!Reply && !Mode.Equals(TEXT("udp"), ESearchCase::IgnoreCase) && !GetWebSocketServer().IsEmpty())
+			{
+				bAutoWebSocket = true;
+				UE_LOG(LogChaosImpact, Log, TEXT("Relay UDP unanswered: switching this session to WSS %s"), *GetWebSocketServer());
+				RequestWebSocket(Body, RequestId, MoveTemp(OnReply));
+				return;
+			}
 			OnReply(Reply, RoundTripMs);
 		});
 	});
@@ -185,9 +240,10 @@ FChaosImpactRelayTunnel::~FChaosImpactRelayTunnel()
 
 bool FChaosImpactRelayTunnel::Start()
 {
-	RelayAddr = Resolve(RelayHost, RoomPort);
+	const bool bWss = ChaosImpactRelay::UseWebSocket();
+	if (!bWss) { RelayAddr = Resolve(RelayHost, RoomPort); }
 	LocalGameAddr = Sockets() ? TSharedPtr<FInternetAddr>(Sockets()->CreateInternetAddr()) : nullptr;
-	if (!RelayAddr.IsValid() || !LocalGameAddr.IsValid())
+	if ((!bWss && !RelayAddr.IsValid()) || !LocalGameAddr.IsValid())
 	{
 		UE_LOG(LogChaosImpact, Warning, TEXT("Relay tunnel: cannot resolve %s"), *RelayHost);
 		return false;
@@ -195,14 +251,20 @@ bool FChaosImpactRelayTunnel::Start()
 	bool bValid = false;
 	LocalGameAddr->SetIp(TEXT("127.0.0.1"), bValid);
 	LocalGameAddr->SetPort(LocalGamePort);
-	RelaySocket = MakeUdpSocket(TEXT("ChaosImpact relay tunnel"));
-	if (!RelaySocket)
+	if (bWss)
+	{
+		WebSocket = MakeShared<FChaosImpactRelayWebSocket>();
+		if (!WebSocket->Start(ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort))) { WebSocket.Reset(); return false; }
+	}
+	else { RelaySocket = MakeUdpSocket(TEXT("ChaosImpact relay tunnel")); }
+	if (!bWss && !RelaySocket)
 	{
 		return false;
 	}
 	bStopping = false;
 	Thread = FRunnableThread::Create(this, TEXT("ChaosImpactRelayTunnel"), 0, TPri_AboveNormal);
-	UE_LOG(LogChaosImpact, Log, TEXT("Relay tunnel: %s -> 127.0.0.1:%d"), *RelayAddr->ToString(true), LocalGamePort);
+	UE_LOG(LogChaosImpact, Log, TEXT("Relay tunnel: %s -> 127.0.0.1:%d"),
+		bWss ? *ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort) : *RelayAddr->ToString(true), LocalGamePort);
 	return Thread != nullptr;
 }
 
@@ -215,6 +277,7 @@ void FChaosImpactRelayTunnel::Shutdown()
 		delete Thread;
 		Thread = nullptr;
 	}
+	if (WebSocket) { WebSocket->Shutdown(); WebSocket.Reset(); }
 	for (TPair<uint32, FClient>& Pair : Clients)
 	{
 		if (Pair.Value.Socket)
@@ -237,6 +300,7 @@ bool FChaosImpactRelayTunnel::IsConnected() const
 
 void FChaosImpactRelayTunnel::SendToRelay(const uint8* Data, const int32 Size)
 {
+	if (WebSocket) { WebSocket->Send(Data, Size); return; }
 	int32 Sent = 0;
 	RelaySocket->SendTo(Data, Size, Sent, *RelayAddr);
 }
@@ -290,6 +354,19 @@ uint32 FChaosImpactRelayTunnel::Run()
 	Hello.Append(reinterpret_cast<const uint8*>("CIH1"), 4);
 	Hello.Append(reinterpret_cast<const uint8*>(Key.Get()), Key.Length());
 	TSharedRef<FInternetAddr> From = Sockets()->CreateInternetAddr();
+	TArray<uint8> WsPacket;
+	const auto ReceiveRelay = [&]()
+	{
+		if (WebSocket)
+		{
+			if (!WebSocket->Receive(WsPacket)) { return 0; }
+			const int32 Size = FMath::Min(WsPacket.Num(), static_cast<int32>(sizeof(Buffer)));
+			FMemory::Memcpy(Buffer, WsPacket.GetData(), Size); return Size;
+		}
+		int32 Size = 0;
+		if (RelaySocket->RecvFrom(Buffer, sizeof(Buffer), Size, *From)) { return Size; }
+		return 0;
+	};
 	while (!bStopping)
 	{
 		const double Now = FPlatformTime::Seconds();
@@ -301,7 +378,7 @@ uint32 FChaosImpactRelayTunnel::Run()
 		}
 		// From the relay: a remote player's packet for the game, or news about them.
 		int32 Read = 0;
-		while (RelaySocket->RecvFrom(Buffer, RelayMaxDatagram, Read, *From) && Read > 0)
+		while ((Read = ReceiveRelay()) > 0)
 		{
 			bBusy = true;
 			if (Read >= 4 && FMemory::Memcmp(Buffer, "CIHK", 4) == 0)
@@ -354,8 +431,58 @@ uint32 FChaosImpactRelayTunnel::Run()
 		if (!bBusy)
 		{
 			// Nothing waiting: a short rest (well under a frame, so packets are not held back).
-			RelaySocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMicroseconds(Clients.IsEmpty() ? 20000 : 500));
+			if (WebSocket) { FPlatformProcess::SleepNoStats(Clients.IsEmpty() ? .002f : .0005f); }
+			else { RelaySocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMicroseconds(Clients.IsEmpty() ? 20000 : 500)); }
 		}
+	}
+	return 0;
+}
+
+FChaosImpactRelayGuestTunnel::~FChaosImpactRelayGuestTunnel() { Shutdown(); }
+
+bool FChaosImpactRelayGuestTunnel::Start()
+{
+	Socket = MakeUdpSocket(TEXT("ChaosImpact WSS guest loopback"));
+	if (!Socket) { return false; }
+	TSharedRef<FInternetAddr> Local = Sockets()->CreateInternetAddr();
+	bool bValid = false; Local->SetIp(TEXT("127.0.0.1"), bValid); Local->SetPort(0);
+	if (!Socket->Bind(*Local)) { Shutdown(); return false; }
+	Socket->GetAddress(*Local);
+	LocalPort = Local->GetPort();
+	if (LocalPort <= 0) { Shutdown(); return false; }
+	WebSocket = MakeShared<FChaosImpactRelayWebSocket>();
+	if (!WebSocket->Start(ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort))) { Shutdown(); return false; }
+	Thread = FRunnableThread::Create(this, TEXT("ChaosImpactWSSGuest"), 0, TPri_AboveNormal);
+	UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS guest: 127.0.0.1:%d -> %s"), LocalPort, *ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort));
+	return Thread != nullptr;
+}
+
+void FChaosImpactRelayGuestTunnel::Shutdown()
+{
+	if (Thread) { bStopping = true; Thread->WaitForCompletion(); delete Thread; Thread = nullptr; }
+	if (WebSocket) { WebSocket->Shutdown(); WebSocket.Reset(); }
+	if (Socket) { Sockets()->DestroySocket(Socket); Socket = nullptr; }
+}
+
+uint32 FChaosImpactRelayGuestTunnel::Run()
+{
+	uint8 Buffer[RelayMaxDatagram];
+	TSharedRef<FInternetAddr> From = Sockets()->CreateInternetAddr();
+	TSharedPtr<FInternetAddr> GameAddress;
+	TArray<uint8> Data;
+	while (!bStopping && !WebSocket->HasFailed())
+	{
+		int32 Read = 0;
+		while (Socket->RecvFrom(Buffer, sizeof(Buffer), Read, *From) && Read > 0)
+		{
+			if (!GameAddress) { GameAddress = From->Clone(); }
+			if (*From == *GameAddress) { WebSocket->Send(Buffer, Read); }
+		}
+		while (WebSocket->Receive(Data))
+		{
+			if (GameAddress) { int32 Sent = 0; Socket->SendTo(Data.GetData(), Data.Num(), Sent, *GameAddress); }
+		}
+		Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMicroseconds(500));
 	}
 	return 0;
 }

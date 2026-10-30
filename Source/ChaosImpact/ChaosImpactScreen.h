@@ -46,7 +46,9 @@ enum class EChaosImpactScreen : uint8
 	/** Settings: screen, picture, controls (per nickname and device) and the rest. */
 	Settings,
 	/** Rank match (online, 1 v 1): the rank, the record and the search button. */
-	RankTop
+	RankTop,
+	/** Online entry gate: verify relay connectivity before showing online setup. */
+	OnlineConnecting
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

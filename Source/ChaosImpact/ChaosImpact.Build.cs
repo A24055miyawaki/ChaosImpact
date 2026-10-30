@@ -35,6 +35,7 @@ public class ChaosImpact : ModuleRules
 			"OnlineSubsystemUtils",
 			// Internet rooms through the relay (ChaosImpactRelay).
 			"Sockets",
+			"WebSockets",
 			"Json",
 			"MoviePlayer",
 			"MediaAssets",

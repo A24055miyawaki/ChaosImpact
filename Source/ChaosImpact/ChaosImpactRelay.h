@@ -7,6 +7,7 @@
 class FRunnableThread;
 class FSocket;
 class FInternetAddr;
+class FChaosImpactRelayWebSocket;
 
 /**
  * Internet play for 合言葉 rooms through the relay (Tools/OnlineRelay/ci_relay.py, run on a cloud VM): the room list
@@ -21,6 +22,9 @@ namespace ChaosImpactRelay
 	/** The relay's directory address ("" when internet play is off). */
 	FString GetServer();
 	bool IsEnabled();
+	FString GetWebSocketServer();
+	bool UseWebSocket();
+	FString GetRoomWebSocketUrl(int32 Port);
 	/** Only rooms made by the same build are listed (players of different versions cannot play together). */
 	FString GetNetVersion();
 
@@ -72,4 +76,24 @@ private:
 	FRunnableThread* Thread = nullptr;
 	TAtomic<bool> bStopping{false};
 	TAtomic<double> LastAckAt{0.0};
+	TSharedPtr<FChaosImpactRelayWebSocket> WebSocket;
+};
+
+/** Guest's loopback UDP socket: the unchanged UE IP driver sends its game packets through WSS. */
+class FChaosImpactRelayGuestTunnel : public FRunnable
+{
+public:
+	explicit FChaosImpactRelayGuestTunnel(int32 InRoomPort) : RoomPort(InRoomPort) {}
+	virtual ~FChaosImpactRelayGuestTunnel();
+	bool Start();
+	void Shutdown();
+	int32 GetLocalPort() const { return LocalPort; }
+	virtual uint32 Run() override;
+	virtual void Stop() override { bStopping = true; }
+private:
+	int32 RoomPort = 0, LocalPort = 0;
+	FSocket* Socket = nullptr;
+	FRunnableThread* Thread = nullptr;
+	TSharedPtr<FChaosImpactRelayWebSocket> WebSocket;
+	TAtomic<bool> bStopping{false};
 };

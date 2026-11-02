@@ -40,7 +40,8 @@ public:
             for(TActorIterator<ARPGPrototypeCharacter> It(W);It;++It) { if(It->IsGrunt()) { It->SetTrainingMenuFrozen(true); } }
             for(TActorIterator<ARPGAdventureCheckpoint> It(W);It;++It)
             { if(It->DisplayName==TEXT("水晶洞窟・入口の灯り")) { Entry=*It; } if(It->DisplayName==TEXT("ボス前の灯り")) { Last=*It; } }
-            for(TActorIterator<ARPGPrototypeBoss> It(W);It;++It) { Boss=*It; }
+            // The cave's own boss (the other lands have bosses of their own since 2026-11).
+            for(TActorIterator<ARPGPrototypeBoss> It(W);It;++It) { if(It->Kind==ERPGBossKind::Maguro) { Boss=*It; } }
             if(!Test->TestTrue(TEXT("Cave has entry, pre-boss checkpoints and exactly existing boss"),Entry.IsValid() && Last.IsValid() && Boss.IsValid())) { return true; }
             Test->TestTrue(TEXT("Boss moved to dungeon depths"),Boss->GetActorLocation().X>38000);
             Test->TestFalse(TEXT("Checkpoint never activates remotely"),Entry->TryActivate(A));

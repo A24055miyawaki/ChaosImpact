@@ -56,7 +56,7 @@ FVector UChaosImpactTackleComponent::PickDirection() const
             return (FRotationMatrix(Yaw).GetUnitAxis(EAxis::X)*Input.Y+FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y)*Input.X).GetSafeNormal2D();
         }
         if(ChaosImpactSettings::IsMouseOnlyScheme(ChaosImpactSettings::GetPlayerControlScheme(PC)))
-        { FVector Aim; if(P->FindMouseAimPoint(Aim)) { return (Aim-P->GetActorLocation()).GetSafeNormal2D(); } }
+        { FVector Aim; if(P->FindMouseAimDirection(Aim)) { return Aim; } }
     }
     return P->AimDirection.GetSafeNormal2D();
 }
@@ -139,6 +139,7 @@ void UChaosImpactTackleComponent::ApplyContact(AChaosImpactCharacter* Victim)
     if(Victim->IsInBallForm()) { Victim->GetBallForm()->Restore(); }
     Other->InterruptAndDrop();
     Kick(Victim,FVector(State.Direction)*KnockbackSpeed+FVector(0,0,KnockbackUpwardSpeed));
+    P->OnTackledSomeone(Victim);
     Victim->ForceNetUpdate();
     MulticastImpact((P->GetActorLocation()+Victim->GetActorLocation())*.5,State.Direction);
 }

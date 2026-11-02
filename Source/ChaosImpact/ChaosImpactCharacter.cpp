@@ -13,6 +13,8 @@
 #include "ChaosImpactClickNavigation.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
+#include "Engine/GameViewportClient.h"
+#include "Widgets/SViewport.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactCPUController.h"
@@ -91,6 +93,7 @@ namespace
 	/** The roster character a player's model shows. */
 	int32 ShownCharacterIndex(const AChaosImpactCharacter* Character, const AChaosImpactPlayerState* State)
 	{
+		if (Character && Character->LookOverride >= 0) { return ChaosImpactRoster::ClampIndex(Character->LookOverride); }
 		const UWorld* World=Character ? Character->GetWorld() : nullptr;
 		const auto* SoloPC=World ? Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController()) : nullptr;
 		const bool bSolo=World && !World->URL.HasOption(TEXT("CIRPGPrototype=1"))
@@ -673,8 +676,8 @@ void AChaosImpactCharacter::UpdateBoundControls()
 		if (Scheme==EChaosImpactControlScheme::Simple) { Tackle->QueueSimpleDash(); }
 		else if (IsMouseOnlyScheme(Scheme))
 		{
-			FVector Point;
-			if (FindMouseAimPoint(Point)) { RequestDirectionalDash(Point - GetActorLocation()); }
+			FVector Toward;
+			if (FindMouseAimDirection(Toward)) { RequestDirectionalDash(Toward); }
 		}
 		else { StartDash(); }
 	}
@@ -1330,6 +1333,7 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 		return;
 	}
 	FVector DesiredDirection = AimDirection;
+	bool bMouseAimed = false;
 	const APlayerController* LocalPlayer = Cast<APlayerController>(GetController());
 	const bool bSimplePad = LocalPlayer && IsLocallyControlled()
 		&& ChaosImpactSettings::GetPlayerDevice(LocalPlayer) != EChaosImpactDevice::KeyboardMouse
@@ -1385,13 +1389,15 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	}
 	else
 	{
-		FVector MouseAimPoint;
-		if (FindMouseAimPoint(MouseAimPoint))
+		FVector MouseAimDirection;
+		if (FindMouseAimDirection(MouseAimDirection))
 		{
-			DesiredDirection = (MouseAimPoint - GetActorLocation()).GetSafeNormal2D();
+			DesiredDirection = MouseAimDirection;
+			bMouseAimed = true;
 		}
 	}
-	if (bIsChargingThrow && !IsChargingNova() && IsLocallyControlled() && !bDevAutoInput
+	// The charge magnet helps a stick find its target; a mouse points exactly, and the arrow must stay on the cursor.
+	if (bIsChargingThrow && !bMouseAimed && !IsChargingNova() && IsLocallyControlled() && !bDevAutoInput
 		&& Cast<APlayerController>(GetController())
 		&& ChaosImpactSettings::IsAimAssistOn(Cast<APlayerController>(GetController())))
 	{
@@ -1527,7 +1533,7 @@ FVector AChaosImpactCharacter::ApplyChargeAimMagnet(const FVector& Direction) co
 	return FMath::Lerp(Direction, Toward, Strength * EdgeFade).GetSafeNormal2D();
 }
 
-bool AChaosImpactCharacter::FindMouseAimPoint(FVector& OutAimPoint) const
+bool AChaosImpactCharacter::DeprojectMouseRay(FVector& OutOrigin, FVector& OutDirection) const
 {
 	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
 	if (!PlayerController || !PlayerController->IsLocalController())
@@ -1540,33 +1546,55 @@ bool AChaosImpactCharacter::FindMouseAimPoint(FVector& OutAimPoint) const
 	{
 		return false;
 	}
+	const UGameViewportClient* ViewportClient = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	const TSharedPtr<SViewport> ViewportWidget = ViewportClient ? ViewportClient->GetGameViewportWidget() : nullptr;
+	if (!FSlateApplication::IsInitialized() || !ViewportWidget.IsValid())
+	{
+		return PlayerController->DeprojectMousePositionToWorld(OutOrigin, OutDirection);
+	}
+	// The absolute pointer the painted reticle is drawn at, mapped onto the viewport's own pixels by the viewport
+	// widget's place on the desktop: right in a window, at any DPI and render size. (The viewport's cached mouse
+	// position stops following the mouse while a HUD widget takes the moves, and lags a frame after capture.)
+	const FGeometry& Geometry = ViewportWidget->GetTickSpaceGeometry();
+	const FVector2D AbsoluteSize = Geometry.GetAbsoluteSize();
+	FVector2D ViewportSize;
+	ViewportClient->GetViewportSize(ViewportSize);
+	if (AbsoluteSize.X < 1.0 || AbsoluteSize.Y < 1.0 || ViewportSize.X < 1.0 || ViewportSize.Y < 1.0) { return false; }
+	const FVector2D Pixels = (FSlateApplication::Get().GetCursorPos() - Geometry.GetAbsolutePosition()) / AbsoluteSize * ViewportSize;
+	if (Pixels.X < 0.0 || Pixels.Y < 0.0 || Pixels.X > ViewportSize.X || Pixels.Y > ViewportSize.Y) { return false; }
+	return PlayerController->DeprojectScreenPositionToWorld(Pixels.X, Pixels.Y, OutOrigin, OutDirection);
+}
 
+bool AChaosImpactCharacter::FindMouseAimDirection(FVector& OutDirection) const
+{
 	FVector RayOrigin;
 	FVector RayDirection;
-	bool bDeprojected = false;
-	const bool bEasy = ChaosImpactSettings::GetPlayerControlScheme(PlayerController) != EChaosImpactControlScheme::Normal;
-	FHitResult NormalCursorHit;
-	if (!bEasy && PlayerController->GetHitResultUnderCursor(ECC_Visibility, false, NormalCursorHit))
+	if (!DeprojectMouseRay(RayOrigin, RayDirection)) { return false; }
+	// The arrow lies flat at AimGuideHeight over the character, so the cursor's point in that same plane is the one
+	// it has to point at. Whatever the cursor happens to be over (a step, a wall, an enemy's head) lies nearer or
+	// farther along the ray, and aiming there turned the arrow and the throw away from the cursor.
+	const float PlaneZ = GetActorLocation().Z + AimGuideHeight;
+	const float Distance = FMath::IsNearlyZero(RayDirection.Z) ? -1.0f : (PlaneZ - RayOrigin.Z) / RayDirection.Z;
+	if (Distance <= 0.0f)
 	{
-		OutAimPoint = NormalCursorHit.ImpactPoint;
-		return true;
+		// A view from below the plane (never in play): the point under the cursor instead.
+		FVector Point;
+		if (!FindMouseAimPoint(Point)) { return false; }
+		OutDirection = (Point - GetActorLocation()).GetSafeNormal2D();
+		return !OutDirection.IsNearlyZero();
 	}
-	if (bEasy
-		&& FSlateApplication::IsInitialized())
-	{
-		// Read the same absolute pointer as the painted reticle, including window offset and DPI. The viewport's
-		// cached mouse position can lag a click by one frame after capture or a resize.
-		const FGeometry Geometry = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this);
-		const FVector2D Local = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
-		if (!FBox2D(FVector2D::ZeroVector, FVector2D(Geometry.GetLocalSize())).IsInside(Local)) { return false; }
-		const FVector2D Pixels = Local * UWidgetLayoutLibrary::GetViewportScale(this);
-		bDeprojected = PlayerController->DeprojectScreenPositionToWorld(Pixels.X, Pixels.Y, RayOrigin, RayDirection);
-	}
-	else { bDeprojected = PlayerController->DeprojectMousePositionToWorld(RayOrigin, RayDirection); }
-	if (!bDeprojected) { return false; }
+	OutDirection = (RayOrigin + RayDirection * Distance - GetActorLocation()).GetSafeNormal2D();
+	return !OutDirection.IsNearlyZero();
+}
+
+bool AChaosImpactCharacter::FindMouseAimPoint(FVector& OutAimPoint) const
+{
+	FVector RayOrigin;
+	FVector RayDirection;
+	if (!DeprojectMouseRay(RayOrigin, RayDirection)) { return false; }
 	FHitResult CursorHit;
 	FCollisionQueryParams Query(SCENE_QUERY_STAT(ChaosImpactMouseAim), false, this);
-	if (bEasy && GetWorld()->LineTraceSingleByChannel(CursorHit, RayOrigin, RayOrigin + RayDirection * 100000.0f,
+	if (GetWorld()->LineTraceSingleByChannel(CursorHit, RayOrigin, RayOrigin + RayDirection * 100000.0f,
 		ECC_Visibility, Query))
 	{
 		OutAimPoint = CursorHit.ImpactPoint;
@@ -1977,7 +2005,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 {
 	const auto* Prison = Cast<AChaosImpactBuddyBall>(DamageCauser);
 	const bool bPrisonImpact = Prison && BallForm->GetFormBall()==Prison && Prison->IsResolvingPrisonImpact();
-	if (!bPrisonImpact && (BallForm->IsReleaseProtected() || BallForm->IsCaptured())) { return 0.f; }
+	if (!bApplyingRoyaleElimination && !bPrisonImpact && (BallForm->IsReleaseProtected() || BallForm->IsCaptured())) { return 0.f; }
 	if (const AChaosImpactBall* Ball = Cast<AChaosImpactBall>(DamageCauser);
 		Ball && Ball->WasThrownBy(this))
 	{
@@ -2014,7 +2042,9 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	}
 
 	float AllowedDamage = DamageAmount;
-	if (Match && Match->IsDuel())
+	const auto* DirectBall = Cast<AChaosImpactBall>(DamageCauser);
+	const bool bUncappedRoyaleNova = bNovaHit || (DirectBall && DirectBall->GetBallType() == EChaosImpactBallType::Nova);
+	if (Match && (Match->IsDuel() || (Match->IsBattleRoyale() && !bUncappedRoyaleNova)))
 	{
 		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage;
 		if (auto* Ball = Cast<AChaosImpactBall>(DamageCauser)) { ThrowDamage = Ball->GetDuelThrowDamage(); }
@@ -2158,7 +2188,7 @@ void AChaosImpactCharacter::BeginRespawnCountdown()
 		return;
 	}
 	// A duel: whoever goes down stays down; the next round puts both back (AChaosImpactGameMode::PlaceDuelists).
-	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>(); Match && Match->IsDuel())
+	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>(); Match && (Match->IsDuel() || Match->IsBattleRoyale()))
 	{
 		return;
 	}
@@ -2194,6 +2224,24 @@ void AChaosImpactCharacter::RemoveAfterElimination()
 		OwnController->Destroy();
 	}
 	Destroy();
+}
+
+void AChaosImpactCharacter::PrepareBattleSuddenDeath()
+{
+	if (!HasAuthority() || bEliminated) { return; }
+	Health = 1.f;
+	Stamina = MaxStamina;
+	ForceNetUpdate();
+}
+
+void AChaosImpactCharacter::EliminateFromBattleRoyale()
+{
+	if (!HasAuthority() || bEliminated) { return; }
+	TGuardValue<bool> ForcedElimination(bApplyingRoyaleElimination, true);
+	bIsDashing = false;
+	FDamageEvent Damage;
+	TakeDamage(Health, Damage, nullptr, nullptr);
+	ForceNetUpdate();
 }
 
 void AChaosImpactCharacter::SetCPULevel(const EChaosImpactCPULevel Level)
@@ -2514,7 +2562,7 @@ FVector AChaosImpactCharacter::GetAimGuideStartWorldLocation() const
 	// Keep the HUD arrow anchored to the collision body rather than hand_r.
 	// Skeletal locomotion moves the hand and held ball every frame, which made
 	// the projected arrow shake while walking even though the actual aim was stable.
-	return GetActorLocation() + FVector::UpVector * 54.0f
+	return GetActorLocation() + FVector::UpVector * AimGuideHeight
 		+ AimDirection.GetSafeNormal2D() * 46.0f;
 }
 
@@ -5225,7 +5273,7 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 	if (Type == EChaosImpactBallType::Snow && ChaosImpactBallTypes::IsSnowOverhead(Scale))
 	{
 		// A big snowball is hurled from over the head: it falls onto whoever is ahead rather than sailing over them.
-		OutHorizontalSpeed = ThrowSpeed * ArcThrowSpeedScale;
+		OutHorizontalSpeed = GetOverheadSnowSpeed(Scale, ThrowSpeed * ArcThrowSpeedScale);
 		OutUpSpeed = ChaosImpactBallTypes::SnowThrowUpSpeed;
 		OutMode = EChaosImpactBallFlightMode::Arc;
 		bOutOverhead = true;
@@ -5247,6 +5295,55 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 		OutMode = EChaosImpactBallFlightMode::Straight;
 		bOutOverhead = false;
 	}
+}
+
+float AChaosImpactCharacter::GetOverheadSnowSpeed(const float Scale, const float FullSpeed) const
+{
+	UWorld* World = GetWorld();
+	const FVector Direction = AimDirection.GetSafeNormal2D();
+	const float Gravity = World ? -World->GetGravityZ() : 0.0f;
+	if (!World || Direction.IsNearlyZero() || Gravity <= 0.0f)
+	{
+		return FullSpeed;
+	}
+	const float Up = ChaosImpactBallTypes::SnowThrowUpSpeed;
+	const float Width = 24.0f * Scale + 50.0f;
+	const FVector Origin = GetActorLocation();
+	const float ReleaseZ = static_cast<float>(Origin.Z + GetOverheadHoldOffset(EChaosImpactBallType::Snow, Scale).Z);
+	float Nearest = TNumericLimits<float>::Max();
+	float Speed = FullSpeed;
+	auto Consider = [&](const AActor* Candidate, const FVector& Velocity)
+	{
+		// How long the lob takes to come down to their middle, and where they will be by then.
+		const float Drop = FMath::Max(0.0f, ReleaseZ - static_cast<float>(Candidate->GetActorLocation().Z));
+		const float Flight = (Up + FMath::Sqrt(Up * Up + 2.0f * Gravity * Drop)) / Gravity;
+		const FVector At = Candidate->GetActorLocation()
+			+ FVector(Velocity.X, Velocity.Y, 0.0f).GetClampedToMaxSize(1200.0f) * (ThrowReleaseDelaySeconds + Flight);
+		const FVector Offset = At - Origin;
+		const float Along = static_cast<float>(Offset.X * Direction.X + Offset.Y * Direction.Y);
+		const float Across = static_cast<float>(FMath::Abs(Offset.X * Direction.Y - Offset.Y * Direction.X));
+		if (Along <= 0.0f || Along >= FullSpeed * Flight || Across > Width || Along >= Nearest)
+		{
+			return;
+		}
+		Nearest = Along;
+		Speed = Along / FMath::Max(Flight, 0.05f);
+	};
+	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+	{
+		if (*It != this && !It->IsEliminated() && !It->IsHidden() && !AChaosImpactGameState::AreTeammates(World, this, *It))
+		{
+			Consider(*It, It->GetVelocity());
+		}
+	}
+	for (TActorIterator<AChaosImpactTrainingTarget> It(World); It; ++It)
+	{
+		if (!It->IsDefeated() && !It->IsHidden())
+		{
+			Consider(*It, FVector::ZeroVector);
+		}
+	}
+	return Speed;
 }
 
 FVector AChaosImpactCharacter::GetOverheadHoldOffset(const EChaosImpactBallType Type, const float Scale) const

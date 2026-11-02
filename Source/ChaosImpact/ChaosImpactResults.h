@@ -33,6 +33,7 @@ struct FChaosImpactResultEntry
 	int32 LocalIndex = INDEX_NONE;
 	int32 Rank = 1;
 	int32 Points = 0;
+	int32 RoundsWon = 0;
 	int32 Knockouts = 0;
 	int32 Throws = 0;
 	int32 Hits = 0;
@@ -59,6 +60,13 @@ struct FChaosImpactResultsData
 	TArray<FChaosImpactResultEntry> Entries;
 	bool bTeams = false;
 	bool bCrashBall = false;
+	bool bDuel = false;
+	bool bBattleRoyale = false;
+	FString ScoreText(const FChaosImpactResultEntry& Entry) const
+	{
+		return bBattleRoyale ? FString::Printf(TEXT("%d位"), Entry.Rank)
+			: bDuel ? FString::Printf(TEXT("%d勝"), Entry.RoundsWon) : FString::Printf(TEXT("%d pt"), Entry.Points);
+	}
 	bool bCrashKnockout = false;
 	/** Team battle: (team, points), best first. */
 	TArray<TPair<int32, int32>> TeamTotals;
@@ -247,6 +255,8 @@ public:
 	/** Online: this machine leaves its results for the lobby. */
 	void Leave();
 	float GetShowSeconds() const { return ShowSeconds; }
+	/** Seconds until an online results screen returns; negative for local matches/inactive screens. */
+	float GetAutoReturnRemaining() const;
 	const FChaosImpactResultsData& GetData() const { return Data; }
 	AChaosImpactPodiumStage* GetPodium() const { return Podium; }
 	int32 Paint(const FGeometry& Allotted, FSlateWindowElementList& Elements, int32 Layer) const;

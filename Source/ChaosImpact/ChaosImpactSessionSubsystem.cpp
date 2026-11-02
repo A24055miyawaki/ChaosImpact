@@ -3,12 +3,14 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactLoadingScreen.h"
+#include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactRelay.h"
 #include "ChaosImpactRelayWebSocket.h"
 #include "Dom/JsonObject.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/PendingNetGame.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
@@ -38,13 +40,73 @@ namespace
 	constexpr double QueueMatchedPollSeconds = 0.5;
 	/** MATCH FOUND stays on screen this long before the match's room is opened or joined. */
 	constexpr double QueueFoundHoldSeconds = 1.8;
+	/** Moving with the room: a new connection the host has not taken in this long is made again (twice at most). */
+	constexpr double RoomTravelRetrySeconds = 12.0;
+	constexpr int32 RoomTravelMaxRetries = 2;
 	/** A ランクマッチ result is asked about this often while the relay waits for the other player's (up to ~90 s). */
 	constexpr float RankReportRetrySeconds = 2.0f;
 	constexpr int32 RankReportMaxTries = 45;
 
 	const TCHAR* QueueModeKey(const EChaosImpactQueueMode Mode)
 	{
-		return Mode == EChaosImpactQueueMode::Rank ? TEXT("rank") : TEXT("random");
+		return Mode == EChaosImpactQueueMode::Rank ? TEXT("rank") : Mode == EChaosImpactQueueMode::Duel ? TEXT("duel") : TEXT("random");
+	}
+
+	/** What the room of a match is called (the loading card and the room's own label). */
+	const TCHAR* QueueRoomName(const EChaosImpactQueueMode Mode)
+	{
+		return Mode == EChaosImpactQueueMode::Rank ? TEXT("ランクマッチ")
+			: Mode == EChaosImpactQueueMode::Duel ? TEXT("ランダムマッチ 1v1") : TEXT("ランダムマッチ 8人");
+	}
+
+	void ReadDuelRecord(const TSharedPtr<FJsonObject>& From, FChaosImpactDuelRecord& Record)
+	{
+		if (!From.IsValid())
+		{
+			return;
+		}
+		Record.Wins = static_cast<int32>(From->GetNumberField(TEXT("wins")));
+		Record.Losses = static_cast<int32>(From->GetNumberField(TEXT("losses")));
+		Record.Draws = static_cast<int32>(From->GetNumberField(TEXT("draws")));
+		Record.Recent.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Recent = nullptr;
+		if (From->TryGetArrayField(TEXT("recent"), Recent))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Recent)
+			{
+				Record.Recent.Add(Value.IsValid() ? Value->AsString() : FString());
+			}
+		}
+	}
+
+	/** The relay's record_info / record_report answer: {duel:{...}, ffa:{games, wins, top3, average, recent}}. */
+	void ReadRecords(const TSharedPtr<FJsonObject>& From, FChaosImpactRecords& Records)
+	{
+		const TSharedPtr<FJsonObject>* Duel = nullptr;
+		const TSharedPtr<FJsonObject>* Ffa = nullptr;
+		if (!From.IsValid() || !From->TryGetObjectField(TEXT("duel"), Duel) || !From->TryGetObjectField(TEXT("ffa"), Ffa))
+		{
+			return;
+		}
+		Records.bKnown = true;
+		ReadDuelRecord(*Duel, Records.Duel);
+		Records.FfaGames = static_cast<int32>((*Ffa)->GetNumberField(TEXT("games")));
+		Records.FfaWins = static_cast<int32>((*Ffa)->GetNumberField(TEXT("wins")));
+		Records.FfaTop3 = static_cast<int32>((*Ffa)->GetNumberField(TEXT("top3")));
+		Records.FfaAverage = static_cast<float>((*Ffa)->GetNumberField(TEXT("average")));
+		Records.FfaRecent.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Recent = nullptr;
+		if ((*Ffa)->TryGetArrayField(TEXT("recent"), Recent))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Recent)
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Pair = nullptr;
+				if (Value.IsValid() && Value->TryGetArray(Pair) && Pair->Num() == 2)
+				{
+					Records.FfaRecent.Add(FIntPoint(static_cast<int32>((*Pair)[0]->AsNumber()), static_cast<int32>((*Pair)[1]->AsNumber())));
+				}
+			}
+		}
 	}
 
 	void ReadRankInfo(const TSharedPtr<FJsonObject>& From, FChaosImpactRankInfo& Info)
@@ -90,6 +152,11 @@ void UChaosImpactSessionSubsystem::Deinitialize()
 {
 	CancelRefresh();
 	CancelQueue();
+	if (RoomTravelWatch.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RoomTravelWatch);
+		RoomTravelWatch.Reset();
+	}
 	if (RankReportTicker.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(RankReportTicker);
@@ -109,6 +176,45 @@ void UChaosImpactSessionSubsystem::Deinitialize()
 	}
 	ChaosImpactRelay::ShutdownWebSockets();
 	Super::Deinitialize();
+}
+
+void UChaosImpactSessionSubsystem::NoteRoomTravel()
+{
+	RoomTravelAt = FPlatformTime::Seconds();
+	RoomTravelRetries = 0;
+	if (!RoomTravelWatch.IsValid())
+	{
+		RoomTravelWatch = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+		{
+			return WatchRoomTravel();
+		}), 1.0f);
+	}
+}
+
+bool UChaosImpactSessionSubsystem::WatchRoomTravel()
+{
+	FWorldContext* Context = GetGameInstance() ? GetGameInstance()->GetWorldContext() : nullptr;
+	const UPendingNetGame* Pending = Context ? Context->PendingNetGame.Get() : nullptr;
+	const double Now = FPlatformTime::Seconds();
+	if (!Context || (!Pending && Now - RoomTravelAt > 3.0))
+	{
+		// In (or given up): nothing more to watch.
+		RoomTravelWatch.Reset();
+		return false;
+	}
+	// Still not taken in by the host (once it is, only the level's own load remains): a fresh connection.
+	if (Pending && !Pending->bSuccessfullyConnected && Now - RoomTravelAt >= RoomTravelRetrySeconds
+		&& RoomTravelRetries < RoomTravelMaxRetries && Context->World())
+	{
+		++RoomTravelRetries;
+		RoomTravelAt = Now;
+		const FString URL = Pending->URL.ToString();
+		UE_LOG(LogChaosImpact, Warning, TEXT("Room travel: the host has not taken this machine in after %.0f s; connecting again (%d): %s"),
+			RoomTravelRetrySeconds, RoomTravelRetries, *URL);
+		// A fresh connection (the stalled one is cancelled when the travel is taken up).
+		GEngine->SetClientTravel(Context->World(), *URL, TRAVEL_Absolute);
+	}
+	return true;
 }
 
 UChaosImpactSessionSubsystem* UChaosImpactSessionSubsystem::Get(const UObject* WorldContext)
@@ -175,7 +281,8 @@ FString UChaosImpactSessionSubsystem::GetTrainingMapName()
 
 FString UChaosImpactSessionSubsystem::GetOfflineTrainingOptions() const
 {
-	return FString::Printf(TEXT("CITraining=1?%s"), *LocalSetupOptions);
+	// Back from a matched room to search again: that training is the search's (no second load to begin it).
+	return FString::Printf(TEXT("CITraining=1?%s%s"), *LocalSetupOptions, bQueueAgain ? TEXT("?CIOnlineSearch=1") : TEXT(""));
 }
 
 void UChaosImpactSessionSubsystem::SetLocalSetup(const FString& Options, const int32 LocalPlayers)
@@ -556,6 +663,7 @@ void UChaosImpactSessionSubsystem::HandleCreateComplete(FName SessionName, const
 
 void UChaosImpactSessionSubsystem::OpenRoomAsHost()
 {
+	ClearRoomCarry();
 	State = EChaosImpactRoomState::Hosting;
 	MemberCount = 1;
 	SpectatorCount = 0;
@@ -598,7 +706,8 @@ void UChaosImpactSessionSubsystem::HandleJoinComplete(FName SessionName,
 
 void UChaosImpactSessionSubsystem::TravelToRoom(const FString& ConnectString)
 {
-	APlayerController* Controller = GetGameInstance() ? GetGameInstance()->GetFirstLocalPlayerController() : nullptr;
+	UGameInstance* GameInstance = GetGameInstance();
+	APlayerController* Controller = GameInstance ? GameInstance->GetFirstLocalPlayerController() : nullptr;
 	if (!Controller)
 	{
 		PostNotice(TEXT("へやに入れませんでした"));
@@ -606,6 +715,32 @@ void UChaosImpactSessionSubsystem::TravelToRoom(const FString& ConnectString)
 		BeginFind();
 		return;
 	}
+	// URL options reserve seats on the host, but do not create LocalPlayers on the client.
+	// Register them before travel: the engine sends their split joins once the main connection opens.
+	// No controller is spawned in the current (menu/search) world.
+	const int32 DesiredPlayers = bJoinAsSpectator ? 1 : LocalPlayerCount;
+	const int32 OriginalPlayers = GameInstance->GetNumLocalPlayers();
+	while (GameInstance->GetNumLocalPlayers() < DesiredPlayers)
+	{
+		FString Error;
+		if (!GameInstance->CreateLocalPlayer(-1, Error, false))
+		{
+			while (GameInstance->GetNumLocalPlayers() > OriginalPlayers)
+			{
+				GameInstance->RemoveLocalPlayer(GameInstance->GetLocalPlayers().Last());
+			}
+			UE_LOG(LogChaosImpact, Warning, TEXT("Room local player setup failed: %s"), *Error);
+			PostNotice(TEXT("2人目の参加準備ができませんでした。人数設定を確認してください"));
+			State = EChaosImpactRoomState::Searching;
+			BeginFind();
+			return;
+		}
+	}
+	while (GameInstance->GetNumLocalPlayers() > DesiredPlayers)
+	{
+		GameInstance->RemoveLocalPlayer(GameInstance->GetLocalPlayers().Last());
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Room travel prepared %d local player(s)"), GameInstance->GetNumLocalPlayers());
 	State = EChaosImpactRoomState::InRoom;
 	UE_LOG(LogChaosImpact, Log, TEXT("Joining room at %s"), *ConnectString);
 	// CIPlayers lets the host reserve a place for this machine's second player, who joins right after.
@@ -623,14 +758,19 @@ void UChaosImpactSessionSubsystem::TravelToRoom(const FString& ConnectString)
 
 void UChaosImpactSessionSubsystem::LeaveRoom()
 {
-	// Leaving a ランクマッチ that is under way gives it to the other player.
+	// Leaving a ランクマッチ (or a 1v1) that is under way gives it to the other player.
 	if (MatchmadeMode == EChaosImpactQueueMode::Rank && bMatchmadeStarted)
 	{
 		ReportRankResult(TEXT("lose"));
 	}
+	if (MatchmadeMode == EChaosImpactQueueMode::Duel && bMatchmadeStarted)
+	{
+		ReportDuelRecord(TEXT("lose"));
+	}
 	MatchmadeMode = EChaosImpactQueueMode::None;
 	MatchmadeOptions.Reset();
 	bMatchmadeStarted = false;
+	ClearRoomCarry();
 	CancelQueue();
 	StopSearch();
 	StopRelayHosting();
@@ -714,9 +854,23 @@ bool UChaosImpactSessionSubsystem::ConsumeReturnToTraining()
 	return bReturn;
 }
 
+void UChaosImpactSessionSubsystem::ResetRelayClients()
+{
+	if (Tunnel)
+	{
+		Tunnel->ResetClients();
+	}
+}
+
 void UChaosImpactSessionSubsystem::HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver,
 	ENetworkFailure::Type FailureType, const FString& ErrorString)
 {
+	// The room moving to its next level closes the old connection just as this machine sets off to follow it.
+	if (FailureType == ENetworkFailure::ConnectionLost && FPlatformTime::Seconds() - RoomTravelAt < 4.0)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Room connection closed while following the room to its next level: %s"), *ErrorString);
+		return;
+	}
 	ReturnAfterDisconnect(ErrorString);
 }
 
@@ -739,6 +893,10 @@ void UChaosImpactSessionSubsystem::ReturnAfterDisconnect(const FString& ErrorStr
 		if (MatchmadeMode == EChaosImpactQueueMode::Rank && bMatchmadeStarted)
 		{
 			ReportRankResult(TEXT("win"));
+		}
+		if (MatchmadeMode == EChaosImpactQueueMode::Duel && bMatchmadeStarted)
+		{
+			ReportDuelRecord(TEXT("win"));
 		}
 		PostNotice(bMatchmadeStarted ? TEXT("対戦相手との接続が切れました") : TEXT("対戦相手と接続できませんでした"));
 		ShowQueueMenu = MatchmadeMode;
@@ -867,17 +1025,20 @@ void UChaosImpactSessionSubsystem::StartTunnel()
 void UChaosImpactSessionSubsystem::JoinRelayRoom(const int32 Port)
 {
 	GuestTunnel.Reset();
-	if (ChaosImpactRelay::UseWebSocket())
+	// Through this game's own tunnel: directly to the host where the two can reach each other, else via the relay.
+	GuestTunnel = MakeUnique<FChaosImpactRelayGuestTunnel>(Port);
+	if (GuestTunnel->Start())
 	{
-		GuestTunnel = MakeUnique<FChaosImpactRelayGuestTunnel>(Port);
-		if (!GuestTunnel->Start())
-		{
-			GuestTunnel.Reset(); State = EChaosImpactRoomState::None;
-			PostNotice(TEXT("中継サーバーにつながりません")); return;
-		}
 		TravelToRoom(FString::Printf(TEXT("127.0.0.1:%d"), GuestTunnel->GetLocalPort()));
 		return;
 	}
+	GuestTunnel.Reset();
+	if (ChaosImpactRelay::UseWebSocket())
+	{
+		State = EChaosImpactRoomState::None;
+		PostNotice(TEXT("中継サーバーにつながりません")); return;
+	}
+	// No tunnel: the game itself talks to the relay's room port (always through the relay).
 	FString Host, PortText;
 	const FString Server = ChaosImpactRelay::GetServer();
 	if (!Server.Split(TEXT(":"), &Host, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd)) { Host = Server; }
@@ -1040,9 +1201,9 @@ bool UChaosImpactSessionSubsystem::StartQueue(const EChaosImpactQueueMode Mode)
 		PostNotice(TEXT("インターネット対戦の中継サーバーが設定されていません"));
 		return false;
 	}
-	if (Mode == EChaosImpactQueueMode::Rank && LocalPlayerCount > 1)
+	if ((Mode == EChaosImpactQueueMode::Rank || Mode == EChaosImpactQueueMode::Duel) && LocalPlayerCount > 1)
 	{
-		PostNotice(TEXT("ランクマッチは1人で参加してください"));
+		PostNotice(Mode == EChaosImpactQueueMode::Duel ? TEXT("1v1は1人で参加してください") : TEXT("ランクマッチは1人で参加してください"));
 		return false;
 	}
 	if (State == EChaosImpactRoomState::Hosting || State == EChaosImpactRoomState::InRoom
@@ -1112,6 +1273,8 @@ void UChaosImpactSessionSubsystem::ResetQueueMatch()
 	bQueueHost = false;
 	bQueueHostReady = false;
 	bQueueRequestInFlight = false;
+	bDuelOffered = false;
+	DuelOffer = FChaosImpactDuelOffer();
 	QueuePort = 0;
 	QueueMatchId.Reset();
 	QueueExpected = 0;
@@ -1134,6 +1297,16 @@ void UChaosImpactSessionSubsystem::QueueJoin()
 	Message->SetStringField(TEXT("name"), GetPlayerName());
 	Message->SetNumberField(TEXT("players"), LocalPlayerCount);
 	Message->SetNumberField(TEXT("rtt"), LastRelayRtt > 0 ? LastRelayRtt : 999);
+	// What a 1v1 opponent is shown of this player: the character, its colour, and pad or keyboard.
+	const UChaosImpactLoadoutSubsystem* Loadouts = GetGameInstance() ? GetGameInstance()->GetSubsystem<UChaosImpactLoadoutSubsystem>() : nullptr;
+	const FChaosImpactLoadout Loadout = Loadouts ? Loadouts->GetLoadout(0) : FChaosImpactLoadout();
+	int32 KeyboardPlayer = INDEX_NONE;
+	FParse::Value(*(TEXT("?") + LocalSetupOptions), TEXT("CIKeyboardPlayer="), KeyboardPlayer);
+	TSharedRef<FJsonObject> Profile = MakeShared<FJsonObject>();
+	Profile->SetNumberField(TEXT("chara"), Loadout.Character);
+	Profile->SetNumberField(TEXT("color"), FMath::Max(0, Loadout.Colour));
+	Profile->SetStringField(TEXT("device"), KeyboardPlayer == 0 ? TEXT("key") : TEXT("pad"));
+	Message->SetObjectField(TEXT("profile"), Profile);
 	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Generation](
 		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
 	{
@@ -1147,7 +1320,7 @@ void UChaosImpactSessionSubsystem::QueueJoin()
 		{
 			const FString Error = Reply.IsValid() ? Reply->GetStringField(TEXT("error")) : FString();
 			Self->PostNotice(!Reply.IsValid() ? TEXT("中継サーバーにつながりません")
-				: Error == TEXT("solo only") ? TEXT("ランクマッチは1人で参加してください") : TEXT("マッチングを始められませんでした"));
+				: Error == TEXT("solo only") ? TEXT("1人で参加してください") : TEXT("マッチングを始められませんでした"));
 			Self->CancelQueue();
 			return;
 		}
@@ -1188,19 +1361,21 @@ void UChaosImpactSessionSubsystem::QueueTick()
 			MatchmadeMode = QueueMode;
 			MatchmadeId = QueueMatchId;
 			bMatchmadeStarted = false;
+			MatchmadeGame = -1;
 			const int32 Port = QueuePort;
 			QueueMode = EChaosImpactQueueMode::None;
 			QueueTicket.Reset();
 			StopQueueTicker();
 			bJoinAsSpectator = false;
-			RoomName = MatchmadeMode == EChaosImpactQueueMode::Rank ? TEXT("ランクマッチ") : TEXT("ランダムマッチ");
+			RoomName = QueueRoomName(MatchmadeMode);
 			State = EChaosImpactRoomState::Joining;
 			++RelayGeneration;
 			JoinRelayRoom(Port);
 			return;
 		}
 	}
-	const double Interval = bQueueMatched ? QueueMatchedPollSeconds : QueuePollSeconds;
+	// Quicker while a match is found (the host getting ready, or the opponent's answer to a 1v1).
+	const double Interval = bQueueMatched || bDuelOffered ? QueueMatchedPollSeconds : QueuePollSeconds;
 	if (!bQueueRequestInFlight && !QueueTicket.IsEmpty() && Now - QueueLastPollAt >= Interval
 		&& !(bQueueMatched && bQueueHost))
 	{
@@ -1246,6 +1421,30 @@ void UChaosImpactSessionSubsystem::QueuePoll()
 		{
 			Self->QueueWaiting = static_cast<int32>(Reply->GetNumberField(TEXT("waiting")));
 			Self->QueueStartsIn = static_cast<float>(Reply->GetNumberField(TEXT("starts_in")));
+			// The 1v1 found fell through on the other side (they said no, ran out of time or left): search on.
+			FString Notice;
+			if (Self->bDuelOffered || (Reply->TryGetStringField(TEXT("notice"), Notice) && Notice == TEXT("declined")))
+			{
+				if (Self->bDuelOffered)
+				{
+					UE_LOG(LogChaosImpact, Log, TEXT("Queue duel: the opponent did not accept; searching on"));
+					Self->PostNotice(TEXT("相手が対戦をやめました"));
+				}
+				Self->bDuelOffered = false;
+				Self->DuelOffer = FChaosImpactDuelOffer();
+			}
+		}
+		else if (Step == TEXT("proposed"))
+		{
+			Self->ReadDuelOffer(Reply);
+		}
+		else if (Step == TEXT("expired"))
+		{
+			// This player let the 1v1 found run out: the search ends (the menu comes back).
+			UE_LOG(LogChaosImpact, Log, TEXT("Queue duel: not accepted in time; the search ends"));
+			Self->PostNotice(TEXT("時間切れのため さがすのをやめました"));
+			Self->QueueTicket.Reset();
+			Self->CancelQueue();
 		}
 		else if (Step == TEXT("matched"))
 		{
@@ -1292,11 +1491,14 @@ void UChaosImpactSessionSubsystem::HandleQueueMatched(const TSharedPtr<FJsonObje
 		}
 	}
 	const TSharedPtr<FJsonObject>* Opponent = nullptr;
-	if (Reply->TryGetObjectField(TEXT("opponent"), Opponent) && Opponent && Opponent->IsValid())
+	if (QueueMode == EChaosImpactQueueMode::Rank && Reply->TryGetObjectField(TEXT("opponent"), Opponent) && Opponent && Opponent->IsValid())
 	{
 		QueueOpponentName = (*Opponent)->GetStringField(TEXT("name"));
 		ReadRankInfo(*Opponent, QueueOpponentRank);
 	}
+	// A 1v1 both accepted: its card stays up (saying it starts) until the room opens.
+	bDuelOffered = false;
+	MatchmadeGame = -1;
 	UE_LOG(LogChaosImpact, Log, TEXT("Match %s found (%s): %d player(s), this machine is the %s"), *QueueMatchId,
 		QueueModeKey(QueueMode), QueueExpected, bQueueHost ? TEXT("host") : TEXT("guest"));
 	if (!bQueueHost)
@@ -1313,7 +1515,7 @@ void UChaosImpactSessionSubsystem::HandleQueueMatched(const TSharedPtr<FJsonObje
 	bMatchmadeStarted = false;
 	MatchmadeOptions = FString::Printf(TEXT("?CIMatchmade=%s?CIExpect=%d"), QueueModeKey(QueueMode), FMath::Max(2, QueueExpected));
 	Password.Reset();
-	RoomName = QueueMode == EChaosImpactQueueMode::Rank ? TEXT("ランクマッチ") : TEXT("ランダムマッチ");
+	RoomName = QueueRoomName(QueueMode);
 	State = EChaosImpactRoomState::Creating;
 	StartTunnel();
 	if (!HeartbeatTicker.IsValid())
@@ -1331,7 +1533,8 @@ void UChaosImpactSessionSubsystem::NotifyMatchmadeMatchStarted()
 	if (MatchmadeMode != EChaosImpactQueueMode::None && !bMatchmadeStarted)
 	{
 		bMatchmadeStarted = true;
-		UE_LOG(LogChaosImpact, Log, TEXT("Match %s under way"), *MatchmadeId);
+		++MatchmadeGame;
+		UE_LOG(LogChaosImpact, Log, TEXT("Match %s under way (game %d)"), *MatchmadeId, MatchmadeGame);
 	}
 }
 
@@ -1352,6 +1555,147 @@ EChaosImpactQueueMode UChaosImpactSessionSubsystem::ConsumeShowQueueMenu()
 	const EChaosImpactQueueMode Mode = ShowQueueMenu;
 	ShowQueueMenu = EChaosImpactQueueMode::None;
 	return Mode;
+}
+
+bool UChaosImpactSessionSubsystem::ConsumeQueueAgain()
+{
+	const bool bAgain = bQueueAgain;
+	bQueueAgain = false;
+	return bAgain;
+}
+
+// ---------------------------------------------------------------------------------------------------- ランダムマッチ 1v1
+
+void UChaosImpactSessionSubsystem::ReadDuelOffer(const TSharedPtr<FJsonObject>& Reply)
+{
+	const FString MatchId = Reply->GetStringField(TEXT("match"));
+	if (!bDuelOffered || DuelOffer.MatchId != MatchId)
+	{
+		DuelOffer = FChaosImpactDuelOffer();
+		DuelOffer.MatchId = MatchId;
+		UE_LOG(LogChaosImpact, Log, TEXT("Queue duel: opponent found (%s)"), *MatchId);
+	}
+	bDuelOffered = true;
+	const TSharedPtr<FJsonObject>* Opponent = nullptr;
+	if (Reply->TryGetObjectField(TEXT("opponent"), Opponent) && Opponent && Opponent->IsValid())
+	{
+		DuelOffer.Name = (*Opponent)->GetStringField(TEXT("name"));
+		DuelOffer.Character = static_cast<int32>((*Opponent)->GetNumberField(TEXT("chara")));
+		DuelOffer.Colour = static_cast<int32>((*Opponent)->GetNumberField(TEXT("color")));
+		DuelOffer.bKeyboard = (*Opponent)->GetStringField(TEXT("device")) == TEXT("key");
+		const TSharedPtr<FJsonObject>* Record = nullptr;
+		if ((*Opponent)->TryGetObjectField(TEXT("record"), Record))
+		{
+			ReadDuelRecord(*Record, DuelOffer.Record);
+		}
+	}
+	DuelOffer.PingMs = static_cast<int32>(Reply->GetNumberField(TEXT("ping")));
+	DuelOffer.EndsAt = FPlatformTime::Seconds() + Reply->GetNumberField(TEXT("left"));
+	// (This side's yes counts at once; the relay's word catches up.)
+	DuelOffer.bAccepted = DuelOffer.bAccepted || Reply->GetBoolField(TEXT("accepted"));
+	DuelOffer.bOpponentAccepted = Reply->GetBoolField(TEXT("opponent_accepted"));
+}
+
+void UChaosImpactSessionSubsystem::AnswerDuelOffer(const bool bAccept)
+{
+	// (No is still possible after a yes, until the match is made.)
+	if (!bDuelOffered || QueueTicket.IsEmpty() || (bAccept && DuelOffer.bAccepted))
+	{
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("mm_accept"));
+	Message->SetStringField(TEXT("ticket"), QueueTicket);
+	Message->SetBoolField(TEXT("accept"), bAccept);
+	ChaosImpactRelay::Request(Message, [](TSharedPtr<FJsonObject>, int32) {});
+	UE_LOG(LogChaosImpact, Log, TEXT("Queue duel: %s %s"), bAccept ? TEXT("accepted") : TEXT("declined"), *DuelOffer.MatchId);
+	if (bAccept)
+	{
+		DuelOffer.bAccepted = true;
+		return;
+	}
+	// No: this player stops searching (the opponent searches on).
+	QueueTicket.Reset();
+	CancelQueue();
+}
+
+// ---------------------------------------------------------------------------------------------------- 戦績
+
+void UChaosImpactSessionSubsystem::RefreshRecords()
+{
+	if (!IsInternet() || bRecordsPending)
+	{
+		return;
+	}
+	bRecordsPending = true;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("record_info"));
+	Message->SetStringField(TEXT("token"), GetPlayerToken());
+	Message->SetStringField(TEXT("name"), GetPlayerName());
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this)](
+		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		Self->bRecordsPending = false;
+		if (Reply.IsValid() && Reply->GetBoolField(TEXT("ok")))
+		{
+			Self->LastRelayRtt = RoundTripMs;
+			ReadRecords(Reply, Self->Records);
+		}
+	});
+}
+
+void UChaosImpactSessionSubsystem::ReportDuelRecord(const FString& Result)
+{
+	if (MatchmadeMode != EChaosImpactQueueMode::Duel)
+	{
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("result"), Result);
+	SendRecordReport(Message);
+}
+
+void UChaosImpactSessionSubsystem::ReportRandomRecord(const int32 Place, const int32 Of)
+{
+	if (MatchmadeMode != EChaosImpactQueueMode::Random)
+	{
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetNumberField(TEXT("place"), Place);
+	Message->SetNumberField(TEXT("of"), Of);
+	SendRecordReport(Message);
+}
+
+void UChaosImpactSessionSubsystem::SendRecordReport(TSharedRef<FJsonObject> Message)
+{
+	const FString Game = FString::Printf(TEXT("%s#%d"), *MatchmadeId, MatchmadeGame);
+	if (MatchmadeId.IsEmpty() || MatchmadeGame < 0 || RecordedGame == Game)
+	{
+		return;
+	}
+	RecordedGame = Game;
+	// The game is over for this machine: leaving from here forfeits nothing, and a rematch is the next game.
+	bMatchmadeStarted = false;
+	Message->SetStringField(TEXT("op"), TEXT("record_report"));
+	Message->SetStringField(TEXT("match"), MatchmadeId);
+	Message->SetStringField(TEXT("token"), GetPlayerToken());
+	Message->SetNumberField(TEXT("game"), MatchmadeGame);
+	UE_LOG(LogChaosImpact, Log, TEXT("Match %s: recording game %d"), *MatchmadeId, MatchmadeGame);
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this)](
+		TSharedPtr<FJsonObject> Reply, int32)
+	{
+		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
+		if (Self && Reply.IsValid() && Reply->GetBoolField(TEXT("ok")))
+		{
+			ReadRecords(Reply, Self->Records);
+		}
+	});
 }
 
 // ---------------------------------------------------------------------------------------------------- Rank

@@ -3,6 +3,7 @@
 #include "RPGAdventure.h"
 #include "RPGQuests.h"
 #include "RPGTuning.h"
+#include "RPGWorldLayout.h"
 #include "ChaosImpactSimaeBoss.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/PointLightComponent.h"
@@ -24,10 +25,6 @@ const TCHAR* SnowPathMaterial = TEXT("/Game/ChaosImpact/solo/Stage08/Materials/M
 const TCHAR* IceMaterial = TEXT("/Game/ChaosImpact/FX/M_CI_IceSurface.M_CI_IceSurface");
 FString Adventure(const TCHAR* Name) { return FString::Printf(TEXT("/Game/ChaosImpact/RPGPrototype/Adventure/Materials/M_%s.M_%s"), Name, Name); }
 UStaticMesh* Shape(const TCHAR* Name) { return LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Engine/BasicShapes/%s.%s"), Name, Name)); }
-/** The snowfield's places, by how far along it (local X) they are. */
-struct FSnowPlace { float FromX; const TCHAR* Name; };
-const FSnowPlace SnowPlaces[] = {
-	{-99999, TEXT("雪原・入口の野営地")}, {-4200, TEXT("雪原・針葉樹の森")}, {-300, TEXT("雪原・凍った湖")}, {3300, TEXT("雪原・シマエナガの巣")}};
 }
 
 // ---------------------------------------------------------------- gates
@@ -108,12 +105,19 @@ void ARPGSimaeBody::BeginPlay()
 	GetCharacterMovement()->DisableMovement();
 }
 
-void ARPGSimaeBody::Bind(AChaosImpactSimaeBoss* InBoss, int32 InLevel)
+void ARPGSimaeBody::Bind(AChaosImpactSimaeBoss* InBoss, int32 InLevel, bool bStrong)
 {
 	Boss = InBoss;
+	bStrongVersion = bStrong;
 	SetEnemy(true, InLevel);
 	// RPG health at its level; the boss's own (small) health is kept in proportion.
-	MaxHealth = Health = RPGTuning::SimaeBossHP * (1 + 0.09f * FMath::Max(0, InLevel - RPGTuning::SimaeBossLevel));
+	BaseMaxHealth = RPGTuning::SimaeBossHP * (1 + 0.09f * FMath::Max(0, InLevel - RPGTuning::SimaeBossLevel)) * (bStrong ? 1.7f : 1.0f);
+	MaxHealth = Health = BaseMaxHealth;
+}
+
+void ARPGSimaeBody::ScaleForHeroes(int32 Count)
+{
+	MaxHealth = Health = BaseMaxHealth * (1 + RPGTuning::BossHPPerExtraPlayer * FMath::Max(0, Count - 1));
 }
 
 bool ARPGSimaeBody::IsAwake() const
@@ -134,7 +138,7 @@ void ARPGSimaeBody::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	AChaosImpactSimaeBoss* Real = Boss.Get();
 	if (!Real || !HasAuthority()) { return; }
-	BossFlags = (IsAwake() ? 1 : 0) | (Real->IsFullPower() ? 2 : 0) | (Real->GetMove() == EChaosImpactSimaeMove::PowerUp ? 4 : 0);
+	BossFlags = (IsAwake() ? 1 : 0) | (Real->IsFullPower() ? 2 : 0) | (Real->GetMove() == EChaosImpactSimaeMove::PowerUp ? 4 : 0) | (bStrongVersion ? 8 : 0);
 	// Stand where the boss stands (its knockbacks, pulls and pushes never move it: it is too big).
 	SetActorLocation(Real->GetActorLocation(), false, nullptr, ETeleportType::TeleportPhysics);
 	if (Real->IsEliminated() && !bRewarded)
@@ -177,37 +181,27 @@ ARPGSnowField* ARPGSnowField::Find(const UWorld* World)
 
 FString ARPGSnowField::RegionAt(const UWorld* World, const FVector& At)
 {
-	if (!Find(World)) { return FString(); }
-	const FVector Local = At - Origin();
-	if (FMath::Abs(Local.X) > HalfSize().X + 600 || FMath::Abs(Local.Y) > HalfSize().Y + 600) { return FString(); }
-	FString Name;
-	for (const auto& Place : SnowPlaces) { if (Local.X >= Place.FromX) { Name = Place.Name; } }
-	return Name;
+	const auto* Adventure = ARPGAdventureWorld::Find(World);
+	const FString Name = RPGWorld::RegionAt(Adventure ? Adventure->GetActorTransform().InverseTransformPosition(At) : At);
+	return Name.StartsWith(TEXT("雪原")) ? Name : FString();
 }
+
+FVector ARPGSnowField::Origin() { return RPGWorld::AreaPoint(TEXT("Nest")); }
 
 ARPGSnowField* ARPGSnowField::Ensure(UWorld* World, const FTransform& MapOrigin)
 {
 	if (!World || Find(World)) { return Find(World); }
+	// A map without the snowfield (an older level): no nest.
+	if (!RPGWorld::FindArea(TEXT("Nest"))) { return nullptr; }
 	FActorSpawnParameters Spawn; Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	auto* Field = World->SpawnActor<ARPGSnowField>(Origin(), FRotator::ZeroRotator, Spawn);
-	if (!Field) { return nullptr; }
-	// The colony's gate stands beside the board; the snowfield's at its camp.
-	const FVector Near = MapOrigin.TransformPosition(FVector(300, 1150, 4000));
-	FHitResult Hit; FCollisionQueryParams Params(SCENE_QUERY_STAT(RPGSnowGate), false);
-	const FVector ColonyGround = World->LineTraceSingleByObjectType(Hit, Near, Near - FVector(0, 0, 9000), FCollisionObjectQueryParams(ECC_WorldStatic), Params)
-		? Hit.ImpactPoint : MapOrigin.TransformPosition(FVector(300, 1150, 0));
-	auto* ToSnow = World->SpawnActor<ARPGWarpGate>(ColonyGround, FRotator::ZeroRotator, Spawn);
-	auto* ToColony = World->SpawnActor<ARPGWarpGate>(Origin() + FVector(-6600, 0, 0), FRotator::ZeroRotator, Spawn);
-	if (ToSnow && ToColony)
-	{
-		ToSnow->DisplayName = TEXT("雪原への門"); ToSnow->Destination = Field->ArrivalPoint(); ToSnow->DestinationYaw = 0; ToSnow->Build(false);
-		ToColony->DisplayName = TEXT("コロニーへ戻る門"); ToColony->Destination = ColonyGround + FVector(-320, 0, 0); ToColony->DestinationYaw = 180; ToColony->Build(true);
-	}
-	return Field;
+	// On the nest's real floor (traced, so a hand-edited map still works).
+	FVector At = MapOrigin.TransformPosition(Origin());
+	FHitResult Hit; FCollisionQueryParams Params(SCENE_QUERY_STAT(RPGSnowNest), false);
+	if (World->LineTraceSingleByObjectType(Hit, At + FVector(0, 0, 3000), At - FVector(0, 0, 3000), FCollisionObjectQueryParams(ECC_WorldStatic), Params)) { At = Hit.ImpactPoint; }
+	return World->SpawnActor<ARPGSnowField>(At, FRotator::ZeroRotator, Spawn);
 }
 
-FVector ARPGSnowField::ArrivalPoint() const { return Origin() + FVector(-6150, 0, 0); }
-FVector ARPGSnowField::NestCenter() const { return Origin() + FVector(5100, 0, 0); }
+FVector ARPGSnowField::NestCenter() const { return GetActorLocation(); }
 AChaosImpactSimaeBoss* ARPGSnowField::GetBoss() const { return BossActor.Get(); }
 
 UStaticMeshComponent* ARPGSnowField::Part(const TCHAR* ShapeName, const TCHAR* Material, const FVector& At, const FVector& Size, const FRotator& Rotation, bool bSolid)
@@ -225,18 +219,6 @@ UStaticMeshComponent* ARPGSnowField::Part(const TCHAR* ShapeName, const TCHAR* M
 	return Piece;
 }
 
-void ARPGSnowField::Pine(const FVector& At, float Scale)
-{
-	const FString Bark = Adventure(TEXT("Bark")), Needles = Adventure(TEXT("Pine"));
-	Part(TEXT("Cylinder"), *Bark, At + FVector(0, 0, 90 * Scale), FVector(40, 40, 180) * Scale, FRotator::ZeroRotator, true);
-	for (int32 Tier = 0; Tier < 3; ++Tier)
-	{
-		const float S = Scale * (1.0f - Tier * 0.22f);
-		Part(TEXT("Cone"), *Needles, At + FVector(0, 0, (170 + Tier * 120) * Scale), FVector(260, 260, 220) * S);
-		Part(TEXT("Cone"), SnowMaterial, At + FVector(0, 0, (215 + Tier * 120) * Scale), FVector(170, 170, 120) * S);
-	}
-}
-
 void ARPGSnowField::Lantern(const FVector& At)
 {
 	Part(TEXT("Cylinder"), *Adventure(TEXT("Timber")), At + FVector(0, 0, 110), FVector(18, 18, 220), FRotator::ZeroRotator, true);
@@ -249,50 +231,11 @@ void ARPGSnowField::Lantern(const FVector& At)
 
 void ARPGSnowField::Build()
 {
-	const FVector2D Half = HalfSize();
-	// The plain, a little rolling, walled by snowbanks and cliffs (high enough that knockbacks stay inside).
-	Part(TEXT("Cube"), SnowMaterial, FVector(0, 0, -200), FVector(Half.X * 2 + 1200, Half.Y * 2 + 1200, 400), FRotator::ZeroRotator, true);
-	for (const float Side : {-1.0f, 1.0f})
-	{
-		Part(TEXT("Cube"), SnowBankMaterial, FVector(0, Side * (Half.Y + 300), 450), FVector(Half.X * 2 + 1200, 600, 900), FRotator::ZeroRotator, true);
-		Part(TEXT("Cube"), SnowBankMaterial, FVector(Side * (Half.X + 300), 0, 450), FVector(600, Half.Y * 2 + 1200, 900), FRotator::ZeroRotator, true);
-		for (int32 I = 0; I < 9; ++I)
-		{
-			Part(TEXT("Sphere"), SnowBankMaterial, FVector(-Half.X + I * Half.X * 0.25f, Side * (Half.Y - 120), 60), FVector(900, 520, 380));
-		}
-	}
-	// A trodden path from the camp to the nest.
-	Part(TEXT("Cube"), SnowPathMaterial, FVector(-500, 0, 2), FVector(Half.X * 2 - 1400, 520, 4));
-
-	// Camp: tents, a fire ring, lanterns, crates.
-	for (const float Y : {-900.0f, 900.0f})
-	{
-		Part(TEXT("Cube"), *Adventure(TEXT("Planks")), FVector(-6000, Y, 25), FVector(420, 380, 50), FRotator::ZeroRotator, true);
-		for (const float S : {-1.0f, 1.0f}) { Part(TEXT("Cube"), *Adventure(TEXT("RoofTeal")), FVector(-6000, Y + S * 100, 190), FVector(440, 250, 18), FRotator(0, 0, S * 40)); }
-	}
-	for (int32 I = 0; I < 8; ++I) { const float A = I * 2 * PI / 8; Part(TEXT("Sphere"), *Adventure(TEXT("Stone")), FVector(-5500 + FMath::Cos(A) * 95, -350 + FMath::Sin(A) * 95, 18), FVector(55, 50, 36)); }
-	Part(TEXT("Cube"), *Adventure(TEXT("GlowWarm")), FVector(-5500, -350, 30), FVector(70, 70, 40));
-	for (const FVector& At : {FVector(-6500, -500, 0), FVector(-6500, 500, 0), FVector(-5000, -700, 0), FVector(-5000, 700, 0)}) { Lantern(At); }
-	for (int32 I = 0; I < 3; ++I) { Part(TEXT("Cube"), *Adventure(TEXT("Planks")), FVector(-5700 + I * 110, 1250, 55), FVector(95, 95, 110), FRotator::ZeroRotator, true); }
-
-	// Pine wood (paths left clear in the middle).
-	FRandomStream Random(2026);
-	for (int32 I = 0; I < 34; ++I)
-	{
-		const float X = Random.FRandRange(-4200, -400);
-		float Y = Random.FRandRange(-Half.Y + 500, Half.Y - 500);
-		if (FMath::Abs(Y) < 600) { Y += Y < 0 ? -700 : 700; }
-		Pine(FVector(X, Y, 0), Random.FRandRange(1.0f, 1.7f));
-	}
-	for (int32 I = 0; I < 10; ++I) { Part(TEXT("Sphere"), *Adventure(TEXT("Rock")), FVector(Random.FRandRange(-4000, 3000), Random.FRandRange(-Half.Y + 600, Half.Y - 600), 30), FVector(220, 180, 140) * Random.FRandRange(0.7f, 1.4f), FRotator(0, Random.FRandRange(0, 360), 0), true); }
-
-	// Frozen lake (walkable, slick-looking ice).
-	Part(TEXT("Cylinder"), IceMaterial, FVector(1500, -1700, 3), FVector(3000, 2200, 6));
-	Part(TEXT("Cylinder"), SnowBankMaterial, FVector(1500, -1700, -2), FVector(3200, 2400, 8));
-	for (int32 I = 0; I < 8; ++I) { Pine(FVector(Random.FRandRange(0, 3200), Random.FRandRange(900, Half.Y - 500), 0), Random.FRandRange(1.1f, 1.6f)); }
-
-	// The nest: a ring of snow walls and ice spires round a flat arena, open toward the camp (closed while fighting).
-	const FVector Nest(5100, 0, 0);
+	// The nest: a ring of snow walls and ice spires round a flat arena, open to the south where the path comes in
+	// (closed while fighting). The actor stands in its middle, on the floor.
+	const FVector Nest(0, 0, 0);
+	// Hard snow under the arena, so it is level whatever the ground does at the edge.
+	Part(TEXT("Cylinder"), SnowMaterial, FVector(0, 0, -95), FVector(NestRadius() * 2 + 200, NestRadius() * 2 + 200, 200), FRotator::ZeroRotator, true);
 	const float Ring = NestRadius() + 150;
 	for (int32 I = 0; I < 28; ++I)
 	{
@@ -342,27 +285,8 @@ void ARPGSnowField::BeginPlay()
 {
 	Super::BeginPlay();
 	Build();
-	UWorld* World = GetWorld();
-	FActorSpawnParameters Spawn; Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	// The watcher at the camp (quests "雪原の狩り" and "粉雪の主").
-	if (auto* Giver = World->SpawnActor<ARPGQuestGiver>(Origin() + FVector(-5650, 420, 2), FRotator(0, 180, 0), Spawn)) { Giver->GiverId = 5; }
-	// A rest beacon: a knockout in the snowfield starts again at the camp.
-	World->SpawnActor<ARPGAdventureCheckpoint>(Origin() + FVector(-5900, -650, 0), FRotator::ZeroRotator, Spawn);
-	for (TActorIterator<ARPGAdventureCheckpoint> It(World); It; ++It)
-	{ if (FVector::DistSquared2D(It->GetActorLocation(), Origin() + FVector(-5900, -650, 0)) < 100.0f) { It->DisplayName = TEXT("雪原の灯り"); It->RespawnOffset = FVector(250, 0, 120); } }
-	// The fights (enemy groups and the boss) are the host's; a guest's screen gets those from it.
-	if (World->GetNetMode() == NM_Client) { return; }
-	// Enemy groups: the wood and the lake.
-	const struct { FVector At; int32 Level; int32 Chasers; int32 Throwers; } Groups[] = {
-		{FVector(-2400, 1900, 0), BossLevel - 4, 3, 2}, {FVector(-1500, -2200, 0), BossLevel - 3, 2, 3}, {FVector(1800, 2300, 0), BossLevel - 2, 3, 2}, {FVector(2400, -1300, 0), BossLevel - 2, 2, 2}};
-	for (const auto& Group : Groups)
-	{
-		auto* Point = World->SpawnActorDeferred<ARPGPrototypeSpawnPoint>(ARPGPrototypeSpawnPoint::StaticClass(), FTransform(Origin() + Group.At + FVector(0, 0, 60)), nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-		if (!Point) { continue; }
-		Point->bEncounterGroup = true; Point->EnemyLevel = Group.Level; Point->ChaserCount = Group.Chasers; Point->ThrowerCount = Group.Throwers;
-		Point->DropChance = 0.3f; Point->RespawnSeconds = 45; Point->EngageRadius = 950; Point->PursuitRadius = 1800;
-		Point->FinishSpawning(FTransform(Origin() + Group.At + FVector(0, 0, 60)));
-	}
+	// The boss is the host's; a guest's screen gets it from there.
+	if (GetWorld()->GetNetMode() == NM_Client) { return; }
 	SpawnBoss();
 }
 
@@ -376,11 +300,20 @@ void ARPGSnowField::SpawnBoss()
 	// The solo boss as it is: asleep in its nest until someone walks in.
 	auto* Boss = World->SpawnActorDeferred<AChaosImpactSimaeBoss>(AChaosImpactSimaeBoss::StaticClass(), Where, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
 	if (!Boss) { return; }
+	// Once beaten it comes back as its strong version: quicker between moves, faster throws, more snowballs.
+	const bool bStrong = Defeats > 0;
+	if (bStrong)
+	{
+		Boss->RestSeconds *= 0.65f; Boss->FullPowerRestSeconds *= 0.65f; Boss->FullPowerTempo = 1.3f;
+		Boss->WalkSpeed *= 1.2f; Boss->FullPowerWalkSpeed *= 1.2f; Boss->GoukyuSpeed *= 1.15f;
+		Boss->AvalancheCount += 2; Boss->FullPowerAvalancheCount += 3;
+	}
 	Boss->SetDormant(true);
 	Boss->FinishSpawning(Where);
 	BossActor = Boss;
 	auto* Shell = World->SpawnActorDeferred<ARPGSimaeBody>(ARPGSimaeBody::StaticClass(), Where, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-	if (Shell) { Shell->SetEnemy(true, BossLevel); Shell->FinishSpawning(Where); Shell->Bind(Boss, BossLevel); Body = Shell; }
+	const int32 Level = BossLevel + (bStrong ? 8 : 0);
+	if (Shell) { Shell->SetEnemy(true, Level); Shell->FinishSpawning(Where); Shell->Bind(Boss, Level, bStrong); Body = Shell; }
 	bFighting = false; EmptySince = -1; DefeatedAt = -1;
 	SetNestClosed(false);
 }
@@ -416,14 +349,19 @@ void ARPGSnowField::Tick(float DeltaSeconds)
 	}
 	if (Boss->IsEliminated())
 	{
-		if (DefeatedAt < 0) { DefeatedAt = Now; bFighting = false; }
+		if (DefeatedAt < 0) { DefeatedAt = Now; bFighting = false; ++Defeats; }
 		if (Now - DefeatedAt > 4) { SetNestClosed(false); }
 		if (Near == 0 && Now - DefeatedAt > 10) { SpawnBoss(); }
 		return;
 	}
 	if (!bFighting)
 	{
-		if (Inside > 0) { bFighting = true; Boss->SetDormant(false); SetNestClosed(true); EmptySince = -1; }
+		if (Inside > 0)
+		{
+			bFighting = true; Boss->SetDormant(false); SetNestClosed(true); EmptySince = -1;
+			// More health for more players in the nest (and near its door).
+			if (auto* Shell = Body.Get()) { Shell->ScaleForHeroes(Near); }
+		}
 		return;
 	}
 	// Everyone knocked out or out of the nest: it starts over, asleep and whole.

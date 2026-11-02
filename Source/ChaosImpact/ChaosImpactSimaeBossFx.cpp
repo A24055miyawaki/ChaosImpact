@@ -29,6 +29,12 @@
 
 namespace
 {
+	/** Online: sends one of the boss's effects to the guests (defined with the warnings below). */
+	void SimaeSendFx(UWorld* World, const ChaosImpactSimaeFx::FNetFx& Fx);
+}
+
+namespace
+{
 	using FMeshBuffers = ChaosImpactIceMeshes::FMeshBuffers;
 
 	void SimaeSetSection(UProceduralMeshComponent* Component, const int32 Section, const FMeshBuffers& Mesh)
@@ -121,6 +127,11 @@ void ChaosImpactSimaeFx::PlaySnowDust(UWorld* World, const FVector& Location, co
 	{
 		return;
 	}
+	{
+		FNetFx Fx;
+		Fx.Kind = 8; Fx.A = Location; Fx.F0 = Size; Fx.F1 = Seconds; Fx.F2 = Rate;
+		SimaeSendFx(World, Fx);
+	}
 	// Light: a few small puffs only (more soon hides the fight).
 	const float Puff = FMath::Min(Size * 0.6f, 220.0f);
 	SimaePowder(World, Location, Puff, FMath::Clamp(FMath::RoundToInt(Rate * Seconds * 3.0f), 2, 4), Puff * 0.8f, 0.8f);
@@ -131,6 +142,11 @@ void ChaosImpactSimaeFx::PlaySnowBurst(UWorld* World, const FVector& Location, c
 	if (!World || World->GetNetMode() == NM_DedicatedServer)
 	{
 		return;
+	}
+	{
+		FNetFx Fx;
+		Fx.Kind = 8; Fx.A = Location; Fx.F0 = Scale; Fx.bFlag = true;
+		SimaeSendFx(World, Fx);
 	}
 	SimaePowder(World, Location, FMath::Clamp(Scale, 0.5f, 1.6f) * 200.0f, 7, FMath::Clamp(Scale, 0.5f, 1.6f) * 500.0f, 1.0f);
 	ChaosImpactBallTypes::PlaySnowBurst(World, Location + FVector(0, 0, 30), FMath::Clamp(Scale, 0.5f, 1.6f));
@@ -170,20 +186,26 @@ AChaosImpactSimaeWarning::AChaosImpactSimaeWarning()
 }
 
 TFunction<void(UWorld*, const ChaosImpactSimaeFx::FNetFx&)> ChaosImpactSimaeFx::NetHook;
+TFunction<void(AChaosImpactCharacter*, const FVector&, bool)> ChaosImpactSimaeFx::StrikeHook;
 
 namespace
 {
 	/** A lane is being made (its circle and first aim are sent as one lane). */
 	bool GSimaeSpawningLane = false;
 	int32 GSimaeNextNetFxId = 0;
+	int32 GSimaeFxMuted = 0;
 	void SimaeSendFx(UWorld* World, const ChaosImpactSimaeFx::FNetFx& Fx)
 	{
-		if (World && World->GetNetMode() == NM_ListenServer && ChaosImpactSimaeFx::NetHook)
+		if (World && GSimaeFxMuted == 0 && World->GetNetMode() == NM_ListenServer && ChaosImpactSimaeFx::NetHook)
 		{
 			ChaosImpactSimaeFx::NetHook(World, Fx);
 		}
 	}
 }
+
+void ChaosImpactSimaeFx::SendFx(UWorld* World, const FNetFx& Fx) { SimaeSendFx(World, Fx); }
+ChaosImpactSimaeFx::FNetFxMute::FNetFxMute() { ++GSimaeFxMuted; }
+ChaosImpactSimaeFx::FNetFxMute::~FNetFxMute() { --GSimaeFxMuted; }
 
 AChaosImpactSimaeWarning* AChaosImpactSimaeWarning::SpawnCircle(UWorld* World, const FVector& Center, const float Radius,
 	const float Seconds, const FLinearColor& Color)
@@ -589,6 +611,13 @@ AChaosImpactSimaeGoukyu* AChaosImpactSimaeGoukyu::Launch(AChaosImpactSimaeBoss* 
 	{
 		return nullptr;
 	}
+	// Online: a guest's screen makes its own (its wind and furrow; the ball itself comes from the host).
+	{
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 7; Fx.A = Start; Fx.B = Flat; Fx.F0 = Speed; Fx.F1 = HitRadius; Fx.F2 = Range; Fx.Count = FMath::RoundToInt(Knockback); Fx.Color.A = Heat;
+		SimaeSendFx(World, Fx);
+	}
+	ChaosImpactSimaeFx::FNetFxMute Mute;
 	AChaosImpactSimaeGoukyu* Shot = World->SpawnActor<AChaosImpactSimaeGoukyu>(Start, Flat.Rotation());
 	if (!Shot)
 	{
@@ -715,6 +744,8 @@ void AChaosImpactSimaeGoukyu::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AChaosImpactSimaeGoukyu::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	// (A guest's screen runs its own copy of this shot.)
+	ChaosImpactSimaeFx::FNetFxMute Mute;
 	Age += DeltaSeconds;
 	UWorld* World = GetWorld();
 	if (!World)
@@ -940,6 +971,13 @@ AChaosImpactSimaeBoulder* AChaosImpactSimaeBoulder::Drop(AChaosImpactSimaeBoss* 
 	{
 		return nullptr;
 	}
+	// Online: a guest's screen drops its own (its warning, fall and landing); only the host's hurts.
+	{
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 6; Fx.A = Ground; Fx.F0 = Size; Fx.F1 = HitRadius; Fx.F2 = WarningSeconds; Fx.Count = FMath::RoundToInt(Knockback); Fx.Color.A = Heat;
+		SimaeSendFx(World, Fx);
+	}
+	ChaosImpactSimaeFx::FNetFxMute Mute;
 	Rock->Boss = Boss;
 	Rock->Ground = Ground;
 	Rock->Size = Size;
@@ -988,6 +1026,8 @@ void AChaosImpactSimaeBoulder::Tick(const float DeltaSeconds)
 
 void AChaosImpactSimaeBoulder::Land()
 {
+	// (A guest's screen lands its own copy.)
+	ChaosImpactSimaeFx::FNetFxMute Mute;
 	bLanded = true;
 	UWorld* World = GetWorld();
 	if (AChaosImpactSimaeWarning* Shown = Warning.Get())

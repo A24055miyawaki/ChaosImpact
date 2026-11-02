@@ -14,20 +14,18 @@ class UPostProcessComponent;
 class USceneComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
-class UTextRenderComponent;
 
 /**
- * VS ステージ6 (溶鉱炉コア・ファクトリー): a heavy industrial foundry suspended over a sea of magma for up to 8 players.
- * Built with strict four-fold rotational symmetry:
- *  - Central Circular Core Deck (+60 cm): a wide steel turntable deck holding a central Crucible Altar (whose ball
- *    spawner always produces special elemental / drive balls) and four Thermal Vent grates.
- *  - Four Cardinal Foundry Platforms (0 cm) behind corrugated container cover, connected to the Core Deck by wide
- *    sloped steel ramps.
- *  - Four Corner Cooling Chambers (0 cm) connected by eight outer catwalk bridges and four diagonal walkways, with
- *    angled Steel Baffle reflector walls for pinball-style bank shots.
- *  - Invisible character-only safety fences around the platform edges over the magma sea (balls thrown off fall in).
- *  - Thermal Vents (サーマル・ベント): every 11-14 seconds, a diagonal pair of vents warns for 2.4 s and erupts for
- *    1.6 s, launching non-dashing characters on the grate and boosting any flying ball passing through by 1.35x.
+ * VS ステージ6 (溶鉱炉コア・ファクトリー): a heavy industrial foundry over a sea of magma for up to 8 players. One wide
+ * steel deck (an octagon), four-fold symmetric so no side is better and with room to move everywhere:
+ *  - the core in the middle: a low crucible (its ball pad only ever gives special elemental / drive balls) with four
+ *    thermal vents round it and four steel baffles turned 45 deg for bank shots
+ *  - four foundry bays north, south, east and west, each in its own colour, with a container and coolant tanks for cover
+ *  - four corner cooling chambers behind low blast walls, and low slag barriers between them and the bays
+ *  - Thermal Vents (サーマル・ベント): every 11-14 seconds a facing pair of vents turns into a pale red danger area that
+ *    fills toward its edge for 2.4 s, then erupts for 1.6 s: whoever is on it (not dashing) takes 1 and is thrown up,
+ *    and a flying ball through the plume speeds up by 1.35x.
+ * The deck's edge holds players in (an invisible fence that stops characters only: a ball thrown off it falls in).
  */
 UCLASS(Blueprintable, meta=(DisplayName="Chaos Impact Forge Stage"))
 class AChaosImpactForgeStage : public AChaosImpactStageBase
@@ -48,7 +46,6 @@ public:
 	static constexpr float LayoutHalfExtent = 3500.0f;
 	static constexpr float LayoutScale = 1.0f;
 	static constexpr float ForgeHalfExtent = LayoutHalfExtent * LayoutScale;
-	static constexpr float CoreDeckZ = 60.0f;
 	static constexpr float VentRadius = 330.0f;
 
 	/** Seconds between one Thermal Vent eruption cycle and the next (server). */
@@ -96,7 +93,7 @@ public:
 
 	/** Heavy steel chequer-plate floor colour. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Forge Stage|Palette")
-	FLinearColor SteelFloorColor = FLinearColor(0.11f, 0.12f, 0.15f);
+	FLinearColor SteelFloorColor = FLinearColor(0.22f, 0.23f, 0.27f);
 
 	/** Concrete platform & catwalk colour. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Forge Stage|Palette")
@@ -110,9 +107,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Forge Stage|Palette")
 	FLinearColor StripeColor = FLinearColor(1.0f, 0.68f, 0.02f);
 
-	/** Molten magma and furnace core glow. */
+	/** Molten seams, rings and furnace glow. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Forge Stage|Palette")
 	FLinearColor MagmaGlowColor = FLinearColor(1.0f, 0.26f, 0.02f);
+
+	/** The magma sea far below, glowing between its crust (kept deep so it does not flood the view). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Forge Stage|Palette")
+	FLinearColor MagmaSeaColor = FLinearColor(0.42f, 0.055f, 0.008f);
 
 	/** Coolant pipe and chamber accent glow. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Forge Stage|Palette")
@@ -153,7 +154,7 @@ protected:
 private:
 	enum EPaint : uint8
 	{
-		SteelFloor, Concrete, Baffle, Stripe, MagmaGlow, CoolantGlow, Scenery, DarkSteel, Gold,
+		SteelFloor, Concrete, Baffle, Stripe, MagmaGlow, CoolantGlow, Scenery, DarkSteel, Gold, MagmaSea,
 		Bay, BayDark = Bay + 4, BayGlow = BayDark + 4
 	};
 
@@ -169,13 +170,15 @@ private:
 	void AddFence(const FString& Name, const FVector& From, const FVector& To);
 	void AddContainer(const FString& Name, uint8 Paint, uint8 DarkPaint, const FVector& Location, const FVector& Size, float Yaw);
 
-	void BuildCoreDeck();
+	/** The deck (an octagon) with its skirt, legs and edge, the core and the crucible in its middle, and the magma sea. */
+	void BuildFloor();
 	void BuildQuarter(int32 Quarter);
 	void BuildThermalVent(int32 Vent);
 	void BuildFoundryScenery(int32 Quarter);
 
 	void ApplyPalette();
 	FLinearColor GetPaintColor(uint8 Paint) const;
+	static bool IsGlowPaint(uint8 Paint);
 	static bool ReadPaint(const UStaticMeshComponent* Block, uint8& OutPaint);
 
 	void TickVentsServer(double Now);
@@ -199,8 +202,9 @@ private:
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TArray<TObjectPtr<UStaticMeshComponent>> VentRings;
 
+	/** Each vent's danger area, shown only while it is about to erupt (the boss's ground warning). */
 	UPROPERTY(VisibleAnywhere, Category="Components")
-	TArray<TObjectPtr<UStaticMeshComponent>> VentWarnBeams;
+	TArray<TObjectPtr<UStaticMeshComponent>> VentWarnAreas;
 
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TArray<TObjectPtr<UStaticMeshComponent>> VentEruptBeams;
@@ -236,6 +240,8 @@ private:
 	TObjectPtr<UStaticMesh> CylinderMesh;
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> RingMesh;
+	UPROPERTY()
+	TObjectPtr<UStaticMesh> PlaneMesh;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> FlatMaterial;
@@ -256,7 +262,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> FieldAmberMaterial;
 	UPROPERTY()
-	TObjectPtr<UMaterialInterface> StencilMaterial;
+	TObjectPtr<UMaterialInterface> WarnMaterial;
 
 	double NextVentAt = -1.0;
 	bool bVentErupted = false;

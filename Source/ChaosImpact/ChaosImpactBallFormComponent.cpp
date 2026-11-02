@@ -391,8 +391,8 @@ bool UChaosImpactBallFormComponent::HandleInput()
 		FVector Direction = FRotationMatrix(Yaw).GetUnitAxis(EAxis::X)*Input.Y + FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y)*Input.X;
 		if (IsMouseOnlyScheme(GetPlayerControlScheme(PC)))
 		{
-			FVector Point;
-			if (IsActionDown(PC, EChaosImpactAction::Throw) && P->FindMouseAimPoint(Point)) { Direction = (Point-P->GetActorLocation()).GetSafeNormal2D(); }
+			FVector Toward;
+			if (IsActionDown(PC, EChaosImpactAction::Throw) && P->FindMouseAimDirection(Toward)) { Direction = Toward; }
 		}
 		Steer(Direction);
 		return true;

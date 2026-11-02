@@ -81,8 +81,6 @@ public:
 	void ToggleTrainingOverlay();
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Training")
 	void CloseTrainingOverlay();
-	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Ball")
-	void ToggleBallFlightMode();
 	/** Training panel: the ball type ボールを呼び出す places in front of this player. */
 	void CycleTrainingSummonBallType();
 	void SetTrainingSummonBallType(EChaosImpactBallType Type);
@@ -205,6 +203,20 @@ public:
 	void BeginMatchQueue(EChaosImpactQueueMode Mode);
 	/** ランクマッチ's own page (the rank, the record, the search button); asks the relay for the latest rank. */
 	void OpenRankTop();
+	/** オンラインメニュー: 合言葉マッチ (make a room or find one) and 戦績 (asks the relay for the latest). */
+	void OpenOnlinePrivate();
+	void OpenOnlineRecord();
+	/** ランダムマッチ 1v1 found (DuelFound): this player's answer. */
+	void AnswerDuelOffer(bool bAccept);
+	/** A matched room's results: leave them, to search again the same way or for the online menu. */
+	void LeaveMatchmadeResults(bool bSearchAgain);
+	/** A matched 1v1's results: 同じ相手と再戦 (it starts once the other player asks too). */
+	void RequestRematch();
+	bool HasRequestedRematch() const;
+	/** The other player of this matched 1v1 is still in the room; bOutAsked: they asked for the rematch. */
+	bool IsRematchOpponentHere(bool& bOutAsked) const;
+	UFUNCTION(Server, Reliable)
+	void ServerRequestRematch();
 	/** The matched room is over for this machine: back to its own training. */
 	UFUNCTION(Client, Reliable)
 	void ClientLeaveMatchmade();
@@ -413,7 +425,6 @@ protected:
 	/** Active and pending slot occupied by the one local keyboard/mouse pair. */
 	int32 ActiveKeyboardPlayerIndex = 0;
 	int32 RequestedKeyboardPlayerIndex = 0;
-	bool bControllerAssignmentKeepsFlightMode = false;
 	EChaosImpactScreen ControllerAssignmentReturnScreen = EChaosImpactScreen::TrainingSetup;
 	/** Physical device ids, stored in the exact order their join button was pressed. */
 	TArray<int32> JoinedInputDeviceIds;
@@ -430,6 +441,8 @@ protected:
 	bool bRoomCharacterChange = false;
 	/** A matched room: tells the session when its match is under way, and sends a ランクマッチ's result once. */
 	void UpdateMatchmadeProgress();
+	/** ランダムマッチ 1v1: the card of the opponent found comes up over the training, and goes when it is settled. */
+	void UpdateDuelOfferScreen();
 	bool bRenamingPlayer = false;
 	/** へやをつくる: the password waits here while the room name is entered. */
 	FString PendingRoomPassword;
@@ -471,6 +484,7 @@ protected:
 	FString BuildLocalSetupOptions();
 
 	virtual void PlayerTick(float DeltaTime) override;
+	virtual void PreClientTravel(const FString& PendingURL, ETravelType TravelType, bool bIsSeamlessTravel) override;
 	/** Hands this player's character select pick to their player state once it exists. */
 	void SendLoadout();
 	bool bLoadoutSent = false;
@@ -478,6 +492,13 @@ protected:
 	void UpdateMatchScreens();
 	/** Opening camera: flies over the stage, then dives into this player's own view. */
 	void UpdateMatchIntroCamera();
+	/**
+	 * Drops the VS stage's props up on its walls (billboards, graffiti) from this player's own view while this player's
+	 * camera is close to them, so they never stand between the camera and the play (the walls fade by their material).
+	 */
+	void UpdateNearCameraParts();
+	TWeakObjectPtr<class AChaosImpactStageBase> NearPartsStage;
+	double NextNearPartsSearchAt = 0.0;
 	/** Back to play from a match screen, without the pause-only checks of ResumeGameplay. */
 	void EnterPlayingScreen();
 
@@ -529,7 +550,7 @@ protected:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactWarpPad>> TrainingWarpPads;
 	/** bLoadingScreen: from the title, a loading screen covers the load (the VS card has its own). */
-	void OpenTrainingLevel(bool bKeepFlightMode, bool bOnlineSearch = false, bool bLoadingScreen = true);
+	void OpenTrainingLevel(bool bOnlineSearch = false, bool bLoadingScreen = true);
 	/** Back to the title world (the level with no options), where the title plays its demo match. */
 	void OpenTitleLevel();
 	void ResetControllerJoinSequence();

@@ -2,8 +2,9 @@
 """
 Chaos Impact online relay: the room list for 合言葉 (password) rooms, the queues of ランダムマッチ and ランクマッチ, and
 a UDP relay that carries the game's traffic between the players' machines over the internet. Nothing of the game
-itself runs here (no Unreal Engine): a room's host is still one player's PC (a listen server), and every packet passes
-through this relay, so no one has to open ports on their router.
+itself runs here (no Unreal Engine): a room's host is still one player's PC (a listen server). The relay tells each
+player where the other can be reached so they can try to talk directly (through their routers, like other online games
+do); where that does not work, every packet passes through this relay, so no one has to open ports on their router.
 
   Directory (one UDP port, JSON requests and replies):
     create {ver, password, name, host}            -> {ok, room, key, port}
@@ -11,13 +12,26 @@ through this relay, so no one has to open ports on their router.
     search {ver, password}                        -> {ok, rooms:[{room, name, host, members, spectators, open, port}]}
     close  {room, key}                            -> {ok}
 
-    Matchmaking (mode "random": up to 8 players, free-for-all; mode "rank": 1 v 1):
-    mm_join  {ver, mode, token, name, players, rtt}  -> {ok, ticket}
-    mm_poll  {ticket, rtt}                        -> {ok, state:"waiting", waiting, elapsed, starts_in}
+    Matchmaking (mode "random": up to 8 players, free-for-all; mode "duel": 1 v 1 for fun; mode "rank": 1 v 1 ranked):
+    mm_join  {ver, mode, token, name, players, rtt, profile:{chara, color, device}}  -> {ok, ticket}
+    mm_poll  {ticket, rtt}                        -> {ok, state:"waiting", waiting, elapsed, starts_in, notice}
+                                                     {ok, state:"proposed", match, left, accepted, opponent_accepted,
+                                                      ping, opponent:{name, chara, color, device, record}}   (duel)
                                                      {ok, state:"matched", match, mode, role:"host"|"guest", port,
                                                       key (host only), host_ready, expect, names:[...], opponent}
+                                                     {ok, state:"expired"}   (a duel this player did not accept in time)
                                                      {ok, state:"gone"}   (expired or the match fell through)
+    mm_accept {ticket, accept}                    -> {ok}   (duel: both accept the opponent shown, or neither plays)
     mm_leave {ticket}                             -> {ok}
+    A duel found is only "proposed": its room is made once both players accept within DUEL_ACCEPT seconds of both having
+    seen it. One who declines (or lets the time run out) stops searching; the other searches on ("notice": "declined"),
+    not offered the same opponent again for a while.
+
+    Records (1 v 1 and 8-player matches, in the same JSON file):
+    record_info   {token, name}                   -> {ok, name, duel:{wins, losses, draws, recent}, ffa:{games, wins,
+                                                      top3, average, recent:[[place, of], ...]}}
+    record_report {match, token, game, result:"win"|"lose"|"draw"}   (duel)
+                  {match, token, game, place, of}                     (random)   -> {ok, ...record_info}
 
     Rank (仮, the preseason: a JSON file on this VM, see --data):
     rank_info   {token, name}                     -> {ok, mmr, games, wins, losses, draws, best, placement, recent}
@@ -32,6 +46,14 @@ through this relay, so no one has to open ports on their router.
     client -> relay  any other packet             -> b"CIRD" + client id + packet to the host
     relay -> host  b"CIRX" + client id            that client went quiet and was dropped
 
+  Direct connection (both sides over UDP; never forwarded to the game):
+    host -> relay    b"CI2PPRIV" + "ip:port,..."  the host's addresses on its own network (with each CIH1)
+    client -> relay  b"CI2PPRIV" + "ip:port,..."  the same from a client (every second; also keeps the client alive)
+    relay -> client  b"CI2PHOST" + client id + token (8 bytes) + "pub=ip:port;priv=ip:port,..."   the host's addresses
+    relay -> host    b"CI2PPEER" + client id + token + "pub=ip:port;priv=..."                    that client's addresses
+  The two then probe each other (b"CI2PPROB"/b"CI2PRPLY" + client id + token) and send the game's packets directly
+  while the probes are answered; the token (random, per client) keeps others from posing as either of them.
+
 Run:  python3 ci_relay.py --bind 0.0.0.0 --port 7700 --room-ports 7701-7760 --data /var/lib/ci-relay/ranks.json
 Python 3.8+ standard library only.
 """
@@ -42,6 +64,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import struct
 import time
 
@@ -51,11 +74,14 @@ MAX_ROOMS_PER_PASSWORD = 8
 MAX_CLIENTS_PER_ROOM = 16
 MAX_PACKET = 2048
 
-TICKET_TIMEOUT = 8.0      # a queued player who stops polling this long leaves the queue
+TICKET_TIMEOUT = 15.0     # a queued player who stops polling this long leaves the queue (a level load can take a while)
 MATCH_KEEP = 20 * 60.0    # a match is remembered this long (for late polls and the rank reports)
 HOST_WAIT = 25.0          # the chosen host must reach the relay within this long, or the match falls through
 RANDOM_MAX_PLAYERS = 8
 RANDOM_GATHER = 20.0      # once two players wait, more may join for this long before the match is made
+DUEL_ACCEPT = 15.0        # a 1 v 1 found waits this long for both players to accept it (from when both have seen it)
+DUEL_SEEN_WAIT = 20.0     # ...and this long for both to see it at all (a player loading or gone is not waited for)
+DUEL_AVOID = 120.0        # an opponent who declined is not offered again for this long
 RANK_START = 1500
 RANK_PLACEMENT_GAMES = 10
 RANK_WINDOWS = ((15.0, 150), (45.0, 300))   # (seconds waited, MMR difference allowed); after the last: any
@@ -67,6 +93,18 @@ log = logging.getLogger("ci_relay")
 
 def token_id(token):
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:32]
+
+
+def clean_profile(profile):
+    """What a player shows of themselves to a 1 v 1 opponent: character, colour and pad or keyboard."""
+    profile = profile if isinstance(profile, dict) else {}
+
+    def number(key):
+        try:
+            return max(0, min(63, int(profile.get(key, 0))))
+        except (TypeError, ValueError):
+            return 0
+    return {"chara": number("chara"), "color": number("color"), "device": "key" if profile.get("device") == "key" else "pad"}
 
 
 class Room:
@@ -87,7 +125,8 @@ class Room:
         self.transport = None
         self.host_addr = None
         self.host_seen = 0.0
-        self.clients = {}       # addr -> [client id, last seen]
+        self.clients = {}       # addr -> [client id, last seen, token for the direct connection]
+        self.host_private = ""  # the host's own network addresses (CI2PPRIV), for a client on the same network
         self.addresses = {}     # client id -> addr
         self.next_client = 1
         self.packets = 0
@@ -124,6 +163,8 @@ class Room:
                 target = self.addresses.get(client_id)
                 if target:
                     self.send(data[8:], target)
+            elif data[:8] == b"CI2PPRIV":
+                self.host_private = clean_addresses(data[8:])
             return
         if self.host_addr is None:
             return
@@ -131,16 +172,30 @@ class Room:
         if entry is None:
             if len(self.clients) >= MAX_CLIENTS_PER_ROOM:
                 return
-            entry = [self.next_client, now]
+            entry = [self.next_client, now, secrets.token_bytes(8)]
             self.next_client += 1
             self.clients[addr] = entry
             self.addresses[entry[0]] = addr
             log.info("room %s: client %d from %s:%d", self.id, entry[0], addr[0], addr[1])
         entry[1] = now
+        if data[:8] == b"CI2PPRIV":
+            self.introduce(entry, addr, clean_addresses(data[8:]))
+            return
         self.send(b"CIRD" + struct.pack(">I", entry[0]) + data, self.host_addr)
 
+    def introduce(self, entry, addr, private):
+        """A client asked how to reach the host directly: each learns the other's addresses (repeated every second, so a
+        lost datagram only delays it). Not over WSS: a WebSocket end has no UDP address to reach."""
+        if addr[0] == "wss" or self.host_addr[0] == "wss":
+            return
+        head = struct.pack(">I", entry[0]) + entry[2]
+        host = "pub=%s:%d;priv=%s" % (self.host_addr[0], self.host_addr[1], self.host_private)
+        client = "pub=%s:%d;priv=%s" % (addr[0], addr[1], private)
+        self.send(b"CI2PHOST" + head + host.encode("ascii"), addr)
+        self.send(b"CI2PPEER" + head + client.encode("ascii"), self.host_addr)
+
     def sweep(self, now):
-        for addr, (client_id, seen) in list(self.clients.items()):
+        for addr, (client_id, seen, _token) in list(self.clients.items()):
             if now - seen > CLIENT_TIMEOUT:
                 del self.clients[addr]
                 self.addresses.pop(client_id, None)
@@ -158,12 +213,41 @@ class Room:
             self.transport = None
 
 
+def clean_addresses(data):
+    """A player's "ip:port,..." (its own network's addresses), kept to IPv4 numbers and at most four of them."""
+    found = []
+    for part in data[:200].decode("ascii", "ignore").split(","):
+        ip, _, port = part.strip().rpartition(":")
+        try:
+            socket.inet_aton(ip)
+            if ip.count(".") == 3 and 0 < int(port) < 65536:
+                found.append("%s:%d" % (ip, int(port)))
+        except (OSError, ValueError):
+            pass
+    return ",".join(found[:4])
+
+
+def ignore_unreachable(transport):
+    """Windows: a datagram sent to a port that has closed (a player's game moving to the room's next level) comes back as
+    an error on the socket, which stops asyncio reading it there; ask Windows not to report it. (Linux never does.)"""
+    sock = transport.get_extra_info("socket")
+    if sock is not None and hasattr(socket, "SIO_UDP_CONNRESET"):
+        try:
+            sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+        except OSError:
+            pass
+
+
 class RoomProtocol(asyncio.DatagramProtocol):
     def __init__(self, room):
         self.room = room
 
     def connection_made(self, transport):
+        ignore_unreachable(transport)
         self.room.transport = transport
+
+    def error_received(self, exc):
+        log.info("room %s: socket error %s (ignored)", self.room.id, exc)
 
     def datagram_received(self, data, addr):
         limit = MAX_PACKET + 8 if addr == self.room.host_addr and data[:4] == b"CIHD" else MAX_PACKET
@@ -254,6 +338,45 @@ class RankBook:
         entry = self.data["players"].get(pid)
         return entry["mmr"] if entry else RANK_START
 
+    # ---- records of the 1 v 1 and 8-player matches (no rating: just what happened)
+    def records(self, pid):
+        entry = self.player(pid)
+        duel = entry.setdefault("duel", {})
+        for key in ("wins", "losses", "draws"):
+            duel.setdefault(key, 0)
+        duel.setdefault("recent", [])
+        ffa = entry.setdefault("ffa", {})
+        for key in ("games", "wins", "top3", "places"):
+            ffa.setdefault(key, 0)
+        ffa.setdefault("recent", [])
+        return duel, ffa
+
+    def describe_duel(self, pid):
+        duel, _ = self.records(pid)
+        return {"wins": duel["wins"], "losses": duel["losses"], "draws": duel["draws"], "recent": duel["recent"][-10:]}
+
+    def describe_records(self, pid):
+        _, ffa = self.records(pid)
+        average = round(ffa["places"] / ffa["games"], 1) if ffa["games"] else 0
+        return {"name": self.player(pid)["name"], "duel": self.describe_duel(pid),
+                "ffa": {"games": ffa["games"], "wins": ffa["wins"], "top3": ffa["top3"], "average": average,
+                        "recent": ffa["recent"][-10:]}}
+
+    def add_duel(self, pid, result):
+        duel, _ = self.records(pid)
+        duel[{"win": "wins", "lose": "losses", "draw": "draws"}[result]] += 1
+        duel["recent"] = (duel["recent"] + [{"win": "W", "lose": "L", "draw": "D"}[result]])[-10:]
+        self.save()
+
+    def add_ffa(self, pid, place, of):
+        _, ffa = self.records(pid)
+        ffa["games"] += 1
+        ffa["wins"] += 1 if place == 1 else 0
+        ffa["top3"] += 1 if place <= 3 else 0
+        ffa["places"] += place
+        ffa["recent"] = (ffa["recent"] + [[place, of]])[-10:]
+        self.save()
+
     def settle(self, a, b, score_a, match_id):
         """score_a: 1 a won, 0 b won, 0.5 draw. Returns {pid: (before, after)}."""
         now = time.time()
@@ -301,6 +424,10 @@ class Ticket:
         self.joined = now
         self.seen = now
         self.match = None
+        self.profile = clean_profile(request.get("profile"))
+        self.notice = ""          # said once on the next poll: "declined" (the opponent found said no)
+        self.avoid = {}           # pid -> until when that opponent is not offered again
+        self.expired = False      # a duel offered was not accepted: the search ends on the next poll
 
 
 class Match:
@@ -313,6 +440,10 @@ class Match:
         self.reports = {}                 # pid -> (result, at)
         self.outcome = None               # "done" | "void"
         self.changes = {}
+        self.accepts = set()              # duel: the pids that accepted (the room is made when both have)
+        self.seen = set()                 # duel: the pids that have been shown the opponent
+        self.deadline = None              # duel: when the answers are due (set once both have seen it)
+        self.recorded = set()             # (pid, game) already in the records
 
     def host(self):
         return self.tickets[0]
@@ -346,6 +477,16 @@ class Relay:
             return self.queue_join(request)
         if op == "mm_poll":
             return self.queue_poll(request)
+        if op == "mm_accept":
+            return self.queue_accept(request)
+        if op == "record_info":
+            if not request.get("token"):
+                return {"ok": False, "error": "bad request"}
+            pid = token_id(request["token"])
+            self.ranks.player(pid, request.get("name"))
+            return dict(ok=True, **self.ranks.describe_records(pid))
+        if op == "record_report":
+            return self.record_report(request)
         if op == "mm_leave":
             ticket = self.tickets.pop(str(request.get("ticket", "")), None)
             if ticket and ticket.match is None:
@@ -409,15 +550,16 @@ class Relay:
     # ---- queues
     def queue_join(self, request):
         mode = request.get("mode")
-        if mode not in ("random", "rank") or not isinstance(request.get("ver"), str) or not request.get("token"):
+        if mode not in ("random", "duel", "rank") or not isinstance(request.get("ver"), str) or not request.get("token"):
             return {"ok": False, "error": "bad request"}
-        if mode == "rank" and int(request.get("players", 1)) != 1:
+        if mode in ("duel", "rank") and int(request.get("players", 1)) != 1:
             return {"ok": False, "error": "solo only"}
         pid = token_id(request["token"])
         # One place per player: joining again (a retried request, or back from a match) replaces the old ticket.
         for old in [t for t in self.tickets.values() if t.pid == pid and t.match is None]:
             del self.tickets[old.id]
         ticket = Ticket(secrets.token_hex(8), request, pid)
+        self.ranks.player(pid, ticket.name)
         if mode == "rank":
             self.ranks.player(pid, ticket.name)
             ticket.mmr = self.ranks.mmr(pid)
@@ -433,15 +575,33 @@ class Relay:
         ticket.seen = now
         if request.get("rtt"):
             ticket.rtt = int(request["rtt"])
+        if ticket.expired:
+            self.tickets.pop(ticket.id, None)
+            return {"ok": True, "state": "expired"}
         match = self.matches.get(ticket.match) if ticket.match else None
         if match is None:
-            waiting = [t for t in self.tickets.values() if t.match is None and t.mode == ticket.mode and t.version == ticket.version]
+            waiting = [t for t in self.tickets.values()
+                       if t.match is None and not t.expired and t.mode == ticket.mode and t.version == ticket.version]
             reply = {"ok": True, "state": "waiting", "waiting": sum(t.players for t in waiting),
-                     "elapsed": round(now - ticket.joined, 1), "starts_in": -1}
+                     "elapsed": round(now - ticket.joined, 1), "starts_in": -1, "notice": ticket.notice}
+            ticket.notice = ""
             since = self.gather_since.get(ticket.version)
             if ticket.mode == "random" and since is not None:
                 reply["starts_in"] = round(max(0.0, RANDOM_GATHER - (now - since)), 1)
             return reply
+        if match.room is None:
+            # A duel found: who it is, how far away, and whether each side has accepted. The time to answer runs from
+            # when both have been shown it.
+            other = match.tickets[1] if ticket is match.tickets[0] else match.tickets[0]
+            match.seen.add(ticket.pid)
+            if match.deadline is None and len(match.seen) == 2:
+                match.deadline = now + DUEL_ACCEPT
+            left = DUEL_ACCEPT if match.deadline is None else max(0.0, match.deadline - now)
+            return {"ok": True, "state": "proposed", "match": match.id, "left": round(left, 1),
+                    "accepted": ticket.pid in match.accepts, "opponent_accepted": other.pid in match.accepts,
+                    # Through the relay: the most it takes (a direct line, found once they connect, is quicker).
+                    "ping": min(999, ticket.rtt + other.rtt),
+                    "opponent": dict(name=other.name, record=self.ranks.describe_duel(other.pid), **other.profile)}
         if match.room.id not in self.rooms:
             # The host never came, or left before anyone joined.
             self.tickets.pop(ticket.id, None)
@@ -455,10 +615,39 @@ class Relay:
         if ticket is host:
             reply["key"] = match.room.key
             reply["room"] = match.room.id
+        if match.mode == "duel":
+            other = match.tickets[1] if ticket is host else host
+            reply["opponent"] = dict(name=other.name, record=self.ranks.describe_duel(other.pid), **other.profile)
         if match.mode == "rank":
             other = match.tickets[1] if ticket is host else host
             reply["opponent"] = {"name": other.name, **self.ranks.describe(other.pid)}
         return reply
+
+    def queue_accept(self, request):
+        ticket = self.tickets.get(str(request.get("ticket", "")))
+        match = self.matches.get(ticket.match) if ticket and ticket.match else None
+        if match is None or match.mode != "duel" or match.room is not None:
+            return {"ok": False, "error": "unknown match"}
+        if request.get("accept") is True:
+            match.accepts.add(ticket.pid)
+            log.info("match %s: %s accepts", match.id, ticket.name)
+        else:
+            log.info("match %s: %s declines", match.id, ticket.name)
+            self.end_proposal(match, [ticket])
+        return {"ok": True}
+
+    def end_proposal(self, match, refusers):
+        """A duel found will not be played: who did not accept stops searching, the other searches on."""
+        now = time.monotonic()
+        for ticket in match.tickets:
+            ticket.match = None
+            if ticket in refusers:
+                ticket.expired = True
+            else:
+                ticket.notice = "declined"
+                for other in refusers:
+                    ticket.avoid[other.pid] = now + DUEL_AVOID
+        self.matches.pop(match.id, None)
 
     async def matchmake(self):
         now = time.monotonic()
@@ -466,13 +655,38 @@ class Relay:
             del self.tickets[ticket.id]
             if ticket.match is None:
                 log.info("queue %s: %s dropped (quiet)", ticket.mode, ticket.name)
-        waiting = [t for t in self.tickets.values() if t.match is None]
+        # Duels found: made once both accept; dropped when one says no, lets the time run out or leaves.
+        for match in [m for m in self.matches.values() if m.room is None]:
+            gone = [t for t in match.tickets if t.id not in self.tickets]
+            if gone:
+                self.end_proposal(match, gone)
+            elif all(t.pid in match.accepts for t in match.tickets):
+                room = await self.open_room({"password": "\x00match", "ver": match.host().version, "name": "duel",
+                                             "host": match.host().name}, listed=False)
+                if room is None:
+                    log.error("queue duel: no room port free for a match")
+                    self.end_proposal(match, [])
+                    continue
+                match.room = room
+                match.created = now
+                log.info("match %s (duel) accepted: hosted by %s on port %d", match.id, match.host().name, room.port)
+            elif match.deadline is not None and now > match.deadline:
+                log.info("match %s (duel): not accepted in time", match.id)
+                self.end_proposal(match, [t for t in match.tickets if t.pid not in match.accepts])
+            elif match.deadline is None and now - match.created > DUEL_SEEN_WAIT:
+                log.info("match %s (duel): not seen by both in time", match.id)
+                self.end_proposal(match, [t for t in match.tickets if t.pid not in match.seen])
+        waiting = [t for t in self.tickets.values() if t.match is None and not t.expired]
         for version in {t.version for t in waiting}:
             await self.match_random(version, sorted((t for t in waiting if t.version == version and t.mode == "random"),
                                                     key=lambda t: t.joined), now)
+            self.match_duel(sorted((t for t in waiting if t.version == version and t.mode == "duel"),
+                                   key=lambda t: t.joined), now)
             await self.match_rank(version, sorted((t for t in waiting if t.version == version and t.mode == "rank"),
                                                   key=lambda t: t.joined), now)
         for match in list(self.matches.values()):
+            if match.room is None:
+                continue
             if now - match.created > MATCH_KEEP:
                 del self.matches[match.id]
             elif match.room.id in self.rooms and match.room.host_addr is None and now - match.created > HOST_WAIT:
@@ -498,6 +712,28 @@ class Relay:
             waiting = [t for t in waiting if t not in group]
             self.gather_since.pop(version, None)
         self.gather_since.pop(version, None)
+
+    def match_duel(self, waiting, now):
+        """1 v 1 for fun: the two who have waited longest (but not someone who just declined the other)."""
+        taken = set()
+        for ticket in waiting:
+            if ticket.id in taken:
+                continue
+            for other in waiting:
+                if other is ticket or other.id in taken or other.pid == ticket.pid:
+                    continue
+                if ticket.avoid.get(other.pid, 0) > now or other.avoid.get(ticket.pid, 0) > now:
+                    continue
+                taken.update((ticket.id, other.id))
+                # The host is the one with the quicker way to the relay.
+                group = sorted([ticket, other], key=lambda t: (t.rtt, t.joined))
+                match = Match(secrets.token_hex(6), "duel", None, group)
+                self.matches[match.id] = match
+                for member in group:
+                    member.match = match.id
+                log.info("match %s (duel) found: %s and %s, waiting for both to accept", match.id, group[0].name,
+                         group[1].name)
+                break
 
     async def match_rank(self, version, waiting, now):
         def allowed(ticket):
@@ -535,6 +771,33 @@ class Relay:
             ticket.match = match.id
         log.info("match %s (%s): %s, hosted by %s on port %d", match.id, mode,
                  ", ".join(f"{t.name}({t.players})" for t in group), group[0].name, room.port)
+
+    # ---- records
+    def record_report(self, request):
+        match = self.matches.get(str(request.get("match", "")))
+        if match is None or match.mode not in ("duel", "random") or not request.get("token"):
+            return {"ok": False, "error": "unknown match"}
+        pid = token_id(request["token"])
+        if pid not in (t.pid for t in match.tickets):
+            return {"ok": False, "error": "not in this match"}
+        try:
+            game = int(request.get("game", 0))
+            key = (pid, game)
+            if key not in match.recorded:
+                if match.mode == "duel":
+                    result = request.get("result")
+                    if result not in ("win", "lose", "draw"):
+                        return {"ok": False, "error": "bad request"}
+                    self.ranks.add_duel(pid, result)
+                else:
+                    of = max(2, min(RANDOM_MAX_PLAYERS, int(request.get("of", RANDOM_MAX_PLAYERS))))
+                    place = max(1, min(of, int(request.get("place", of))))
+                    self.ranks.add_ffa(pid, place, of)
+                match.recorded.add(key)
+                log.info("match %s: %s recorded game %d", match.id, self.ranks.player(pid)["name"], game)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "bad request"}
+        return dict(ok=True, **self.ranks.describe_records(pid))
 
     # ---- rank results
     def rank_report(self, request):

@@ -3,6 +3,8 @@
 #include "RPGAdventure.h"
 #include "RPGQuests.h"
 #include "RPGSnowField.h"
+#include "RPGNavigation.h"
+#include "RPGWorldLayout.h"
 #include "ChaosImpactSimaeBoss.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/Engine.h"
@@ -36,13 +38,16 @@ public:
         case 1:
         {
             for(TActorIterator<ARPGPrototypeCharacter> It(W);It;++It) { if(It->IsGrunt() && !Cast<ARPGSimaeBody>(*It)) { It->SetTrainingMenuFrozen(true); } }
-            ARPGWarpGate* ToSnow=nullptr; for(TActorIterator<ARPGWarpGate> It(W);It;++It) { if(It->DisplayName.Contains(TEXT("雪原"))) { ToSnow=*It; } }
-            if(!Test->TestNotNull(TEXT("A gate to the snowfield stands in the colony"),ToSnow)) { return true; }
+            // The snowfield is part of the map now: up the misty pass by road, no gate.
+            int32 Gates=0; for(TActorIterator<ARPGWarpGate> It(W);It;++It) { ++Gates; }
+            Test->TestEqual(TEXT("No gate any more"),Gates,0);
+            const TArray<FVector> Way=RPGNav::ShortestWay(W,P->GetActorLocation(),{RPGWorld::AreaPoint(TEXT("SnowCamp"))});
+            Test->TestTrue(TEXT("The snowfield's camp can be walked to by road"),Way.Num()>=2);
             Test->TestTrue(TEXT("The boss sleeps in its nest"),Boss && Boss->IsDormant() && Body && !Body->IsAwake());
-            Move(ToSnow->GetActorLocation()+FVector(-150,0,110)); Stage=2; Next=Now+.3; return false;
+            Move(RPGWorld::AreaPoint(TEXT("SnowCamp"))+FVector(-200,0,120)); Stage=2; Next=Now+.6; return false;
         }
         case 2:
-            Test->TestTrue(TEXT("The gate takes the player to the snowfield"),P->InteractAdventure() && Place->RegionName(P->GetActorLocation()).StartsWith(TEXT("雪原")));
+            Test->TestTrue(TEXT("The camp is in the snowfield"),Place->RegionName(P->GetActorLocation()).StartsWith(TEXT("雪原")));
             Stage=3; Next=Now+1.5; return false;
         case 3:
         {
@@ -59,7 +64,7 @@ public:
             Test->TestTrue(TEXT("Talking to the watcher"),P->InteractAdventure() && P->QuestGiver==5);
             P->QuestSelection=18; P->RequestQuestPrimary(); Test->TestEqual(TEXT("Boss quest taken"),RPGQuests::State(P,18),ERPGQuestState::Active);
             P->SetQuestMenuOpen(false);
-            Move(ARPGSnowField::Origin()+FVector(1200,-900,120)); Stage=5; Next=Now+1.2; return false;
+            Move(RPGWorld::AreaPoint(TEXT("FrozenLake"))+FVector(0,0,120)); Stage=5; Next=Now+1.2; return false;
         case 5:
             Test->TestEqual(TEXT("The lake has its own name"),Place->RegionName(P->GetActorLocation()),FString(TEXT("雪原・凍った湖")));
             P->NoticeUntil=0; Shot(TEXT("snow-lake.png"));

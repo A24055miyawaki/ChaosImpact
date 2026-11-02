@@ -144,7 +144,8 @@ public:
             P->SetActorLocation(Boss->GetArenaHome()+FVector(-650,0,0));
             const int32 Rubies=P->GetRubies();
             Boss->TakeDamage(10000,FDamageEvent(),PC,P);
-            Test->TestEqual(TEXT("Victory raises boss level by five"),Boss->GetRPGLevel(),15);
+            // Beaten once, it comes back as its strong version, eight levels up (2026-11); after that five a time.
+            Test->TestEqual(TEXT("Victory brings the strong version, eight levels up"),Boss->GetRPGLevel(),18);
             Test->TestEqual(TEXT("Defeated boss waits for explicit retry"),Boss->GetBossState(),ERPGBossState::Defeated);
             Test->TestTrue(TEXT("Boss victory pays scaled rubies"),P->GetRubies()>=Rubies+80);
             MoneyAfter=P->GetRubies();
@@ -157,11 +158,12 @@ public:
             if(Now<Next) { return false; }
             Test->TestTrue(TEXT("Defeated encounter is retained rather than auto respawned/removed"),Boss.IsValid() && Boss->IsEliminated());
             Test->TestTrue(TEXT("Nearby player can explicitly retry"),Boss->Retry(P));
-            Test->TestEqual(TEXT("Retry is Lv15"),Boss->GetRPGLevel(),15);
-            Test->TestEqual(TEXT("Next level has higher full HP"),Boss->GetMaxHealth(),ARPGPrototypeBoss::HealthForLevel(15));
+            Test->TestEqual(TEXT("Retry is Lv18"),Boss->GetRPGLevel(),18);
+            Test->TestTrue(TEXT("The retry is its strong version"),Boss->IsStrongVersion());
+            Test->TestTrue(TEXT("The strong version has much more HP"),Boss->GetMaxHealth()>ARPGPrototypeBoss::HealthForLevel(18)*1.5f);
             Test->TestEqual(TEXT("Retry resets boss HP"),Boss->GetHealth(),Boss->GetMaxHealth());
             Boss->TakeDamage(10000,FDamageEvent(),PC,P);
-            Test->TestEqual(TEXT("Second victory continues to Lv20"),Boss->GetRPGLevel(),20);
+            Test->TestEqual(TEXT("Second victory continues to Lv23"),Boss->GetRPGLevel(),23);
             P->SetPrototypeAutomatedInput(false);
             W->GetAuthGameMode<ARPGPrototypeGameMode>()->ResetPrototype();
             return true;

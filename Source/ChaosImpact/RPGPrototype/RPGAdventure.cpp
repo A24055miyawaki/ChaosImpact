@@ -136,7 +136,7 @@ void ARPGPrototypeCharacter::TickAdventure(float DeltaSeconds)
     {
         NextPlaceCheckAt=GetWorld()->GetTimeSeconds()+.4;
         const FString Place=Adventure->RegionName(GetActorLocation());
-        if(Place!=LastPlace) { LastPlace=Place; if(!Place.IsEmpty()) { QuestEvent(ERPGQuestEvent::RegionEntered,GetActorLocation(),0,Place); } }
+        if(Place!=LastPlace) { LastPlace=Place; if(!Place.IsEmpty()) { QuestEvent(ERPGQuestEvent::RegionEntered,GetActorLocation(),0,Place); NoteVisited(Place); } }
     }
     if(Adventure->IsInColony(GetActorLocation()))
     { RestoreHP(MaxHealth*.3f*DeltaSeconds); Stamina=FMath::Min(MaxStamina,Stamina+MaxStamina*.4f*DeltaSeconds); }

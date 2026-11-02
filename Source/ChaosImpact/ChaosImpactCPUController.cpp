@@ -1803,7 +1803,7 @@ bool AChaosImpactCPUController::UsesArcFlightMode() const
 			return It->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc;
 		}
 	}
-	return !GetWorld() || !GetWorld()->URL.HasOption(TEXT("CIBallStraight=1"));
+	return true;
 }
 
 // ---------------------------------------------------------------------------------------------

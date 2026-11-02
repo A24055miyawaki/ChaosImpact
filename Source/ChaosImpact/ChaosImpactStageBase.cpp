@@ -1,5 +1,9 @@
 #include "ChaosImpactStageBase.h"
 
+#include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/ConstructorHelpers.h"
+
 namespace
 {
 	TArray<FVector2D> BuildRoutePolyline2D(const FVector& StartOffset, const FVector& GoalOffset,
@@ -244,4 +248,55 @@ bool AChaosImpactStageBase::IsOutside(const FVector& Location) const
 	const FVector Local = GetActorTransform().InverseTransformPositionNoScale(Location);
 	const float Reach = GetHalfExtent() + OutsideMargin;
 	return FMath::Abs(Local.X) > Reach || FMath::Abs(Local.Y) > Reach || Local.Z < -OutsideDepth;
+}
+
+AChaosImpactStageBase::AChaosImpactStageBase()
+{
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WallFade(TEXT("/Game/ChaosImpact/Versus/M_CI_WallFade.M_CI_WallFade"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WallFadeGlow(
+		TEXT("/Game/ChaosImpact/Versus/M_CI_WallFadeGlow.M_CI_WallFadeGlow"));
+	WallFadeMaterial = WallFade.Succeeded() ? WallFade.Object : nullptr;
+	WallFadeGlowMaterial = WallFadeGlow.Succeeded() ? WallFadeGlow.Object : nullptr;
+}
+
+void AChaosImpactStageBase::MakeWallsSeeThrough(const TArray<FString>& Prefixes, const UMaterialInterface* GlowSource)
+{
+	if (!WallFadeMaterial || !WallFadeGlowMaterial)
+	{
+		return;
+	}
+	TArray<UStaticMeshComponent*> Blocks;
+	GetComponents(Blocks);
+	for (UStaticMeshComponent* Block : Blocks)
+	{
+		const FString BlockName = Block->GetName();
+		if (!Prefixes.ContainsByPredicate([&BlockName](const FString& Prefix) { return BlockName.StartsWith(Prefix); }))
+		{
+			continue;
+		}
+		// (Already see-through, maybe under the palette's own instance of it.)
+		const UMaterialInterface* Current = Block->GetMaterial(0);
+		const UMaterialInstanceDynamic* Instance = Cast<UMaterialInstanceDynamic>(Current);
+		const UMaterialInterface* Source = Instance ? Instance->Parent.Get() : Current;
+		if (Source == WallFadeMaterial || Source == WallFadeGlowMaterial)
+		{
+			continue;
+		}
+		Block->SetMaterial(0, GlowSource && Source == GlowSource ? WallFadeGlowMaterial.Get() : WallFadeMaterial.Get());
+	}
+}
+
+void AChaosImpactStageBase::HideNearCamera(const TArray<FString>& Prefixes)
+{
+	NearCameraParts.Reset();
+	TArray<UPrimitiveComponent*> Parts;
+	GetComponents(Parts);
+	for (UPrimitiveComponent* Part : Parts)
+	{
+		const FString PartName = Part->GetName();
+		if (Prefixes.ContainsByPredicate([&PartName](const FString& Prefix) { return PartName.StartsWith(Prefix); }))
+		{
+			NearCameraParts.Add(Part);
+		}
+	}
 }

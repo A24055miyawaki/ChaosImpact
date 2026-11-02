@@ -10,7 +10,8 @@ bool ChaosImpactDuelBallBalance::IsDuel(const UWorld* World)
 
 TSharedPtr<FChaosImpactDuelThrowDamage> FChaosImpactDuelThrowDamage::Create(const UWorld* World)
 {
-	if (ChaosImpactDuelBallBalance::IsDuel(World) && World->GetNetMode() != NM_Client)
+	const auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Match && (Match->IsDuel() || Match->IsBattleRoyale()) && World->GetNetMode() != NM_Client)
 	{
 		return MakeShared<FChaosImpactDuelThrowDamage>();
 	}

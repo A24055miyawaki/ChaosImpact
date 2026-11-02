@@ -5,7 +5,7 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSfx.h"
 
-// The full-screen bag menu (1 player, "全体メニュー"). Pages: 装備 / バッグ / 強化 / チューン / 設定.
+// The full-screen bag menu (1 player, "全体メニュー"). Pages: 装備 / バッグ / 強化 / チューン / ショップ / 設定.
 // FullMenuLayout() both paints and collects the click regions, so what is drawn is exactly what can be clicked.
 // Action numbers are listed in RPGPrototypeHUD.h (RPGMenuAction).
 
@@ -60,15 +60,16 @@ int32 CompareSlot(const ARPGPrototypeCharacter* P, const FRPGPrototypeItem& Item
 void FullHeader(RPGUI::FCanvas& C, const FFullMenu& M)
 {
 	const auto* P = M.P;
-	const int32 Pages[] = {ERPGBagPage::Equipment, ERPGBagPage::Items, ERPGBagPage::Upgrade, ERPGBagPage::Tune, ERPGBagPage::Settings};
-	const TCHAR* Names[] = {TEXT("装備"), TEXT("バッグ"), TEXT("強化"), TEXT("チューン"), TEXT("設定")};
+	const int32 Pages[] = {ERPGBagPage::Equipment, ERPGBagPage::Items, ERPGBagPage::Upgrade, ERPGBagPage::Tune, ERPGBagPage::Shop, ERPGBagPage::Settings};
+	const TCHAR* Names[] = {TEXT("装備"), TEXT("バッグ"), TEXT("強化"), TEXT("チューン"), TEXT("ショップ"), TEXT("設定")};
 	float X = FFullMenu::Margin;
 	X += RPGUI::Keycap(C, 0, M.Key(TEXT("Q"), TEXT("L")), X, 30, 24) + 8;
-	const int32 Current = P->BagPage == ERPGBagPage::Equipment ? 0 : P->BagPage == ERPGBagPage::Items ? 1 : P->BagPage == ERPGBagPage::Upgrade ? 2 : P->BagPage == ERPGBagPage::Tune ? 3 : 4;
-	for (int32 Tab = 0; Tab < 5; ++Tab)
+	int32 Current = 0;
+	for (int32 Tab = 0; Tab < 6; ++Tab) { if (Pages[Tab] == P->BagPage) { Current = Tab; } }
+	for (int32 Tab = 0; Tab < 6; ++Tab)
 	{
-		const float TabW = 124, Y = 18;
-		const bool bEnabled = Tab < 2 || Tab == 4 || P->IsAtMerchant();
+		const float TabW = 116, Y = 18;
+		const bool bEnabled = Tab < 2 || Tab == 5 || P->IsAtMerchant();
 		const int32 Action = Act::PageBase + Pages[Tab];
 		if (bEnabled) { C.Hit(X, Y, TabW, 46, Action); }
 		const RPGUI::EStyle Style = !bEnabled ? RPGUI::EStyle::Disabled : Tab == Current ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card;
@@ -114,7 +115,7 @@ float FullItemHeader(RPGUI::FCanvas& C, const FFullMenu& M, const FRPGPrototypeI
 {
 	RPGUI::ItemIcon(C, 1, FVector2D(X + 40, Y + 40), 27, I);
 	const FLinearColor Name = I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(I.Rarity);
-	RPGUI::Label(C, 1, RPGUI::Fit(I.Name(), W - 100, 28, TEXT("Black")), X + 84, Y + 4, 28, Name, ETextAlign::Left, TEXT("Black"));
+	RPGUI::LabelFit(C, 1, I.Name(), X + 84, Y + 4, W - 100, 28, Name, ETextAlign::Left, TEXT("Black"));
 	float ChipX = X + 84;
 	const float ChipY = Y + 48;
 	ChipX += RPGUI::Chip(C, 1, RPGUI::RarityName(I.Rarity), ChipX, ChipY, RPGUI::RarityColor(I.Rarity), 13, true) + 6;
@@ -141,7 +142,7 @@ void FullItemDetail(RPGUI::FCanvas& C, const FFullMenu& M, const FRPGPrototypeIt
 		const float PowerW = RPGUI::Measure(Power, 44, TEXT("BlackItalic"));
 		RPGUI::Label(C, 1, TEXT("攻撃パワー"), X + Pad + PowerW + 12, At + 4, 14, RPGUI::TextSub);
 		RPGUI::Label(C, 1, FString::Printf(TEXT("再使用 %.2f秒"), I.EffectiveCooldown()), X + Pad + PowerW + 12, At + 24, 16, RPGUI::Cyan);
-		RPGUI::Label(C, 1, RPGUI::Fit(RPGTuning::BallArchetype(I.Type).Role, Inner - PowerW - 150, 14), X + W - Pad, At + 26, 14, RPGUI::TextDim, ETextAlign::Right);
+		RPGUI::LabelFit(C, 1, RPGTuning::BallArchetype(I.Type).Role, X + W - Pad, At + 26, Inner - PowerW - 150, 14, RPGUI::TextDim, ETextAlign::Right);
 		At += 62;
 	}
 	// Against what is equipped now (the slot it would replace).
@@ -155,14 +156,14 @@ void FullItemDetail(RPGUI::FCanvas& C, const FFullMenu& M, const FRPGPrototypeIt
 		{
 			const float From = P->GetDisplayedPower(Current), To = P->GetDisplayedPower(I);
 			const FString Text = FString::Printf(TEXT("%s の %s と比べて  パワー %.0f → %.0f"), *SlotName, *Current.Name(), From, To);
-			RPGUI::Label(C, 1, RPGUI::Fit(Text, Inner - 70, 15), X + Pad, At, 15, RPGUI::TextSub);
+			RPGUI::LabelFit(C, 1, Text, X + Pad, At, Inner - 70, 15, RPGUI::TextSub);
 			RPGUI::Delta(C, 1, To - From, X + W - Pad, At - 1, 17, ETextAlign::Right);
 		}
 		else
 		{
 			const FString Text = Current.IsValid() ? FString::Printf(TEXT("%s 装備中：%s（%s）"), *SlotName, *Current.Name(), *RPGUI::ShortEffect(Current))
 				: FString::Printf(TEXT("%s は空いています"), *SlotName);
-			RPGUI::Label(C, 1, RPGUI::Fit(Text, Inner, 15), X + Pad, At, 15, Current.IsValid() ? RPGUI::TextSub : RPGUI::Good);
+			RPGUI::LabelFit(C, 1, Text, X + Pad, At, Inner, 15, Current.IsValid() ? RPGUI::TextSub : RPGUI::Good);
 		}
 		At += 38;
 	}
@@ -269,10 +270,10 @@ void FullItemList(RPGUI::FCanvas& C, const FFullMenu& M)
 		if (P->IsEquipped(I.Id)) { Right -= RPGUI::Chip(C, 1, TEXT("装備中"), Right, RowY + 13, RPGUI::Highlight, 11, false, ETextAlign::Right) + 5; }
 		if (I.bLocked) { Right -= RPGUI::Chip(C, 1, TEXT("ロック"), Right, RowY + 13, RPGUI::Cyan, 11, false, ETextAlign::Right) + 5; }
 		const float TextX = X + 60, TextW = Right - TextX - 6;
-		RPGUI::Label(C, 1, RPGUI::Fit(I.Name(), TextW, 18), TextX, RowY + 3, 18, I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : Rarity);
+		RPGUI::LabelFit(C, 1, I.Name(), TextX, RowY + 3, TextW, 18, I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : Rarity);
 		const FString Sub = I.Kind == ERPGItemKind::Ball ? FString::Printf(TEXT("Lv.%d  +%d  %s"), I.Level, I.Enhancement, RPGUI::RarityName(I.Rarity))
 			: FString::Printf(TEXT("Lv.%d  +%d  %s"), I.Level, I.Enhancement, *RPGUI::ShortEffect(I));
-		RPGUI::Label(C, 1, RPGUI::Fit(Sub, TextW, 12), TextX, RowY + 27, 12, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, Sub, TextX, RowY + 27, TextW, 12, RPGUI::TextSub);
 	}
 	RPGUI::ScrollBar(C, 0, X + W - 7, Y, Rows * FFullMenu::RowH - 6, Start, Rows, List.Num());
 	const float PagerY = Y + Rows * FFullMenu::RowH + 4;
@@ -317,7 +318,7 @@ void FullOverview(RPGUI::FCanvas& C, const FFullMenu& M)
 				RPGUI::SlotGlyph(C, 0, FVector2D(X + CardW * 0.5f, Y + 48), 17, Slot, true);
 			}
 			const FLinearColor NameColor = !Item.IsValid() ? RPGUI::TextDim : Item.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(Item.Rarity);
-			RPGUI::Label(C, 0, RPGUI::Fit(Item.IsValid() ? Item.Name() : TEXT("未装備"), CardW - 24, 15), X + CardW * 0.5f, Y + H - (Slot < 3 ? 44 : 30), 15, NameColor, ETextAlign::Center);
+			RPGUI::LabelFit(C, 0, Item.IsValid() ? Item.Name() : TEXT("未装備"), X + CardW * 0.5f, Y + H - (Slot < 3 ? 44 : 30), CardW - 24, 15, NameColor, ETextAlign::Center);
 			if (Slot < 3 && Item.IsValid()) { RPGUI::Label(C, 0, FString::Printf(TEXT("再使用 %.1f秒"), Item.EffectiveCooldown()), X + CardW * 0.5f, Y + H - 23, 12, RPGUI::TextDim, ETextAlign::Center); }
 		}
 	}
@@ -478,15 +479,14 @@ void FullTunePage(RPGUI::FCanvas& C, const FFullMenu& M)
 		C.Hit(SX, At, SocketW, 54, Action);
 		RPGUI::Panel(C, 1, SX, At, SocketW, 54, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card, bOn ? RPGUI::Highlight : FLinearColor::Transparent);
 		RPGUI::Label(C, 1, Socket < 2 ? FString::Printf(TEXT("専用%d"), Socket + 1) : FString(TEXT("共通")), SX + 16, At + 5, 12, Socket < 2 ? RPGUI::Highlight : RPGUI::Cyan);
-		RPGUI::Label(C, 1, RPGUI::Fit(Definition ? FString::Printf(TEXT("%s  R%d"), *Definition->Name, Affix.Rank) : FString(TEXT("未装着")), SocketW - 26, 16),
-			SX + 16, At + 25, 16, Definition ? RPGUI::TextMain : RPGUI::TextDim);
+		RPGUI::LabelFit(C, 1, Definition ? FString::Printf(TEXT("%s  R%d"), *Definition->Name, Affix.Rank) : FString(TEXT("未装着")), SX + 16, At + 25, SocketW - 26, 16, Definition ? RPGUI::TextMain : RPGUI::TextDim);
 	}
 	At += 66;
 	const auto& Pool = RPGEquipment::Tunes(I->Type);
 	const auto Offers = P->GetTuneOffers(P->BagSelection, P->TuneSocket);
 	const int32 Choice = FMath::Clamp(P->TuneSelection, 0, FMath::Max(0, Offers.Num() - 1));
 	// What the three sockets are, in one line for first-time players.
-	RPGUI::Label(C, 1, RPGUI::Fit(P->TuneSocket < 2 ? TEXT("専用：このボールだけの改造（2つまで）。下の3つから選んで付けます。") : TEXT("共通：威力・速さ・射程など、どのボールにも付く改造（1つ）。"), Inner, 14), X + 22, At, 14, RPGUI::TextSub);
+	RPGUI::LabelFit(C, 1, P->TuneSocket < 2 ? TEXT("専用：このボールだけの改造（2つまで）。下の3つから選んで付けます。") : TEXT("共通：威力・速さ・射程など、どのボールにも付く改造（1つ）。"), X + 22, At, Inner, 14, RPGUI::TextSub);
 	At += 26;
 	RPGUI::Section(C, 1, TEXT("付けられる改造（効果の数値は付けると分かる）"), X + 22, At, Inner);
 	At += 26;
@@ -498,7 +498,7 @@ void FullTunePage(RPGUI::FCanvas& C, const FFullMenu& M)
 		C.Hit(X + 22, At, Inner, 62, Action);
 		RPGUI::Panel(C, 1, X + 22, At, Inner, 62, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card, bOn ? RPGUI::Highlight : FLinearColor::Transparent);
 		RPGUI::Label(C, 1, Definition.Name, X + 42, At + 6, 18, RPGUI::TextMain);
-		RPGUI::Label(C, 1, RPGUI::Fit(RPGUI::HiddenDescription(Definition), Inner - 40, 14), X + 42, At + 34, 14, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, RPGUI::HiddenDescription(Definition), X + 42, At + 34, Inner - 40, 14, RPGUI::TextSub);
 		At += 68;
 	}
 	if (Offers.IsEmpty()) { RPGUI::Label(C, 1, TEXT("この枠に付けられる候補はもうありません"), X + 22, At + 6, 16, RPGUI::TextDim); At += 40; }
@@ -510,10 +510,81 @@ void FullTunePage(RPGUI::FCanvas& C, const FFullMenu& M)
 	const float Half = (Inner - 10) * 0.5f, ButtonY = Bottom - 62;
 	const bool bCanRank = Existing && Current.Rank < RPGTuning::TuneMaxRank;
 	const int32 RankCost = I->TuneCost() * FMath::Max(1, Current.Rank);
-	RPGUI::Button(C, 1, X + 22, ButtonY, Half, 46, !Existing ? TEXT("ランクUP（未装着）") : !bCanRank ? TEXT("ランクMAX") : FString::Printf(TEXT("ランクUP  ◆%d"), RankCost),
-		Act::RankUp, false, bCanRank && P->GetRubies() >= RankCost, M.Key(TEXT("Space"), TEXT("上")));
-	RPGUI::Button(C, 1, X + 32 + Half, ButtonY, Half, 46, FString::Printf(TEXT("付ける  ◆%d"), I->TuneCost()), Act::ApplyTune, true,
-		Offers.Num() > 0 && P->GetRubies() >= I->TuneCost(), M.Key(TEXT("Enter"), TEXT("決定")));
+	// Tunes also take shards (one to put one on, its rank to raise it).
+	RPGUI::Label(C, 1, FString::Printf(TEXT("チューンの欠片 %d"), P->GetTuneShards()), X + 22 + Inner, ButtonY - 26, 15, P->GetTuneShards() > 0 ? RPGUI::Cyan : RPGUI::Bad, ETextAlign::Right);
+	RPGUI::Button(C, 1, X + 22, ButtonY, Half, 46, !Existing ? TEXT("ランクUP（未装着）") : !bCanRank ? TEXT("ランクMAX") : FString::Printf(TEXT("ランクUP  ◆%d・欠片%d"), RankCost, Current.Rank),
+		Act::RankUp, false, bCanRank && P->GetRubies() >= RankCost && P->GetTuneShards() >= Current.Rank, M.Key(TEXT("Space"), TEXT("上")));
+	RPGUI::Button(C, 1, X + 32 + Half, ButtonY, Half, 46, FString::Printf(TEXT("付ける  ◆%d・欠片%d"), I->TuneCost(), RPGTuning::ShardsPerTune), Act::ApplyTune, true,
+		Offers.Num() > 0 && P->GetRubies() >= I->TuneCost() && P->GetTuneShards() >= RPGTuning::ShardsPerTune, M.Key(TEXT("Enter"), TEXT("決定")));
+}
+
+/** The merchant's shop: the line-up on the left (with the merchant's level and when it changes), the chosen ball on the right. */
+void FullShopPage(RPGUI::FCanvas& C, const FFullMenu& M)
+{
+	const auto* P = M.P;
+	const auto& Stock = P->GetShopStock();
+	const float LX = FFullMenu::Margin, LW = M.ListW() - 14, Top = FFullMenu::ContentTop;
+	const bool bCaravan = P->IsAtCaravan();
+	const int32 Level = P->GetMerchantLevel(), Shown = bCaravan ? FMath::Min(Level + 1, RPGTuning::MerchantMaxLevel) : Level;
+	// The merchant: level, how far to the next, and when the line-up changes.
+	RPGUI::Panel(C, 0, LX, Top, LW, 92, RPGUI::EStyle::Panel, bCaravan ? RPGUI::Highlight : WithAlpha(RPGUI::Cyan, 0.7f));
+	RPGUI::Label(C, 1, bCaravan ? FString::Printf(TEXT("行商の隊商　Lv.%d"), Shown) : FString::Printf(TEXT("商人　Lv.%d"), Shown), LX + 18, Top + 10, 24, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+	const int32 Left = P->GetShopSecondsLeft();
+	RPGUI::Label(C, 1, FString::Printf(TEXT("%s %d:%02d"), bCaravan ? TEXT("隊商が去るまで") : TEXT("入れかわりまで"), Left / 60, Left % 60), LX + LW - 18, Top + 16, 15, RPGUI::TextSub, ETextAlign::Right);
+	const bool bTop = Level >= RPGTuning::MerchantMaxLevel;
+	const int32 From = RPGTuning::MerchantLevelXP[Level - 1], To = bTop ? From : RPGTuning::MerchantLevelXP[Level];
+	const float Fill = bTop ? 1.0f : FMath::Clamp(static_cast<float>(P->GetMerchantXP() - From) / FMath::Max(1, To - From), 0.0f, 1.0f);
+	if (C.IsPainting())
+	{
+		RoundedBox(C.At(1, 2), LX + 18, Top + 50, LW - 36, 10, 5, FLinearColor(1, 1, 1, 0.08f));
+		if (Fill > 0) { RoundedBox(C.At(1, 3), LX + 18, Top + 50, (LW - 36) * Fill, 10, 5, RPGUI::Highlight); }
+	}
+	RPGUI::Label(C, 1, bTop ? FString(TEXT("最大レベル")) : FString::Printf(TEXT("次のLvまで ◆%s"), *FString::FormatAsNumber(To - P->GetMerchantXP())), LX + LW - 18, Top + 66, 13, RPGUI::TextDim, ETextAlign::Right);
+	RPGUI::Label(C, 1, bCaravan ? TEXT("隊商は商人より1つ上のLvの品を持ってくる") : TEXT("商人に払ったルビーでLvが上がる"), LX + 18, Top + 66, 13, RPGUI::TextDim);
+	// The line-up.
+	const float ListTop = Top + 104;
+	if (Stock.IsEmpty())
+	{
+		RPGUI::Panel(C, 0, LX, ListTop, LW, 120, RPGUI::EStyle::Panel);
+		RPGUI::Label(C, 0, TEXT("売り切れ"), LX + LW * 0.5f, ListTop + 32, 20, RPGUI::TextSub, ETextAlign::Center);
+		RPGUI::Label(C, 0, bCaravan ? TEXT("次の隊商を待とう") : TEXT("品ぞろえが入れかわるのを待とう"), LX + LW * 0.5f, ListTop + 66, 14, RPGUI::TextDim, ETextAlign::Center);
+	}
+	for (int32 Row = 0; Row < Stock.Num() && Row < 6; ++Row)
+	{
+		const auto& I = Stock[Row];
+		const float RowY = ListTop + Row * FFullMenu::RowH;
+		const int32 Action = Act::ShopRowBase + Row;
+		const bool bSelected = Row == P->ShopSelection;
+		C.Hit(LX, RowY, LW, FFullMenu::RowDraw, Action);
+		if (!C.IsPainting()) { continue; }
+		const FLinearColor Rarity = RPGUI::RarityColor(I.Rarity);
+		RPGUI::Panel(C, 1, LX, RowY, LW, FFullMenu::RowDraw, bSelected ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card,
+			bSelected ? RPGUI::Highlight : FLinearColor::Transparent, Rarity);
+		RPGUI::ItemIcon(C, 1, FVector2D(LX + 34, RowY + 23), 15, I);
+		const int32 Price = I.ShopPrice();
+		float Right = LX + LW - 18;
+		Right -= RPGUI::Rubies(C, 1, Price, Right, RowY + 11, 19, ETextAlign::Right) + 18;
+		const float Power = P->GetDisplayedPower(I);
+		RPGUI::Label(C, 1, FString::Printf(TEXT("%.0f"), Power), Right, RowY + 2, 20, RPGUI::TextMain, ETextAlign::Right);
+		const auto& Current = P->GetEquipment(CompareSlot(P, I));
+		if (Current.IsValid()) { RPGUI::Delta(C, 1, Power - P->GetDisplayedPower(Current), Right, RowY + 26, 12, ETextAlign::Right); }
+		Right -= 60;
+		const float TextX = LX + 60, TextW = Right - TextX - 6;
+		RPGUI::LabelFit(C, 1, I.Name(), TextX, RowY + 3, TextW, 18, I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : Rarity);
+		RPGUI::LabelFit(C, 1, FString::Printf(TEXT("Lv.%d  %s"), I.Level, RPGUI::RarityName(I.Rarity)), TextX, RowY + 27, TextW, 12, P->GetRubies() >= Price ? RPGUI::TextSub : RPGUI::Bad);
+	}
+	// The chosen ball and the button.
+	const float X = M.DetailX(), W = M.DetailW(), Bottom = M.ContentBottom();
+	const FRPGPrototypeItem* I = Stock.IsValidIndex(P->ShopSelection) ? &Stock[P->ShopSelection] : nullptr;
+	RPGUI::Panel(C, 0, X, Top, W, Bottom - Top, RPGUI::EStyle::Panel, I ? RPGUI::RarityColor(I->Rarity) : WithAlpha(RPGUI::Cyan, 0.5f));
+	if (!I) { RPGUI::Label(C, 1, TEXT("買えるボールがありません"), X + W * 0.5f, Top + 120, 20, RPGUI::TextDim, ETextAlign::Center); return; }
+	const float Row1 = Bottom - 62;
+	FullItemDetail(C, M, *I, X, Top, W, Row1);
+	const int32 Price = I->ShopPrice();
+	const bool bFull = P->GetBag().Num() >= RPGTuning::BagCapacity, bAfford = P->GetRubies() >= Price;
+	const FString Text = bFull ? FString(TEXT("バッグがいっぱい（分解して空きを作ろう）")) : bAfford ? FString::Printf(TEXT("買う  ◆%s"), *FString::FormatAsNumber(Price))
+		: FString::Printf(TEXT("ルビー不足（あと ◆%s）"), *FString::FormatAsNumber(Price - P->GetRubies()));
+	RPGUI::Button(C, 1, X + 22, Row1, W - 44, 46, Text, Act::Buy, true, !bFull && bAfford, M.Key(TEXT("Enter"), TEXT("決定")));
 }
 
 void FullSettingsPage(RPGUI::FCanvas& C, const FFullMenu& M)
@@ -634,6 +705,11 @@ void FullMenuLayout(RPGUI::FCanvas& C, const FFullMenu& M)
 		FullUpgradePage(C, M);
 		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("強化")}, {M.Key(TEXT("X"), TEXT("ZL")), TEXT("並べ替え")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("Tab"), TEXT("－")), TEXT("閉じる")}}, TEXT("ルビー工房"));
 	}
+	else if (P->BagPage == ERPGBagPage::Shop)
+	{
+		FullShopPage(C, M);
+		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("買う")}, {M.Key(TEXT("PgUp/Dn"), TEXT("右スティック")), TEXT("説明")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("Tab"), TEXT("－")), TEXT("閉じる")}}, TEXT("ショップ"));
+	}
 	else if (P->BagPage == ERPGBagPage::Tune)
 	{
 		FullTunePage(C, M);
@@ -651,7 +727,7 @@ void FullMenuLayout(RPGUI::FCanvas& C, const FFullMenu& M)
 			{M.Key(TEXT("Del"), TEXT("左")), TEXT("分解")}, {M.Key(TEXT("PgUp/Dn"), TEXT("右スティック")), TEXT("説明")}, {Pages, TEXT("ページ")}});
 	}
 	if (!P->IsAtMerchant() && P->BagPage != ERPGBagPage::Settings && C.IsPainting() && M.IsOverview())
-	{ RPGUI::Label(C, 0, TEXT("強化・チューンは開始地点近くのルビー商人へ"), M.W * 0.58f, M.H - 76, 13, RPGUI::TextDim, ETextAlign::Right); }
+	{ RPGUI::Label(C, 0, TEXT("強化・チューン・ショップは開始地点近くのルビー商人へ"), M.W * 0.58f, M.H - 76, 13, RPGUI::TextDim, ETextAlign::Right); }
 	if (C.bModalOpen) { FullDialog(C, M); }
 }
 
@@ -738,7 +814,14 @@ void URPGPrototypeHUD::ActivateBagAction(int32 Action)
 	{ if(auto* Mode=GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>()) { Mode->SetLocalPlayerCount(FMath::Clamp(Mode->GetLocalPlayerCount()+(Action==A::PlayersDown?-1:1),1,4)); } return; }
 	if(Action==A::Close) { P->SetBagOpen(false); return; }
 	if(Action>=A::InspectBase && Action<A::InspectBase+5) { P->InspectEquipmentSlot(Action-A::InspectBase); return; }
-	if(Action>=A::PageBase && Action<=A::PageBase+4) { P->SwitchInventoryPage(Action-A::PageBase); return; }
+	if(Action>=A::PageBase && Action<=A::PageBase+ERPGBagPage::Shop) { P->SwitchInventoryPage(Action-A::PageBase); return; }
+	if(Action>=A::ShopRowBase && Action<A::ShopRowBase+6)
+	{
+		// A second click on the chosen ball buys it.
+		const int32 Row=Action-A::ShopRowBase; if(!P->GetShopStock().IsValidIndex(Row)) { return; }
+		if(Row==P->ShopSelection) { P->BuyShopItem(Row); } else { P->ShopSelection=Row; P->DetailScroll=0; } return;
+	}
+	if(Action==A::Buy) { P->BuyShopItem(P->ShopSelection); return; }
 	if(Action==A::Salvage) { P->SalvageItem(P->BagSelection); return; }
 	if(Action==A::EquipSlot1 || Action==A::EquipSlot2) { P->EquipTargetSlot=Action==A::EquipSlot1?1:2; P->EquipBagItem(P->BagSelection,P->EquipTargetSlot); return; }
 	if(Action==A::Upgrade) { P->UpgradeItem(P->BagSelection); return; }

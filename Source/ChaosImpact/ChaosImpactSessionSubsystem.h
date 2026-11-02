@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactRank.h"
 #include "ChaosImpactRelay.h"
 #include "Containers/Ticker.h"
@@ -28,13 +29,17 @@ enum class EChaosImpactRoomState : uint8
 	InRoom
 };
 
-/** ランダムマッチ (up to 8 players, free-for-all) or ランクマッチ (1 v 1), matched by the relay. */
+/**
+ * ランダムマッチ (up to 8 players, free-for-all), ランダムマッチ 1v1 (Duel: the duel's rules, both players accept the
+ * opponent found first) or ランクマッチ (1 v 1 with a rating; not offered in the menus for now), matched by the relay.
+ */
 UENUM(BlueprintType)
 enum class EChaosImpactQueueMode : uint8
 {
 	None,
 	Random,
-	Rank
+	Rank,
+	Duel
 };
 
 /** A room found by へやをさがす. */
@@ -52,6 +57,13 @@ struct FChaosImpactRoomListing
 	FOnlineSessionSearchResult Result;
 	/** An internet room: its port on the relay (0 for a LAN room). */
 	int32 RelayPort = 0;
+};
+
+/** One member of an online room as the room's previous level knew them (host; see UChaosImpactSessionSubsystem::RoomCarry). */
+struct FChaosImpactRoomCarryMember
+{
+	int32 JoinOrder = 0;
+	bool bSpectating = false;
 };
 
 /**
@@ -135,6 +147,23 @@ public:
 	static FString GetTrainingMapName();
 	FString GetOfflineTrainingOptions() const;
 
+	// ---- An online room moving between its levels (host): the lobby, and each match in its own level. The host opens
+	// the next level afresh and everyone comes back in, so it remembers who was who.
+	/** Everyone in the room as it left its last level, by machine and player (AChaosImpactGameMode::GetCarryKey). */
+	TMap<FString, FChaosImpactRoomCarryMember> RoomCarry;
+	/** The rules of the match the room went to play. */
+	FChaosImpactMatchRules RoomCarryRules;
+	int32 RoomCarryNextJoinOrder = 1;
+	bool bRoomCarryValid = false;
+	void ClearRoomCarry() { RoomCarry.Reset(); RoomCarryNextJoinOrder = 1; bRoomCarryValid = false; }
+	/**
+	 * Guest: the host is taking the room to its next level; the old connection's end then is no reason to leave. The
+	 * new connection is watched: one the host has not taken in after a while is made again (it can stall, now and then).
+	 */
+	void NoteRoomTravel();
+	/** Host: the room's next level is open; the relay tunnel's player sockets start over (FChaosImpactRelayTunnel::ResetClients). */
+	void ResetRelayClients();
+
 	// ---- ランダムマッチ / ランクマッチ (internet only: the relay keeps the queues and makes the matches)
 	/**
 	 * Joins the queue; the player then waits in their own training (the opponents are only met in the match).
@@ -166,6 +195,25 @@ public:
 	void FinishMatchmade();
 	/** Once, in the training a matched room returned to: which menu to bring up there (None: none). */
 	EChaosImpactQueueMode ConsumeShowQueueMenu();
+	/** After a matched room's results: search the same way again (instead of the menu) once back in training. */
+	void SetQueueAgainAfterMatch(bool bAgain) { bQueueAgain = bAgain; }
+	/** Once, with ConsumeShowQueueMenu: the search starts again by itself. */
+	bool ConsumeQueueAgain();
+
+	// ---- ランダムマッチ 1v1: the opponent found is shown, and both accept before the match is made
+	bool IsDuelOffered() const { return bDuelOffered; }
+	const FChaosImpactDuelOffer& GetDuelOffer() const { return DuelOffer; }
+	/** This player's answer: yes waits for the opponent's; no stops searching. */
+	void AnswerDuelOffer(bool bAccept);
+
+	// ---- 戦績 (the relay keeps them)
+	void RefreshRecords();
+	const FChaosImpactRecords& GetRecords() const { return Records; }
+	bool IsRecordsPending() const { return bRecordsPending; }
+	/** The 1v1 just played, for this machine's player ("win", "lose" or "draw"): into the records once per game. */
+	void ReportDuelRecord(const FString& Result);
+	/** The 8-player match just played: this machine's first player's place out of how many. */
+	void ReportRandomRecord(int32 Place, int32 Of);
 
 	// ---- Rank (the preseason, kept by the relay)
 	void RefreshRankInfo();
@@ -178,6 +226,10 @@ public:
 	FString GetPlayerToken() const;
 
 private:
+	double RoomTravelAt = -100.0;
+	bool WatchRoomTravel();
+	FTSTicker::FDelegateHandle RoomTravelWatch;
+	int32 RoomTravelRetries = 0;
 	void QueueJoin();
 	void QueueTick();
 	void QueuePoll();
@@ -185,6 +237,8 @@ private:
 	void ResetQueueMatch();
 	void StopQueueTicker();
 	void SendRankReport();
+	void ReadDuelOffer(const TSharedPtr<FJsonObject>& Reply);
+	void SendRecordReport(TSharedRef<FJsonObject> Message);
 	EChaosImpactQueueMode QueueMode = EChaosImpactQueueMode::None;
 	FString QueueTicket;
 	double QueueStartedAt = 0.0;
@@ -214,6 +268,14 @@ private:
 	FString MatchmadeOptions;
 	bool bMatchmadeStarted = false;
 	EChaosImpactQueueMode ShowQueueMenu = EChaosImpactQueueMode::None;
+	bool bQueueAgain = false;
+	bool bDuelOffered = false;
+	FChaosImpactDuelOffer DuelOffer;
+	FChaosImpactRecords Records;
+	bool bRecordsPending = false;
+	/** The matched room's games so far (a 1v1 rematch is the next): each goes into the records once. */
+	int32 MatchmadeGame = -1;
+	FString RecordedGame;
 	FChaosImpactRankInfo RankInfo;
 	bool bRankInfoPending = false;
 	FChaosImpactRankReport RankReport;

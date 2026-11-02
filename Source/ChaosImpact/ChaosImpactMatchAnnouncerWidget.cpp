@@ -2,6 +2,8 @@
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactGameViewportClient.h"
 #include "ChaosImpactCrashBall.h"
 #include "EngineUtils.h"
 #include "ChaosImpactGameState.h"
@@ -14,6 +16,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
@@ -60,12 +63,26 @@ void UChaosImpactMatchAnnouncerWidget::NativeTick(const FGeometry& MyGeometry, c
 		ResultsView->Tick(GetOwningPlayer(), InDeltaTime);
 	}
 	UpdateSounds();
+	// Reuse the primary player's existing room presentation. Its pawn/HUD can change when switching
+	// to spectating, so refresh the cache when that HUD leaves the player layer.
+	if (!OnlineRoomOverlay || !OnlineRoomOverlay->IsInViewport())
+	{
+		OnlineRoomOverlay = nullptr;
+		for (TObjectIterator<UChaosImpactChargeWidget> It; It; ++It)
+		{
+			if (It->GetOwningPlayer() == GetOwningPlayer() && It->IsInViewport())
+			{
+				OnlineRoomOverlay = *It;
+				break;
+			}
+		}
+	}
 }
 
 void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 {
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	const bool bStarting = Match && Match->bOnlineRoom && Match->Phase == EChaosImpactOnlinePhase::Starting;
+	const bool bStarting = Match && Match->bOnlineRoom && !Match->bRoomMatchLevel && Match->Phase == EChaosImpactOnlinePhase::Starting;
 	if (!Match || (!Match->bVersusMatch && !bStarting))
 	{
 		SoundPhase = -1;
@@ -214,7 +231,7 @@ void UChaosImpactMatchAnnouncerWidget::PaintCrashScoreboard(const FGeometry& Top
 	// -1 for the team shown on the left, +1 for the right.
 	const auto SideOf = [Flip](const int32 Team) { return (Team == 0 ? -1.0f : 1.0f) * Flip; };
 
-	// The counts: a plate each side of the clock. A count that just went down punches out and flashes.
+	// The counts: a plate each side of the clock. A count that just went down flashes.
 	for (int32 Team = 0; Team < 2; ++Team)
 	{
 		const float X = SideOf(Team) < 0.0f ? -374.f : 180.f;
@@ -233,8 +250,7 @@ void UChaosImpactMatchAnnouncerWidget::PaintCrashScoreboard(const FGeometry& Top
 			Face.Text(TEXT("リード"), X + 12, 44, 16, FMath::Lerp(Accent, Paper, 0.25f + 0.25f * FMath::Sin(Time * 5.0f)),
 				ETextAlign::Left, TEXT("Black"), 1.f, Ink);
 		}
-		const float Size = 43.0f * (1.0f + 0.45f * Punch);
-		HudText3D(HudAbove(Face), FString::FromInt(Match.GetCrashCount(Team)), X + 162 + Size * 0.05f, 24 - (Size - 43.0f) * 0.55f, Size,
+		HudText3D(HudAbove(Face), FString::FromInt(Match.GetCrashCount(Team)), X + 164, 24, 43.0f,
 			FMath::Lerp(Paper, Accent, Punch * 0.6f), ETextAlign::Right);
 	}
 
@@ -316,8 +332,13 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 {
 	using namespace ChaosImpactPaint;
 
-	const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId,
+	int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId,
 		InWidgetStyle, bParentEnabled);
+	if (OnlineRoomOverlay && (!ResultsView || !ResultsView->IsActive()))
+	{
+		OnlineRoomOverlay->PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+		BaseLayer += 20;
+	}
 	// The results (podium, numbers) take the whole screen once FINISH is over; online they stay into the lobby.
 	if (ResultsView && ResultsView->IsActive() && ResultsView->GetShowSeconds() >= 0.0f)
 	{
@@ -325,7 +346,8 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	}
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
-	const bool bStarting = Match && Match->bOnlineRoom && Match->Phase == EChaosImpactOnlinePhase::Starting;
+	// (The match level's wait for everyone to arrive is no countdown.)
+	const bool bStarting = Match && Match->bOnlineRoom && !Match->bRoomMatchLevel && Match->Phase == EChaosImpactOnlinePhase::Starting;
 	if (!Match || (!Match->bVersusMatch && !bStarting) || Size.X < 1.0f || Size.Y < 1.0f)
 	{
 		return BaseLayer;
@@ -337,18 +359,9 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	const bool bTeams = Match->IsTeamBattle();
 
 	// A word scaled about the screen centre: it lands slightly large and settles, standing out like the logo's letters.
-	// The big moments (Ready?, GO!, FINISH) burst out of a jagged blast of ice or fire behind it.
 	const auto PaintCallout = [&](const FString& Word, const float TextSize, const float Scale, const float Alpha,
-		const FLinearColor& Color, const int32 Layer, const FHudFill* Blast = nullptr)
+		const FLinearColor& Color, const int32 Layer)
 	{
-		if (Blast)
-		{
-			const float Open = FMath::Clamp(Alpha * 1.3f, 0.0f, 1.0f) * Scale;
-			const float Outer = TextSize * 1.05f * Open;
-			const float HalfWidth = (HudMeasure(Word, TextSize, TEXT("BlackItalic")) * 0.5f + TextSize * 0.6f) * Open;
-			HudBurst(FPainter{Center, OutDrawElements, Layer, Alpha}, FVector2D(0.0, -TextSize * 0.1f), TextSize * 0.62f * Open, Outer, 18,
-				*Blast, -6.0f, FVector2D(HalfWidth / FMath::Max(Outer, 1.0f), 0.85), 6.0f, FVector2D(9.0, 10.0), TextSize);
-		}
 		const FGeometry Space = MakeSkewed(Center, -800.0f, -TextSize * 0.8f, 1600.0f, TextSize * 1.6f, -0.12f, Scale);
 		HudText3D(FPainter{Space, OutDrawElements, Layer + 3, Alpha}, Word, 800.0f, 0.0f, TextSize, Color, ETextAlign::Center,
 			TEXT("BlackItalic"), TextSize * 0.07f);
@@ -390,10 +403,17 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 
 	if (Match->Phase == EChaosImpactOnlinePhase::Intro)
 	{
+		if (Match->Rules.bBattleRoyale && Match->ReadyStartedAt <= 0.f && Match->GetIntroElapsedSeconds() >= .2f && Match->GetIntroElapsedSeconds() < 2.8f)
+		{
+			const float Alpha = FMath::Min(1.f, (Match->GetIntroElapsedSeconds() - .2f) * 5.f)
+				* (1.f - FMath::Clamp((Match->GetIntroElapsedSeconds() - 2.3f) * 2.f, 0.f, 1.f));
+			PaintCallout(TEXT("バトルロイヤル"), 88.f, 1.f, Alpha, Paper, BaseLayer + 2);
+			FPainter{Center, OutDrawElements, BaseLayer + 7, Alpha}.Text(TEXT("生き残れ！"), 0.f, 88.f, 38.f, Gold, ETextAlign::Center, TEXT("Black"), 3.f, Ink);
+		}
 		if (Match->ReadyStartedAt > 0.0)
 		{
 			const float T = static_cast<float>(ServerNow - Match->ReadyStartedAt);
-			PaintCallout(TEXT("Ready?"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * T), EaseOut(T / 0.12f), Paper, BaseLayer + 2, &IceFill);
+			PaintCallout(TEXT("Ready?"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * T), EaseOut(T / 0.12f), Paper, BaseLayer + 2);
 		}
 		else if (Match->bOnlineRoom
 			&& Match->GetIntroElapsedSeconds() > ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds + 0.3f)
@@ -407,6 +427,58 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		return BaseLayer + 7;
 	}
 
+	if (Match->Phase == EChaosImpactOnlinePhase::Match && Match->Rules.bBattleRoyale)
+	{
+		PaintRoyaleHUD(AllottedGeometry, OutDrawElements, BaseLayer + 1, *Match);
+		const auto& Royale = Match->Royale;
+		const float Elapsed = Match->GetPhaseElapsedSeconds();
+		const float Remaining = Match->GetPhaseRemainingSeconds();
+		const double Now = FPlatformTime::Seconds();
+		// The last two players (or teams): called once, the moment it comes down to them.
+		if (RoyaleShownSides != Royale.AliveSides)
+		{
+			if (Royale.AliveSides == 2 && RoyaleShownSides > 2 && !Royale.bSuddenDeath)
+			{
+				RoyaleLastTwoAt = Now;
+			}
+			RoyaleShownSides = Royale.AliveSides;
+		}
+		if (Elapsed < 1.1f)
+		{
+			PaintCallout(TEXT("GO!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Elapsed / 0.18f)),
+				1.0f - FMath::Clamp((Elapsed - 0.7f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 12);
+		}
+		const float SuddenAge = static_cast<float>(ServerNow - Royale.SuddenDeathStartedAt);
+		const float LastTwoAge = static_cast<float>(Now - RoyaleLastTwoAt);
+		if (Royale.bSuddenDeath && SuddenAge >= 0.0f && SuddenAge < 2.2f)
+		{
+			// Sudden death: only the leaders are left, on one health each.
+			const float Alpha = EaseOut(SuddenAge / 0.12f) * (1.0f - FMath::Clamp((SuddenAge - 1.8f) / 0.4f, 0.0f, 1.0f));
+			PaintCallout(TEXT("サドンデス！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * SuddenAge), Alpha, Paper, BaseLayer + 12);
+			FPainter{Center, OutDrawElements, BaseLayer + 16, Alpha}.Text(TEXT("首位だけで決着！"), 0.0f, 86.0f, 30.0f, Gold,
+				ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+		}
+		else if (LastTwoAge >= 0.0f && LastTwoAge < 1.8f)
+		{
+			const float Alpha = EaseOut(LastTwoAge / 0.12f) * (1.0f - FMath::Clamp((LastTwoAge - 1.4f) / 0.4f, 0.0f, 1.0f));
+			PaintCallout(Match->IsTeamBattle() ? TEXT("残り2チーム！") : TEXT("一騎打ち！"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * LastTwoAge),
+				Alpha, Gold, BaseLayer + 12);
+		}
+		else if (!Royale.bSuddenDeath && Remaining <= 60.0f && Remaining > 58.2f && Elapsed + Remaining > 61.0f)
+		{
+			const float Age = 60.0f - Remaining;
+			PaintCallout(TEXT("あと1分！"), 96.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age),
+				EaseOut(Age / 0.12f) * (1.0f - FMath::Clamp((Age - 1.4f) / 0.4f, 0.0f, 1.0f)), Gold, BaseLayer + 12);
+		}
+		if (Remaining > 0.0f && Remaining <= 5.0f && !(Royale.bSuddenDeath && SuddenAge < 2.2f))
+		{
+			const int32 Seconds = FMath::CeilToInt(Remaining);
+			const float Local = static_cast<float>(Seconds) - Remaining;
+			PaintCallout(FString::FromInt(Seconds), 120.0f, 1.0f + 0.5f * FMath::Exp(-8.0f * Local), 0.7f * (1.0f - 0.6f * Local), Paper,
+				BaseLayer + 12);
+		}
+		return BaseLayer + 20;
+	}
 	if (Match->Phase == EChaosImpactOnlinePhase::Match && Match->Rules.bDuel)
 	{
 		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
@@ -423,17 +495,17 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			const bool bFinal = Duel.Round >= ChaosImpactMatch::DuelMaxRounds
 				|| (Duel.Wins[0] == ChaosImpactMatch::DuelRoundsToWin - 1 && Duel.Wins[1] == ChaosImpactMatch::DuelRoundsToWin - 1);
 			PaintCallout(bFinal ? FString(TEXT("FINAL ROUND")) : FString::Printf(TEXT("ROUND %d"), Duel.Round), 110.0f,
-				1.0f + 0.6f * FMath::Exp(-11.0f * Age), Fade(Age, 1.2f, 0.4f), bFinal ? Gold : Paper, BaseLayer + 12, &IceFill);
+				1.0f + 0.6f * FMath::Exp(-11.0f * Age), Fade(Age, 1.2f, 0.4f), bFinal ? Gold : Paper, BaseLayer + 12);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::Fight && Age < 0.9f)
 		{
 			PaintCallout(TEXT("FIGHT!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Age / 0.18f)),
-				1.0f - FMath::Clamp((Age - 0.55f) / 0.35f, 0.0f, 1.0f), Paper, BaseLayer + 12, &FireFill);
+				1.0f - FMath::Clamp((Age - 0.55f) / 0.35f, 0.0f, 1.0f), Paper, BaseLayer + 12);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::SuddenDeath && Age < 2.0f)
 		{
 			const float Alpha = Fade(Age, 1.6f, 0.4f);
-			PaintCallout(TEXT("サドンデス！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age), Alpha, Paper, BaseLayer + 12, &FireFill);
+			PaintCallout(TEXT("サドンデス！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age), Alpha, Paper, BaseLayer + 12);
 			FPainter{Center, OutDrawElements, BaseLayer + 16, Alpha}.Text(TEXT("先に当てたほうがラウンドを取る"), 0.0f, 86.0f, 30.0f, Gold,
 				ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 		}
@@ -445,17 +517,16 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 				const TCHAR* Word = Duel.RoundEnd == EChaosImpactDuelEnd::Time ? TEXT("TIME!")
 					: Duel.RoundEnd == EChaosImpactDuelEnd::DoubleKnockout ? TEXT("DOUBLE K.O.")
 					: Duel.RoundEnd == EChaosImpactDuelEnd::Draw ? TEXT("TIME UP") : TEXT("K.O.!");
-				PaintCallout(Word, 140.0f, FMath::Lerp(1.9f, 1.0f, EaseOut(Age / 0.18f)), Fade(Age, 1.1f, 0.4f), Paper, BaseLayer + 12, &FireFill);
+				PaintCallout(Word, 140.0f, FMath::Lerp(1.9f, 1.0f, EaseOut(Age / 0.18f)), Fade(Age, 1.1f, 0.4f), Paper, BaseLayer + 12);
 			}
 			else if (Age >= 1.5f)
 			{
 				// ...then who took the round, in their colour.
 				const float Local = Age - 1.5f;
 				const bool bDrawn = Duel.RoundWinner == INDEX_NONE;
-				const FLinearColor Color = bDrawn ? Paper : DuelSideColor(Duel.RoundWinner);
-				const FHudFill Blast = MakeFill(FMath::Lerp(Color, Paper, 0.5f), Color * FLinearColor(0.5f, 0.5f, 0.5f, 1.0f));
+				const FLinearColor Color = bDrawn ? Paper : FMath::Lerp(DuelSideColor(Duel.RoundWinner), Paper, 0.2f);
 				PaintCallout(bDrawn ? FString(TEXT("ROUND DRAW")) : FString::Printf(TEXT("%s WIN"), *GetAnnouncerName(Duel.Sides[Duel.RoundWinner])),
-					96.0f, 1.0f + 0.5f * FMath::Exp(-10.0f * Local), Fade(Local, 1.5f, 0.35f), Paper, BaseLayer + 12, bDrawn ? nullptr : &Blast);
+					96.0f, 1.0f + 0.5f * FMath::Exp(-10.0f * Local), Fade(Local, 1.5f, 0.35f), Color, BaseLayer + 12);
 			}
 		}
 		// The last five seconds of a round, large in the middle.
@@ -480,30 +551,21 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		// One minute left: a banner across the middle, and the clock turns gold for a moment.
 		const float MinuteLeftAge = 60.0f - Remaining;
 		const bool bMinuteCall = Elapsed + Remaining > 61.0f && MinuteLeftAge >= 0.0f && MinuteLeftAge < 1.8f;
-		// The clock: a broken-edged slab at the top with the time standing out on it, a blade under it of the time left,
-		// and two loose shards bobbing beside it. The last ten seconds it turns red-hot, a fire blast flaring behind it
-		// and the whole of it jolting on every second.
+		// The clock: a broken-edged slab at the top with the time standing out on it and a blade under it of the time
+		// left. The last ten seconds it turns red-hot.
 		const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
 		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
 		const float Total = FMath::Max(Elapsed + Remaining, 1.0f);
 		const bool bHurry = Remaining <= 10.0f && !Match->Crash.bOvertime;
-		const float Beat = bHurry ? 1.0f - FMath::Frac(Remaining) : 0.0f;
-		const float Kick = Beat * Beat;
-		const float Shake = bHurry ? FMath::Sin(Beat * 40.0f) * Kick * 6.0f : 0.0f;
 		const FPainter ClockBase{TopCenter, OutDrawElements, BaseLayer + 1};
-		if (bHurry)
-		{
-			HudBurst(ClockBase, At(Shake, 40.0f), 60.0f * (1.0f + 0.3f * Kick), 96.0f * (1.0f + 0.3f * Kick), 14, FireFill, Time * 40.0f,
-				FVector2D(1.9, 0.62), 3.0f, FVector2D::ZeroVector, 2.0f);
-		}
 		const FPainter Slab = HudAbove(ClockBase);
-		HudShard(Slab, {At(-122.0f + Shake, 4.0f), At(124.0f + Shake, 4.0f), At(142.0f + Shake, 32.0f), At(110.0f + Shake, 78.0f),
-			At(-106.0f + Shake, 80.0f), At(-140.0f + Shake, 36.0f)}, bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f),
+		HudShard(Slab, {At(-122.0f, 4.0f), At(124.0f, 4.0f), At(142.0f, 32.0f), At(110.0f, 78.0f),
+			At(-106.0f, 80.0f), At(-140.0f, 36.0f)}, bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f),
 			FLinearColor(0.12f, 0.01f, 0.02f, 0.96f)) : NightFill, 4.0f, FVector2D(7.0, 8.0));
 		const FPainter OnSlab = HudAbove(Slab);
-		HudStroke(OnSlab, {At(-119.0f + Shake, 8.0f), At(122.0f + Shake, 8.0f), At(137.0f + Shake, 32.0f)}, bHurry ? FireFill.Top : IceFill.Middle, 3.0f);
-		const TArray<FVector2D> Blade{At(-86.0f + Shake, 62.0f), At(80.0f + Shake, 62.0f), At(94.0f + Shake, 66.0f), At(80.0f + Shake, 70.0f),
-			At(-90.0f + Shake, 70.0f)};
+		HudStroke(OnSlab, {At(-119.0f, 8.0f), At(122.0f, 8.0f), At(137.0f, 32.0f)}, bHurry ? FireFill.Top : IceFill.Middle, 3.0f);
+		const TArray<FVector2D> Blade{At(-86.0f, 62.0f), At(80.0f, 62.0f), At(94.0f, 66.0f), At(80.0f, 70.0f),
+			At(-90.0f, 70.0f)};
 		HudPoly(OnSlab, HudInflate(Blade, 2.0f), SolidFill(Navy), 1);
 		// クラッシュボール overtime: the blade is the overtime team's grace, refilled by each of its hits on the giant ball.
 		const bool bOvertime = Match->Rules.bCrashBall && Match->Crash.bOvertime;
@@ -516,13 +578,9 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			? 1.0f - static_cast<float>(ServerNow - FMath::Max(Match->Crash.OvertimeHitAt, Match->Crash.OvertimeStartedAt))
 				/ ChaosImpactMatch::CrashOvertimeGraceSeconds
 			: Remaining / Total;
-		HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + Shake + 184.0f * FMath::Clamp(BladeFill, 0.0f, 1.0f), false, true),
+		HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + 184.0f * FMath::Clamp(BladeFill, 0.0f, 1.0f), false, true),
 			bOvertime ? TeamFill(Match->Crash.OvertimeTeam) : bHurry ? FireFill : IceFill, 2);
-		const float Bob = FMath::Sin(Time * 2.2f) * 3.0f;
-		HudShard(OnSlab, {At(-170.0f, 14.0f + Bob), At(-150.0f, 20.0f + Bob), At(-160.0f, 40.0f + Bob)}, bHurry ? FireFill : IceFill, 2.0f,
-			FVector2D(3.0, 4.0));
-		HudShard(OnSlab, {At(156.0f, 44.0f - Bob), At(176.0f, 34.0f - Bob), At(170.0f, 58.0f - Bob)}, FireFill, 2.0f, FVector2D(3.0, 4.0));
-		const FPainter Digits{MakeSkewed(TopCenter, -120.0f + Shake, 2.0f, 240.0f, 66.0f, -0.12f, 1.0f + 0.25f * Kick), OutDrawElements,
+		const FPainter Digits{MakeSkewed(TopCenter, -120.0f, 2.0f, 240.0f, 66.0f, -0.12f), OutDrawElements,
 			BaseLayer + 9};
 		HudText3D(Digits, bOvertime ? FString(TEXT("延長")) : FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 120.0f, -6.0f, 46.0f,
 			bOvertime ? FMath::Lerp(ChaosImpactMatch::GetTeamColor(Match->Crash.OvertimeTeam), Paper, 0.35f + 0.25f * FMath::Sin(Time * 9.0f))
@@ -542,9 +600,9 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			if (bOvertime && OvertimeAge >= 0. && OvertimeAge < 1.8)
 			{
 				const float Age = static_cast<float>(OvertimeAge);
-				const FHudFill Blast = TeamFill(Match->Crash.OvertimeTeam);
 				PaintCallout(TEXT("延長戦！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age),
-					EaseOut(Age / 0.12f) * (1.0f - FMath::Clamp((Age - 1.4f) / 0.4f, 0.0f, 1.0f)), Paper, BaseLayer + 12, &Blast);
+					EaseOut(Age / 0.12f) * (1.0f - FMath::Clamp((Age - 1.4f) / 0.4f, 0.0f, 1.0f)),
+					FMath::Lerp(ChaosImpactMatch::GetTeamColor(Match->Crash.OvertimeTeam), Paper, 0.2f), BaseLayer + 12);
 			}
 		}
 		if (bMinuteCall)
@@ -557,7 +615,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		if (Elapsed < 1.1f)
 		{
 			PaintCallout(TEXT("GO!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Elapsed / 0.18f)),
-				1.0f - FMath::Clamp((Elapsed - 0.7f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 12, &FireFill);
+				1.0f - FMath::Clamp((Elapsed - 0.7f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 12);
 		}
 		if (Remaining > 0.0f && Remaining <= 5.0f)
 		{
@@ -583,8 +641,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		const bool bKnockout = Match->Rules.bCrashBall && Match->Crash.bKnockout && Match->Crash.Winner != INDEX_NONE;
 		Full.Box(0.0f, 0.0f, Size.X, Size.Y, WithAlpha(bKnockout ? FMath::Lerp(Paper, ChaosImpactMatch::GetTeamColor(Match->Crash.Winner), 0.3f) : Paper,
 			(bKnockout ? 0.6f : 0.45f) * FMath::Clamp(1.0f - Elapsed / 0.25f, 0.0f, 1.0f)));
-		const FLinearColor KnockoutColor = bKnockout ? ChaosImpactMatch::GetTeamColor(Match->Crash.Winner) : Paper;
-		const FHudFill KnockoutBlast = MakeFill(FMath::Lerp(KnockoutColor, Paper, 0.5f), KnockoutColor * FLinearColor(0.55f, 0.55f, 0.55f, 1.0f));
+		const FLinearColor KnockoutColor = bKnockout ? FMath::Lerp(ChaosImpactMatch::GetTeamColor(Match->Crash.Winner), Paper, 0.2f) : Paper;
 		if (Match->Rules.bDuel)
 		{
 			// The duel: who won it (YOU WIN / YOU LOSE for a player alone at the screen), in the winner's colour.
@@ -596,14 +653,13 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			const FString Word = bDrawn ? FString(TEXT("DRAW"))
 				: OwnSide != INDEX_NONE && !bShared ? FString(OwnSide == Duel.MatchWinner ? TEXT("YOU WIN!") : TEXT("YOU LOSE"))
 				: FString::Printf(TEXT("%s WIN!"), *GetAnnouncerName(Duel.Sides[Duel.MatchWinner]));
-			const FLinearColor Color = bDrawn ? Paper : DuelSideColor(Duel.MatchWinner);
-			const FHudFill Blast = MakeFill(FMath::Lerp(Color, Paper, 0.5f), Color * FLinearColor(0.55f, 0.55f, 0.55f, 1.0f));
+			const FLinearColor Color = bDrawn ? Paper : FMath::Lerp(DuelSideColor(Duel.MatchWinner), Paper, 0.2f);
 			PaintCallout(Word, 124.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Elapsed / 0.2f)), 1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f),
-				Paper, BaseLayer + 3, &Blast);
+				Color, BaseLayer + 3);
 			return BaseLayer + 8;
 		}
 		PaintCallout(bKnockout ? TEXT("KNOCKOUT!") : TEXT("FINISH"), bKnockout ? 128.0f : 120.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Elapsed / 0.2f)),
-			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), Paper, BaseLayer + 3, bKnockout ? &KnockoutBlast : &FireFill);
+			1.0f - FMath::Clamp((Elapsed - 1.3f) / 0.4f, 0.0f, 1.0f), KnockoutColor, BaseLayer + 3);
 	}
 	return BaseLayer + 8;
 }
@@ -611,8 +667,10 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 int32 UChaosImpactMatchAnnouncerWidget::GetDuelLeftSide(const AChaosImpactGameState& Match) const
 {
 	const UGameInstance* GameInstance = GetGameInstance();
-	const bool bShared = GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
-	const int32 OwnSide = GetOwningPlayer() ? Match.Duel.SideOf(GetOwningPlayer()->PlayerState) : INDEX_NONE;
+	const ULocalPlayer* Single = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
+	const APlayerController* Viewer = Single ? Single->GetPlayerController(GetWorld()) : GetOwningPlayer();
+	const bool bShared = !Single && GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
+	const int32 OwnSide = Viewer ? Match.Duel.SideOf(Viewer->PlayerState) : INDEX_NONE;
 	return !bShared && OwnSide == 1 ? 1 : 0;
 }
 
@@ -645,8 +703,10 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	// The players either side: name, the rounds won (pips by the clock) and the health left.
 	const int32 LeftSide = GetDuelLeftSide(Match);
 	const UGameInstance* GameInstance = GetGameInstance();
-	const bool bShared = GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
-	const int32 OwnSide = GetOwningPlayer() ? Duel.SideOf(GetOwningPlayer()->PlayerState) : INDEX_NONE;
+	const ULocalPlayer* Single = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
+	const APlayerController* Viewer = Single ? Single->GetPlayerController(GetWorld()) : GetOwningPlayer();
+	const bool bShared = !Single && GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
+	const int32 OwnSide = Viewer ? Duel.SideOf(Viewer->PlayerState) : INDEX_NONE;
 	for (int32 PlateIndex = 0; PlateIndex < 2; ++PlateIndex)
 	{
 		const int32 Side = PlateIndex == 0 ? LeftSide : 1 - LeftSide;

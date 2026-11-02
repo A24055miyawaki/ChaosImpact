@@ -58,21 +58,21 @@ void MiniHeader(RPGUI::FCanvas& C, const FMiniMenu& M)
 		C.At(0, 3).Box(7, 5, MiniW - 14, MiniH - 10, FLinearColor(0.014f, 0.022f, 0.046f, 0.97f));
 		C.At(0, 4).Box(16, 46, MiniW - 32, 2, WithAlpha(RPGUI::Cyan, 0.4f));
 	}
-	const TCHAR* Titles[] = {TEXT("装備"), TEXT("強化"), TEXT("チューン"), TEXT("設定"), TEXT("バッグ")};
+	const TCHAR* Titles[] = {TEXT("装備"), TEXT("強化"), TEXT("チューン"), TEXT("設定"), TEXT("バッグ"), TEXT("ショップ")};
 	RPGUI::Label(C, 1, FString::Printf(TEXT("%dP"), P->GetLocalRPGIndex() + 1), 18, 8, 24, RPGUI::Cyan, ETextAlign::Left, TEXT("BlackItalic"));
-	RPGUI::Label(C, 1, M.bChoosing ? TEXT("装備変更") : M.bMerchant && (M.Page == 1 || M.Page == 2) ? TEXT("ルビー工房") : Titles[FMath::Clamp(M.Page, 0, 4)], 64, 10, 21, RPGUI::TextMain);
+	RPGUI::Label(C, 1, M.bChoosing ? TEXT("装備変更") : M.bMerchant && (M.Page == 1 || M.Page == 2) ? TEXT("ルビー工房") : M.bMerchant && M.Page == ERPGBagPage::Shop && P->IsAtCaravan() ? TEXT("行商の隊商") : Titles[FMath::Clamp(M.Page, 0, 5)], 64, 10, 21, RPGUI::TextMain);
 	RPGUI::Rubies(C, 1, P->GetRubies(), 386, 12, 19, ETextAlign::Right);
 	RPGUI::Button(C, 1, 396, 8, 40, 32, TEXT("×"), MiniAct::Close);
-	const int32 Pages[] = {0, 4, 1, 2, 3};
-	const TCHAR* Tabs[] = {TEXT("装備"), TEXT("バッグ"), TEXT("強化"), TEXT("チューン"), TEXT("設定")};
-	for (int32 Tab = 0; Tab < 5; ++Tab)
+	const int32 Pages[] = {0, 4, 1, 2, 5, 3};
+	const TCHAR* Tabs[] = {TEXT("装備"), TEXT("バッグ"), TEXT("強化"), TEXT("チューン"), TEXT("ショップ"), TEXT("設定")};
+	for (int32 Tab = 0; Tab < 6; ++Tab)
 	{
-		const float X = 12 + 85 * Tab, Y = 54, W = 80;
-		const bool bEnabled = Tab < 2 || Tab == 4 || M.bMerchant, bOn = M.Page == Pages[Tab];
+		const float X = 12 + 71 * Tab, Y = 54, W = 67;
+		const bool bEnabled = Tab < 2 || Tab == 5 || M.bMerchant, bOn = M.Page == Pages[Tab];
 		const int32 Action = MiniAct::PageBase + Pages[Tab];
 		if (bEnabled) { C.Hit(X, Y, W, 36, Action); }
 		RPGUI::Panel(C, 1, X, Y, W, 36, !bEnabled ? RPGUI::EStyle::Disabled : RowStyle(C, Action, bOn), bOn ? RPGUI::Highlight : FLinearColor::Transparent);
-		RPGUI::Label(C, 1, Tabs[Tab], X + W * 0.5f + 2, Y + 7, 17, !bEnabled ? RPGUI::TextDim : bOn ? RPGUI::TextMain : RPGUI::TextSub, ETextAlign::Center);
+		RPGUI::LabelFit(C, 1, Tabs[Tab], X + W * 0.5f + 1, Y + 9, W - 12, 15, !bEnabled ? RPGUI::TextDim : bOn ? RPGUI::TextMain : RPGUI::TextSub, ETextAlign::Center);
 		if (Tab == 1 && P->GetUnseenCount() > 0) { RPGUI::Chip(C, 2, FString::FromInt(P->GetUnseenCount()), X + W - 2, Y - 8, RPGUI::NewColor, 11, true, ETextAlign::Right); }
 	}
 }
@@ -106,7 +106,7 @@ void MiniFilters(RPGUI::FCanvas& C, const FMiniMenu& M)
 	const auto* P = M.P;
 	if (M.bChoosing)
 	{
-		RPGUI::Label(C, 1, RPGUI::Fit(ARPGPrototypeCharacter::EquipmentLabel(P->EquipmentSelection) + TEXT(" に付ける物"), 300, 19), 20, 102, 19, RPGUI::TextMain);
+		RPGUI::LabelFit(C, 1, ARPGPrototypeCharacter::EquipmentLabel(P->EquipmentSelection) + TEXT(" に付ける物"), 20, 102, 300, 19, RPGUI::TextMain);
 		RPGUI::Button(C, 1, MiniW - 16 - 100, 98, 100, 32, TEXT("戻る"), MiniAct::CancelChange);
 		return;
 	}
@@ -160,10 +160,10 @@ void MiniRows(RPGUI::FCanvas& C, const FMiniMenu& M)
 		if (P->IsEquipped(I.Id)) { Right -= RPGUI::Chip(C, 1, TEXT("装備中"), Right, Y + 11, RPGUI::Highlight, 11, false, ETextAlign::Right) + 4; }
 		if (I.bLocked) { Right -= RPGUI::Chip(C, 1, TEXT("ロック"), Right, Y + 11, RPGUI::Cyan, 11, false, ETextAlign::Right) + 4; }
 		const float TextX = X + 54, TextW = Right - TextX - 4;
-		RPGUI::Label(C, 1, RPGUI::Fit(I.Name(), TextW, 17), TextX, Y + 1, 17, I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(I.Rarity));
+		RPGUI::LabelFit(C, 1, I.Name(), TextX, Y + 1, TextW, 17, I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(I.Rarity));
 		const FString Sub = I.Kind == ERPGItemKind::Ball ? FString::Printf(TEXT("Lv.%d +%d %s"), I.Level, I.Enhancement, RPGUI::RarityName(I.Rarity))
 			: FString::Printf(TEXT("Lv.%d +%d %s"), I.Level, I.Enhancement, *RPGUI::ShortEffect(I));
-		RPGUI::Label(C, 1, RPGUI::Fit(Sub, TextW, 13), TextX, Y + 23, 13, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, Sub, TextX, Y + 23, TextW, 13, RPGUI::TextSub);
 	}
 	const float PagerY = FMiniMenu::ListTop + Rows * FMiniMenu::RowH;
 	const int32 Pages = FMath::Max(1, FMath::DivideAndRoundUp(List.Num(), Rows));
@@ -184,8 +184,9 @@ void MiniDetailStrip(RPGUI::FCanvas& C, const FMiniMenu& M, const FRPGPrototypeI
 	const int32 Index = FMath::Clamp(M.P->DetailScroll, 0, Sections.Num() - 1);
 	const float Y = FMiniMenu::DetailTop, W = FMiniMenu::W - 84;
 	if (C.IsPainting()) { RoundedBox(C.At(1, 2), FMiniMenu::X, Y - 4, FMiniMenu::W, 48, 6, FLinearColor(1, 1, 1, 0.05f)); }
-	RPGUI::Label(C, 1, RPGUI::Fit(Sections[Index].Title, W, 13), FMiniMenu::X + 10, Y - 1, 13, Sections[Index].Color);
-	RPGUI::Label(C, 1, RPGUI::Fit(Sections[Index].Body, W, 15), FMiniMenu::X + 10, Y + 18, 15, Sections[Index].bEmpty ? RPGUI::TextDim : RPGUI::TextMain);
+	// The body on up to two lines (an effect is a sentence; one line cut it short).
+	RPGUI::LabelFit(C, 1, Sections[Index].Title, FMiniMenu::X + 10, Y - 2, W, 12, Sections[Index].Color);
+	RPGUI::Wrap(C, 1, Sections[Index].Body, FMiniMenu::X + 10, Y + 13, W, 13, Sections[Index].bEmpty ? RPGUI::TextDim : RPGUI::TextMain, 2, 16);
 	RPGUI::Label(C, 1, FString::Printf(TEXT("%d/%d"), Index + 1, Sections.Num()), FMiniMenu::X + FMiniMenu::W - 76, Y + 1, 12, RPGUI::TextDim, ETextAlign::Right);
 	RPGUI::Button(C, 1, FMiniMenu::X + FMiniMenu::W - 70, Y, 32, 38, TEXT("▲"), MiniAct::DetailUp, false, Index > 0);
 	RPGUI::Button(C, 1, FMiniMenu::X + FMiniMenu::W - 34, Y, 32, 38, TEXT("▼"), MiniAct::DetailDown, false, Index + 1 < Sections.Num());
@@ -221,7 +222,7 @@ void MiniOverview(RPGUI::FCanvas& C, const FMiniMenu& M)
 	}
 	const auto& Item = P->GetEquipment(P->EquipmentSelection);
 	const FString Name = Item.IsValid() ? Item.Name() : ARPGPrototypeCharacter::EquipmentLabel(P->EquipmentSelection) + TEXT("（未装備）");
-	RPGUI::Label(C, 1, RPGUI::Fit(Name, MiniW - 36, 20), 18, 368, 20, Item.IsValid() && Item.Rarity != ERPGPrototypeRarity::Normal ? RPGUI::RarityColor(Item.Rarity) : RPGUI::TextMain);
+	RPGUI::LabelFit(C, 1, Name, 18, 368, MiniW - 36, 20, Item.IsValid() && Item.Rarity != ERPGPrototypeRarity::Normal ? RPGUI::RarityColor(Item.Rarity) : RPGUI::TextMain);
 	RPGUI::Wrap(C, 1, Item.IsValid() ? RPGUI::ShortEffect(Item) : FString(TEXT("「装備変更」で付ける物を選べます")), 18, 398, MiniW - 36, 15, RPGUI::TextSub, 2, 21);
 	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, TEXT("装備変更"), MiniAct::BeginChange, true, true, M.Key(TEXT("Enter"), TEXT("決定")));
 	MiniFooter(C, {{M.Key(TEXT("↑↓←→"), TEXT("十字")), TEXT("枠")}, {M.Key(TEXT("Q E"), TEXT("L R")), TEXT("ページ")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}});
@@ -280,7 +281,7 @@ void MiniUpgrade(RPGUI::FCanvas& C, const FMiniMenu& M)
 		RPGUI::Label(C, 1, FString::Printf(TEXT("パワー %.0f → %.0f"), P->GetDisplayedPower(*I), P->GetDisplayedPower(Next)), FMiniMenu::X + 170, Y + 9, 17, RPGUI::TextMain);
 		RPGUI::Delta(C, 1, P->GetDisplayedPower(Next) - P->GetDisplayedPower(*I), FMiniMenu::X + FMiniMenu::W - 10, Y + 10, 15, ETextAlign::Right);
 	}
-	else { RPGUI::Label(C, 1, RPGUI::Fit(RPGUI::ActualDescription(Next, Next.Badge), FMiniMenu::W - 180, 15), FMiniMenu::X + 170, Y + 10, 15, RPGUI::Good); }
+	else { RPGUI::LabelFit(C, 1, RPGUI::ActualDescription(Next, Next.Badge), FMiniMenu::X + 170, Y + 10, FMiniMenu::W - 180, 15, RPGUI::Good); }
 	const int32 Cost = I->UpgradeCost();
 	const bool bAfford = P->GetRubies() >= Cost;
 	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, bMax ? TEXT("強化MAX") : bAfford ? FString::Printf(TEXT("強化する  ◆%d"), Cost) : FString::Printf(TEXT("ルビー不足（あと◆%d）"), Cost - P->GetRubies()),
@@ -297,7 +298,7 @@ void MiniTune(RPGUI::FCanvas& C, const FMiniMenu& M)
 	RPGUI::Button(C, 1, MiniW - 56, 98, 40, 34, TEXT("›"), MiniAct::SelectNext);
 	if (!I) { RPGUI::Label(C, 1, TEXT("チューンできるボールがありません"), MiniW * 0.5f, 104, 16, RPGUI::TextDim, ETextAlign::Center); return; }
 	RPGUI::ItemIcon(C, 1, FVector2D(84, 115), 12, *I);
-	RPGUI::Label(C, 1, RPGUI::Fit(FString::Printf(TEXT("%s  Lv.%d +%d"), *I->Name(), I->Level, I->Enhancement), 280, 18), 106, 104, 18, I->Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(I->Rarity));
+	RPGUI::LabelFit(C, 1, FString::Printf(TEXT("%s  Lv.%d +%d"), *I->Name(), I->Level, I->Enhancement), 106, 104, 280, 18, I->Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(I->Rarity));
 	const float SocketW = (FMiniMenu::W - 12) / 3;
 	for (int32 Socket = 0; Socket < 3; ++Socket)
 	{
@@ -308,8 +309,7 @@ void MiniTune(RPGUI::FCanvas& C, const FMiniMenu& M)
 		C.Hit(SX, 140, SocketW, 44, Action);
 		RPGUI::Panel(C, 1, SX, 140, SocketW, 44, RowStyle(C, Action, P->TuneSocket == Socket), P->TuneSocket == Socket ? RPGUI::Highlight : FLinearColor::Transparent);
 		RPGUI::Label(C, 1, Socket == 0 ? TEXT("専用1") : Socket == 1 ? TEXT("専用2") : TEXT("共通"), SX + 14, 142, 12, Socket < 2 ? RPGUI::Highlight : RPGUI::Cyan);
-		RPGUI::Label(C, 1, RPGUI::Fit(Definition ? FString::Printf(TEXT("%s R%d"), *Definition->Name, Affix.Rank) : FString(TEXT("未装着")), SocketW - 22, 15),
-			SX + 14, 160, 15, Definition ? RPGUI::Highlight : RPGUI::TextDim);
+		RPGUI::LabelFit(C, 1, Definition ? FString::Printf(TEXT("%s R%d"), *Definition->Name, Affix.Rank) : FString(TEXT("未装着")), SX + 14, 160, SocketW - 22, 15, Definition ? RPGUI::Highlight : RPGUI::TextDim);
 	}
 	const auto Offers = P->GetTuneOffers(P->BagSelection, P->TuneSocket);
 	const auto& Pool = RPGEquipment::Tunes(I->Type);
@@ -322,7 +322,7 @@ void MiniTune(RPGUI::FCanvas& C, const FMiniMenu& M)
 		C.Hit(FMiniMenu::X, Y, FMiniMenu::W, 48, Action);
 		RPGUI::Panel(C, 1, FMiniMenu::X, Y, FMiniMenu::W, 48, RowStyle(C, Action, bOn), bOn ? RPGUI::Highlight : FLinearColor::Transparent);
 		RPGUI::Label(C, 1, Definition.Name, FMiniMenu::X + 18, Y + 2, 17, RPGUI::TextMain);
-		RPGUI::Label(C, 1, RPGUI::Fit(RPGUI::HiddenDescription(Definition), FMiniMenu::W - 30, 13), FMiniMenu::X + 18, Y + 26, 13, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, RPGUI::HiddenDescription(Definition), FMiniMenu::X + 18, Y + 26, FMiniMenu::W - 30, 13, RPGUI::TextSub);
 	}
 	if (Offers.IsEmpty()) { RPGUI::Label(C, 1, TEXT("この枠の候補はもうありません"), MiniW * 0.5f, 210, 15, RPGUI::TextDim, ETextAlign::Center); }
 	const FRPGAffix Current = I->Tunes.IsValidIndex(P->TuneSocket) ? I->Tunes[P->TuneSocket] : FRPGAffix{};
@@ -334,10 +334,52 @@ void MiniTune(RPGUI::FCanvas& C, const FMiniMenu& M)
 	const float Half = (MiniW - 40) * 0.5f;
 	const int32 RankCost = I->TuneCost() * FMath::Max(1, Current.Rank);
 	const bool bCanRank = Existing && Current.Rank < RPGTuning::TuneMaxRank;
-	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, Half, FMiniMenu::ButtonH, bCanRank ? FString::Printf(TEXT("ランクUP ◆%d"), RankCost) : FString(TEXT("ランクUP")), MiniAct::RankUp, false,
-		bCanRank && P->GetRubies() >= RankCost);
-	RPGUI::Button(C, 1, 24 + Half, FMiniMenu::ButtonY, Half, FMiniMenu::ButtonH, FString::Printf(TEXT("付ける ◆%d"), I->TuneCost()), MiniAct::ApplyTune, true, Offers.Num() > 0 && P->GetRubies() >= I->TuneCost());
+	RPGUI::Label(C, 1, FString::Printf(TEXT("欠片 %d"), P->GetTuneShards()), MiniW - 16, FMiniMenu::ButtonY - 22, 13, P->GetTuneShards() > 0 ? RPGUI::Cyan : RPGUI::Bad, ETextAlign::Right);
+	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, Half, FMiniMenu::ButtonH, bCanRank ? FString::Printf(TEXT("ランクUP ◆%d・%d"), RankCost, Current.Rank) : FString(TEXT("ランクUP")), MiniAct::RankUp, false,
+		bCanRank && P->GetRubies() >= RankCost && P->GetTuneShards() >= Current.Rank);
+	RPGUI::Button(C, 1, 24 + Half, FMiniMenu::ButtonY, Half, FMiniMenu::ButtonH, FString::Printf(TEXT("付ける ◆%d・%d"), I->TuneCost(), RPGTuning::ShardsPerTune), MiniAct::ApplyTune, true,
+		Offers.Num() > 0 && P->GetRubies() >= I->TuneCost() && P->GetTuneShards() >= RPGTuning::ShardsPerTune);
 	MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("候補")}, {M.Key(TEXT("←→"), TEXT("左右")), TEXT("枠")}, {M.Key(TEXT("PgUp/Dn"), TEXT("Rスティック")), TEXT("ボール")}});
+}
+
+void MiniShop(RPGUI::FCanvas& C, const FMiniMenu& M)
+{
+	const auto* P = M.P;
+	const auto& Stock = P->GetShopStock();
+	const bool bCaravan = P->IsAtCaravan();
+	const int32 Level = P->GetMerchantLevel(), Left = P->GetShopSecondsLeft();
+	RPGUI::Label(C, 1, FString::Printf(TEXT("%s Lv.%d"), bCaravan ? TEXT("隊商") : TEXT("商人"), bCaravan ? FMath::Min(Level + 1, RPGTuning::MerchantMaxLevel) : Level), 20, 102, 19, RPGUI::TextMain);
+	RPGUI::Label(C, 1, FString::Printf(TEXT("%s %d:%02d"), bCaravan ? TEXT("去るまで") : TEXT("入れかわり"), Left / 60, Left % 60), MiniW - 20, 105, 15, RPGUI::TextSub, ETextAlign::Right);
+	if (Stock.IsEmpty()) { RPGUI::Label(C, 1, TEXT("売り切れ（入れかわりを待とう）"), MiniW * 0.5f, FMiniMenu::ListTop + 40, 16, RPGUI::TextDim, ETextAlign::Center); }
+	for (int32 Row = 0; Row < Stock.Num() && Row < 5; ++Row)
+	{
+		const auto& I = Stock[Row];
+		const float Y = FMiniMenu::ListTop + Row * FMiniMenu::RowH, X = FMiniMenu::X, W = FMiniMenu::W;
+		const int32 Action = MiniAct::ShopRowBase + Row;
+		C.Hit(X, Y, W, FMiniMenu::RowDraw, Action);
+		if (!C.IsPainting()) { continue; }
+		const bool bOn = Row == P->ShopSelection;
+		RPGUI::Panel(C, 1, X, Y, W, FMiniMenu::RowDraw, RowStyle(C, Action, bOn), bOn ? RPGUI::Highlight : FLinearColor::Transparent, RPGUI::RarityColor(I.Rarity));
+		RPGUI::ItemIcon(C, 1, FVector2D(X + 30, Y + 21), 13, I);
+		float Right = X + W - 14;
+		Right -= RPGUI::Rubies(C, 1, I.ShopPrice(), Right, Y + 10, 17, ETextAlign::Right) + 12;
+		const float Power = P->GetDisplayedPower(I);
+		RPGUI::Label(C, 1, FString::Printf(TEXT("%.0f"), Power), Right, Y + 1, 19, RPGUI::TextMain, ETextAlign::Right);
+		const auto& Current = MiniCompare(M, I);
+		if (Current.IsValid()) { RPGUI::Delta(C, 1, Power - P->GetDisplayedPower(Current), Right, Y + 24, 12, ETextAlign::Right); }
+		Right -= 48;
+		const float TextX = X + 54, TextW = Right - TextX - 4;
+		RPGUI::LabelFit(C, 1, I.Name(), TextX, Y + 1, TextW, 17, I.Rarity == ERPGPrototypeRarity::Normal ? RPGUI::TextMain : RPGUI::RarityColor(I.Rarity));
+		RPGUI::LabelFit(C, 1, FString::Printf(TEXT("Lv.%d %s"), I.Level, RPGUI::RarityName(I.Rarity)), TextX, Y + 23, TextW, 13, P->GetRubies() >= I.ShopPrice() ? RPGUI::TextSub : RPGUI::Bad);
+	}
+	const FRPGPrototypeItem* I = Stock.IsValidIndex(P->ShopSelection) ? &Stock[P->ShopSelection] : nullptr;
+	if (I) { MiniDetailStrip(C, M, *I); }
+	const int32 Price = I ? I->ShopPrice() : 0;
+	const bool bFull = P->GetBag().Num() >= RPGTuning::BagCapacity, bAfford = I && P->GetRubies() >= Price;
+	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, !I ? FString(TEXT("買えるボールがありません")) : bFull ? FString(TEXT("バッグがいっぱい"))
+		: bAfford ? FString::Printf(TEXT("買う  ◆%d"), Price) : FString::Printf(TEXT("ルビー不足（あと◆%d）"), Price - P->GetRubies()),
+		MiniAct::Buy, true, I && !bFull && bAfford, M.Key(TEXT("Enter"), TEXT("決定")));
+	MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("買う")}, {M.Key(TEXT("Q E"), TEXT("L R")), TEXT("ページ")}});
 }
 
 void MiniSettings(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -395,6 +437,7 @@ void MiniLayout(RPGUI::FCanvas& C, const FMiniMenu& M)
 	if (M.Page == ERPGBagPage::Settings) { MiniSettings(C, M); }
 	else if (M.Page == ERPGBagPage::Upgrade) { MiniUpgrade(C, M); }
 	else if (M.Page == ERPGBagPage::Tune) { MiniTune(C, M); }
+	else if (M.Page == ERPGBagPage::Shop) { MiniShop(C, M); }
 	else if (M.Page == ERPGBagPage::Items || M.bChoosing) { MiniItems(C, M); }
 	else { MiniOverview(C, M); }
 	if (C.bModalOpen) { MiniDialog(C, M); }

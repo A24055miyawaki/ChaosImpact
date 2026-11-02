@@ -68,7 +68,7 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 	CrashBallStartOffset = FVector(0, 0, 105);
 	Team0GoalOffset = FVector(-3100, 0, 0);
 	Team1GoalOffset = FVector(3100, 0, 0);
-	CrashBallExtraBallOffsets = {FVector(-1050, 250, 0), FVector(1050, -250, 0), FVector(-2500, 350, 0), FVector(2500, -350, 0)};
+	CrashBallExtraBallOffsets = {FVector(-1050, 250, 0), FVector(1050, -250, 0), FVector(-2550, 700, 0), FVector(2550, -700, 0)};
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	SetNetUpdateFrequency(10.0f);
@@ -101,6 +101,7 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 	TEMPLE_MATERIAL(CloudMat, "/Game/ChaosImpact/solo/Stage2/Materials/M_CI_CloudSea.M_CI_CloudSea");
 	TEMPLE_MATERIAL(PineMat, "/Game/ChaosImpact/solo/Stage14/Materials/MI_Pine.MI_Pine");
 	TEMPLE_MATERIAL(BarkMat, "/Game/ChaosImpact/solo/Stage14/Materials/MI_PineBark.MI_PineBark");
+	TEMPLE_MATERIAL(WarnMat, "/Game/ChaosImpact/FX/Kit/M_CIFX_Warn.M_CIFX_Warn");
 #undef TEMPLE_MATERIAL
 
 	FChaosImpactTempleAssets A;
@@ -110,49 +111,18 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 	A.RuneTeal = RuneTealMat.Object; A.RuneGold = RuneGoldMat.Object; A.Gold = GoldMat.Object; A.Moss = MossMat.Object;
 	A.FieldTeal = FieldTealMat.Object; A.FieldSoft = FieldSoftMat.Object; A.FieldAmber = FieldAmberMat.Object;
 	A.NeonAmber = NeonAmberMat.Object; A.Cloud = CloudMat.Object; A.Pine = PineMat.Object; A.Bark = BarkMat.Object;
+	A.Warn = WarnMat.Object;
 	Assets = A;
 
-	// ---- The nine islands and the bridges between them.
-	TArray<float> CentreOpenings, CentreWidths;
-	for (int32 Side = 0; Side < 4; ++Side)
-	{
-		CentreOpenings.Add(Side * 90.0f);
-		CentreWidths.Add(700.0f);
-	}
-	BuildIsland(TEXT("Centre"), FVector::ZeroVector, CentreRadius, 2600.0f, CentreOpenings, CentreWidths);
-	for (int32 Side = 0; Side < 4; ++Side)
-	{
-		const FVector Centre = TempleStage::SideCentre(Side);
-		const FVector Prev = TempleStage::Corner((Side + 3) % 4);
-		const FVector Next = TempleStage::Corner(Side);
-		BuildIsland(FString::Printf(TEXT("Side%d"), Side), Centre, SideRadius, 1700.0f,
-			{TempleStage::YawOf(-Centre), TempleStage::YawOf(Prev - Centre), TempleStage::YawOf(Next - Centre)}, {700.0f, 420.0f, 420.0f});
-		const FVector Inward = -Centre.GetSafeNormal2D();
-		BuildBridge(FString::Printf(TEXT("BridgeCentre%d"), Side), Centre.GetSafeNormal2D() * (CentreRadius - 120.0f),
-			Centre + Inward * (SideRadius - 120.0f), 700.0f);
-	}
-	for (int32 Corner = 0; Corner < 4; ++Corner)
-	{
-		const FVector Centre = TempleStage::Corner(Corner);
-		const FVector SideA = TempleStage::SideCentre(Corner);
-		const FVector SideB = TempleStage::SideCentre((Corner + 1) % 4);
-		BuildIsland(FString::Printf(TEXT("Corner%d"), Corner), Centre, CornerRadius, 1300.0f,
-			{TempleStage::YawOf(SideA - Centre), TempleStage::YawOf(SideB - Centre)}, {420.0f, 420.0f});
-		for (const FVector& Side : {SideA, SideB})
-		{
-			const FVector Along = (Centre - Side).GetSafeNormal2D();
-			BuildBridge(FString::Printf(TEXT("BridgeCorner%d_%d"), Corner, Side == SideA ? 0 : 1),
-				Side + Along * (SideRadius - 110.0f), Centre - Along * (CornerRadius - 110.0f), 420.0f);
-		}
-	}
+	BuildDeck();
 
 	// ---- The temple in the middle: the altar of blessing in a ring of columns.
-	AddCylinder(SceneRoot, TEXT("AltarStep1"), A.Pale, FVector(0.0f, 0.0f, 0.0f), 1400.0f, 35.0f);
-	AddCylinder(SceneRoot, TEXT("AltarStep2"), A.Bridge, FVector(0.0f, 0.0f, 0.0f), 960.0f, 70.0f);
-	AddCylinder(SceneRoot, TEXT("AltarStep3"), A.Pale, FVector(0.0f, 0.0f, 0.0f), 560.0f, 105.0f);
-	AltarGlows.Add(AddRing(SceneRoot, TEXT("AltarGold1"), A.RuneGold, FVector(0.0f, 0.0f, 35.5f), 700.0f, 6.0f));
-	AltarGlows.Add(AddRing(SceneRoot, TEXT("AltarGold2"), A.RuneGold, FVector(0.0f, 0.0f, 70.5f), 480.0f, 6.0f));
-	AltarGlows.Add(AddRing(SceneRoot, TEXT("AltarGold3"), A.RuneGold, FVector(0.0f, 0.0f, 105.5f), 280.0f, 6.0f));
+	AddCylinder(SceneRoot, TEXT("AltarStep1"), A.Sand, FVector(0.0f, 0.0f, 0.0f), 1300.0f, 30.0f);
+	AddCylinder(SceneRoot, TEXT("AltarStep2"), A.Bridge, FVector(0.0f, 0.0f, 0.0f), 880.0f, 60.0f);
+	AddCylinder(SceneRoot, TEXT("AltarStep3"), A.Pale, FVector(0.0f, 0.0f, 0.0f), 480.0f, 90.0f);
+	AltarGlows.Add(AddRing(SceneRoot, TEXT("AltarGold1"), A.RuneGold, FVector(0.0f, 0.0f, 30.5f), 650.0f, 6.0f));
+	AltarGlows.Add(AddRing(SceneRoot, TEXT("AltarGold2"), A.RuneGold, FVector(0.0f, 0.0f, 60.5f), 440.0f, 6.0f));
+	AltarGlows.Add(AddRing(SceneRoot, TEXT("AltarGold3"), A.RuneGold, FVector(0.0f, 0.0f, 90.5f), 240.0f, 6.0f));
 	AddRing(SceneRoot, TEXT("CourtRune"), A.RuneTeal, FVector(0.0f, 0.0f, 0.6f), 1000.0f, 4.0f);
 	AddRing(SceneRoot, TEXT("CourtGold"), A.RuneGold, FVector(0.0f, 0.0f, 0.6f), 1080.0f, 3.0f);
 	for (int32 Index = 0; Index < 16; ++Index)
@@ -162,10 +132,11 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 			FVector(FMath::Cos(Angle) * 1040.0f, FMath::Sin(Angle) * 1040.0f, 0.8f), FVector(70.0f, 18.0f, 1.2f),
 			FMath::RadiansToDegrees(Angle), false);
 	}
-	for (int32 Index = 0; Index < 8; ++Index)
+	// Four columns round the plaza (cover, with room between them).
+	for (int32 Index = 0; Index < 4; ++Index)
 	{
-		const float Angle = FMath::DegreesToRadians(22.5f + Index * 45.0f);
-		BuildColumn(FString::Printf(TEXT("Column%d"), Index), FVector(FMath::Cos(Angle) * 1200.0f, FMath::Sin(Angle) * 1200.0f, 0.0f), 320.0f);
+		const float Angle = FMath::DegreesToRadians(45.0f + Index * 90.0f);
+		BuildColumn(FString::Printf(TEXT("Column%d"), Index), FVector(FMath::Cos(Angle) * 1250.0f, FMath::Sin(Angle) * 1250.0f, 0.0f), 300.0f);
 	}
 
 	// ---- The side islands' seals (the pillars of light) and their cover; the corner islands' portal gates.
@@ -177,8 +148,15 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 		const FVector Across(-Out.Y, Out.X, 0.0f);
 		for (const float Sign : {-1.0f, 1.0f})
 		{
-			// A fallen column lying across the outer half: cover you can jump.
-			const FVector At = Centre + Out * 420.0f + Across * Sign * 330.0f;
+			// A low wall either side, halfway to the corners (cover you can jump).
+			AddBox(SceneRoot, FString::Printf(TEXT("LowWall%d_%d"), Side, Sign > 0 ? 1 : 0), A.Sand,
+				Out * (SideDistance - 200.0f) + Across * Sign * 1150.0f + FVector(0.0f, 0.0f, 47.5f), FVector(480.0f, 80.0f, 95.0f),
+				TempleStage::YawOf(Out), true, true);
+			AddBox(SceneRoot, FString::Printf(TEXT("LowWallRune%d_%d"), Side, Sign > 0 ? 1 : 0), A.RuneTeal,
+				Out * (SideDistance - 200.0f) + Across * Sign * 1150.0f + FVector(0.0f, 0.0f, 96.0f), FVector(440.0f, 30.0f, 3.0f),
+				TempleStage::YawOf(Out), false);
+			// A fallen column lying beside the seal: cover you can jump.
+			const FVector At = Centre + Out * 380.0f + Across * Sign * 640.0f;
 			AddPart(SceneRoot, FString::Printf(TEXT("Fallen%d_%d"), Side, Sign > 0 ? 1 : 0), Assets.Cylinder, A.Pale,
 				At + FVector(0.0f, 0.0f, 55.0f) - Across * 150.0f, FVector(1.1f, 1.1f, 3.0f),
 				FRotator(0.0f, TempleStage::YawOf(Across), 90.0f), true);
@@ -192,26 +170,28 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 	}
 	BuildScenery();
 
-	// Where players appear: the outer side of each side island and to one side on each corner island.
+	// Where players appear: behind each seal, and either side of it toward the corners.
 	for (int32 Side = 0; Side < 4; ++Side)
 	{
-		const FVector Out = TempleStage::SideCentre(Side).GetSafeNormal2D();
-		SpawnPointOffsets.Add(TempleStage::SideCentre(Side) + Out * 600.0f);
+		const FVector Out(TempleStage::SideDirections[Side], 0.0f);
+		SpawnPointOffsets.Add(Out * 2800.0f);
+	}
+	for (int32 Side = 0; Side < 4; ++Side)
+	{
+		const FVector Out(TempleStage::SideDirections[Side], 0.0f);
+		const FVector Across(-Out.Y, Out.X, 0.0f);
+		SpawnPointOffsets.Add(Out * 2700.0f + Across * 1500.0f);
+		SpawnPointOffsets.Add(Out * 2700.0f - Across * 1500.0f);
+	}
+	// Ball pads: the altar's top, between the altar and each seal, and on each path to a gate.
+	BallPointOffsets.Add(FVector(0.0f, 0.0f, 90.0f));
+	for (int32 Side = 0; Side < 4; ++Side)
+	{
+		BallPointOffsets.Add(FVector(TempleStage::SideDirections[Side], 0.0f) * 1450.0f);
 	}
 	for (int32 Corner = 0; Corner < 4; ++Corner)
 	{
-		const FVector In = GetPortalFacing(Corner);
-		const FVector Across(-In.Y, In.X, 0.0f);
-		SpawnPointOffsets.Add(TempleStage::Corner(Corner) + In * 120.0f + Across * 280.0f);
-	}
-	BallPointOffsets.Add(FVector(0.0f, 0.0f, 105.0f));
-	for (int32 Side = 0; Side < 4; ++Side)
-	{
-		BallPointOffsets.Add(TempleStage::SideCentre(Side) - TempleStage::SideCentre(Side).GetSafeNormal2D() * 540.0f);
-	}
-	for (int32 Corner = 0; Corner < 4; ++Corner)
-	{
-		BallPointOffsets.Add(TempleStage::Corner(Corner) + GetPortalFacing(Corner) * 260.0f);
+		BallPointOffsets.Add(FVector(TempleStage::CornerDirections[Corner] * 1750.0f, 0.0f));
 	}
 }
 
@@ -281,104 +261,113 @@ void AChaosImpactTempleStage::AddFence(const FString& Name, const FVector& From,
 	Fence->ComponentTags.Add(TEXT("TempleFence"));
 }
 
-void AChaosImpactTempleStage::BuildIsland(const FString& Name, const FVector& Centre, const float Radius, const float Depth,
-	const TArray<float>& OpeningsYaw, const TArray<float>& OpeningWidths)
+void AChaosImpactTempleStage::BuildDeck()
 {
 	const FChaosImpactTempleAssets& A = Assets;
-	AddCylinder(SceneRoot, Name + TEXT("Top"), A.Floor, Centre - FVector(0.0f, 0.0f, 40.0f), Radius * 2.0f, 40.0f);
-	AddCylinder(SceneRoot, Name + TEXT("Lip"), A.Pale, Centre - FVector(0.0f, 0.0f, 115.0f), Radius * 2.0f + 70.0f, 78.0f, false);
-	// The rock it floats on, tapering away into the clouds (the engine cone points up: turned over).
-	AddPart(SceneRoot, Name + TEXT("Rock"), A.Cone, A.Sand, Centre - FVector(0.0f, 0.0f, 115.0f + Depth * 0.5f),
-		FVector(Radius * 2.02f / 100.0f, Radius * 2.02f / 100.0f, Depth / 100.0f), FRotator(180.0f, 0.0f, 0.0f), false);
-	AddPart(SceneRoot, Name + TEXT("RockDark"), A.Cone, A.Dark, Centre - FVector(0.0f, 0.0f, 200.0f + Depth * 0.62f),
-		FVector(Radius * 1.4f / 100.0f, Radius * 1.4f / 100.0f, Depth * 1.1f / 100.0f), FRotator(180.0f, 37.0f, 0.0f), false);
-	FRandomStream Random(GetTypeHash(Name));
-	for (int32 Index = 0; Index < 5; ++Index)
+	constexpr float Half = DeckHalf;
+	constexpr float Round = DeckCornerRadius;
+	constexpr float Straight = Half - Round;
+	constexpr float Thick = 60.0f;
+	// The floor: a long slab across, one at each end, and a disc in each corner (a hair lower, so no two tops meet flush).
+	AddBox(SceneRoot, TEXT("DeckMain"), A.Floor, FVector(0.0f, 0.0f, -Thick * 0.5f), FVector(Half * 2.0f, Straight * 2.0f, Thick));
+	for (const float Sign : {-1.0f, 1.0f})
 	{
-		const float Angle = Random.FRandRange(0.0f, UE_TWO_PI);
-		const float Size = Random.FRandRange(220.0f, 420.0f);
-		AddPart(SceneRoot, FString::Printf(TEXT("%sHang%d"), *Name, Index), A.Chamfer, Index % 2 ? A.Dark : A.Sand,
-			Centre + FVector(FMath::Cos(Angle) * Radius * 0.72f, FMath::Sin(Angle) * Radius * 0.72f, -260.0f - Random.FRandRange(0.0f, 300.0f)),
+		AddBox(SceneRoot, FString::Printf(TEXT("DeckEnd%d"), Sign > 0 ? 1 : 0), A.Floor,
+			FVector(0.0f, Sign * (Straight + Round * 0.5f), -Thick * 0.5f), FVector(Straight * 2.0f, Round, Thick));
+	}
+	for (int32 Corner = 0; Corner < 4; ++Corner)
+	{
+		const FVector At(TempleStage::CornerDirections[Corner].X * Straight, TempleStage::CornerDirections[Corner].Y * Straight, 0.0f);
+		AddCylinder(SceneRoot, FString::Printf(TEXT("DeckCorner%d"), Corner), A.Floor, At - FVector(0.0f, 0.0f, Thick + 0.5f), Round * 2.0f, Thick);
+		// The stone lip under the edge, and the rock the corner hangs from.
+		AddCylinder(SceneRoot, FString::Printf(TEXT("LipCorner%d"), Corner), A.Pale, At - FVector(0.0f, 0.0f, 138.0f), Round * 2.0f + 70.0f, 78.0f, false);
+		AddPart(SceneRoot, FString::Printf(TEXT("RockCorner%d"), Corner), A.Cone, A.Sand, At + FVector(0.0f, 0.0f, -138.0f - 700.0f),
+			FVector(Round * 2.04f / 100.0f, Round * 2.04f / 100.0f, 14.0f), FRotator(180.0f, Corner * 31.0f, 0.0f), false);
+	}
+	AddBox(SceneRoot, TEXT("LipMain"), A.Pale, FVector(0.0f, 0.0f, -99.0f), FVector(Half * 2.0f + 70.0f, Straight * 2.0f, 78.0f), 0.0f, false);
+	AddBox(SceneRoot, TEXT("LipEnds"), A.Pale, FVector(0.0f, 0.0f, -99.5f), FVector(Straight * 2.0f, Half * 2.0f + 70.0f, 78.0f), 0.0f, false);
+	// The rock the plateau floats on, tapering away into the clouds, and stones hanging under its edge.
+	AddPart(SceneRoot, TEXT("Rock"), A.Cone, A.Sand, FVector(0.0f, 0.0f, -138.0f - 1700.0f),
+		FVector(Half * 2.04f / 100.0f, Half * 2.04f / 100.0f, 34.0f), FRotator(180.0f, 0.0f, 0.0f), false);
+	AddPart(SceneRoot, TEXT("RockDark"), A.Cone, A.Dark, FVector(0.0f, 0.0f, -400.0f - 2300.0f),
+		FVector(Half * 1.3f / 100.0f, Half * 1.3f / 100.0f, 44.0f), FRotator(180.0f, 37.0f, 0.0f), false);
+	FRandomStream Random(31);
+	for (int32 Index = 0; Index < 16; ++Index)
+	{
+		const float Angle = Index * UE_TWO_PI / 16.0f + Random.FRandRange(-0.15f, 0.15f);
+		const float Size = Random.FRandRange(260.0f, 520.0f);
+		AddPart(SceneRoot, FString::Printf(TEXT("Hang%d"), Index), A.Chamfer, Index % 2 ? A.Dark : A.Sand,
+			FVector(FMath::Cos(Angle) * Half * 0.86f, FMath::Sin(Angle) * Half * 0.86f, -300.0f - Random.FRandRange(0.0f, 380.0f)),
 			FVector(Size, Size * 0.8f, Size * 1.4f) / 100.0f, FRotator(Random.FRandRange(-20.0f, 20.0f), Random.FRandRange(0.0f, 90.0f), 0.0f), false);
 	}
 
-	// The rim: low kerb stones and moss round the edge (not across the bridges), and invisible fences above them.
-	const auto IsOpen = [&](const float YawDegrees, const float Margin)
+	// Inlaid in the floor: the pale plaza in the middle and a path from it to each corner's gate (none of it
+	// collides; each lies a hair above the one under it).
+	AddCylinder(SceneRoot, TEXT("Plaza"), A.Pale, FVector(0.0f, 0.0f, -0.6f), PlazaRadius * 2.0f, 1.0f, false);
+	AddRing(SceneRoot, TEXT("PlazaRim"), A.RuneGold, FVector(0.0f, 0.0f, 0.5f), PlazaRadius, 3.0f);
+	for (int32 Corner = 0; Corner < 4; ++Corner)
 	{
-		for (int32 Index = 0; Index < OpeningsYaw.Num(); ++Index)
+		const FVector Way = FVector(TempleStage::CornerDirections[Corner], 0.0f).GetSafeNormal();
+		constexpr float From = PlazaRadius - 20.0f, To = 3250.0f;
+		AddBox(SceneRoot, FString::Printf(TEXT("Path%d"), Corner), A.Bridge, Way * (From + To) * 0.5f + FVector(0.0f, 0.0f, -0.1f),
+			FVector(To - From, 520.0f, 1.0f), TempleStage::YawOf(Way), false);
+		for (const float Sign : {-1.0f, 1.0f})
 		{
-			const float Half = FMath::RadiansToDegrees(FMath::Atan2(OpeningWidths[Index] * 0.5f + Margin, Radius));
-			if (FMath::Abs(FMath::FindDeltaAngleDegrees(YawDegrees, OpeningsYaw[Index])) < Half)
-			{
-				return true;
-			}
-		}
-		return false;
-	};
-	const int32 Kerbs = FMath::Max(10, FMath::RoundToInt(UE_TWO_PI * Radius / 230.0f));
-	for (int32 Index = 0; Index < Kerbs; ++Index)
-	{
-		const float Yaw = Index * 360.0f / Kerbs;
-		if (IsOpen(Yaw, 40.0f))
-		{
-			continue;
-		}
-		const FVector Out(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw)), 0.0f);
-		AddBox(SceneRoot, FString::Printf(TEXT("%sKerb%d"), *Name, Index), Index % 3 ? A.Pale : A.Sand,
-			Centre + Out * (Radius - 35.0f) + FVector(0.0f, 0.0f, 20.0f), FVector(70.0f, 200.0f, 40.0f), Yaw, true, true);
-		if (Index % 4 == 1)
-		{
-			AddPart(SceneRoot, FString::Printf(TEXT("%sMoss%d"), *Name, Index), Assets.Cylinder, A.Moss,
-				Centre + Out * (Radius - 120.0f) + FVector(0.0f, 0.0f, 0.4f), FVector(1.6f, 2.4f, 0.02f), FRotator(0.0f, Yaw, 0.0f), false, false);
+			const FVector Across(-Way.Y * Sign, Way.X * Sign, 0.0f);
+			AddBox(SceneRoot, FString::Printf(TEXT("PathEdge%d_%d"), Corner, Sign > 0 ? 1 : 0), A.Sand,
+				Way * (From + To) * 0.5f + Across * 270.0f + FVector(0.0f, 0.0f, 0.1f), FVector(To - From, 24.0f, 1.2f), TempleStage::YawOf(Way), false);
 		}
 	}
-	const int32 Segments = FMath::Max(12, FMath::RoundToInt(UE_TWO_PI * Radius / 200.0f));
-	for (int32 Index = 0; Index < Segments; ++Index)
+	for (int32 Side = 0; Side < 4; ++Side)
 	{
-		const float YawA = Index * 360.0f / Segments;
-		const float YawB = (Index + 1) * 360.0f / Segments;
-		if (IsOpen((YawA + YawB) * 0.5f, -10.0f))
-		{
-			continue;
-		}
-		const auto At = [&](const float Yaw)
-		{ return Centre + FVector(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw)), 0.0f) * (Radius + 15.0f); };
-		const FVector From = At(YawA), To = At(YawB);
-		const FVector Extend = (To - From).GetSafeNormal() * 30.0f;
-		AddFence(FString::Printf(TEXT("%sFence%d"), *Name, Index), From - Extend, To + Extend);
+		AddCylinder(SceneRoot, FString::Printf(TEXT("SealStone%d"), Side), A.Pale, GetSealOffset(Side) - FVector(0.0f, 0.0f, 0.6f),
+			(SealRadius + 170.0f) * 2.0f, 1.0f, false);
 	}
-}
 
-void AChaosImpactTempleStage::BuildBridge(const FString& Name, const FVector& From, const FVector& To, const float Width)
-{
-	const FChaosImpactTempleAssets& A = Assets;
-	const FVector Span = To - From;
-	const float Length = Span.Size2D();
-	const float Yaw = TempleStage::YawOf(Span);
-	const FVector Across = FVector(-Span.Y, Span.X, 0.0f).GetSafeNormal();
-	const FVector Middle = (From + To) * 0.5f;
-	AddBox(SceneRoot, Name + TEXT("Deck"), A.Bridge, Middle - FVector(0.0f, 0.0f, 20.0f), FVector(Length, Width, 40.0f), Yaw);
-	AddBox(SceneRoot, Name + TEXT("Under"), A.Sand, Middle - FVector(0.0f, 0.0f, 100.0f), FVector(Length, Width * 0.8f, 120.0f), Yaw, false);
-	// An arch under the middle, so it reads as built rather than floating.
-	AddPart(SceneRoot, Name + TEXT("Arch"), A.Cone, A.Sand, Middle - FVector(0.0f, 0.0f, 330.0f),
-		FVector(Width * 0.9f / 100.0f, Width * 0.9f / 100.0f, 4.4f), FRotator(180.0f, Yaw, 0.0f), false);
-	for (const float Sign : {-1.0f, 1.0f})
+	// The edge, walked round: kerb stones (moss here and there), and an invisible fence just outside them.
+	int32 Kerb = 0;
+	const auto PlaceKerb = [&](const FVector& Inner, const float Yaw)
 	{
-		const FVector Edge = Across * Sign * (Width * 0.5f - 25.0f);
-		AddBox(SceneRoot, FString::Printf(TEXT("%sRail%d"), *Name, Sign > 0 ? 1 : 0), A.Pale, Middle + Edge + FVector(0.0f, 0.0f, 22.0f),
-			FVector(Length, 40.0f, 44.0f), Yaw, true, true);
-		for (const float Along : {-0.5f, 0.5f})
+		const FVector Out(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw)), 0.0f);
+		AddBox(SceneRoot, FString::Printf(TEXT("Kerb%d"), Kerb), Kerb % 3 ? A.Pale : A.Sand, Inner + FVector(0.0f, 0.0f, 20.0f),
+			FVector(70.0f, 200.0f, 40.0f), Yaw, true, true);
+		if (Kerb % 4 == 1)
 		{
-			const FVector Post = Middle + Span * Along * 0.92f + Edge;
-			AddBox(SceneRoot, FString::Printf(TEXT("%sPost%d%d"), *Name, Sign > 0 ? 1 : 0, Along > 0 ? 1 : 0), A.Pale,
-				Post + FVector(0.0f, 0.0f, 70.0f), FVector(70.0f, 70.0f, 140.0f), Yaw, true, true);
-			AddBox(SceneRoot, FString::Printf(TEXT("%sLamp%d%d"), *Name, Sign > 0 ? 1 : 0, Along > 0 ? 1 : 0), A.RuneTeal,
-				Post + FVector(0.0f, 0.0f, 152.0f), FVector(34.0f, 34.0f, 24.0f), Yaw + 45.0f, false);
+			AddPart(SceneRoot, FString::Printf(TEXT("Moss%d"), Kerb), A.Cylinder, A.Moss, Inner - Out * 90.0f + FVector(0.0f, 0.0f, 0.4f),
+				FVector(1.6f, 2.4f, 0.02f), FRotator(0.0f, Yaw, 0.0f), false, false);
 		}
-		// Invisible fences along both sides, reaching onto the islands to close the gap at each end.
-		const FVector Out = Across * Sign * (Width * 0.5f + 15.0f);
-		AddFence(FString::Printf(TEXT("%sFence%d"), *Name, Sign > 0 ? 1 : 0), From - Span.GetSafeNormal2D() * 140.0f + Out,
-			To + Span.GetSafeNormal2D() * 140.0f + Out);
+		++Kerb;
+	};
+	for (int32 Side = 0; Side < 4; ++Side)
+	{
+		const FVector Out(TempleStage::SideDirections[Side], 0.0f);
+		const FVector Along(-Out.Y, Out.X, 0.0f);
+		const int32 Count = FMath::RoundToInt(Straight * 2.0f / 230.0f);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			PlaceKerb(Out * (Half - 35.0f) + Along * (-Straight + (Index + 0.5f) * Straight * 2.0f / Count), TempleStage::YawOf(Out));
+		}
+		AddFence(FString::Printf(TEXT("FenceSide%d"), Side), Out * (Half + 15.0f) - Along * (Straight + 30.0f), Out * (Half + 15.0f) + Along * (Straight + 30.0f));
+	}
+	for (int32 Corner = 0; Corner < 4; ++Corner)
+	{
+		const FVector Centre(TempleStage::CornerDirections[Corner].X * Straight, TempleStage::CornerDirections[Corner].Y * Straight, 0.0f);
+		const float StartYaw = TempleStage::YawOf(Centre) - 45.0f;
+		const int32 Count = FMath::Max(4, FMath::RoundToInt(Round * UE_HALF_PI / 230.0f));
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Yaw = StartYaw + (Index + 0.5f) * 90.0f / Count;
+			PlaceKerb(Centre + FVector(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw)), 0.0f) * (Round - 35.0f), Yaw);
+		}
+		constexpr int32 Segments = 6;
+		for (int32 Index = 0; Index < Segments; ++Index)
+		{
+			const auto At = [&](const float Yaw)
+			{ return Centre + FVector(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw)), 0.0f) * (Round + 15.0f); };
+			const FVector From = At(StartYaw + Index * 90.0f / Segments), To = At(StartYaw + (Index + 1) * 90.0f / Segments);
+			const FVector Extend = (To - From).GetSafeNormal() * 30.0f;
+			AddFence(FString::Printf(TEXT("FenceCorner%d_%d"), Corner, Index), From - Extend, To + Extend);
+		}
 	}
 }
 
@@ -422,6 +411,11 @@ void AChaosImpactTempleStage::BuildSeal(const int32 Seal)
 	Beam->SetCastShadow(false);
 	Beam->SetVisibility(false);
 	PillarBeams.Add(Beam);
+	// While a pillar is coming: the seal becomes a pale red danger area filling toward its edge (as the boss's attacks).
+	UStaticMeshComponent* Area = AddPart(SceneRoot, Name + TEXT("WarnArea"), A.Plane, A.Warn, At + FVector(0.0f, 0.0f, 4.0f),
+		FVector((SealRadius * 2.0f + 90.0f) / 100.0f, (SealRadius * 2.0f + 90.0f) / 100.0f, 1.0f), FRotator::ZeroRotator, false, false);
+	Area->SetVisibility(false);
+	PillarWarnAreas.Add(Area);
 	UStaticMeshComponent* Warn = AddCylinder(SceneRoot, Name + TEXT("WarnBeam"), A.FieldSoft, At, 90.0f, 3400.0f, false);
 	Warn->SetCastShadow(false);
 	Warn->SetVisibility(false);
@@ -455,7 +449,8 @@ void AChaosImpactTempleStage::BuildPortal(const int32 Portal)
 		AddBox(SceneRoot, FString::Printf(TEXT("%sRune%d"), *Name, Sign > 0 ? 1 : 0), bAmber ? A.NeonAmber : A.RuneTeal,
 			Foot + Facing * 62.0f + FVector(0.0f, 0.0f, 260.0f), FVector(6.0f, 40.0f, 260.0f), Yaw, false);
 	}
-	AddBox(SceneRoot, Name + TEXT("Lintel"), A.Sand, At + FVector(0.0f, 0.0f, 505.0f), FVector(150.0f, 760.0f, 90.0f), Yaw, true, true);
+	AddBox(SceneRoot, Name + TEXT("Lintel"), A.Sand, At + FVector(0.0f, 0.0f, 505.0f), FVector(150.0f, 760.0f, 90.0f), Yaw, true, true)
+		->SetCastShadow(false);
 	AddBox(SceneRoot, Name + TEXT("Gilt"), A.Gold, At + Facing * 76.0f + FVector(0.0f, 0.0f, 505.0f), FVector(8.0f, 700.0f, 30.0f), Yaw, false);
 	// The opening: a disc of light filling the gate, and a band turning round its rim.
 	UStaticMeshComponent* Disc = AddPart(SceneRoot, Name + TEXT("Field"), A.Cylinder, bAmber ? A.FieldAmber : A.FieldTeal,
@@ -470,6 +465,18 @@ void AChaosImpactTempleStage::BuildPortal(const int32 Portal)
 		FRotator(90.0f, 0.0f, 0.0f), false, false);
 	AddPart(Swirl, Name + TEXT("BandInner"), A.Band, A.RuneGold, FVector::ZeroVector, FVector(2.5f, 2.5f, 0.8f),
 		FRotator(90.0f, 0.0f, 45.0f), false, false);
+	// Arrows on the floor leading into the gate, in its pair's colour (the gate of the same colour is where you come out).
+	for (int32 Arrow = 0; Arrow < 3; ++Arrow)
+	{
+		const FVector Tip = At + Facing * (260.0f + Arrow * 150.0f) + FVector(0.0f, 0.0f, 1.0f);
+		for (const float Sign : {-1.0f, 1.0f})
+		{
+			const float ArmYaw = Yaw + Sign * 38.0f;
+			const FVector Arm(FMath::Cos(FMath::DegreesToRadians(ArmYaw)), FMath::Sin(FMath::DegreesToRadians(ArmYaw)), 0.0f);
+			AddBox(SceneRoot, FString::Printf(TEXT("%sArrow%d_%d"), *Name, Arrow, Sign > 0 ? 1 : 0), bAmber ? A.NeonAmber : A.RuneTeal,
+				Tip + Arm * 60.0f, FVector(130.0f, 20.0f, 1.2f), ArmYaw, false);
+		}
+	}
 	// A threshold step in front, so the way in is plain.
 	AddBox(SceneRoot, Name + TEXT("Threshold"), bAmber ? A.NeonAmber : A.RuneTeal, At + Facing * 120.0f + FVector(0.0f, 0.0f, 0.8f),
 		FVector(40.0f, 520.0f, 1.2f), Yaw, false);
@@ -561,6 +568,15 @@ void AChaosImpactTempleStage::BeginPlay()
 	for (UStaticMeshComponent* Beam : PillarWarnBeams)
 	{
 		WarnLooks.Add(Beam ? Beam->CreateDynamicMaterialInstance(0) : nullptr);
+	}
+	for (UStaticMeshComponent* Area : PillarWarnAreas)
+	{
+		UMaterialInstanceDynamic* Look = Area ? Area->CreateDynamicMaterialInstance(0) : nullptr;
+		if (Look)
+		{
+			Look->SetScalarParameterValue(TEXT("Lane"), 0.0f);
+		}
+		WarnAreaLooks.Add(Look);
 	}
 	UpdatePillarLook(0.0f);
 }
@@ -753,12 +769,12 @@ void AChaosImpactTempleStage::UpdatePillarLook(const float DeltaSeconds)
 		const float Warn = bThis && Progress < 1.0f ? Progress : 0.0f;
 		const bool bStrike = bThis && Progress >= 1.0f;
 		const float StrikeT = bStrike ? Progress - 1.0f : 0.0f;
-		// The seal: a slow breath at rest; a quickening flicker while it warns; blinding while it strikes.
+		// The seal: a slow breath at rest; dimmed while it warns (so the red danger area over it reads); blinding while
+		// it strikes.
 		const float Rest = 0.6f + 0.25f * FMath::Sin(LookClock * 1.4f + Seal);
-		const float Flicker = Warn > 0.0f ? (2.0f + 6.0f * Warn) * (0.6f + 0.4f * FMath::Sin(LookClock * (10.0f + 25.0f * Warn))) : 0.0f;
 		if (UMaterialInstanceDynamic* Look = SealDiscLooks.IsValidIndex(Seal) ? SealDiscLooks[Seal].Get() : nullptr)
 		{
-			Look->SetScalarParameterValue(TEXT("Intensity"), bStrike ? 14.0f : Rest + Flicker);
+			Look->SetScalarParameterValue(TEXT("Intensity"), bStrike ? 14.0f : Warn > 0.0f ? 0.15f : Rest);
 		}
 		if (UStaticMeshComponent* Ring = SealRings.IsValidIndex(Seal) ? SealRings[Seal].Get() : nullptr)
 		{
@@ -767,12 +783,22 @@ void AChaosImpactTempleStage::UpdatePillarLook(const float DeltaSeconds)
 		}
 		if (UStaticMeshComponent* Warning = PillarWarnBeams.IsValidIndex(Seal) ? PillarWarnBeams[Seal].Get() : nullptr)
 		{
-			// A thin shaft feels its way down from the sky during the warning.
-			Warning->SetVisibility(Warn > 0.0f);
-			Warning->SetRelativeScale3D(FVector(0.9f + Warn * 1.5f, 0.9f + Warn * 1.5f, 34.0f));
-			if (UMaterialInstanceDynamic* Look = WarnLooks.IsValidIndex(Seal) ? WarnLooks[Seal].Get() : nullptr)
+			// (The thin shaft of old is not shown: the danger area on the floor says it all.)
+			Warning->SetVisibility(false);
+		}
+		if (UStaticMeshComponent* Area = PillarWarnAreas.IsValidIndex(Seal) ? PillarWarnAreas[Seal].Get() : nullptr)
+		{
+			// The danger area: fades in, fills from the middle to the edge as the strike nears, blinking faster, then
+			// flashes white as it strikes and fades with the pillar.
+			const bool bShown = Warn > 0.0f || (bStrike && StrikeT < 1.0f);
+			Area->SetVisibility(bShown);
+			if (UMaterialInstanceDynamic* Look = bShown && WarnAreaLooks.IsValidIndex(Seal) ? WarnAreaLooks[Seal].Get() : nullptr)
 			{
-				Look->SetScalarParameterValue(TEXT("Intensity"), 2.0f + 6.0f * Warn);
+				const float Blink = 0.5f + 0.5f * FMath::Sin(LookClock * FMath::Lerp(6.0f, 22.0f, Warn * Warn));
+				Look->SetScalarParameterValue(TEXT("Progress"), bStrike ? 1.0f : Warn);
+				Look->SetScalarParameterValue(TEXT("Flash"), bStrike ? 1.0f - StrikeT : 0.12f * Blink * Warn);
+				Look->SetScalarParameterValue(TEXT("Opacity"), bStrike ? 1.0f - StrikeT : FMath::Clamp(Warn * 8.0f, 0.0f, 1.0f));
+				Look->SetScalarParameterValue(TEXT("Intensity"), 1.5f + 0.4f * Blink * Warn);
 			}
 		}
 		if (UStaticMeshComponent* Beam = PillarBeams.IsValidIndex(Seal) ? PillarBeams[Seal].Get() : nullptr)
@@ -788,7 +814,9 @@ void AChaosImpactTempleStage::UpdatePillarLook(const float DeltaSeconds)
 		}
 		if (UPointLightComponent* Light = SealLights.IsValidIndex(Seal) ? SealLights[Seal].Get() : nullptr)
 		{
-			Light->SetIntensity(bStrike ? 90000.0f * (1.0f - StrikeT) + 8000.0f : Warn * 30000.0f + 1500.0f);
+			// Red while it warns (the danger), the seal's own teal when the light comes down.
+			Light->SetLightColor(Warn > 0.0f ? FLinearColor(1.0f, 0.25f, 0.2f) : FLinearColor(0.35f, 1.0f, 0.9f));
+			Light->SetIntensity(bStrike ? 90000.0f * (1.0f - StrikeT) + 8000.0f : Warn * 14000.0f + 1500.0f);
 		}
 	}
 }

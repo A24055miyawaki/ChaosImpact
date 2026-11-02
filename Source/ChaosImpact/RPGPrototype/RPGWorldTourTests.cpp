@@ -24,6 +24,21 @@ public:
 	{
 		FString Only; FParse::Value(FCommandLine::Get(),TEXT("RPGTourOnly="),Only);
 		const bool bHighOnly=FParse::Param(FCommandLine::Get(),TEXT("RPGTourHigh"));
+		// -RPGTourPart=1: only the lands added in 2026-11 (their overviews and areas).
+		int32 Part=-1; FParse::Value(FCommandLine::Get(),TEXT("RPGTourPart="),Part);
+		if(Part==1)
+		{
+			Views.Add({TEXT("0_Overview_Coast"),FVector(-12000,24000,22000),FRotator(-60,0,0),75});
+			Views.Add({TEXT("0_Overview_Desert"),FVector(-2000,28000,24000),FRotator(-62,0,0),75});
+			Views.Add({TEXT("0_Overview_Pass"),FVector(4000,17000,24000),FRotator(-58,0,0),75});
+			Views.Add({TEXT("0_Overview_Snow"),FVector(10000,29000,26000),FRotator(-55,0,0),70});
+			for(const auto& A:RPGWorld::Areas())
+			{
+				if(A.Part!=1 || bHighOnly) { continue; }
+				Views.Add({FString::Printf(TEXT("2_%s"),*A.Id.ToString()),RPGWorld::AreaPoint(A.Id)+FVector(0,0,120),FRotator::ZeroRotator,0});
+			}
+			return;
+		}
 		Views.Add({TEXT("0_Overview_South"),FVector(-9000,0,26000),FRotator(-62,0,0),75});
 		Views.Add({TEXT("0_Overview_North"),FVector(14000,0,30000),FRotator(-62,0,0),75});
 		Views.Add({TEXT("0_Overview_Canyon"),FVector(17000,-500,16000),FRotator(-55,0,0),70});

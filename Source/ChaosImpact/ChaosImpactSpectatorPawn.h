@@ -69,6 +69,7 @@ private:
 	TWeakObjectPtr<AChaosImpactCharacter> Followed;
 	FVector FlyVelocity = FVector::ZeroVector;
 	bool bHudHidden = false;
+	bool bRoyaleAutoFollow = false;
 	/** Placed for the current kind of view (room or stage) on this machine. */
 	bool bPlaced = false;
 	bool bPlacedForMatch = false;

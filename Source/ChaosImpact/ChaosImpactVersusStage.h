@@ -49,6 +49,8 @@ private:
 	UStaticMeshComponent* CreateBlock(const FName& Name, const FVector& Location, const FVector& Size,
 		const FRotator& Rotation = FRotator::ZeroRotator, bool bCollision = true);
 	void ApplyStageColors();
+	/** The four boundary walls (see-through near the camera). */
+	static const TArray<FString> BoundaryWallNames;
 
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TObjectPtr<USceneComponent> SceneRoot;

@@ -51,6 +51,27 @@ namespace
 		Front.Text(TEXT("VS"), 0.0f, Top, Size, Paper, ETextAlign::Center, TEXT("BlackItalic"), Size * 0.04f, Ink);
 	}
 
+	/** Size for Text in Font so it fits in Width (no bigger than Size). */
+	float FitSize(const FString& Text, const TCHAR* Font, const float Size, const float Width)
+	{
+		const float Measured = static_cast<float>(FSlateApplication::Get().GetRenderer()->GetFontMeasureService()->Measure(
+			Text, FCoreStyle::GetDefaultFontStyle(Font, Size)).X);
+		return Measured > Width && Measured > 0.0f ? Size * Width / Measured : Size;
+	}
+
+	/** Where a fighter's card stands, and where it slides in from. */
+	struct FCardPlace
+	{
+		float X = 0.0f;
+		float Y = 0.0f;
+		float Width = 490.0f;
+		float Height = 230.0f;
+		/** On the left half: its colour stripe and portrait on its outer (left) edge. */
+		bool bLeft = true;
+		/** The way it slides in from (it starts this far off, times 1000). */
+		FVector2f From = FVector2f::ZeroVector;
+	};
+
 	/** A space centred on Center, scaled about it and leaning like the menus. */
 	FGeometry MakeEmblem(const FGeometry& Design, const FVector2f Center, const float Scale)
 	{
@@ -105,42 +126,105 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	const FGeometry Design = MakeDesign(AllottedGeometry, Shake);
 	PaintBackdrop(AllottedGeometry, Design, OutDrawElements, LayerId);
 
-	// The two halves slide in and meet along a slanted seam in the middle.
+	// Two sides facing each other for a 1-on-1 or two teams; anything else stands in a ring round the VS.
+	const int32 Count = Info.Entrants.Num();
+	const bool bSides = Count == 2 || Info.Teams == 2;
+	TArray<FCardPlace> Places;
+	Places.SetNum(Count);
+	if (bSides)
+	{
+		TArray<int32> Halves[2];
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const bool bLeftHalf = Info.Teams == 2 ? Info.Entrants[Index].Team <= 0 : Index < (Count + 1) / 2;
+			Halves[bLeftHalf ? 0 : 1].Add(Index);
+		}
+		for (int32 Half = 0; Half < 2; ++Half)
+		{
+			const int32 SideCount = Halves[Half].Num();
+			const float CardHeight = SideCount <= 1 ? 230.0f : SideCount == 2 ? 170.0f : SideCount == 3 ? 132.0f : 108.0f;
+			constexpr float Gap = 18.0f;
+			for (int32 Slot = 0; Slot < SideCount; ++Slot)
+			{
+				FCardPlace& Place = Places[Halves[Half][Slot]];
+				Place.Width = 490.0f;
+				Place.Height = CardHeight;
+				Place.bLeft = Half == 0;
+				Place.X = Place.bLeft ? 80.0f : DesignWidth - 80.0f - Place.Width;
+				Place.Y = 430.0f - (SideCount * CardHeight + (SideCount - 1) * Gap) * 0.5f + Slot * (CardHeight + Gap);
+				Place.From = FVector2f(Place.bLeft ? -1.0f : 1.0f, 0.0f);
+			}
+		}
+	}
+	else
+	{
+		// Evenly round an ellipse about the VS, clockwise from the upper left (P1 first, where the eye starts), so
+		// the ring sits level.
+		const float Step = 360.0f / FMath::Max(Count, 1);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Angle = FMath::DegreesToRadians(-90.0f - Step * 0.5f + Index * Step);
+			const FVector2f Out(FMath::Cos(Angle), FMath::Sin(Angle));
+			FCardPlace& Place = Places[Index];
+			Place.Width = 300.0f;
+			Place.Height = 146.0f;
+			Place.X = 800.0f + Out.X * 560.0f - Place.Width * 0.5f;
+			Place.Y = 430.0f + Out.Y * 250.0f - Place.Height * 0.5f;
+			Place.bLeft = Out.X < -0.01f || (FMath::Abs(Out.X) <= 0.01f && Index % 2 == 0);
+			Place.From = Out;
+		}
+	}
+
+	// Behind them: for two sides, the halves slide in and meet along a slanted seam in the middle; for a ring, one
+	// field with a warm glow at the middle and the ring the fighters stand on.
 	const float SidesIn = EaseOut(T / 0.38f);
 	const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, DesignWidth, DesignHeight, -0.36f);
 	const FPainter Sides{Slant, OutDrawElements, LayerId + 1};
-	Sides.Box(-1700.0f - (1.0f - SidesIn) * 1100.0f, -60.0f, 2490.0f, 1020.0f, WithAlpha(LeftSide, 0.5f));
-	Sides.Box(778.0f - (1.0f - SidesIn) * 1100.0f, -60.0f, 12.0f, 1020.0f, WithAlpha(Ice, 0.9f));
-	Sides.Box(810.0f + (1.0f - SidesIn) * 1100.0f, -60.0f, 2490.0f, 1020.0f, WithAlpha(RightSide, 0.5f));
-	Sides.Box(810.0f + (1.0f - SidesIn) * 1100.0f, -60.0f, 12.0f, 1020.0f, WithAlpha(Fire, 0.9f));
-	const FPainter Seam{Slant, OutDrawElements, LayerId + 1, FMath::Clamp((T - 0.4f) / 0.2f, 0.0f, 1.0f)};
-	Seam.Box(797.0f, -60.0f, 6.0f, 1020.0f, Gold);
+	if (bSides)
+	{
+		Sides.Box(-1700.0f - (1.0f - SidesIn) * 1100.0f, -60.0f, 2490.0f, 1020.0f, WithAlpha(LeftSide, 0.5f));
+		Sides.Box(778.0f - (1.0f - SidesIn) * 1100.0f, -60.0f, 12.0f, 1020.0f, WithAlpha(Ice, 0.9f));
+		Sides.Box(810.0f + (1.0f - SidesIn) * 1100.0f, -60.0f, 2490.0f, 1020.0f, WithAlpha(RightSide, 0.5f));
+		Sides.Box(810.0f + (1.0f - SidesIn) * 1100.0f, -60.0f, 12.0f, 1020.0f, WithAlpha(Fire, 0.9f));
+		const FPainter Seam{Slant, OutDrawElements, LayerId + 1, FMath::Clamp((T - 0.4f) / 0.2f, 0.0f, 1.0f)};
+		Seam.Box(797.0f, -60.0f, 6.0f, 1020.0f, Gold);
+	}
+	else
+	{
+		const FPainter Field{Design, OutDrawElements, LayerId + 1, SidesIn};
+		for (int32 Glow = 0; Glow < 8; ++Glow)
+		{
+			Field.Ring(FVector2D(800.0, 430.0), 120.0f + Glow * 70.0f, WithAlpha(Gold, 0.05f - Glow * 0.005f), 70.0f, 96);
+		}
+		// The ring the fighters stand on: an ellipse, drawn as a circle in a space squashed about the middle.
+		const FGeometry Squashed = Design.MakeChild(FVector2f(DesignWidth, DesignHeight),
+			FSlateLayoutTransform(FVector2f(0.0f, 430.0f * (1.0f - 250.0f / 560.0f))),
+			FSlateRenderTransform(FScale2f(1.0f, 250.0f / 560.0f)), FVector2f::ZeroVector);
+		const FPainter Orbit{Squashed, OutDrawElements, LayerId + 1, SidesIn * FMath::Clamp((T - 0.3f) / 0.3f, 0.0f, 1.0f)};
+		Orbit.Ring(FVector2D(800.0, 430.0), 560.0f, WithAlpha(Gold, 0.35f), 3.0f, 128);
+		Orbit.Ring(FVector2D(800.0, 430.0), 560.0f, WithAlpha(Gold, 0.08f), 26.0f, 128);
+	}
 	for (int32 Stripe = 0; Stripe < 14; ++Stripe)
 	{
 		const float X = FMath::Fmod(Stripe * 173.0f + T * (90.0f + Stripe * 13.0f), 2100.0f) - 250.0f;
 		Sides.Box(X, -60.0f, 1.5f + Stripe % 3, 1020.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.02f + (Stripe % 4) * 0.008f));
 	}
 
-	// The fighters: the first half on the left, the rest on the right.
-	const int32 Count = Info.Entrants.Num();
-	const int32 LeftCount = (Count + 1) / 2;
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		const FChaosImpactVersusEntrant& Entrant = Info.Entrants[Index];
-		const bool bLeft = Index < LeftCount;
-		const int32 Slot = bLeft ? Index : Index - LeftCount;
-		const int32 SideCount = bLeft ? LeftCount : Count - LeftCount;
-		const float CardHeight = SideCount <= 1 ? 230.0f : SideCount == 2 ? 170.0f : SideCount == 3 ? 132.0f : 108.0f;
-		const float Gap = 18.0f;
-		const float Top = 430.0f - (SideCount * CardHeight + (SideCount - 1) * Gap) * 0.5f + Slot * (CardHeight + Gap);
+		const FCardPlace& Place = Places[Index];
+		const bool bLeft = Place.bLeft;
 		const float Delay = 0.16f + Index * 0.06f;
 		const float In = EaseOut((T - Delay) / 0.34f);
 		if (In <= 0.0f)
 		{
 			continue;
 		}
-		const float CardWidth = 490.0f;
-		const float X = (bLeft ? 80.0f : DesignWidth - 80.0f - CardWidth) + (bLeft ? -1.0f : 1.0f) * (1.0f - In) * 1000.0f;
+		const float CardWidth = Place.Width;
+		const float CardHeight = Place.Height;
+		const float X = Place.X + Place.From.X * (1.0f - In) * 1000.0f;
+		const float Top = Place.Y + Place.From.Y * (1.0f - In) * 1000.0f;
 		const FGeometry Card = MakeSkewed(Design, X, Top, CardWidth, CardHeight, -0.2f);
 		const FPainter Panel{Card, OutDrawElements, LayerId + 3};
 		Panel.Box(0.0f, 0.0f, CardWidth, CardHeight, FLinearColor(0.008f, 0.012f, 0.024f, 0.9f));
@@ -185,15 +269,24 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		}
 		Frame.Box(0.0f, PortraitHeight - 3.0f, PortraitWidth, 3.0f, WithAlpha(Entrant.Color, 0.8f));
 		const float TextLeft = bLeft ? PortraitLeft + PortraitWidth + 18.0f : 24.0f;
-		// The label, and under it the name with its colour after it.
+		const float TextRoom = bLeft ? CardWidth - TextLeft - 18.0f : PortraitLeft - TextLeft - 14.0f;
+		// The label, and under it the name with its colour after it (each shrunk to fit the card if need be; the colour
+		// only where it still fits).
 		const float LabelTop = CardHeight * 0.5f - (LabelSize * 1.3f + NameSize * 1.3f) * 0.5f;
-		Words.Text(Entrant.Label, TextLeft, LabelTop, LabelSize, Entrant.Color, ETextAlign::Left, TEXT("BlackItalic"), 3.0f, Ink);
+		Words.Text(Entrant.Label, TextLeft, LabelTop, FitSize(Entrant.Label, TEXT("BlackItalic"), LabelSize, TextRoom), Entrant.Color,
+			ETextAlign::Left, TEXT("BlackItalic"), 3.0f, Ink);
 		const float NameTop = LabelTop + LabelSize * 1.3f;
-		Words.Text(Entrant.Name, TextLeft + 4.0f, NameTop, NameSize, Paper, ETextAlign::Left, TEXT("Bold"));
+		const float NameFit = FitSize(Entrant.Name, TEXT("Bold"), NameSize, TextRoom - 4.0f);
+		Words.Text(Entrant.Name, TextLeft + 4.0f, NameTop, NameFit, Paper, ETextAlign::Left, TEXT("Bold"));
 		const float NameWidth = static_cast<float>(FSlateApplication::Get().GetRenderer()->GetFontMeasureService()->Measure(
-			Entrant.Name, FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), NameSize)).X);
-		Words.Text(Entrant.Detail, TextLeft + 4.0f + NameWidth + 14.0f, NameTop + NameSize * 0.32f, NameSize * 0.7f, Muted,
-			ETextAlign::Left, TEXT("Bold"));
+			Entrant.Name, FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), NameFit)).X);
+		const float DetailWidth = static_cast<float>(FSlateApplication::Get().GetRenderer()->GetFontMeasureService()->Measure(
+			Entrant.Detail, FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), NameSize * 0.7f)).X);
+		if (NameWidth + 14.0f + DetailWidth <= TextRoom - 4.0f)
+		{
+			Words.Text(Entrant.Detail, TextLeft + 4.0f + NameWidth + 14.0f, NameTop + NameSize * 0.32f, NameSize * 0.7f, Muted,
+				ETextAlign::Left, TEXT("Bold"));
+		}
 	}
 
 	// Header and the rules along the bottom.

@@ -2,6 +2,9 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactGameState.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "ChaosImpactSettings.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/Engine.h"
@@ -10,6 +13,48 @@
 #include "InputKeyEventArgs.h"
 
 TFunction<bool(const FInputKeyEventArgs&)> UChaosImpactGameViewportClient::UnownedGamepadHandler;
+
+ULocalPlayer* UChaosImpactGameViewportClient::GetSingleDuelPlayer(const UWorld* World)
+{
+	const auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	if (!Match || !Match->bOnlineRoom || !Match->IsDuel() || !GI || GI->GetNumLocalPlayers() != 2) { return nullptr; }
+	ULocalPlayer* Fighter = nullptr;
+	int32 Playing = 0, Watching = 0;
+	for (ULocalPlayer* Local : GI->GetLocalPlayers())
+	{
+		const auto* PC = Local ? Local->GetPlayerController(World) : nullptr;
+		const auto* Member = PC ? PC->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+		if (!Member) { return nullptr; }
+		if (Member->bSpectating) { ++Watching; }
+		else { ++Playing; Fighter = Local; }
+	}
+	return Playing == 1 && Watching == 1 ? Fighter : nullptr;
+}
+
+void UChaosImpactGameViewportClient::LayoutPlayers()
+{
+	Super::LayoutPlayers();
+	if (ULocalPlayer* Fighter = GetSingleDuelPlayer(GetWorld()))
+	{
+		// Preserve both network connections, input assignments and spectator state; only change rendering.
+		for (ULocalPlayer* Local : GetWorld()->GetGameInstance()->GetLocalPlayers())
+		{
+			Local->Origin = FVector2D::ZeroVector;
+			Local->Size = Local == Fighter ? FVector2D(1., 1.) : FVector2D::ZeroVector;
+		}
+	}
+}
+
+void UChaosImpactGameViewportClient::Tick(const float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+	const bool bSingleNow = GetSingleDuelPlayer(GetWorld()) != nullptr;
+	// UE normally relayouts only when players join/leave or split settings change. Spectating keeps the same
+	// LocalPlayers, so explicitly update through replication/phase changes and restore the usual layout on exit.
+	if (bSingleNow || bSingleDuelLayout) { LayoutPlayers(); }
+	bSingleDuelLayout = bSingleNow;
+}
 
 bool UChaosImpactGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {

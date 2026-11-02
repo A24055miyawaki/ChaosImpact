@@ -125,6 +125,12 @@ private:
 	TSharedPtr<class IInputProcessor> JoinInputProcessor;
 	/** The room list is rebuilt when the session subsystem's list changes. */
 	int32 LastRoomListingsVersion = -1;
+	/** What a live screen's choices last showed (the 1v1 found, a matched 1v1's rematch): rebuilt when it changes. */
+	FString LastLiveEntriesKey;
+	FString GetLiveEntriesKey() const;
+	/** オンラインメニュー: the 戦績 page, and the card of a 1v1 opponent found. */
+	void PaintOnlineRecord(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
+	void PaintDuelFound(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactCharacterSelect> CharacterSelect;

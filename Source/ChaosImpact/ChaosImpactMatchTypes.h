@@ -52,6 +52,9 @@ struct FChaosImpactMatchRules
 	 */
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	bool bDuel = false;
+	/** One life, one round; last surviving player/team or most remaining HP at the bell. */
+	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
+	bool bBattleRoyale = false;
 
 	bool IsTeamBattle() const { return !bDuel && (bCrashBall || TeamCount >= 2); }
 	bool IsCrashBall() const { return bCrashBall; }
@@ -62,6 +65,8 @@ namespace ChaosImpactMatch
 {
 	inline constexpr int32 MaxCompetitors = 8;
 	inline constexpr int32 MaxTeams = 4;
+	inline constexpr float RoyaleSeconds = 120.f;
+	inline constexpr float RoyaleSuddenDeathSeconds = 30.f;
 
 	/** Stages offered on the stage select screen, in StageIndex order. */
 	inline constexpr int32 StageCount = 6;
@@ -78,8 +83,8 @@ namespace ChaosImpactMatch
 	}
 
 	/**
-	 * Each stage's own level (a local match travels to it; an online room still raises the stage inside its lobby
-	 * level). Content/ChaosImpact/Versus/Levels.
+	 * Each stage's own level: every match is played in its stage's level (a local match opens it; an online room moves
+	 * there from its lobby and back). Content/ChaosImpact/Versus/Levels.
 	 */
 	inline FString GetStageLevel(const int32 StageIndex)
 	{
@@ -91,6 +96,18 @@ namespace ChaosImpactMatch
 			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage5"),
 			TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Stage6")};
 		return Levels[SanitizeStage(StageIndex)];
+	}
+
+	/** The 1-on-1 arena's own level (ランクマッチ and a local 1対1). */
+	inline FString GetDuelLevel()
+	{
+		return TEXT("/Game/ChaosImpact/Versus/Levels/Lvl_VS_Duel");
+	}
+
+	/** The level a match with these rules is played in: the duel's arena, else its stage's own level. */
+	inline FString GetMatchLevel(const FChaosImpactMatchRules& Rules)
+	{
+		return Rules.bDuel ? GetDuelLevel() : GetStageLevel(Rules.StageIndex);
 	}
 
 	/** CPU strengths offered on the rules screen, in CPULevel order. */
@@ -163,8 +180,10 @@ namespace ChaosImpactMatch
 	inline constexpr float ResultsRevealSeconds = 7.0f;
 	/** The results' graph: everyone's points this often from GO. */
 	inline constexpr float HistoryStepSeconds = 2.0f;
-	/** Online: the lobby waits at most this long for everyone to come back from the results. */
-	inline constexpr float ResultsViewLimitSeconds = 90.0f;
+	/** Online results automatically return after twenty seconds of the podium/results screen. */
+	inline constexpr float OnlineResultsReturnSeconds = 20.0f;
+	/** Server grace after the client countdown (the podium starts 1.5 seconds after FINISH). */
+	inline constexpr float ResultsViewLimitSeconds = OnlineResultsReturnSeconds + 3.5f;
 
 	/** Each hit on an opponent scores; knocking them out scores this bonus on top. */
 	inline constexpr int32 HitPoints = 1;
@@ -206,6 +225,25 @@ namespace ChaosImpactMatch
 
 	inline FChaosImpactMatchRules Sanitize(FChaosImpactMatchRules Rules, int32 Humans)
 	{
+		if (Rules.bBattleRoyale)
+		{
+			Rules.bDuel = false;
+			Rules.bCrashBall = false;
+			Rules.Minutes = 2;
+			Rules.StageIndex = SanitizeStage(Rules.StageIndex);
+			Rules.CPULevel = SanitizeCPULevel(Rules.CPULevel);
+			Humans = GetCompetingHumans(Rules, Humans);
+			Rules.TeamCount = Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0;
+			if (Rules.TeamCount == 3 && Humans > 6) { Rules.TeamCount = 2; }
+			Rules.CPUCount = FMath::Clamp(Rules.CPUCount, GetMinCPUCount(Humans, Rules.TeamCount), GetMaxCPUCount(Humans));
+			if (Rules.TeamCount >= 2)
+			{
+				const int32 MaxTotal = MaxCompetitors / Rules.TeamCount * Rules.TeamCount;
+				const int32 Total = FMath::Clamp(FMath::DivideAndRoundUp(Humans + Rules.CPUCount, Rules.TeamCount) * Rules.TeamCount, Rules.TeamCount, MaxTotal);
+				Rules.CPUCount = Total - Humans;
+			}
+			return Rules;
+		}
 		// The duel is for one or two players (more cannot share it): otherwise it falls back to a free-for-all.
 		Rules.bDuel = Rules.bDuel && GetCompetingHumans(Rules, Humans) <= 2;
 		if (Rules.bDuel)
@@ -261,6 +299,10 @@ namespace ChaosImpactMatch
 
 	inline FString DescribeRule(const FChaosImpactMatchRules& Rules)
 	{
+		if (Rules.bBattleRoyale)
+		{
+			return Rules.IsTeamBattle() ? FString::Printf(TEXT("バトルロイヤル  %dチーム"), Rules.TeamCount) : FString(TEXT("バトルロイヤル  個人戦"));
+		}
 		if (Rules.bDuel)
 		{
 			return FString::Printf(TEXT("1対1  %d本先取"), DuelRoundsToWin);
@@ -271,9 +313,9 @@ namespace ChaosImpactMatch
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d"),
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d"),
 			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0,
-			Rules.bDuel ? 1 : 0);
+			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -290,6 +332,7 @@ namespace ChaosImpactMatch
 		OutRules.CPULevel = SanitizeCPULevel(FCString::Atoi(URL.GetOption(TEXT("CICPULevel="), TEXT("2"))));
 		OutRules.bCrashBall = FCString::Atoi(URL.GetOption(TEXT("CICrashBall="), TEXT("0"))) != 0;
 		OutRules.bDuel = FCString::Atoi(URL.GetOption(TEXT("CIDuel="), TEXT("0"))) != 0;
+		OutRules.bBattleRoyale = FCString::Atoi(URL.GetOption(TEXT("CIBattleRoyale="), TEXT("0"))) != 0;
 		if (OutRules.bCrashBall)
 		{
 			OutRules.TeamCount = 2;

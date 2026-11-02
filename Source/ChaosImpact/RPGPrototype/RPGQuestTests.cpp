@@ -65,26 +65,24 @@ public:
             Test->TestEqual(TEXT("Report gives the reward item"),P->GetBag().Num(),Items+1);
             P->RequestQuestPrimary(); Test->TestEqual(TEXT("No second reward"),P->GetRubies(),Money+RPGQuests::Get(4).Rubies);
             P->SetQuestMenuOpen(false);
-            // A quest found in the field: lit beacon -> journal -> asked once -> accepted.
+            // A quest found in the field is taken on at once (the journal only lists quests being done, and done ones).
             P->QuestEvent(ERPGQuestEvent::BeaconLit,P->GetActorLocation(),0);
-            Test->TestEqual(TEXT("Lighting a beacon finds the beacon quest"),RPGQuests::State(P,6),ERPGQuestState::Offered);
-            Test->TestEqual(TEXT("Finding is not accepting"),P->Quests[6].Stage,0);
+            Test->TestEqual(TEXT("Lighting a beacon finds and takes on the beacon quest"),RPGQuests::State(P,6),ERPGQuestState::Active);
+            Test->TestEqual(TEXT("The beacon that finds it counts"),P->Quests[6].Count,1);
             P->QuestEvent(ERPGQuestEvent::RegionEntered,P->GetActorLocation(),0,TEXT("水脈峡谷・入口"));
-            Test->TestEqual(TEXT("Entering the canyon finds the explore quest"),RPGQuests::State(P,8),ERPGQuestState::Offered);
+            Test->TestEqual(TEXT("Entering the canyon takes on the explore quest"),RPGQuests::State(P,8),ERPGQuestState::Active);
             P->AddLoot(FRPGPrototypeItem::Make(EChaosImpactBallType::Fire,1,ERPGPrototypeRarity::Rare));
-            Test->TestEqual(TEXT("A first special ball finds its quest"),RPGQuests::State(P,10),ERPGQuestState::Offered);
+            Test->TestEqual(TEXT("A first special ball takes on its quest"),RPGQuests::State(P,10),ERPGQuestState::Active);
             Test->TestTrue(TEXT("Journal opens anywhere"),P->OpenQuestJournal() && P->QuestGiver==INDEX_NONE);
-            P->SetQuestTab(1); Test->TestTrue(TEXT("Found quests are listed as available"),P->QuestPanelList().Contains(6));
-            P->QuestSelection=6; P->RequestQuestPrimary();
-            Test->TestTrue(TEXT("The journal asks before taking a quest on"),P->bQuestConfirm && P->Quests[6].Stage==0);
+            P->SetQuestTab(0); Test->TestTrue(TEXT("Found quests are listed as in progress"),P->QuestPanelList().Contains(6) && P->QuestPanelList().Contains(8));
+            P->SetQuestTab(1); Test->TestFalse(TEXT("Nothing not taken on is listed"),P->QuestPanelList().ContainsByPredicate([P](int32 I) { return RPGQuests::State(P,I)!=ERPGQuestState::Done; }));
+            P->SetQuestTab(0); P->QuestSelection=6;
             P->NoticeUntil=0; Stage=5; Next=Now+.5; return false;
         }
         case 5:
             Shot(TEXT("quest-journal-confirm.png")); Stage=6; Next=Now+.2; return false;
         case 6:
         {
-            P->HandleQuestKey(EKeys::Enter);
-            Test->TestEqual(TEXT("Confirmed field quest is active"),RPGQuests::State(P,6),ERPGQuestState::Active);
             P->SetQuestTab(0); Test->TestTrue(TEXT("Journal shows what is in progress"),P->QuestPanelList().Contains(6));
             P->QuestSelection=6; P->NoticeUntil=0; Stage=7; Next=Now+.5; return false;
         }
@@ -95,15 +93,14 @@ public:
             P->HandleQuestKey(EKeys::Escape); Test->TestFalse(TEXT("Escape closes the journal"),P->IsQuestMenuOpen());
             Money=P->GetRubies();
             P->QuestEvent(ERPGQuestEvent::BeaconLit,P->GetActorLocation(),1); P->QuestEvent(ERPGQuestEvent::BeaconLit,P->GetActorLocation(),1);
-            Test->TestEqual(TEXT("The same beacon counts once"),P->Quests[6].Count,1);
-            P->QuestEvent(ERPGQuestEvent::BeaconLit,P->GetActorLocation(),2); P->QuestEvent(ERPGQuestEvent::BeaconLit,P->GetActorLocation(),3);
+            Test->TestEqual(TEXT("The same beacon counts once"),P->Quests[6].Count,2);
+            P->QuestEvent(ERPGQuestEvent::BeaconLit,P->GetActorLocation(),2);
             Test->TestEqual(TEXT("Field quest pays out where it is finished"),RPGQuests::State(P,6),ERPGQuestState::Done);
             Test->TestEqual(TEXT("Field quest reward"),P->GetRubies(),Money+RPGQuests::Get(6).Rubies);
-            // Tracked quest on the HUD: take on the explore quest and visit one place.
-            P->OpenQuestJournal(); P->SetQuestTab(1); P->QuestSelection=8; P->RequestQuestPrimary(); P->HandleQuestKey(EKeys::Enter); P->SetQuestMenuOpen(false);
+            // Tracked quest on the HUD: the finished beacon quest hands the tracking on; visit one place of the explore quest.
             P->QuestEvent(ERPGQuestEvent::RegionEntered,P->GetActorLocation(),0,TEXT("峡谷の見晴らし台"));
             Test->TestEqual(TEXT("Explore counts a listed place"),P->Quests[8].Count,1);
-            Test->TestEqual(TEXT("Newly accepted quest is tracked when none is"),P->TrackedQuest,8);
+            Test->TestEqual(TEXT("A finished tracked quest hands the tracking on"),P->TrackedQuest,8);
             P->NoticeUntil=0; Stage=8; Next=Now+.5; return false;
         }
         case 8:

@@ -1,8 +1,11 @@
 #include "RPGOnline.h"
 #include "RPGPrototype.h"
+#include "RPGTutorial.h"
 #include "RPGAdventure.h"
 #include "RPGPrototypeVFX.h"
 #include "ChaosImpactSimaeBossFx.h"
+#include "ChaosImpactSimaeBoss.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
@@ -22,8 +25,11 @@
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemUtils.h"
 #include "UObject/UObjectGlobals.h"
+#include "Dom/JsonObject.h"
 #include "RPGTitle.h"
 #include "RPGSnowField.h"
+#include "RPGFieldEvents.h"
+#include "RPGTreasureChest.h"
 #include "Engine/DamageEvents.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -36,6 +42,10 @@ const FName RPGPassKey(TEXT("CIRPGPASS"));
 const FName RPGHostKey(TEXT("CIRPGHOST"));
 const FName RPGCountKey(TEXT("CIRPGCOUNT"));
 const TCHAR* RPGOnlineSection = TEXT("ChaosImpact.RPGOnline");
+/** The host tells the relay how its world is doing this often (the relay forgets a room silent for 20 s). */
+constexpr double RPGRelayHeartbeatSeconds = 3.0;
+/** The world list asks the relay again this often while it is shown. */
+constexpr double RPGRelaySearchSeconds = 2.0;
 }
 
 // ---------------------------------------------------------------- relay
@@ -91,9 +101,21 @@ void ARPGNetRelay::MulticastLightning_Implementation(FVector_NetQuantize Start, 
 	if (!HasAuthority()) { ARPGPrototypeVFX::PlayLightning(GetWorld(), Start, End); }
 }
 
+void ARPGNetRelay::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ARPGNetRelay, ColonyStage);
+}
+
 void ARPGNetRelay::BindSimaeFx(bool bBind)
 {
-	if (!bBind) { ChaosImpactSimaeFx::NetHook = nullptr; return; }
+	if (!bBind) { ChaosImpactSimaeFx::NetHook = nullptr; ChaosImpactSimaeFx::StrikeHook = nullptr; return; }
+	// A boss's hit on a guest: the balls it knocks loose fall on the guest's own machine (its knockback is sent there already).
+	ChaosImpactSimaeFx::StrikeHook = [](AChaosImpactCharacter* Victim, const FVector&, bool bDropBalls)
+	{
+		auto* Hero = Cast<ARPGPrototypeCharacter>(Victim);
+		if (Hero && Hero->IsRemoteHero() && bDropBalls) { Hero->ClientDropAllBalls(); }
+	};
 	ChaosImpactSimaeFx::NetHook = [](UWorld* World, const ChaosImpactSimaeFx::FNetFx& In)
 	{
 		auto* Relay = Get(World);
@@ -117,7 +139,29 @@ void ARPGNetRelay::MulticastSimaeFx_Implementation(const FRPGSimaeFxNet& Fx)
 	case 3: AChaosImpactSimaeFlameBurst::Play(World, Fx.A, Fx.F0, Fx.Count, Fx.bFlag); break;
 	case 4: if (auto* Warning = GuestWarnings.FindRef(Fx.Id).Get()) { Warning->SetLane(Fx.A, Fx.B, Fx.F0); } break;
 	case 5: if (auto* Warning = GuestWarnings.FindRef(Fx.Id).Get()) { Warning->Finish(); } GuestWarnings.Remove(Fx.Id); break;
-	default: break;
+	case 8:
+		if (Fx.bFlag) { ChaosImpactSimaeFx::PlaySnowBurst(World, Fx.A, Fx.F0); } else { ChaosImpactSimaeFx::PlaySnowDust(World, Fx.A, Fx.F0, Fx.F1, Fx.F2); }
+		break;
+	case 10: ChaosImpactSfx::PlayAt(this, static_cast<EChaosImpactSfx>(Fx.Count), Fx.A, Fx.F0, Fx.F1); break;
+	default:
+	{
+		// The boss's own: its snowballs and goukyu (a guest's copies hurt nobody), shakes, clips, full power, defeat.
+		AChaosImpactSimaeBoss* Boss = nullptr;
+		for (TActorIterator<AChaosImpactSimaeBoss> It(World); It; ++It) { Boss = *It; break; }
+		if (!Boss) { break; }
+		switch (Fx.Kind)
+		{
+		case 6: AChaosImpactSimaeBoulder::Drop(Boss, Fx.A, Fx.F0, Fx.F1, Fx.F2, static_cast<float>(Fx.Count), Fx.Color.A); break;
+		case 7: AChaosImpactSimaeGoukyu::Launch(Boss, nullptr, Fx.A, Fx.B, Fx.F0, Fx.F1, Fx.F2, static_cast<float>(Fx.Count), Fx.Color.A); break;
+		case 9: Boss->ShakeNearby(Fx.A, Fx.F0, Fx.F1, Fx.F2); break;
+		case 11: Boss->PlayNetClip(Fx.Count, Fx.bFlag, Fx.F0); break;
+		case 12: Boss->PresentFullPower(); break;
+		case 13: Boss->SetNetAuraTarget(Fx.F0); break;
+		case 14: Boss->PresentDefeat(); break;
+		default: break;
+		}
+		break;
+	}
 	}
 	// Forget the ones already gone.
 	for (auto It = GuestWarnings.CreateIterator(); It; ++It) { if (!It.Value().IsValid()) { It.RemoveCurrent(); } }
@@ -154,6 +198,7 @@ void URPGOnlineSubsystem::Deinitialize()
 	FTSTicker::GetCoreTicker().RemoveTicker(Ticker);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(MapLoadedHandle);
 	if (GEngine) { GEngine->OnNetworkFailure().Remove(NetworkFailureHandle); GEngine->OnTravelFailure().Remove(TravelFailureHandle); }
+	StopRelay();
 	if (IOnlineSessionPtr Sessions = GetSessions()) { Sessions->ClearOnCreateSessionCompleteDelegates(this); Sessions->ClearOnFindSessionsCompleteDelegates(this); Sessions->ClearOnJoinSessionCompleteDelegates(this); }
 	Super::Deinitialize();
 }
@@ -210,8 +255,8 @@ void URPGOnlineSubsystem::PostNotice(const FString& Text)
 bool URPGOnlineSubsystem::Host(UWorld* World, const FString& InPassword)
 {
 	IOnlineSessionPtr Sessions = GetSessions();
-	if (!World || !Sessions || World->GetNetMode() == NM_Client) { PostNotice(TEXT("通信の準備ができていません")); return false; }
-	BindDelegates();
+	bRelay = ChaosImpactRelay::IsEnabled();
+	if (!World || (!Sessions && !bRelay) || World->GetNetMode() == NM_Client) { PostNotice(TEXT("通信の準備ができていません")); return false; }
 	Password = InPassword.TrimStartAndEnd().Left(MaxPasswordLength);
 	if (Password.IsEmpty()) { PostNotice(TEXT("合言葉を入れてください")); return false; }
 	// Listen first, in this very world (the session then advertises the port actually used).
@@ -221,6 +266,15 @@ bool URPGOnlineSubsystem::Host(UWorld* World, const FString& InPassword)
 		Url.AddOption(TEXT("listen"));
 		if (!World->Listen(Url)) { PostNotice(TEXT("世界を開けませんでした（通信を始められません）")); return false; }
 	}
+	if (bRelay)
+	{
+		// Over the internet: the world's room on the relay, and its tunnel to this world's listen port.
+		State = ERPGOnlineState::Hosting;
+		SavePassword(Password);
+		RelayCreate();
+		return true;
+	}
+	BindDelegates();
 	if (Sessions->GetNamedSession(NAME_GameSession)) { Sessions->DestroySession(NAME_GameSession); }
 	FOnlineSessionSettings Settings;
 	Settings.bIsLANMatch = true; Settings.bUsesPresence = false; Settings.bShouldAdvertise = true;
@@ -245,6 +299,12 @@ void URPGOnlineSubsystem::HandleCreateComplete(FName SessionName, bool bSuccess)
 void URPGOnlineSubsystem::SetPlayerCount(int32 Count)
 {
 	PlayerCount = FMath::Clamp(Count, 1, MaxPlayers);
+	if (bRelay)
+	{
+		// Told with the next heartbeat (now).
+		NextHeartbeatAt = 0;
+		return;
+	}
 	IOnlineSessionPtr Sessions = GetSessions();
 	FOnlineSessionSettings* Current = Sessions ? Sessions->GetSessionSettings(NAME_GameSession) : nullptr;
 	if (State != ERPGOnlineState::Hosting || !Current) { return; }
@@ -255,12 +315,14 @@ void URPGOnlineSubsystem::SetPlayerCount(int32 Count)
 
 void URPGOnlineSubsystem::StartSearch(const FString& InPassword)
 {
-	if (!GetSessions()) { PostNotice(TEXT("通信の準備ができていません")); return; }
-	BindDelegates();
+	bRelay = ChaosImpactRelay::IsEnabled();
+	if (!bRelay && !GetSessions()) { PostNotice(TEXT("通信の準備ができていません")); return; }
 	Password = InPassword.TrimStartAndEnd().Left(MaxPasswordLength);
 	SavePassword(Password);
 	State = ERPGOnlineState::Searching;
 	Listings.Reset(); bSearchedOnce = false;
+	if (bRelay) { ++RelayGeneration; bRelayRequestInFlight = false; RelaySearch(); return; }
+	BindDelegates();
 	BeginFind();
 }
 
@@ -268,6 +330,7 @@ void URPGOnlineSubsystem::StopSearch()
 {
 	if (State != ERPGOnlineState::Searching) { return; }
 	State = ERPGOnlineState::Offline;
+	if (bRelay) { ++RelayGeneration; return; }
 	if (IOnlineSessionPtr Sessions = GetSessions(); Sessions && Search.IsValid() && Search->SearchState == EOnlineAsyncTaskState::InProgress) { Sessions->CancelFindSessions(); }
 }
 
@@ -306,7 +369,9 @@ void URPGOnlineSubsystem::HandleFindComplete(bool bSuccess)
 bool URPGOnlineSubsystem::TickRefresh(float DeltaSeconds)
 {
 	// The list refreshes while it is shown (on the core ticker: the title world may be paused).
-	if (State == ERPGOnlineState::Searching && FPlatformTime::Seconds() >= NextFindAt) { BeginFind(); }
+	const double Now = FPlatformTime::Seconds();
+	if (State == ERPGOnlineState::Searching && Now >= NextFindAt) { if (bRelay) { RelaySearch(); } else { BeginFind(); } }
+	if (bRelay && State == ERPGOnlineState::Hosting && !RelayRoomId.IsEmpty() && Now >= NextHeartbeatAt) { RelayHeartbeat(); }
 #if !UE_BUILD_SHIPPING
 	if (!SmokeRole.IsEmpty()) { TickSmoke(); }
 #endif
@@ -351,8 +416,10 @@ void URPGOnlineSubsystem::TickSmoke()
 				int32 Flying = 0; for (TActorIterator<ARPGPrototypeBall> It(World); It; ++It) { if (It->GetInstigator() == Other) { ++Flying; } }
 				ARPGPrototypeCharacter* Near = nullptr; float NearBest = MAX_flt;
 				for (TActorIterator<ARPGPrototypeCharacter> It(World); It; ++It) { if (It->IsGrunt() && !It->IsEliminated()) { const float D = FVector::DistSquared2D(It->GetActorLocation(), Other->GetActorLocation()); if (D < NearBest) { NearBest = D; Near = *It; } } }
-				Log(FString::Printf(TEXT("watch: guest at %s hp %.0f balls %d flying %d charging %d frozen %d locked %d; nearest enemy %.0fcm hp %.0f"), *Other->GetActorLocation().ToString(), Other->GetHealth(), Other->GetCarriedBallCount(), Flying,
-					Other->IsChargingThrow(), Other->IsTrainingMenuFrozen(), Other->IsMatchInputLocked(), FMath::Sqrt(NearBest), Near ? Near->GetHealth() : -1.0f));
+				const auto* Move = Other->GetCharacterMovement();
+				Log(FString::Printf(TEXT("watch: guest at %s hp %.0f balls %d flying %d charging %d frozen %d locked %d; nearest enemy %.0fcm hp %.0f; trust %d mode %d vz %.0f"), *Other->GetActorLocation().ToString(), Other->GetHealth(), Other->GetCarriedBallCount(), Flying,
+					Other->IsChargingThrow(), Other->IsTrainingMenuFrozen(), Other->IsMatchInputLocked(), FMath::Sqrt(NearBest), Near ? Near->GetHealth() : -1.0f,
+					Move->bServerAcceptClientAuthoritativePosition, static_cast<int32>(Move->MovementMode), Move->Velocity.Z));
 			}
 			SmokeAt = Now + 2; if (Now - SmokeT0 > 30) { SmokeStep = 3; } return;
 		case 3:
@@ -371,7 +438,25 @@ void URPGOnlineSubsystem::TickSmoke()
 		case 4:
 			P->bReviveHeld = false;
 			if (Other) { Log(FString::Printf(TEXT("guest revived: %d hp %.0f"), !Other->IsDowned(), Other->GetHealth())); }
-			SmokeStep = 5; SmokeAt = Now + 10; return;
+			SmokeStep = 41; SmokeTicks = 0; return;
+		case 41:
+		{
+			// A field event and a named enemy: the guest should see both (a falling star needs open ground near a hero).
+			ARPGFieldEvents* Events = ARPGFieldEvents::Find(World);
+			if (Events && Events->GetKind() == ARPGFieldEvents::None) { Events->StartEvent(ARPGFieldEvents::Meteor); }
+			if (Events && Events->GetKind() == ARPGFieldEvents::None && ++SmokeTicks < 6) { SmokeAt = Now + 1; return; }
+			Log(FString::Printf(TEXT("field event started: %d"), Events ? static_cast<int32>(Events->GetKind()) : -1));
+			// (The camp may be beaten by now: one more enemy by the guest for it.)
+			if (Other && (!Grunt || FVector::Dist2D(Grunt->GetActorLocation(), Other->GetActorLocation()) > 3000))
+			{
+				const auto* Mode = World->GetAuthGameMode<ARPGPrototypeGameMode>();
+				const FTransform Where(FRotator::ZeroRotator, Other->GetActorLocation() + FVector(700, 0, 60));
+				Grunt = Mode ? World->SpawnActorDeferred<ARPGPrototypeCharacter>(Mode->GruntClass, Where, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn) : nullptr;
+				if (Grunt) { Grunt->SetEnemy(true, 5); Grunt->FinishSpawning(Where); }
+			}
+			if (Grunt) { Grunt->MakeNamed(); Log(FString::Printf(TEXT("named one: %s"), *Grunt->NamedTitle)); }
+			SmokeStep = 5; SmokeAt = Now + 40; return;
+		}
 		case 5:
 			Log(FString::Printf(TEXT("players now %d"), Heroes)); Quit(); SmokeStep = 6; return;
 		default: return;
@@ -459,12 +544,38 @@ void URPGOnlineSubsystem::TickSmoke()
 			Shot(TEXT("net-guest-members.png")); SmokeStep = 46; SmokeAt = Now + 0.5; return;
 		case 46: P->SetQuestMenuOpen(false); SmokeStep = 5; return;
 		case 5:
+			// The host's field event and named enemy arrive while we wait (down or not).
+			if (!bSmokeEventSeen)
+			{
+				const ARPGFieldEvents* Events = ARPGFieldEvents::Find(World);
+				for (TActorIterator<ARPGPrototypeCharacter> It(World); It; ++It)
+				{
+					if (!It->IsNamed() || !Events || Events->GetKind() == ARPGFieldEvents::None) { continue; }
+					int32 Stars = 0; for (TActorIterator<ARPGTreasureChest> Chest(World); Chest; ++Chest) { if (Chest->DisplayName == TEXT("流れ星の宝箱")) { ++Stars; } }
+					Log(FString::Printf(TEXT("field event seen early: kind %d (%s), star chests %d, named '%s' scale %.2f elite %d"), static_cast<int32>(Events->GetKind()), *Events->GetTitle(), Stars, *It->NamedTitle,
+						It->GetActorScale3D().Z, It->IsElite() ? 1 : 0));
+					bSmokeEventSeen = true; P->NoticeUntil = 0; Shot(TEXT("net-guest-event.png")); break;
+				}
+			}
 			if (P->IsDowned() && !bSmokeShotDowned) { bSmokeShotDowned = true; Log(FString::Printf(TEXT("I am down: %.0f s left"), P->GetDownedLeft())); P->NoticeUntil = 0; Shot(TEXT("net-guest-downed.png")); }
 			if (bSmokeShotDowned && !P->IsDowned()) { Log(FString::Printf(TEXT("helped up: hp %.0f"), P->GetHealth())); SmokeStep = 6; SmokeAt = Now + 1; return; }
 			if (Now - SmokeT0 > 60) { Log(TEXT("never downed")); SmokeStep = 6; }
 			return;
 		case 6:
-			Shot(TEXT("net-guest-up.png")); SmokeStep = 7; SmokeAt = Now + 3; return;
+			Shot(TEXT("net-guest-up.png")); SmokeStep = 61; SmokeAt = Now + 2; SmokeT0 = Now; return;
+		case 61:
+		{
+			// The host's field event and named enemy, as this screen has them (a few seconds to arrive).
+			const ARPGFieldEvents* Events = ARPGFieldEvents::Find(World);
+			bool bNamedHere = false; for (TActorIterator<ARPGPrototypeCharacter> It(World); It; ++It) { if (It->IsNamed()) { bNamedHere = true; } }
+			if ((!Events || Events->GetKind() == ARPGFieldEvents::None || !bNamedHere) && ++SmokeTicks < 3000 && Now - SmokeT0 < 12) { SmokeAt = Now + 0.5; return; }
+			int32 Stars = 0; for (TActorIterator<ARPGTreasureChest> It(World); It; ++It) { if (It->DisplayName == TEXT("流れ星の宝箱")) { ++Stars; } }
+			FString Named; float NamedScale = 0;
+			for (TActorIterator<ARPGPrototypeCharacter> It(World); It; ++It) { if (It->IsNamed()) { Named = It->NamedTitle; NamedScale = It->GetActorScale3D().Z; } }
+			Log(FString::Printf(TEXT("field event seen: kind %d (%s), star chests %d, named '%s' scale %.2f"), Events ? static_cast<int32>(Events->GetKind()) : -1, Events ? *Events->GetTitle() : TEXT("-"), Stars, *Named, NamedScale));
+			P->NoticeUntil = 0; Shot(TEXT("net-guest-event.png"));
+			SmokeStep = 7; SmokeAt = Now + 2; return;
+		}
 		case 7:
 			Quit(); SmokeStep = 8; return;
 		default: return;
@@ -476,8 +587,33 @@ void URPGOnlineSubsystem::TickSmoke()
 bool URPGOnlineSubsystem::Join(int32 Index)
 {
 	IOnlineSessionPtr Sessions = GetSessions();
-	if (!Sessions || State != ERPGOnlineState::Searching || !Listings.IsValidIndex(Index)) { return false; }
+	if ((!Sessions && !bRelay) || State != ERPGOnlineState::Searching || !Listings.IsValidIndex(Index)) { return false; }
 	if (Listings[Index].Players >= MaxPlayers) { PostNotice(TEXT("この世界は4人そろっています")); return false; }
+	if (bRelay)
+	{
+		// Through this game's own tunnel: directly to the host where the two can reach each other, else via the relay.
+		APlayerController* Controller = GetGameInstance() ? GetGameInstance()->GetFirstLocalPlayerController() : nullptr;
+		if (!Controller) { return false; }
+		++RelayGeneration;
+		GuestTunnel = MakeUnique<FChaosImpactRelayGuestTunnel>(Listings[Index].RelayPort);
+		FString Connect;
+		if (GuestTunnel->Start())
+		{
+			Connect = FString::Printf(TEXT("127.0.0.1:%d"), GuestTunnel->GetLocalPort());
+		}
+		else
+		{
+			GuestTunnel.Reset();
+			FString RelayHost, PortText;
+			if (ChaosImpactRelay::UseWebSocket() || !ChaosImpactRelay::GetServer().Split(TEXT(":"), &RelayHost, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+			{ PostNotice(TEXT("中継サーバーにつながりません")); return false; }
+			Connect = FString::Printf(TEXT("%s:%d"), *RelayHost, Listings[Index].RelayPort);
+		}
+		State = ERPGOnlineState::Guest;
+		UE_LOG(LogChaosImpact, Log, TEXT("RPG online: joining %s's world through %s"), *Listings[Index].Host, *Connect);
+		Controller->ClientTravel(Connect + TEXT("?CIRPGPrototype=1?CIOpenWorld=1?CIRPGHeroes=1?CIRPGGuest=1?CILocalPlayers=1?CIKeyboardPlayer=0"), TRAVEL_Absolute);
+		return true;
+	}
 	if (Search.IsValid() && Search->SearchState == EOnlineAsyncTaskState::InProgress) { Sessions->CancelFindSessions(); }
 	if (Sessions->GetNamedSession(NAME_GameSession)) { Sessions->DestroySession(NAME_GameSession); }
 	State = ERPGOnlineState::Joining;
@@ -507,6 +643,7 @@ void URPGOnlineSubsystem::HandleJoinComplete(FName SessionName, EOnJoinSessionCo
 void URPGOnlineSubsystem::Leave()
 {
 	StopSearch();
+	StopRelay();
 	State = ERPGOnlineState::Offline;
 	if (IOnlineSessionPtr Sessions = GetSessions(); Sessions && Sessions->GetNamedSession(NAME_GameSession)) { Sessions->DestroySession(NAME_GameSession); }
 }
@@ -521,6 +658,138 @@ void URPGOnlineSubsystem::LostConnection(const FString& Error)
 	PostNotice(Error.Contains(TEXT("CIRPGFULL")) ? TEXT("この世界は4人そろっています") : TEXT("ホストとの接続が切れました。タイトルに戻りました"));
 	Leave();
 	bReturnToTitle = true;
+}
+
+// ---------------------------------------------------------------- over the internet
+
+FString URPGOnlineSubsystem::RelayVersion()
+{
+	// The relay lists rooms of the same version only: RPG worlds and VS rooms never meet.
+	return TEXT("rpg-") + ChaosImpactRelay::GetNetVersion();
+}
+
+void URPGOnlineSubsystem::RelayCreate()
+{
+	const int32 Generation = ++RelayGeneration;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("create"));
+	Message->SetStringField(TEXT("ver"), RelayVersion());
+	Message->SetStringField(TEXT("password"), Password);
+	Message->SetStringField(TEXT("name"), FString::Printf(TEXT("%sの世界"), *GetHostName()));
+	Message->SetStringField(TEXT("host"), GetHostName());
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<URPGOnlineSubsystem>(this), Generation](TSharedPtr<FJsonObject> Reply, int32)
+	{
+		URPGOnlineSubsystem* Self = WeakThis.Get();
+		if (!Self || Generation != Self->RelayGeneration || Self->State != ERPGOnlineState::Hosting) { return; }
+		if (!Reply.IsValid() || !Reply->GetBoolField(TEXT("ok")))
+		{
+			Self->PostNotice(!Reply.IsValid() ? TEXT("中継サーバーにつながりません") : TEXT("合言葉の世界を作れませんでした"));
+			return;
+		}
+		Self->RelayRoomId = Reply->GetStringField(TEXT("room"));
+		Self->RelayRoomKey = Reply->GetStringField(TEXT("key"));
+		Self->RelayRoomPort = static_cast<int32>(Reply->GetNumberField(TEXT("port")));
+		Self->NextHeartbeatAt = FPlatformTime::Seconds() + RPGRelayHeartbeatSeconds;
+		Self->StartRelayTunnel();
+		UE_LOG(LogChaosImpact, Log, TEXT("RPG online: hosting with password \"%s\" on relay port %d"), *Self->Password, Self->RelayRoomPort);
+	});
+}
+
+void URPGOnlineSubsystem::StartRelayTunnel()
+{
+	UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
+	UNetDriver* Driver = World ? World->GetNetDriver() : nullptr;
+	const TSharedPtr<const FInternetAddr> Local = Driver ? Driver->GetLocalAddr() : nullptr;
+	const int32 ListenPort = Local.IsValid() && Local->GetPort() > 0 ? Local->GetPort() : FURL::UrlConfig.DefaultPort;
+	FString RelayHost, PortText;
+	const FString Server = ChaosImpactRelay::GetServer();
+	if (!Server.Split(TEXT(":"), &RelayHost, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd)) { RelayHost = Server; }
+	Tunnel = MakeUnique<FChaosImpactRelayTunnel>(RelayHost, RelayRoomPort, RelayRoomKey, ListenPort);
+	if (!Tunnel->Start()) { Tunnel.Reset(); PostNotice(TEXT("中継サーバーにつながりません")); }
+}
+
+void URPGOnlineSubsystem::RelayHeartbeat()
+{
+	NextHeartbeatAt = FPlatformTime::Seconds() + RPGRelayHeartbeatSeconds;
+	const int32 Generation = RelayGeneration;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("update"));
+	Message->SetStringField(TEXT("room"), RelayRoomId);
+	Message->SetStringField(TEXT("key"), RelayRoomKey);
+	Message->SetNumberField(TEXT("members"), FMath::Max(1, PlayerCount));
+	Message->SetNumberField(TEXT("spectators"), 0);
+	Message->SetBoolField(TEXT("open"), PlayerCount < MaxPlayers);
+	Message->SetStringField(TEXT("name"), FString::Printf(TEXT("%sの世界"), *GetHostName()));
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<URPGOnlineSubsystem>(this), Generation](TSharedPtr<FJsonObject> Reply, int32)
+	{
+		URPGOnlineSubsystem* Self = WeakThis.Get();
+		if (!Self || Generation != Self->RelayGeneration || Self->State != ERPGOnlineState::Hosting || !Reply.IsValid()) { return; }
+		if (!Reply->GetBoolField(TEXT("ok")))
+		{
+			// The relay no longer knows the world (it restarted): made again, at a new port (guests already in stay).
+			UE_LOG(LogChaosImpact, Warning, TEXT("RPG online: the relay lost the world; making it again"));
+			Self->Tunnel.Reset();
+			Self->RelayRoomId.Reset();
+			Self->RelayCreate();
+		}
+	});
+}
+
+void URPGOnlineSubsystem::RelaySearch()
+{
+	NextFindAt = FPlatformTime::Seconds() + RPGRelaySearchSeconds;
+	if (bRelayRequestInFlight) { return; }
+	bRelayRequestInFlight = true;
+	const int32 Generation = RelayGeneration;
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("op"), TEXT("search"));
+	Message->SetStringField(TEXT("ver"), RelayVersion());
+	Message->SetStringField(TEXT("password"), Password);
+	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<URPGOnlineSubsystem>(this), Generation](TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
+	{
+		URPGOnlineSubsystem* Self = WeakThis.Get();
+		if (!Self) { return; }
+		Self->bRelayRequestInFlight = false;
+		if (Generation != Self->RelayGeneration || Self->State != ERPGOnlineState::Searching) { return; }
+		if (!Reply.IsValid()) { Self->PostNotice(TEXT("中継サーバーにつながりません")); Self->bSearchedOnce = true; return; }
+		TArray<FRPGWorldListing> Found;
+		const TArray<TSharedPtr<FJsonValue>>* Rooms = nullptr;
+		if (Reply->TryGetArrayField(TEXT("rooms"), Rooms))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Rooms)
+			{
+				const TSharedPtr<FJsonObject> Room = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!Room.IsValid()) { continue; }
+				FRPGWorldListing& Listing = Found.AddDefaulted_GetRef();
+				Listing.Host = Room->GetStringField(TEXT("host"));
+				Listing.Players = static_cast<int32>(Room->GetNumberField(TEXT("members")));
+				Listing.PingMs = RoundTripMs;
+				Listing.RelayPort = static_cast<int32>(Room->GetNumberField(TEXT("port")));
+			}
+		}
+		Found.StableSort([](const FRPGWorldListing& A, const FRPGWorldListing& B) { return A.Players < MaxPlayers && B.Players >= MaxPlayers; });
+		Self->Listings = MoveTemp(Found);
+		Self->bSearchedOnce = true;
+		UE_LOG(LogChaosImpact, Log, TEXT("RPG online: the relay has %d world(s) with the password"), Self->Listings.Num());
+	});
+}
+
+void URPGOnlineSubsystem::StopRelay()
+{
+	if (!RelayRoomId.IsEmpty())
+	{
+		TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+		Message->SetStringField(TEXT("op"), TEXT("close"));
+		Message->SetStringField(TEXT("room"), RelayRoomId);
+		Message->SetStringField(TEXT("key"), RelayRoomKey);
+		ChaosImpactRelay::Request(Message, [](TSharedPtr<FJsonObject>, int32) {});
+	}
+	++RelayGeneration;
+	RelayRoomId.Reset();
+	RelayRoomKey.Reset();
+	RelayRoomPort = 0;
+	Tunnel.Reset();
+	GuestTunnel.Reset();
 }
 
 void URPGOnlineSubsystem::HandleMapLoaded(UWorld* World)
@@ -546,6 +815,11 @@ void ARPGPrototypeCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME_CONDITION(ARPGPrototypeCharacter, RPGLevel, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(ARPGPrototypeCharacter, RepMaxHealth, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(ARPGPrototypeCharacter, HeroName, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(ARPGPrototypeCharacter, BossesBeaten, COND_SkipOwner);
+	DOREPLIFETIME(ARPGPrototypeCharacter, bElite);
+	DOREPLIFETIME(ARPGPrototypeCharacter, NamedTitle);
+	DOREPLIFETIME_CONDITION(ARPGPrototypeCharacter, TackleSkill, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(ARPGPrototypeCharacter, DashSkill, COND_SkipOwner);
 	DOREPLIFETIME(ARPGPrototypeCharacter, bDowned);
 	DOREPLIFETIME(ARPGPrototypeCharacter, DownedEndsAt);
 	DOREPLIFETIME(ARPGPrototypeCharacter, ReviveProgress);
@@ -650,6 +924,14 @@ void ARPGPrototypeCharacter::ClientApplyStatus_Implementation(FName Key, float V
 	ApplyRPGStatus(Key, Value, Seconds);
 }
 void ARPGPrototypeCharacter::ClientDropAllBalls_Implementation() { LoseCarriedBalls(); }
+void ARPGPrototypeCharacter::ServerRetryBoss_Implementation(ARPGPrototypeBoss* Boss) { if (Boss) { Boss->Retry(this); } }
+void ARPGPrototypeCharacter::ServerSetBossesBeaten_Implementation(int32 Mask) { BossesBeaten = Mask & 0x7F; }
+void ARPGPrototypeCharacter::NoteBossBeaten(int32 BossId)
+{
+	if (BossId < 0 || BossId > 6 || (BossesBeaten & (1 << BossId))) { return; }
+	BossesBeaten |= 1 << BossId;
+	if (!HasAuthority() && IsLocallyControlled()) { ServerSetBossesBeaten(BossesBeaten); }
+}
 
 void ARPGPrototypeCharacter::ApplyKillEffects(const FRPGKillCredit& Credit)
 {
@@ -669,17 +951,21 @@ void ARPGPrototypeCharacter::ReceiveKillCredit(const FRPGKillCredit& Credit)
 		LastKillAt = GetWorld()->GetTimeSeconds(); bKillDashReady = true;
 		if (Credit.KillRefund > 0) { ReduceSpecialCooldowns(Credit.KillRefund); }
 	}
-	int32 Gain = FMath::RandRange(RPGTuning::KillRubyMin, RPGTuning::KillRubyMax) + RPGLevel;
+	int32 Gain = RPGTuning::KillRubies(RPGLevel);
+	// A fully grown colony: more rubies from every enemy.
+	if (RPGColony::WorldStage(GetWorld()) >= RPGColony::MaxStage) { Gain = FMath::RoundToInt(Gain * 1.1f); }
 	Gain = FMath::RoundToInt(Gain * (1 + BadgeMod(TEXT("Ruby")) * .01f));
 	if (FMath::FRand() * 100 < BadgeMod(TEXT("TechLucky"))) { Gain *= 2; }
 	AddRubies(Gain);
 	GainRPGExperience(RPGTuning::KillXP);
 	QuestEvent(ERPGQuestEvent::Kill, Credit.At, Credit.Detail);
-	if (Credit.bBoss) { AddRubies(Credit.Level * RPGTuning::BossRubyPerLevel); }
-	if (!Credit.bBoss && FMath::FRand() >= FMath::Clamp(Credit.DropChance, 0.0f, 1.0f)) { return; }
-	// A drop of its own (rarity and kind odds: RPGTuning, cumulative from the rarest).
+	if (Credit.bBoss) { AddRubies(Credit.Level * RPGTuning::BossRubyPerLevel); AddTuneShards(RPGTuning::ShardsPerBoss, TEXT("ボス撃破")); NoteBossBeaten(Credit.BossId); }
+	else if (Credit.bNamed) { AddRubies(Credit.Level * RPGTuning::BossRubyPerLevel / 2); AddTuneShards(RPGTuning::ShardsPerNamed, TEXT("ネームド撃破")); }
+	else if (FMath::FRand() < RPGTuning::ShardDropChance) { AddTuneShards(1, TEXT("敵が落とした")); }
+	if (!Credit.bBoss && !Credit.bNamed && FMath::FRand() >= FMath::Clamp(Credit.DropChance, 0.0f, 1.0f)) { return; }
+	// A drop of its own (rarity and kind odds: RPGTuning, cumulative from the rarest). A named one drops as a boss does.
 	using namespace RPGTuning;
-	const bool bBoss = Credit.bBoss;
+	const bool bBoss = Credit.bBoss || Credit.bNamed;
 	const float Roll = FMath::FRand();
 	const auto Rarity = bBoss ? (Roll < BossLegendChance ? ERPGPrototypeRarity::Legend : Roll < BossLegendChance + BossUniqueChance ? ERPGPrototypeRarity::Unique : ERPGPrototypeRarity::Rare)
 		: Roll < EnemyLegendChance ? ERPGPrototypeRarity::Legend : Roll < EnemyLegendChance + EnemyUniqueChance ? ERPGPrototypeRarity::Unique

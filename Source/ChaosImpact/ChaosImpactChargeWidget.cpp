@@ -1,6 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactPlayerMarkerLayout.h"
+#include "ChaosImpactGameViewportClient.h"
 #include "ChaosImpactEase.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
@@ -356,6 +358,10 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	const ULocalPlayer* SingleDuelPlayer = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
+	// Slate keeps a player's HUD layer even when their scene view has zero size. Keep its tick alive so it
+	// restores on return to the lobby, but hide the observer's personal HUD during the shared duel view.
+	SetRenderOpacity(SingleDuelPlayer && GetOwningLocalPlayer() != SingleDuelPlayer ? 0.f : 1.f);
 	RefreshPersonalAimGuide();
 	RefreshSplitScreenDividers();
 	RefreshBallPickupAnimation();
@@ -610,7 +616,8 @@ void UChaosImpactChargeWidget::RefreshPersonalAimGuide()
 		const FVector2D Delta = End - Start;
 		if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(Bar->Slot))
 		{
-			Slot->SetPosition(Start);
+			// The pivot is the bar's left middle, so its middle line starts exactly at Start.
+			Slot->SetPosition(Start - FVector2D(0.0f, Thickness * 0.5f));
 			Slot->SetSize(FVector2D(FMath::Max(Delta.Length(), 1.0f), Thickness));
 		}
 		Bar->SetRenderTransformAngle(FMath::RadiansToDegrees(FMath::Atan2(Delta.Y, Delta.X)));
@@ -646,7 +653,7 @@ void UChaosImpactChargeWidget::RefreshSplitScreenDividers()
 
 	bool bShowVertical = false;
 	bool bShowHorizontal = false;
-	if (PlayerCount == 2)
+	if (PlayerCount == 2 && !UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld()))
 	{
 		bShowVertical = PlayerIndex == 0;
 	}
@@ -1057,6 +1064,12 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
 {
 	using namespace ChaosImpactPaint;
+	if (const ULocalPlayer* Single = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
+		Single && GetOwningLocalPlayer() != Single)
+	{
+		// The spectator still owns a Slate layer, but none of its hand-painted personal HUD belongs in the fighter's view.
+		return LayerId;
+	}
 
 	const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
 		OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
@@ -1281,7 +1294,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 			Hint.Text(FString::Printf(TEXT("ボール化中　%s で解除"),*Key),0,7,20,Paper,ETextAlign::Center);
 		}
 	}
-	PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 6);
+	// The online room overlay is rendered once by the full-window announcer, outside split-view clipping.
 	PaintSoloClear(AllottedGeometry, OutDrawElements, HudLayer + 28);
 	return FMath::Max(BaseLayer + 22, HudLayer + 44);
 }
@@ -1523,7 +1536,8 @@ float UChaosImpactChargeWidget::GetHudScale(const double Width, const double Hei
 {
 	const UGameInstance* ScaleGameInstance = GetGameInstance();
 	const UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
-	if (ScaleGameInstance && ScaleGameInstance->GetLocalPlayers().Num() > 1 && Viewport && !Viewport->IsSplitscreenForceDisabled())
+	if (ScaleGameInstance && ScaleGameInstance->GetLocalPlayers().Num() > 1 && Viewport && !Viewport->IsSplitscreenForceDisabled()
+		&& !UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld()))
 	{
 		// A split view is only part of the screen but is read from the same distance, so it is sized by what
 		// fits in the view rather than shrunk in proportion to it.
@@ -2133,11 +2147,51 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	const FGeometry Bottom = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y, S);
 	const FGeometry Plate = MakeSkewed(Bottom, -300.0f, -128.0f, 600.0f, 64.0f, -0.25f);
 	const FPainter P{Plate, OutDrawElements, BaseLayer, 1.0f};
+	const auto* RoyaleEntry = Match && Match->IsBattleRoyale() && GetOwningPlayer() ? Match->GetRoyaleEntry(GetOwningPlayer()->PlayerState) : nullptr;
+	const bool bRoyaleOut = RoyaleEntry && RoyaleEntry->bOut;
+	// バトルロイヤル: the place this player fell at, in its medal's colours (gold, silver, bronze; red after that).
+	const FHudFill PlaceFill = !bRoyaleOut ? SolidFill(Ice) : RoyaleEntry->Place == 1 ? FireFill : RoyaleEntry->Place == 2 ? SilverFill
+		: RoyaleEntry->Place == 3 ? BronzeFill : MakeFill(FLinearColor(1.0f, 0.3f, 0.32f), FLinearColor(0.55f, 0.04f, 0.1f));
 	P.Box(8.0f, 8.0f, 600.0f, 64.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
 	P.Box(0.0f, 0.0f, 600.0f, 64.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.88f));
-	P.Box(0.0f, 0.0f, 150.0f, 64.0f, Ice);
+	P.Box(0.0f, 0.0f, 150.0f, 64.0f, PlaceFill.Middle);
 	P.Box(0.0f, 60.0f, 600.0f, 4.0f, ShowingColor);
-	P.Text(TEXT("観戦中"), 75.0f, 11.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+	if (bRoyaleOut && Match)
+	{
+		// The moment this player falls: their place, large over the field, before the camera takes over. Falling at
+		// the start of sudden death, it waits until that call-out has gone.
+		const double Now = FPlatformTime::Seconds();
+		const bool bSuddenCall = Match->Royale.bSuddenDeath && Match->GetServerWorldTimeSeconds() - Match->Royale.SuddenDeathStartedAt < 2.2;
+		if (RoyaleOwnOutMatch != Match->PhaseStartedAt && !bSuddenCall)
+		{
+			RoyaleOwnOutMatch = Match->PhaseStartedAt;
+			RoyaleOwnOutSeenAt = Now;
+		}
+		const float Age = static_cast<float>(Now - RoyaleOwnOutSeenAt);
+		if (RoyaleOwnOutMatch == Match->PhaseStartedAt && Age < 3.2f && RoyaleEntry->Place > 0)
+		{
+			const float Alpha = EaseOut(Age / 0.15f) * (1.0f - FMath::Clamp((Age - 2.7f) / 0.5f, 0.0f, 1.0f));
+			const float Pop = 1.0f + 0.5f * FMath::Exp(-10.0f * Age);
+			const FGeometry Card = MakeSkewed(MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.31f, S), -200.0f, -90.0f, 400.0f, 180.0f, -0.12f, Pop);
+			const FPainter Back{Card, OutDrawElements, BaseLayer + 6, Alpha};
+			HudShard(Back, {FVector2D(22.0, 16.0), FVector2D(400.0, 0.0), FVector2D(378.0, 168.0), FVector2D(0.0, 180.0)}, NightFill, 4.0f, FVector2D(8.0, 9.0));
+			const FPainter Front = HudAbove(Back);
+			HudShard(Front, {FVector2D(40.0, 30.0), FVector2D(250.0, 22.0), FVector2D(236.0, 156.0), FVector2D(26.0, 164.0)}, PlaceFill, 3.0f, FVector2D(4.0, 5.0));
+			const FString PlaceText = FString::FromInt(RoyaleEntry->Place);
+			const float PlaceWidth = HudMeasure(PlaceText, 108.0f, TEXT("BlackItalic"));
+			HudText3D(HudAbove(Front, 2), PlaceText, 112.0f, 18.0f, 108.0f, Paper, ETextAlign::Center);
+			HudText3D(HudAbove(Front, 2), TEXT("位"), 112.0f + PlaceWidth * 0.5f + 4.0f, 82.0f, 44.0f, Paper, ETextAlign::Left, TEXT("Black"));
+			HudText3D(HudAbove(Front, 2), FString::Printf(TEXT("/%d"), Match->Royale.Entries.Num()), 274.0f, 98.0f, 30.0f, WithAlpha(Paper, 0.85f), ETextAlign::Left);
+			FPainter{Card, OutDrawElements, BaseLayer + 12, Alpha}.Text(TEXT("脱落"), 272.0f, 38.0f, 40.0f, Fire, ETextAlign::Left, TEXT("Black"), 3.0f, Ink);
+			if (Age < 0.6f)
+			{
+				HudShatter(FPainter{Card, OutDrawElements, BaseLayer + 13, Alpha}, FVector2D(200.0, 90.0), Age / 0.6f, 40.0f, PlaceFill, 9, 3.0f);
+			}
+		}
+	}
+	const FString Caption = RoyaleEntry && RoyaleEntry->bOut
+		? (RoyaleEntry->Place > 0 ? FString::Printf(TEXT("%d位 脱落"), RoyaleEntry->Place) : FString(TEXT("脱落"))) : FString(TEXT("観戦中"));
+	P.Text(Caption, 75.0f, 11.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 	P.Text(Showing, 375.0f, 12.0f, 30.0f, ShowingColor, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 	const AChaosImpactPlayerController* Viewer = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 	const bool bOnline = Viewer && Viewer->IsOnlineRoom();
@@ -2188,6 +2242,17 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 	const UGameInstance* GameInstance = GetGameInstance();
 	// In smoke nobody else's name or arrow shows; they drift back in as it clears.
 	const float OthersShown = 1.0f - GetSmokeCover();
+	float MarkerTopInset = 0.f;
+	if (const AChaosImpactGameState* Match = World->GetGameState<AChaosImpactGameState>(); Match && (Match->IsDuel() || Match->IsBattleRoyale()))
+	{
+		// The scoreboard is shared across the whole window, while markers live inside each player's view.
+		// Convert its lower edge to this view's widget coordinates, including split screens and DPI scaling.
+		const FGeometry Viewport = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this);
+		const FVector2D ViewportSize = Viewport.GetLocalSize();
+		const float ScoreScale = FMath::Clamp(static_cast<float>(FMath::Min(ViewportSize.X / 1600., ViewportSize.Y / 900.)), .42f, 1.4f);
+		MarkerTopInset = FMath::Clamp(static_cast<float>(AllottedGeometry.AbsoluteToLocal(
+			Viewport.LocalToAbsolute(FVector2D(ViewportSize.X * .5, (Match->IsBattleRoyale() ? 190.f : 155.f) * ScoreScale))).Y), 0.f, static_cast<float>(Center.Y * .75));
+	}
 
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
@@ -2248,9 +2313,13 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 			{
 				const FPainter Tag{AllottedGeometry, OutDrawElements, BaseLayer, Shown};
 				const float FontSize = 15.0f * S;
-				const FVector2D Tip(HeadScreen.X, HeadScreen.Y);
 				ChaosImpactCombatHealth::FPresentation HealthTag;
 				const float HealthSpace = GetCombatHealthPresentation(Character,HealthTag) ? 24.0f * S : 0.0f;
+				if (MarkerTopInset > 0.f)
+				{
+					HeadScreen.Y = FMath::Max(HeadScreen.Y, static_cast<double>(MarkerTopInset + FontSize * 1.75f + 7.f * S + HealthSpace));
+				}
+				const FVector2D Tip(HeadScreen.X, HeadScreen.Y);
 				Tag.Text(Name, static_cast<float>(HeadScreen.X), static_cast<float>(HeadScreen.Y) - FontSize * 1.75f - 7.0f * S - HealthSpace,
 					FontSize, Color, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
 				PaintMarkerArrow(Tag, Tip, FVector2D(0.0, 1.0), 0.38f * S, Color);
@@ -2297,12 +2366,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		const float Nearness = 1.0f - FMath::Clamp(
 			(Distance - PlayerMarkerNearDistance) / (PlayerMarkerRange - PlayerMarkerNearDistance), 0.0f, 1.0f);
 		const float K = S * FMath::Lerp(0.75f, 1.8f, Nearness * Nearness);
-		const float Margin = 30.0f * K + 6.0f;
-		const FVector2D Half(FMath::Max(Center.X - Margin, 1.0), FMath::Max(Center.Y - Margin, 1.0));
-		const double Reach = FMath::Min(
-			FMath::Abs(Direction.X) > UE_KINDA_SMALL_NUMBER ? Half.X / FMath::Abs(Direction.X) : UE_BIG_NUMBER,
-			FMath::Abs(Direction.Y) > UE_KINDA_SMALL_NUMBER ? Half.Y / FMath::Abs(Direction.Y) : UE_BIG_NUMBER);
-		const FVector2D Tip = Center + Direction * Reach + Direction * 14.0f * K;
+		const FVector2D Tip = ChaosImpactPlayerMarkerLayout::EdgeTip(Size, Direction, K, MarkerTopInset);
 
 		const FPainter Marker{AllottedGeometry, OutDrawElements, BaseLayer, FMath::Lerp(0.6f, 1.0f, Nearness) * Shown};
 		Marker.Disc(Tip - Direction * 16.0f * K, 18.0f * K, WithAlpha(Ink, 0.62f));
@@ -2379,7 +2443,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 		}
 		const float In = EaseOut((Elapsed - 0.3f) / 0.35f);
 		const float Out = FMath::Clamp((Elapsed - (ChaosImpactMatch::FlyoverSeconds - 0.35f)) / 0.3f, 0.0f, 1.0f);
-		if (In > 0.0f && Out < 1.0f)
+		if (In > 0.0f && Out < 1.0f && !Match->Rules.bBattleRoyale)
 		{
 			const float Alpha = In * (1.0f - Out);
 			// Plain type over the flyover, rising slightly into place.
@@ -2407,7 +2471,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			return;
 		}
 		// The duel's scoreboard (both players, their rounds and health) is drawn once for the whole screen.
-		if (Match->Rules.bDuel)
+		if (Match->Rules.bDuel || Match->Rules.bBattleRoyale)
 		{
 			return;
 		}
@@ -2616,7 +2680,9 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
 	const double Clock = FPlatformTime::Seconds();
-	const float S = GetHudScale(Size.X, Size.Y);
+	// Split participants need room to see their arena: use one compact shared overlay, scaled for the window.
+	const UGameInstance* OverlayGI = GetGameInstance();
+	const float S = GetHudScale(Size.X, Size.Y) * (OverlayGI && OverlayGI->GetNumLocalPlayers() > 1 ? .72f : 1.f);
 	const FGeometry TopLeft = MakeAnchor(AllottedGeometry, 0.0f, 0.0f, S);
 	const FGeometry Center = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.5f, S);
 	const FGeometry TopCenter = MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, S);
@@ -2651,6 +2717,40 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		NoticeY = 144.0f;
 	}
 
+	// ランダムマッチ: searching (or just found) while waiting in local training.
+	if (Sessions && (!Room || !Room->bOnlineRoom) && Sessions->IsQueueing())
+	{
+		const bool bFound = Sessions->IsQueueMatched() || Sessions->IsDuelOffered();
+		const bool bDuel = Sessions->GetQueueMode() == EChaosImpactQueueMode::Duel;
+		const int32 Elapsed = FMath::Max(0, FMath::FloorToInt(Clock - Sessions->GetQueueStartedAt()));
+		FString Line = FString::Printf(TEXT("%d:%02d"), Elapsed / 60, Elapsed % 60);
+		if (!bFound && Sessions->GetQueueWaitingCount() > 0)
+		{
+			Line += FString::Printf(TEXT("  ・  いま%d人"), Sessions->GetQueueWaitingCount());
+		}
+		if (!bFound && !bDuel && Sessions->GetQueueStartsIn() >= 0.0f)
+		{
+			Line += FString::Printf(TEXT("  ・  あと%d秒で開始"), FMath::CeilToInt(Sessions->GetQueueStartsIn()));
+		}
+		const FGeometry Chip = MakeSkewed(TopLeft, 40.0f, 40.0f, 720.0f, 84.0f, -0.25f);
+		const FPainter P{Chip, OutDrawElements, BaseLayer};
+		P.Box(8.0f, 9.0f, 720.0f, 84.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		P.Box(0.0f, 0.0f, 720.0f, 84.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
+		P.Box(0.0f, 0.0f, 12.0f, 84.0f, bFound ? Gold : bDuel ? Gold : Fire);
+		P.Text(bFound ? TEXT("見つかりました！") : bDuel ? TEXT("1v1の相手をさがしています") : TEXT("ランダムマッチ 8人をさがしています"),
+			40.0f, 8.0f, 28.0f, Paper);
+		P.Text(bFound ? FString(TEXT("まもなく対戦がはじまります")) : Line + TEXT("    ポーズでやめる"), 42.0f, 48.0f, 20.0f, Muted);
+		const FVector2D SpinCenter(676.0f, 42.0f);
+		for (int32 Dot = 0; Dot < 6 && !bFound; ++Dot)
+		{
+			const float Angle = static_cast<float>(Clock) * 6.0f + Dot * UE_TWO_PI / 6.0f;
+			const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+			P.Line(SpinCenter + Direction * 12.0f, SpinCenter + Direction * 22.0f,
+				WithAlpha(Paper, 0.2f + 0.8f * Dot / 5.0f), 5.0f);
+		}
+		NoticeY = 144.0f;
+	}
+
 	// Room notices such as "the room was dissolved".
 	if (Sessions && !Sessions->GetNotice().IsEmpty() && Clock - Sessions->GetNoticeTime() < 4.0)
 	{
@@ -2668,7 +2768,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 	}
 	// Join / leave / play-or-watch notes in the top-right corner, under the lobby's rules panel when it is shown.
 	{
-		const bool bLobbyPanels = !Room->bVersusMatch
+		const bool bLobbyPanels = !Room->bVersusMatch && !Room->bRoomMatchLevel
 			&& (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting);
 		const float ToastTop = !bLobbyPanels ? 36.0f : Room->bRulesDecided ? 304.0f : Room->bRecruitmentClosed ? 112.0f : 36.0f;
 		PaintRoomToasts(AllottedGeometry, OutDrawElements, BaseLayer + 1, ToastTop);
@@ -2689,7 +2789,8 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 	}
 
 	// Member list: host at the top, then everyone in the order they came in.
-	if (!Room->bVersusMatch && (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting))
+	if (!Room->bVersusMatch && !Room->bRoomMatchLevel
+		&& (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting))
 	{
 		// The room card: its name, the password on a gold tag, how full it is (a pip per place, lit when taken).
 		constexpr float ListW = 500.0f;
@@ -2835,12 +2936,17 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		W.Text(FString::Printf(TEXT("観戦 %d/%d  %s"), Watchers.Num(), AChaosImpactGameState::MaxSpectators,
 			*FString::Join(WatcherNames, TEXT("・"))), 22.0f, 4.0f, 20.0f, Watchers.IsEmpty() ? Muted : Gold,
 			ETextAlign::Left, TEXT("Bold"));
-		if (const AChaosImpactPlayerController* SwitchController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-			SwitchController && SwitchController->CanToggleSpectating())
+		if (const UGameInstance* LocalGI = GetGameInstance(); LocalGI && !Room->bRecruitmentClosed)
 		{
-			W.Text(FString::Printf(TEXT("%s で%s"), *ChaosImpactSettings::DescribeAction(SwitchController, EChaosImpactAction::LobbySpectate),
-				SwitchController->IsSpectating() ? TEXT("プレイヤーに戻る") : TEXT("観戦にする")),
-				24.0f, 42.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Regular"));
+			for (int32 Index = 0; Index < LocalGI->GetNumLocalPlayers(); ++Index)
+			{
+				const auto* SwitchController = Cast<AChaosImpactPlayerController>(LocalGI->GetLocalPlayers()[Index]->GetPlayerController(GetWorld()));
+				if (!SwitchController || !SwitchController->CanToggleSpectating()) { continue; }
+				W.Text(FString::Printf(TEXT("%dP  %s  %s"), Index + 1,
+					*ChaosImpactSettings::DescribeAction(SwitchController, EChaosImpactAction::LobbySpectate),
+					SwitchController->IsSpectating() ? TEXT("プレイヤーに戻る") : TEXT("観戦にする")),
+					24.0f, 42.0f + Index * 25.f, 18.0f, WithAlpha(Paper, .85f), ETextAlign::Left, TEXT("Regular"));
+			}
 		}
 
 		if (!Room->bRecruitmentClosed && !Room->IsMatchmade())

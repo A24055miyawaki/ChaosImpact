@@ -50,13 +50,17 @@ enum class EChaosImpactOnlinePhase : uint8
 	Starting
 };
 
-/** A room the relay made for a ランダムマッチ or ランクマッチ (not a 合言葉 room): it starts by itself and ends with the match. */
+/**
+ * A room the relay made for a ランダムマッチ (8 players or 1v1) or ランクマッチ (not a 合言葉 room): it starts by itself
+ * and ends with the match (a 1v1 may be played again if both players ask).
+ */
 UENUM(BlueprintType)
 enum class EChaosImpactMatchmade : uint8
 {
 	None,
 	Random,
-	Rank
+	Rank,
+	Duel
 };
 
 /** Where a ランクマッチ round stands (only while the match phase runs). */
@@ -199,6 +203,9 @@ public:
 	/** Online: still on the results (the lobby waits for everyone to come back before the next match). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	bool bViewingResults = false;
+	/** ランダムマッチ 1v1, on the results: this player asked for 同じ相手と再戦 (both asking starts it). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	bool bWantsRematch = false;
 
 	/** Points, knockouts and every number above back to nothing (a new match). */
 	void ResetMatchStats();
@@ -215,6 +222,33 @@ public:
 	static FString MakeSecondPlayerName(const FString& FirstPlayerName) { return FirstPlayerName + TEXT("(2)"); }
 };
 
+USTRUCT()
+struct FChaosImpactRoyaleEntry
+{
+	GENERATED_BODY()
+	UPROPERTY() TObjectPtr<AChaosImpactPlayerState> Member;
+	UPROPERTY() FString Name;
+	UPROPERTY() int32 Character = 0;
+	UPROPERTY() int32 Colour = 0;
+	UPROPERTY() int32 Team = INDEX_NONE;
+	UPROPERTY() float Health = 3.f;
+	UPROPERTY() bool bOut = false;
+	UPROPERTY() int32 Place = 0;
+};
+
+USTRUCT()
+struct FChaosImpactRoyaleState
+{
+	GENERATED_BODY()
+	UPROPERTY() TArray<FChaosImpactRoyaleEntry> Entries;
+	UPROPERTY() TArray<int32> TeamPlaces;
+	UPROPERTY() bool bSuddenDeath = false;
+	UPROPERTY() bool bFinished = false;
+	UPROPERTY() double SuddenDeathStartedAt = 0.;
+	UPROPERTY() int32 AlivePlayers = 0;
+	UPROPERTY() int32 AliveSides = 0;
+};
+
 /** Replicated room and VS match state, used by online rooms and local matches alike. */
 UCLASS()
 class AChaosImpactGameState : public AGameStateBase
@@ -222,6 +256,12 @@ class AChaosImpactGameState : public AGameStateBase
 	GENERATED_BODY()
 
 public:
+	UPROPERTY(Replicated)
+	FChaosImpactRoyaleState Royale;
+	bool IsBattleRoyale() const { return bVersusMatch && Rules.bBattleRoyale; }
+	const FChaosImpactRoyaleEntry* GetRoyaleEntry(const APlayerState* Member) const;
+	bool IsRoyaleEliminated(const APlayerState* Member) const;
+	float GetRoyaleTeamHealth(int32 Team) const;
 	UPROPERTY(Replicated)
 	FChaosImpactCrashMatchState Crash;
 	AChaosImpactCrashBall* GetCrashBall() const { return Crash.Ball; }
@@ -262,6 +302,13 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	bool bOnlineRoom = false;
+
+	/**
+	 * This level is the online room's match level (it came here from its lobby for one match, and goes back after):
+	 * no lobby here, only the match and, before it, the wait for everyone to arrive.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	bool bRoomMatchLevel = false;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	EChaosImpactOnlinePhase Phase = EChaosImpactOnlinePhase::Lobby;

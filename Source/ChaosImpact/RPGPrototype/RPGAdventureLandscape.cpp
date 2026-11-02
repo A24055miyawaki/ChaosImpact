@@ -1,3 +1,5 @@
+#include "RPGColony.h"
+#include "RPGFieldEvents.h"
 #include "RPGAdventure.h"
 #include "RPGQuests.h"
 #include "RPGSnowField.h"
@@ -59,7 +61,7 @@ FString ARPGAdventureWorld::RegionName(const FVector& At) const
     return Snow.IsEmpty()?RPGWorld::RegionAt(GetActorTransform().InverseTransformPosition(At)):Snow;
 }
 void ARPGAdventureWorld::OnConstruction(const FTransform& Transform) { Super::OnConstruction(Transform); Rebuild(); }
-void ARPGAdventureWorld::BeginPlay() { Super::BeginPlay(); if(Parts.IsEmpty()) { Rebuild(); } ARPGQuestGiver::SpawnDefaults(GetWorld(),GetActorTransform()); ARPGSnowField::Ensure(GetWorld(),GetActorTransform()); ARPGHealHerb::SpawnField(GetWorld()); }
+void ARPGAdventureWorld::BeginPlay() { Super::BeginPlay(); if(Parts.IsEmpty()) { Rebuild(); } ARPGQuestGiver::SpawnDefaults(GetWorld(),GetActorTransform()); ARPGSnowField::Ensure(GetWorld(),GetActorTransform()); ARPGHealHerb::SpawnField(GetWorld()); ARPGColonyDecor::Ensure(GetWorld()); if(HasAuthority()) { ARPGFieldEvents::Ensure(GetWorld()); } }
 void ARPGAdventureWorld::Piece(const TCHAR* Shape,const TCHAR* Material,FVector At,FVector Dimensions,FRotator Rotation,bool Collision)
 {
     const FString Key=FString(Shape)+TEXT("_")+Material+(Collision?TEXT("_solid"):TEXT("_decor"));

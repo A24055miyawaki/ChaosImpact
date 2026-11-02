@@ -67,8 +67,13 @@ namespace
 				}
 				PC->BeginVersusLocal();
 				FChaosImpactMatchRules& Rules = const_cast<FChaosImpactMatchRules&>(PC->GetPendingMatchRules());
+				// -CIVsCardCPUs=<n> / -CIVsCardTeams=<n>: another line-up (default: 3 CPUs, each for themselves).
 				Rules.CPUCount = 3;
 				Rules.TeamCount = 0;
+				FParse::Value(FCommandLine::Get(), TEXT("CIVsCardCPUs="), Rules.CPUCount);
+				FParse::Value(FCommandLine::Get(), TEXT("CIVsCardTeams="), Rules.TeamCount);
+				// -CIVsCardDuel: a 1対1 (against one CPU), which loads the duel arena's own level.
+				Rules.bDuel = FParse::Param(FCommandLine::Get(), TEXT("CIVsCardDuel"));
 				Rules.Minutes = 3;
 				Rules.CPULevel = 3;
 				PC->ConfirmMatchRules();
@@ -99,7 +104,11 @@ namespace
 					return false;
 				}
 				LoadedAt = Now;
-				UE_LOG(LogTemp, Display, TEXT("VSCARD VS level opened %.2f s after the card started"), Now - CardAt);
+				UE_LOG(LogTemp, Display, TEXT("VSCARD VS level %s opened %.2f s after the card started"), *World->GetMapName(), Now - CardAt);
+				if (FParse::Param(FCommandLine::Get(), TEXT("CIVsCardDuel")))
+				{
+					Test->TestTrue(TEXT("A 1対1 is played in the duel arena's own level"), World->GetMapName().Contains(TEXT("Lvl_VS_Duel")));
+				}
 				Shoot(TEXT("4_LevelOpensDark"));
 				Stage = 5;
 				NextAt = Now + 0.1;

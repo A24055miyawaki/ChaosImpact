@@ -3,6 +3,7 @@
 #include "RPGAdventure.h"
 #include "RPGPrototype.h"
 #include "RPGTreasureChest.h"
+#include "RPGAbilityGates.h"
 #include "Materials/MaterialInterface.h"
 
 #if WITH_EDITOR
@@ -261,7 +262,7 @@ int32 URPGWorldBuilder::BuildTerrain(UMaterialInterface* Material,int32 FirstTil
 			FStaticMeshAttributes Attributes(*Description); Attributes.Register();
 			auto Positions=Attributes.GetVertexPositions(); auto Normals=Attributes.GetVertexInstanceNormals();
 			auto UVs=Attributes.GetVertexInstanceUVs(); auto Colors=Attributes.GetVertexInstanceColors();
-			UVs.SetNumChannels(2);
+			UVs.SetNumChannels(4);
 			const FPolygonGroupID Group=Description->CreatePolygonGroup();
 			Attributes.GetPolygonGroupMaterialSlotNames()[Group]=TEXT("Ground");
 			const int32 Q=LodQuads[Lod]; const float Step=TileSize/Q; const int32 N=Q+3;
@@ -286,8 +287,11 @@ int32 URPGWorldBuilder::BuildTerrain(UMaterialInterface* Material,int32 FirstTil
 					const FVector3f Normal=FVector3f(-DX,-DY,1).GetSafeNormal();
 					// Colour: dirt, pavers, sand, moss; second UVs: cave floor, and how near the cliff's lip.
 					const FVector4f Color(S.Dirt,S.Pavers,S.Sand,S.Moss);
-					const FVector2f Extra(S.Cave,FMath::Clamp(1-S.Inside/220.0f,0.0f,1.0f));
+					// Second UVs: cave floor, snow.
+					const FVector2f Extra(S.Cave,S.Snow);
 					Instances[I*Side+J]=Make(FVector3f(I*Step,J*Step,S.Height),Normal,Color,Extra,X0+I*Step,Y0+J*Step);
+					// Third and fourth UVs: regional colour (ash, dry grass; marsh).
+					UVs.Set(Instances[I*Side+J],2,FVector2f(S.Ash,S.Dry)); UVs.Set(Instances[I*Side+J],3,FVector2f(S.Marsh,0));
 				}
 			}
 			for(int32 I=0;I<Q;++I)
@@ -309,7 +313,8 @@ int32 URPGWorldBuilder::BuildTerrain(UMaterialInterface* Material,int32 FirstTil
 				for(int32 Index:Edge)
 				{
 					const FVector3f P=Positions[Description->GetVertexInstanceVertex(Instances[Index])];
-					Low.Add(Make(P-FVector3f(0,0,600),Outward,Colors[Instances[Index]],FVector2f(0,1),0,0));
+					Low.Add(Make(P-FVector3f(0,0,600),Outward,Colors[Instances[Index]],UVs.Get(Instances[Index],1),0,0));
+					UVs.Set(Low.Last(),2,UVs.Get(Instances[Index],2)); UVs.Set(Low.Last(),3,UVs.Get(Instances[Index],3));
 				}
 				for(int32 K=0;K+1<Edge.Num();++K)
 				{
@@ -340,7 +345,7 @@ int32 URPGWorldBuilder::BuildTerrain(UMaterialInterface* Material,int32 FirstTil
 namespace RPGWorldBuild
 {
 using RPGWorld::Height;
-enum class EBiome : uint8 { Village, Meadow, Rocky, Forest, Blossom, Beach, Ruins, Canyon, Garden, Cave };
+enum class EBiome : uint8 { Village, Meadow, Rocky, Forest, Blossom, Beach, Ruins, Canyon, Garden, Cave, Desert, Snow, Volcano, Swamp };
 
 struct FKit
 {
@@ -350,11 +355,14 @@ struct FKit
 	TMap<FString,UStaticMesh*> Meshes;
 	/** Where gameplay things stand: scenery keeps clear of these. */
 	TArray<FVector4> Reserved;
+	/** Also on everything made (ExtendLevel's "RPGWorld2": a second run replaces only those). */
+	FName ExtraTag;
 
 	UMaterialInterface* Mat(const FString& Name)
 	{
 		if(UMaterialInterface** Found=Materials.Find(Name)) { return *Found; }
-		UMaterialInterface* M=LoadObject<UMaterialInterface>(nullptr,*FString::Printf(TEXT("%s/Materials/M_%s.M_%s"),Root,*Name,*Name),nullptr,LOAD_Quiet|LOAD_NoWarn);
+		// A full path ("/Game/...") is loaded as it is; a short name is one of the adventure's own materials.
+		UMaterialInterface* M=Name.StartsWith(TEXT("/"))?nullptr:LoadObject<UMaterialInterface>(nullptr,*FString::Printf(TEXT("%s/Materials/M_%s.M_%s"),Root,*Name,*Name),nullptr,LOAD_Quiet|LOAD_NoWarn);
 		if(!M) { M=LoadObject<UMaterialInterface>(nullptr,*Name,nullptr,LOAD_Quiet|LOAD_NoWarn); }
 		if(!M) { UE_LOG(LogTemp,Warning,TEXT("RPGWORLD missing material %s"),*Name); M=LoadObject<UMaterialInterface>(nullptr,TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")); }
 		Materials.Add(Name,M); return M;
@@ -373,7 +381,7 @@ struct FKit
 		FActorSpawnParameters Params; Params.ObjectFlags|=RF_Transactional; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		auto* A=World->SpawnActor<ARPGAdventureSceneryPiece>(At,FRotator::ZeroRotator,Params);
 		if(bMovable) { A->GetRootComponent()->SetMobility(EComponentMobility::Movable); }
-		A->SetActorLabel(Label); A->SetFolderPath(FName(*(TEXT("RPGWorld/")+Folder))); A->Tags.Add(TEXT("RPGWorld"));
+		A->SetActorLabel(Label); A->SetFolderPath(FName(*(TEXT("RPGWorld/")+Folder))); A->Tags.Add(TEXT("RPGWorld")); if(!ExtraTag.IsNone()) { A->Tags.Add(ExtraTag); }
 		++Made; return A;
 	}
 	/** A part: Size in cm (all the meshes are 100 across), At and rotation in the world. */
@@ -411,7 +419,12 @@ EBiome BiomeAt(float X,float Y)
 		{TEXT("Quarry"),EBiome::Rocky},{TEXT("Pit"),EBiome::Rocky},{TEXT("Tower"),EBiome::Rocky},{TEXT("Fort"),EBiome::Rocky},
 		{TEXT("Forest"),EBiome::Forest},{TEXT("Grove"),EBiome::Forest},{TEXT("Hills"),EBiome::Blossom},{TEXT("Windmill"),EBiome::Blossom},
 		{TEXT("Cove"),EBiome::Beach},{TEXT("Islet"),EBiome::Beach},{TEXT("Ruins"),EBiome::Ruins},{TEXT("CanyonGate"),EBiome::Ruins},
-		{TEXT("Lookout"),EBiome::Canyon},{TEXT("Camp"),EBiome::Canyon},{TEXT("Sluice"),EBiome::Canyon},{TEXT("Garden"),EBiome::Garden}};
+		{TEXT("Lookout"),EBiome::Canyon},{TEXT("Camp"),EBiome::Canyon},{TEXT("Sluice"),EBiome::Canyon},{TEXT("Garden"),EBiome::Garden},
+		// 2026-11.
+		{TEXT("Strand"),EBiome::Beach},{TEXT("Harbor"),EBiome::Village},{TEXT("Cape"),EBiome::Blossom},{TEXT("Marsh"),EBiome::Swamp},
+		{TEXT("VolcanoFoot"),EBiome::Volcano},{TEXT("Crater"),EBiome::Volcano},{TEXT("Dunes"),EBiome::Desert},{TEXT("Oasis"),EBiome::Desert},
+		{TEXT("SandTemple"),EBiome::Desert},{TEXT("Teahouse"),EBiome::Blossom},{TEXT("Mesa"),EBiome::Canyon},{TEXT("Pillars"),EBiome::Canyon},
+		{TEXT("SnowPass"),EBiome::Snow},{TEXT("SnowCamp"),EBiome::Snow},{TEXT("SnowWood"),EBiome::Snow},{TEXT("FrozenLake"),EBiome::Snow},{TEXT("Nest"),EBiome::Snow}};
 	if(const EBiome* Found=Table.Find(Best)) { return *Found; }
 	return X>17500?EBiome::Canyon:EBiome::Meadow;
 }
@@ -422,6 +435,34 @@ void Tree(FKit& K,const FVector& At,float S,FRandomStream& R,int32 Style)
 {
 	auto* A=K.Piece(FString::Printf(TEXT("RPG_樹木_%.0f_%.0f"),At.X,At.Y),RegionFolder(At)+TEXT("/樹木"),At);
 	const float Yaw=R.FRandRange(0,360);
+	if(Style==6)
+	{
+		// A pine under snow (the pass and the snowfield).
+		K.Part(A,TEXT("KitFrustum"),TEXT("Bark"),At+FVector(0,0,90*S),FVector(48,48,180)*S,FRotator(0,Yaw,0),true);
+		for(int32 I=0;I<3;++I)
+		{
+			const FVector Tier=At+FVector(0,0,(230+I*125)*S), Size=FVector(330-I*80,330-I*80,260-I*40)*S;
+			K.Part(A,TEXT("KitCone"),TEXT("Pine"),Tier,Size,FRotator(0,Yaw+I*22,0));
+			K.Part(A,TEXT("KitCone"),TEXT("/Game/ChaosImpact/solo/Stage08/Materials/MI_Snow.MI_Snow"),Tier+FVector(0,0,Size.Z*.2f),Size*FVector(.74f,.74f,.62f),FRotator(0,Yaw+I*22+10,0));
+		}
+		return;
+	}
+	if(Style==7)
+	{
+		// A cactus: a column with an arm or two turned up.
+		K.Part(A,TEXT("KitCylinder"),TEXT("Moss"),At+FVector(0,0,150*S),FVector(72,72,300)*S,FRotator(0,Yaw,0),true);
+		K.Part(A,TEXT("Sphere"),TEXT("Moss"),At+FVector(0,0,298*S),FVector(72,72,46)*S);
+		for(const float Side:{-1.0f,1.0f})
+		{
+			if(Side>0 && R.FRand()<.4f) { continue; }
+			const FVector Out=FRotator(0,Yaw,0).RotateVector(FVector(0,Side,0));
+			const float Up=R.FRandRange(120,190)*S;
+			K.Part(A,TEXT("KitCylinder"),TEXT("Moss"),At+Out*70*S+FVector(0,0,Up),FVector(46,46,110)*S,FRotationMatrix::MakeFromZ(Out).Rotator());
+			K.Part(A,TEXT("KitCylinder"),TEXT("Moss"),At+Out*118*S+FVector(0,0,Up+70*S),FVector(46,46,140)*S);
+			K.Part(A,TEXT("Sphere"),TEXT("Moss"),At+Out*118*S+FVector(0,0,Up+140*S),FVector(46,46,30)*S);
+		}
+		return;
+	}
 	if(Style==1)
 	{
 		// A pine: a short trunk under three tiers of needles.
@@ -687,14 +728,80 @@ void Glow(FKit& K,AActor* A,const FVector& At,const FLinearColor& Color,float In
 	A->AddInstanceComponent(Light); Light->RegisterComponent();
 }
 
+// ---------------------------------------------------------------- pieces of the 2026-11 lands
+const TCHAR* SnowMat=TEXT("/Game/ChaosImpact/solo/Stage08/Materials/MI_Snow.MI_Snow");
+const TCHAR* SnowBankMat=TEXT("/Game/ChaosImpact/solo/Stage08/Materials/MI_SnowBank.MI_SnowBank");
+const TCHAR* IceMat=TEXT("/Game/ChaosImpact/FX/M_CI_IceSurface.M_CI_IceSurface");
+
+/** On (or right beside) a road or an area of the new lands. */
+/** On a new road (its width plus a margin). */
+bool OnNewRoad(const FVector& At,float Margin)
+{
+	for(const auto& Road:RPGWorld::Roads())
+	{
+		if(Road.Part!=1) { continue; }
+		for(int32 I=0;I+1<Road.Points.Num();++I)
+		{
+			FVector A=Road.Points[I],B=Road.Points[I+1]; A.Z=B.Z=0;
+			if(FVector::Dist2D(FMath::ClosestPointOnSegment(FVector(At.X,At.Y,0),A,B),FVector(At.X,At.Y,0))<Road.Width*.5f+Margin) { return true; }
+		}
+	}
+	return false;
+}
+bool OnNewGround(const FVector& At,float Margin)
+{
+	for(const auto& A:RPGWorld::Areas())
+	{
+		if(A.Part!=1) { continue; }
+		const float Rn=FMath::Sqrt(FMath::Square((At.X-A.At.X)/A.Radius.X)+FMath::Square((At.Y-A.At.Y)/A.Radius.Y));
+		if(Rn<1+Margin/FMath::Min(A.Radius.X,A.Radius.Y)) { return true; }
+	}
+	for(const auto& Road:RPGWorld::Roads())
+	{
+		if(Road.Part!=1) { continue; }
+		for(int32 I=0;I+1<Road.Points.Num();++I)
+		{
+			FVector A=Road.Points[I],B=Road.Points[I+1]; A.Z=B.Z=0;
+			if(FVector::Dist2D(FMath::ClosestPointOnSegment(FVector(At.X,At.Y,0),A,B),FVector(At.X,At.Y,0))<Road.Width*.5f+Margin) { return true; }
+		}
+	}
+	return false;
+}
+/** A boulder of any stone (sandstone, red rock, cinders, snow-capped). */
+void Boulder(FKit& K,const FVector& At,float S,FRandomStream& R,const TCHAR* Material,const TCHAR* Cap=nullptr)
+{
+	auto* A=K.Piece(FString::Printf(TEXT("RPG_岩_%.0f_%.0f"),At.X,At.Y),RegionFolder(At)+TEXT("/岩"),At);
+	const int32 Count=R.RandRange(1,3);
+	for(int32 I=0;I<Count;++I)
+	{
+		const float Size=(I==0?1:R.FRandRange(.4f,.7f))*S;
+		const FVector Off=I==0?FVector::ZeroVector:FRotator(0,R.FRandRange(0,360),0).Vector()*S*R.FRandRange(60,110);
+		const FVector Dim(R.FRandRange(140,200)*Size,R.FRandRange(130,190)*Size,R.FRandRange(100,150)*Size);
+		const FRotator Rot(R.FRandRange(-8,8),R.FRandRange(0,360),R.FRandRange(-8,8));
+		K.Part(A,R.FRand()<.5f?TEXT("KitRock"):TEXT("KitRockB"),Material,At+Off+FVector(0,0,-8*Size),Dim,Rot,Size>.6f);
+		if(Cap) { K.Part(A,TEXT("KitBlobB"),Cap,At+Off+FVector(0,0,Dim.Z*.36f),FVector(Dim.X*.8f,Dim.Y*.8f,Dim.Z*.28f),Rot); }
+	}
+}
+/** A tall stone shape (mesa towers, temple blocks, the pillar valley's needles). */
+void Spire(FKit& K,const FVector& At,float H,float W,const TCHAR* Material,FRandomStream& R,const TCHAR* Cap=nullptr)
+{
+	auto* A=K.Piece(FString::Printf(TEXT("RPG_岩柱_%.0f_%.0f"),At.X,At.Y),RegionFolder(At)+TEXT("/岩柱"),At);
+	const float Yaw=R.FRandRange(0,360);
+	K.Part(A,TEXT("KitFrustum"),Material,At+FVector(0,0,H*.5f-30),FVector(W,W*R.FRandRange(.75f,1.0f),H),FRotator(0,Yaw,0),true);
+	K.Part(A,TEXT("KitRock"),Material,At+FVector(0,0,H-20),FVector(W*.9f,W*.8f,W*.5f),FRotator(0,Yaw+40,0));
+	if(Cap) { K.Part(A,TEXT("KitBlobB"),Cap,At+FVector(0,0,H+W*.12f),FVector(W*.85f,W*.75f,W*.22f),FRotator(0,Yaw,0)); }
+}
+void Palm(FKit& K,const FVector& At,FRandomStream& R) { Tree(K,At,R.FRandRange(.9f,1.2f),R,4); }
+
+
 // ---------------------------------------------------------------- landmarks, one per place
-/** Round the edge of every open place, by what kind of place it is; tall things only on its far side. */
-void DressAreaEdges(FKit& K,FRandomStream& R)
+/** Round the edge of every open place (OnlyPart >= 0: only those of that part of the map), by what kind of place it is; tall things only on its far side. */
+void DressAreaEdges(FKit& K,FRandomStream& R,int32 OnlyPart=-1)
 {
 	int32 CaveLights=0;
 	for(const auto& Area:RPGWorld::Areas())
 	{
-		if(Area.Id==TEXT("ColonyPlaza") || Area.Id==TEXT("Colony")) { continue; }
+		if(Area.Id==TEXT("ColonyPlaza") || Area.Id==TEXT("Colony") || (OnlyPart>=0 && Area.Part!=OnlyPart)) { continue; }
 		const EBiome Biome=BiomeAt(Area.At.X,Area.At.Y);
 		const int32 Count=FMath::Clamp(FMath::RoundToInt((Area.Radius.X+Area.Radius.Y)/260),5,16);
 		for(int32 I=0;I<Count;++I)
@@ -740,6 +847,18 @@ void DressAreaEdges(FKit& K,FRandomStream& R)
 				}
 				break;
 			}
+			case EBiome::Snow:
+				if(bFar && Roll<.6f) { Tree(K,At,R.FRandRange(.9f,1.4f),R,6); } else if(Roll<.85f) { Boulder(K,At,R.FRandRange(.6f,1.1f),R,TEXT("Rock"),SnowMat); } else { Lantern(K,At,220); }
+				break;
+			case EBiome::Desert:
+				if(bFar && Roll<.4f) { Spire(K,At,R.FRandRange(300,520),R.FRandRange(200,300),TEXT("Plaster"),R); } else if(Roll<.7f) { Tree(K,At,R.FRandRange(.8f,1.2f),R,7); } else { Boulder(K,At,R.FRandRange(.5f,.9f),R,TEXT("Plaster")); }
+				break;
+			case EBiome::Volcano:
+				if(bFar && Roll<.5f) { Spire(K,At,R.FRandRange(260,480),R.FRandRange(200,300),TEXT("StoneDark"),R); } else { Boulder(K,At,R.FRandRange(.6f,1.2f),R,TEXT("StoneDark")); }
+				break;
+			case EBiome::Swamp:
+				if(bFar && Roll<.5f) { Tree(K,At,R.FRandRange(1.0f,1.4f),R,5); } else { Mushroom(K,At,R.FRandRange(1.0f,1.8f),R,true); }
+				break;
 			default:
 				if(bFar && Roll<.4f) { Tree(K,At,R.FRandRange(.9f,1.2f),R,0); } else if(Roll<.75f) { Bush(K,At,R.FRandRange(.8f,1.1f),R,R.FRand()<.5f); } else { Rock(K,At,R.FRandRange(.4f,.7f),R); }
 				break;
@@ -963,6 +1082,223 @@ void BuildLandmarks(FKit& K,FRandomStream& R)
 		Glow(K,L,C+FVector(0,0,600),FLinearColor(.35f,.75f,1),30000,3200);
 	}
 }
+void BuildNewLandmarks(FKit& K,FRandomStream& R)
+{
+	const auto G=[&](float X,float Y,float Lift=0) { return K.Ground(X,Y,Lift); };
+	// Off the roads (a house or a tent a road runs into is a wall in the way): pushed straight out from the nearest
+	// road until it is Clear of its edge, onto land.
+	const auto GO=[&](float X,float Y,float Clear)
+	{
+		for(int32 Try=0;Try<4;++Try)
+		{
+			float Half=0; FVector Near=FVector::ZeroVector;
+			if(RPGWorld::RoadDistance(X,Y,&Half,&Near)>=Half+Clear) { break; }
+			FVector2D Away(X-Near.X,Y-Near.Y); Away=Away.IsNearlyZero()?FVector2D(1,0):Away.GetSafeNormal();
+			FVector2D To=FVector2D(Near.X,Near.Y)+Away*(Half+Clear+10);
+			if(!RPGWorld::Sample(To.X,To.Y).bLand) { To=FVector2D(Near.X,Near.Y)-Away*(Half+Clear+10); }
+			X=To.X; Y=To.Y;
+		}
+		return K.Ground(X,Y);
+	};
+	// The white beach: palms, driftwood, a beached boat.
+	for(const FVector2D P:{FVector2D(-2600,15600),FVector2D(-1100,15900),FVector2D(-2700,17900),FVector2D(-900,17800),FVector2D(-1500,18200)}) { Palm(K,G(P.X,P.Y),R); }
+	{
+		auto* A=K.Piece(TEXT("RPG_浜辺_小舟"),TEXT("白砂の浜辺/小物"),G(-2900,16900));
+		const FVector B=G(-2900,16900);
+		K.Part(A,TEXT("KitBlobB"),TEXT("Planks"),B+FVector(0,0,40),FVector(420,170,90),FRotator(0,25,8),true);
+		K.Part(A,TEXT("Cube"),TEXT("Timber"),B+FVector(0,0,90),FVector(360,16,16),FRotator(0,25,8));
+		K.Part(A,TEXT("KitCylinder"),TEXT("Bark"),G(-1300,16300)+FVector(0,0,20),FVector(36,36,320),FRotator(90,70,0),true);
+	}
+	// The fishing village: houses round the square, a pier out over the sea, nets, boats.
+	House(K,GO(2600,21200,420),180,TEXT("RoofTeal"),R); House(K,GO(2400,22700,420),180,TEXT("RoofClay"),R); House(K,GO(500,22900,420),0,TEXT("RoofTeal"),R);
+	{
+		auto* A=K.Piece(TEXT("RPG_漁村_桟橋"),TEXT("潮騒の漁村/桟橋"),G(400,20700));
+		const FVector Start=G(300,20900);
+		for(int32 I=0;I<9;++I)
+		{
+			const FVector P=FVector(Start.X-I*150,Start.Y-I*40,Start.Z);
+			K.Part(A,TEXT("Cube"),I%3?TEXT("Planks"):TEXT("Timber"),P+FVector(0,0,8),FVector(140,280,14),FRotator(0,-15,0),true);
+			if(I%2==0) { for(float S:{-1.0f,1.0f}) { K.Part(A,TEXT("KitCylinder"),TEXT("Timber"),P+FRotator(0,-15,0).RotateVector(FVector(0,S*150,-140)),FVector(22,22,300),FRotator::ZeroRotator,true); } }
+		}
+		for(const FVector& Boat:{G(-900,20500),G(-700,21200)})
+		{
+			K.Part(A,TEXT("KitBlobB"),TEXT("ChestBlue"),FVector(Boat.X,Boat.Y,RPGWorld::SeaLevel+20),FVector(380,150,80),FRotator(0,R.FRandRange(-30,30),0));
+		}
+	}
+	for(const FVector2D Wanted:{FVector2D(1200,22300),FVector2D(1900,21000)})
+	{
+		const FVector Spot=GO(Wanted.X,Wanted.Y,200); const FVector2D P(Spot.X,Spot.Y);
+		auto* A=K.Piece(FString::Printf(TEXT("RPG_漁村_網_%.0f"),P.X),TEXT("潮騒の漁村/小物"),G(P.X,P.Y));
+		for(float S:{-1.0f,1.0f}) { K.Part(A,TEXT("KitCylinder"),TEXT("Timber"),G(P.X,P.Y+S*130)+FVector(0,0,90),FVector(14,14,180),FRotator::ZeroRotator,true); }
+		K.Part(A,TEXT("Cube"),TEXT("Sail"),G(P.X,P.Y)+FVector(0,0,110),FVector(8,260,130));
+	}
+	for(const FVector2D P:{FVector2D(1500,21300),FVector2D(800,22200),FVector2D(2200,22100)}) { Lantern(K,G(P.X,P.Y)); }
+	Barrels(K,GO(1000,21000,170),R); Barrels(K,GO(2000,22900,170),R);
+	// The lighthouse on the cape.
+	{
+		const FVector L=G(-5100,22500);
+		Tower(K,L,170,900,TEXT("RoofClay"),TEXT("灯台の岬"));
+		auto* A=K.Piece(TEXT("RPG_灯台_光"),TEXT("灯台の岬/灯台"),L);
+		K.Part(A,TEXT("Sphere"),TEXT("GlowWarm"),L+FVector(0,0,960),FVector(120,120,120),FRotator::ZeroRotator,false,false);
+		Glow(K,A,L+FVector(0,0,960),FLinearColor(1,.75f,.4f),20000,2600);
+		Fence(K,G(-4300,21600),G(-3900,22600),TEXT("灯台の岬"));
+	}
+	// The firefly marsh: dead trees, glowing mushrooms, reeds, still water, fireflies.
+	for(int32 I=0;I<9;++I)
+	{
+		const float A=I*UE_TWO_PI/9+R.FRandRange(-.2f,.2f); const float D=R.FRandRange(.45f,.85f);
+		const float X=-3000+FMath::Cos(A)*2200*D, Y=28500+FMath::Sin(A)*1700*D;
+		if(RPGWorld::RoadDistance(X,Y)<450) { continue; }
+		if(I%3==0) { Tree(K,G(X,Y),R.FRandRange(1.0f,1.4f),R,5); }
+		else if(I%3==1) { Mushroom(K,G(X,Y),R.FRandRange(1.2f,2.0f),R,true); }
+		else
+		{
+			auto* P=K.Piece(FString::Printf(TEXT("RPG_沼_水たまり_%d"),I),TEXT("ほたる沼/水"),G(X,Y));
+			K.Part(P,TEXT("KitCylinder"),TEXT("Water"),G(X,Y)+FVector(0,0,4),FVector(R.FRandRange(320,520),R.FRandRange(260,420),4),FRotator(0,R.FRandRange(0,180),0),false,false);
+			for(int32 J=0;J<6;++J) { K.Part(P,TEXT("KitCylinder"),TEXT("Moss"),G(X,Y)+FVector(R.FRandRange(-200,200),R.FRandRange(-200,200),60),FVector(8,8,R.FRandRange(90,160))); }
+		}
+	}
+	{
+		auto* Flies=K.Piece(TEXT("RPG_沼_ほたる"),TEXT("ほたる沼/光"),G(-3000,28500));
+		for(int32 I=0;I<26;++I)
+		{
+			const FVector P=G(-3000+R.FRandRange(-1900,1900),28500+R.FRandRange(-1500,1500),R.FRandRange(60,220));
+			K.Part(Flies,TEXT("Sphere"),TEXT("GlowTeal"),P,FVector(9,9,9),FRotator::ZeroRotator,false,false);
+			if(I%5==0) { Glow(K,Flies,P,FLinearColor(.4f,1,.7f),900,500); }
+		}
+	}
+	// The volcano: the researcher's camp at its foot; lava pools and glowing cracks in the crater.
+	Tent(K,GO(1700,29100,260),30,TEXT("Sail")); Tent(K,GO(900,29900,260),-60,TEXT("Sail")); Campfire(K,GO(1400,29600,120)); Barrels(K,GO(800,29000,170),R);
+	{
+		auto* Lava=K.Piece(TEXT("RPG_火口_溶岩"),TEXT("灼熱の火口/溶岩"),G(2600,33500));
+		const FVector2D Pools[]={FVector2D(2200,34300),FVector2D(3300,33000),FVector2D(1800,33200),FVector2D(3100,34600)};
+		for(const FVector2D& P:Pools)
+		{
+			const FVector At=G(P.X,P.Y);
+			const float Sz=R.FRandRange(260,420);
+			K.Part(Lava,TEXT("KitCylinder"),TEXT("Lava"),At+FVector(0,0,3),FVector(Sz,Sz*R.FRandRange(.7f,1),6),FRotator(0,R.FRandRange(0,180),0),false,false);
+			for(int32 I=0;I<5;++I) { K.Part(Lava,TEXT("KitRock"),TEXT("StoneDark"),At+FRotator(0,I*72+R.FRandRange(-15,15),0).Vector()*Sz*.55f,FVector(70,60,40)*R.FRandRange(.8f,1.4f),FRotator(0,R.FRandRange(0,360),0)); }
+			Glow(K,Lava,At+FVector(0,0,120),FLinearColor(1,.35f,.08f),6000,900);
+		}
+		for(int32 I=0;I<10;++I)
+		{
+			const float A=I*UE_TWO_PI/10; const FVector At=G(2600+FMath::Cos(A)*1450,33500+FMath::Sin(A)*1250);
+			if(RPGWorld::RoadDistance(At.X,At.Y)<400) { continue; }
+			Boulder(K,At,R.FRandRange(.9f,1.5f),R,TEXT("StoneDark"));
+		}
+	}
+	// The desert: sandstone arches and towers, cacti, the oasis pool and palms, the temple.
+	{
+		const auto Arch=[&](const FVector& At,float Yaw)
+		{
+			auto* A=K.Piece(FString::Printf(TEXT("RPG_砂岩のアーチ_%.0f"),At.X),RegionFolder(At)+TEXT("/岩柱"),At);
+			const FRotator F(0,Yaw,0);
+			for(float S:{-1.0f,1.0f}) { K.Part(A,TEXT("KitFrustum"),TEXT("Plaster"),At+F.RotateVector(FVector(0,S*300,220)),FVector(170,150,440),F,true); }
+			K.Part(A,TEXT("KitBlobB"),TEXT("Plaster"),At+F.RotateVector(FVector(0,0,470)),FVector(220,820,140),F,true);
+		};
+		Arch(G(7600,26400),20); Arch(G(5200,23300),-30);
+		for(const FVector2D P:{FVector2D(8200,23800),FVector2D(4600,25400),FVector2D(7900,27200)}) { Spire(K,G(P.X,P.Y),R.FRandRange(420,700),R.FRandRange(220,320),TEXT("Plaster"),R); }
+		auto* Pool=K.Piece(TEXT("RPG_オアシス_泉"),TEXT("砂漠のオアシス/泉"),G(5600,30200));
+		K.Part(Pool,TEXT("KitCylinder"),TEXT("Water"),G(5700,30500)+FVector(0,0,5),FVector(900,700,4),FRotator(0,20,0),false,false);
+		for(int32 I=0;I<12;++I) { const float A=I*UE_TWO_PI/12; K.Part(Pool,TEXT("KitRock"),TEXT("Plaster"),G(5700+FMath::Cos(A)*470,30500+FMath::Sin(A)*370)+FVector(0,0,5),FVector(90,80,40),FRotator(0,R.FRandRange(0,360),0)); }
+		for(int32 I=0;I<7;++I) { const float A=I*UE_TWO_PI/7+.3f; Palm(K,G(5700+FMath::Cos(A)*820,30500+FMath::Sin(A)*690),R); }
+		Tent(K,GO(5000,29600,260),100,TEXT("Banner")); Tent(K,GO(6300,29500,260),70,TEXT("Sail"));
+		for(const FVector2D P:{FVector2D(5200,30000),FVector2D(6000,29800)}) { Lantern(K,G(P.X,P.Y),210); }
+		// The temple: a paved court of pillars, walls round three sides, a stair up to a broken gate.
+		const FVector T=G(9800,33200);
+		for(int32 I=0;I<4;++I) { for(float S:{-1.0f,1.0f}) { Pillar(K,G(9000+I*520,33200+S*700),R.FRandRange(380,520),I==2&&S>0,R); } }
+		Wall(K,G(11000,32300),G(11000,34100),260,TEXT("砂に眠る神殿"));
+		Wall(K,G(8700,34300),G(10900,34300),220,TEXT("砂に眠る神殿"));
+		Wall(K,G(8700,32100),G(9400,32100),200,TEXT("砂に眠る神殿"),false);
+		auto* Idol=K.Piece(TEXT("RPG_神殿_石像"),TEXT("砂に眠る神殿/石像"),T);
+		K.Part(Idol,TEXT("Cube"),TEXT("Stone"),G(10650,33200)+FVector(0,0,60),FVector(260,260,120),FRotator::ZeroRotator,true);
+		K.Part(Idol,TEXT("Sphere"),TEXT("Plaster"),G(10650,33200)+FVector(0,0,260),FVector(240,220,260),FRotator::ZeroRotator,true);
+		K.Part(Idol,TEXT("KitGem"),TEXT("GlowTeal"),G(10650,33200)+FVector(-110,0,300),FVector(40,40,50),FRotator::ZeroRotator,false,false);
+		Glow(K,Idol,G(10650,33200)+FVector(-200,0,320),FLinearColor(.3f,1,.9f),3000,700);
+	}
+	for(int32 I=0;I<16;++I)
+	{
+		const float X=R.FRandRange(4200,9000), Y=R.FRandRange(22800,27800);
+		const RPGWorld::FSample S=RPGWorld::Sample(X,Y);
+		if(!S.bLand || S.Inside<120 || RPGWorld::RoadDistance(X,Y)<420 || K.IsReserved(FVector(X,Y,0),260)) { continue; }
+		Tree(K,FVector(X,Y,S.Height),R.FRandRange(.8f,1.3f),R,7);
+	}
+	// The teahouse on the pass: a long house, benches, a red gate, blossom.
+	{
+		House(K,GO(12300,17600,420),90,TEXT("RoofTeal"),R);
+		auto* Gate=K.Piece(TEXT("RPG_茶屋_鳥居"),TEXT("峠の茶屋/門"),G(11100,16500));
+		const FVector P=G(11100,16500); const FRotator F(0,40,0);
+		for(float S:{-1.0f,1.0f}) { K.Part(Gate,TEXT("KitCylinder"),TEXT("Banner"),P+F.RotateVector(FVector(0,S*260,180)),FVector(44,44,360),FRotator::ZeroRotator,true); }
+		K.Part(Gate,TEXT("Cube"),TEXT("Banner"),P+FVector(0,0,350),FVector(50,640,34),F); K.Part(Gate,TEXT("Cube"),TEXT("Timber"),P+FVector(0,0,385),FVector(60,720,26),F);
+		for(const FVector2D Wanted:{FVector2D(11500,17700),FVector2D(11900,16600)})
+		{
+			const FVector Spot=GO(Wanted.X,Wanted.Y,170); const FVector2D B(Spot.X,Spot.Y);
+			auto* A=K.Piece(FString::Printf(TEXT("RPG_茶屋_縁台_%.0f"),B.X),TEXT("峠の茶屋/縁台"),G(B.X,B.Y));
+			K.Part(A,TEXT("Cube"),TEXT("Banner"),G(B.X,B.Y)+FVector(0,0,48),FVector(240,90,10)); K.Part(A,TEXT("Cube"),TEXT("Planks"),G(B.X,B.Y)+FVector(0,0,40),FVector(240,90,12),FRotator::ZeroRotator,true);
+		}
+		for(const FVector2D T:{FVector2D(11000,17800),FVector2D(12600,16700),FVector2D(11300,18300)}) { Tree(K,G(T.X,T.Y),R.FRandRange(.9f,1.1f),R,2); }
+		Lantern(K,G(11600,16900)); Lantern(K,G(12000,17900));
+	}
+	// The red mesa and the pillar valley: tall stone needles.
+	for(int32 I=0;I<7;++I)
+	{
+		const float A=I*UE_TWO_PI/7+R.FRandRange(-.2f,.2f);
+		const FVector At=G(24200+FMath::Cos(A)*1350,12400+FMath::Sin(A)*1100);
+		if(RPGWorld::RoadDistance(At.X,At.Y)<450) { continue; }
+		Spire(K,At,R.FRandRange(500,900),R.FRandRange(220,340),TEXT("RoofClay"),R);
+	}
+	for(int32 I=0;I<9;++I)
+	{
+		const float A=I*UE_TWO_PI/9+R.FRandRange(-.2f,.2f), D=R.FRandRange(.55f,.9f);
+		const FVector At=G(20600+FMath::Cos(A)*1500*D,18600+FMath::Sin(A)*1200*D);
+		if(RPGWorld::RoadDistance(At.X,At.Y)<420) { continue; }
+		Spire(K,At,R.FRandRange(700,1300),R.FRandRange(160,260),TEXT("Stone"),R);
+	}
+	// The misty pass and the snowfield: snowy pines, the camp, the frozen lake.
+	{
+		const FVector Shrine=G(16000,23300);
+		auto* A=K.Piece(TEXT("RPG_峠_石の祠"),TEXT("白霧の峠/祠"),Shrine);
+		K.Part(A,TEXT("Cube"),TEXT("Stone"),Shrine+FVector(0,0,70),FVector(160,140,140),FRotator(0,30,0),true);
+		K.Part(A,TEXT("KitCone"),TEXT("StoneDark"),Shrine+FVector(0,0,180),FVector(220,200,90),FRotator(0,30,0));
+		K.Part(A,TEXT("KitBlobB"),SnowMat,Shrine+FVector(0,0,215),FVector(200,180,40),FRotator(0,30,0));
+		Lantern(K,G(16700,22300)); Lantern(K,G(18700,25300));
+	}
+	Tent(K,GO(21600,29200,260),-20,TEXT("RoofTeal")); Tent(K,GO(20600,28900,260),40,TEXT("RoofTeal")); Campfire(K,GO(21000,28500,120));
+	for(const FVector2D P:{FVector2D(20800,28000),FVector2D(21800,28600)}) { Lantern(K,G(P.X,P.Y)); }
+	Barrels(K,GO(21700,28000,170),R);
+	{
+		auto* Lake=K.Piece(TEXT("RPG_雪原_凍った湖"),TEXT("雪原・凍った湖/氷"),G(24600,33000));
+		K.Part(Lake,TEXT("KitCylinder"),IceMat,G(24700,33300)+FVector(0,0,4),FVector(2400,2000,6),FRotator(0,15,0),false,false);
+		for(int32 I=0;I<6;++I) { Crystal(K,G(24600+R.FRandRange(-1200,1200),33000+R.FRandRange(-1000,1000)),R.FRandRange(.8f,1.3f),R,TEXT("Crystal")); }
+	}
+	for(int32 I=0;I<46;++I)
+	{
+		const float X=R.FRandRange(16000,30000), Y=R.FRandRange(21800,34200);
+		const RPGWorld::FSample S=RPGWorld::Sample(X,Y);
+		if(!S.bLand || S.Inside<140 || S.Snow<.6f || RPGWorld::RoadDistance(X,Y)<480 || K.IsReserved(FVector(X,Y,0),300)) { continue; }
+		if(FVector::Dist2D(FVector(X,Y,0),FVector(29800,31200,0))<2300) { continue; }
+		Tree(K,FVector(X,Y,S.Height),R.FRandRange(.9f,1.5f),R,6);
+	}
+	// The legend's arena: tall pillars round it, banners, the way in lit, a seat of stone at the far side.
+	{
+		const FVector C=G(34000,14400);
+		for(int32 I=0;I<14;++I)
+		{
+			const float A=I*UE_TWO_PI/14;
+			if(FMath::Abs(FMath::FindDeltaAngleDegrees(FMath::RadiansToDegrees(A),180.0f))<20) { continue; }
+			Pillar(K,G(34000+FMath::Cos(A)*1650,14400+FMath::Sin(A)*1650),R.FRandRange(700,900),false,R);
+		}
+		auto* Seat=K.Piece(TEXT("RPG_闘技場_玉座"),TEXT("覇者の闘技場/玉座"),C);
+		const FVector Back=G(35500,14400);
+		K.Part(Seat,TEXT("Cube"),TEXT("StoneDark"),Back+FVector(0,0,80),FVector(420,520,160),FRotator::ZeroRotator,true);
+		K.Part(Seat,TEXT("Cube"),TEXT("Gold"),Back+FVector(60,0,300),FVector(120,420,320),FRotator::ZeroRotator,true);
+		K.Part(Seat,TEXT("Cube"),TEXT("Banner"),Back+FVector(-10,0,520),FVector(20,300,200));
+		Glow(K,Seat,Back+FVector(-200,0,500),FLinearColor(1,.7f,.35f),12000,1600);
+		for(const float S:{-1.0f,1.0f}) { Lantern(K,G(32300,14400+S*420),260); }
+	}
+	// Signposts where the new roads leave the old map.
+	Sign(K,G(10500,10500),90); Sign(K,G(-2350,11800),90); Sign(K,G(23600,6800),70); Sign(K,G(12700,9800),110); Sign(K,G(11700,18200),30);
+}
 #endif
 }
 
@@ -1107,7 +1443,7 @@ int32 URPGWorldBuilder::PopulateLevel(UObject* WorldContextObject)
 	}
 	for(TActorIterator<ARPGPrototypeMerchant> It(World);It;++It) { It->SetActorLocation(K.Ground(-850,500)); K.Reserve(It->GetActorLocation(),250); }
 	for(TActorIterator<ARPGPrototypeBoss> It(World);It;++It)
-	{ It->SetActorLocation(K.Ground(40700,200,120)); It->SetActorRotation(FRotator(0,180,0)); It->SetFolderPath(TEXT("RPGAdventure/Boss")); }
+	{ if(It->Kind!=ERPGBossKind::Maguro) { continue; } It->SetActorLocation(K.Ground(40700,200,120)); It->SetActorRotation(FRotator(0,180,0)); It->SetFolderPath(TEXT("RPGAdventure/Boss")); }
 	for(TActorIterator<APlayerStart> It(World);It;++It) { It->SetActorLocation(K.Ground(-450,-200,120)); }
 	K.Reserve(FVector(-450,-200,0),400);
 
@@ -1281,6 +1617,319 @@ int32 URPGWorldBuilder::PopulateLevel(UObject* WorldContextObject)
 	}
 	World->MarkPackageDirty();
 	UE_LOG(LogTemp,Display,TEXT("RPGWORLD populated %d actors"),K.Made);
+	return K.Made;
+#else
+	return 0;
+#endif
+}
+int32 URPGWorldBuilder::ExtendLevel(UObject* WorldContextObject)
+{
+#if WITH_EDITOR
+	using namespace RPGWorldBuild;
+	UWorld* World=GEngine?GEngine->GetWorldFromContextObject(WorldContextObject,EGetWorldErrorMode::LogAndReturnNull):nullptr;
+	if(!World || World->IsGameWorld()) { return 0; }
+	FKit K; K.World=World; K.ExtraTag=TEXT("RPGWorld2");
+	FRandomStream R(20261102);
+
+	// 1. A second run replaces what the first one made. Old scenery standing where the new roads and places go is cleared
+	//    (nothing else of the old map is touched: hand edits stay).
+	int32 Removed=0;
+	for(TActorIterator<AActor> It(World);It;++It)
+	{
+		AActor* A=*It;
+		if(A->Tags.Contains(TEXT("RPGWorld2"))) { A->Destroy(); ++Removed; continue; }
+		if(!A->IsA<ARPGAdventureSceneryPiece>() || !A->Tags.Contains(TEXT("RPGWorld"))) { continue; }
+		const FString Label=A->GetActorLabel();
+		if(Label.StartsWith(TEXT("RPG_水面")) || Label.StartsWith(TEXT("RPG_草むら")) || Label.StartsWith(TEXT("RPG_花")) || Label.StartsWith(TEXT("RPG_小石"))) { continue; }
+		if(OnNewGround(A->GetActorLocation(),180)) { A->Destroy(); ++Removed; continue; }
+		// A solid part of it lying across a new road (the old fort's fallen tower): just that part goes.
+		TArray<UStaticMeshComponent*> Parts; A->GetComponents(Parts);
+		for(UStaticMeshComponent* Part:Parts)
+		{
+			if(!Part || Part->GetCollisionEnabled()==ECollisionEnabled::NoCollision) { continue; }
+			const FBoxSphereBounds Bounds=Part->Bounds;
+			if(OnNewRoad(Bounds.Origin,FMath::Min(Bounds.BoxExtent.X,Bounds.BoxExtent.Y))) { A->RemoveInstanceComponent(Part); Part->DestroyComponent(); ++Removed; }
+		}
+	}
+	UE_LOG(LogTemp,Display,TEXT("RPGWORLD extend: removed %d"),Removed);
+
+	// 2. Terrain tiles the level does not show yet.
+	TSet<FString> Tiles;
+	for(TActorIterator<AStaticMeshActor> It(World);It;++It) { if(It->GetActorLabel().StartsWith(TEXT("RPG_地形_"))) { Tiles.Add(It->GetActorLabel()); } }
+	for(int32 Tile=0;Tile<GetTerrainTileCount();++Tile)
+	{
+		const int32 IX=Tile/TilesY(), IY=Tile%TilesY();
+		const FString Label=FString::Printf(TEXT("RPG_地形_%02d_%02d"),IX,IY);
+		if(Tiles.Contains(Label)) { continue; }
+		const FString Name=FString::Printf(TEXT("SM_RPGTerrain_%02d_%02d"),IX,IY);
+		UStaticMesh* Mesh=LoadObject<UStaticMesh>(nullptr,*FString::Printf(TEXT("%s/Terrain/%s.%s"),Root,*Name,*Name));
+		if(!Mesh) { continue; }
+		auto* A=World->SpawnActor<AStaticMeshActor>(FVector(RPGWorld::MinX+IX*TileSize,RPGWorld::MinY+IY*TileSize,0),FRotator::ZeroRotator);
+		A->GetStaticMeshComponent()->SetStaticMesh(Mesh); A->GetStaticMeshComponent()->SetMobility(EComponentMobility::Static);
+		A->SetActorLabel(Label); A->SetFolderPath(TEXT("RPGWorld/地形")); A->Tags.Add(TEXT("RPGWorld")); ++K.Made;
+	}
+
+	// 3. Gameplay places: the people who give quests (spawned at run time from RPGQuests::Givers), chests, enemy groups, beacons.
+	for(const auto& Giver:RPGQuests::Givers()) { if(!Giver.At.IsNearlyZero()) { K.Reserve(FVector(Giver.At.X,Giver.At.Y,0),300); } }
+	K.Reserve(FVector(29800,31200,0),2300);
+	struct FChestDef { const TCHAR* Name; float X,Y; ERPGChestStyle Style; int32 Min,Max; float Rare,Unique,Legend; };
+	const TArray<FChestDef> Chests={
+		{TEXT("白砂の浜辺の宝箱"),-2300,17600,ERPGChestStyle::Wood,50,100,.3f,.1f,.01f},
+		{TEXT("漁村の網小屋の宝箱"),2100,22400,ERPGChestStyle::Wood,60,110,.3f,.1f,.01f},
+		{TEXT("灯台の足元の宝箱"),-4800,22900,ERPGChestStyle::Silver,120,200,.45f,.2f,.03f},
+		{TEXT("ほたる沼の倒木の宝箱"),-3600,29400,ERPGChestStyle::Silver,120,200,.45f,.2f,.03f},
+		{TEXT("ほたる沼の奥の宝箱"),-4400,27800,ERPGChestStyle::Gold,260,420,.35f,.45f,.12f},
+		{TEXT("火山のふもとの宝箱"),1500,28900,ERPGChestStyle::Wood,70,130,.35f,.12f,.02f},
+		{TEXT("火口の縁の宝箱"),3400,34100,ERPGChestStyle::Gold,300,480,.3f,.5f,.15f},
+		{TEXT("砂丘に埋もれた宝箱"),7400,23600,ERPGChestStyle::Wood,60,110,.3f,.1f,.01f},
+		{TEXT("砂丘の岩陰の宝箱"),5100,26100,ERPGChestStyle::Silver,120,200,.45f,.2f,.03f},
+		{TEXT("オアシスの泉の宝箱"),6300,31000,ERPGChestStyle::Wood,70,120,.35f,.12f,.02f},
+		{TEXT("神殿の祭壇の宝箱"),10400,33700,ERPGChestStyle::Gold,280,460,.3f,.5f,.15f},
+		{TEXT("神殿の柱の間の宝箱"),9300,32600,ERPGChestStyle::Silver,130,210,.45f,.2f,.03f},
+		{TEXT("茶屋の裏の宝箱"),12500,18000,ERPGChestStyle::Wood,60,110,.3f,.1f,.01f},
+		{TEXT("赤土の台地の宝箱"),25000,13000,ERPGChestStyle::Silver,130,210,.45f,.2f,.03f},
+		{TEXT("石柱の谷の宝箱"),21300,19300,ERPGChestStyle::Silver,140,220,.45f,.2f,.03f},
+		{TEXT("白霧の峠の宝箱"),16900,23300,ERPGChestStyle::Wood,80,140,.35f,.12f,.02f},
+		{TEXT("雪原の野営地の宝箱"),21700,29400,ERPGChestStyle::Wood,80,140,.35f,.12f,.02f},
+		{TEXT("針葉樹の森の宝箱"),26300,26600,ERPGChestStyle::Silver,150,240,.45f,.2f,.03f},
+		{TEXT("凍った湖のほとりの宝箱"),23500,33800,ERPGChestStyle::Gold,300,500,.3f,.5f,.15f},
+		{TEXT("巡礼の石段の宝箱"),13900,31200,ERPGChestStyle::Silver,140,220,.45f,.2f,.03f},
+		{TEXT("覇者の道の宝箱"),29500,13700,ERPGChestStyle::Gold,320,520,.3f,.5f,.15f},
+		{TEXT("覇者の闘技場の宝箱"),35400,13900,ERPGChestStyle::Gold,500,900,.2f,.55f,.25f},
+		// Behind the boulder, the ice, the leap and the lava boulder.
+		{TEXT("砂岩の隠し部屋の秘宝"),11200,24200,ERPGChestStyle::Gold,400,700,.25f,.5f,.2f},
+		{TEXT("氷の祠の秘宝"),27000,35500,ERPGChestStyle::Gold,450,750,.25f,.5f,.2f},
+		{TEXT("石柱の頂の秘宝"),22700,21000,ERPGChestStyle::Gold,500,800,.2f,.5f,.25f},
+		{TEXT("火山の隠し洞の秘宝"),450,36150,ERPGChestStyle::Gold,500,850,.2f,.5f,.25f},
+	};
+	const auto Inland=[](float& X,float& Y,float Margin)
+	{
+		for(int32 Step=0;Step<40 && RPGWorld::Sample(X,Y).Inside<Margin;++Step)
+		{
+			FVector Road; RPGWorld::RoadDistance(X,Y,nullptr,&Road);
+			const FVector2D To=FVector2D(Road.X-X,Road.Y-Y).GetSafeNormal()*50; X+=To.X; Y+=To.Y;
+		}
+	};
+	for(int32 I=0;I<Chests.Num();++I)
+	{
+		auto C=Chests[I];
+		Inland(C.X,C.Y,170);
+		const FVector At=K.Ground(C.X,C.Y,2);
+		FVector Road; RPGWorld::RoadDistance(C.X,C.Y,nullptr,&Road);
+		const float Yaw=(Road-At).GetSafeNormal2D().Rotation().Yaw;
+		auto* Chest=World->SpawnActorDeferred<ARPGTreasureChest>(ARPGTreasureChest::StaticClass(),FTransform(FRotator(0,Yaw,0),At),nullptr,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		Chest->ChestId=FName(*FString::Printf(TEXT("FrontierTreasure2_%03d"),I+1)); Chest->DisplayName=C.Name; Chest->Style=C.Style;
+		Chest->RubyMin=C.Min; Chest->RubyMax=C.Max; Chest->RareChance=C.Rare; Chest->UniqueChance=C.Unique; Chest->LegendChance=C.Legend;
+		Chest->FinishSpawning(FTransform(FRotator(0,Yaw,0),At));
+		Chest->SetActorLabel(FString::Printf(TEXT("RPG_宝箱2_%02d_%s"),I+1,C.Name));
+		Chest->SetFolderPath(FName(*(TEXT("RPGAdventure/TreasureChests/")+RPGWorld::RegionAt(At)))); Chest->Tags.Add(TEXT("RPGWorld2"));
+		K.Reserve(At,260); ++K.Made;
+	}
+	struct FGroupDef { float X,Y; int32 Level,Chasers,Throwers; float Respawn; };
+	const TArray<FGroupDef> Groups={
+		{-2000,15400,4,3,2,40},{-200,19300,4,3,2,40},{-4300,21800,5,3,2,40},{3900,23300,5,3,2,40},
+		{-600,25200,6,3,2,40},{-1000,29400,6,3,3,40},{600,29300,7,3,2,45},{2000,31300,8,3,3,45},{3400,30000,8,3,2,45},
+		{6000,24000,6,3,2,40},{7300,25700,6,2,3,40},{6000,27600,6,3,2,40},{7600,32200,7,3,2,45},{11700,32400,8,3,3,45},
+		{10900,12300,5,3,2,40},{11400,15000,5,3,2,40},{9800,20300,6,3,2,40},{14000,19800,7,3,2,45},
+		{24400,11800,6,3,2,40},{24900,8100,6,3,2,40},{23400,14000,7,3,3,45},{22600,15600,7,3,2,45},{18400,20800,7,3,2,45},
+		{28000,13600,10,3,3,50},{31200,14200,11,4,2,50},
+		{16400,22900,8,3,2,45},{18600,25600,8,3,3,45},{25300,27400,9,3,2,45},{26200,28400,9,3,3,45},
+		{24600,32900,9,3,2,45},{23100,31900,10,4,2,50},{13600,31600,8,3,2,45},
+	};
+	for(int32 I=0;I<Groups.Num();++I)
+	{
+		const auto& Def=Groups[I]; const FVector At=K.Ground(Def.X,Def.Y,120);
+		auto* Spawn=World->SpawnActor<ARPGPrototypeSpawnPoint>(At,FRotator::ZeroRotator);
+		Spawn->EnemyLevel=Def.Level; Spawn->DropChance=.28f; Spawn->RespawnSeconds=Def.Respawn; Spawn->bEncounterGroup=true;
+		Spawn->ChaserCount=Def.Chasers; Spawn->ThrowerCount=Def.Throwers;
+		Spawn->SetActorLabel(FString::Printf(TEXT("RPG_敵集団2_%02d_Lv%d_接近%d投球%d"),I+1,Def.Level,Def.Chasers,Def.Throwers));
+		Spawn->SetFolderPath(FName(*(TEXT("RPGAdventure/EnemySpawns/")+RPGWorld::RegionAt(At)))); Spawn->Tags.Add(TEXT("RPGWorld2"));
+		K.Reserve(At,420); ++K.Made;
+	}
+	struct FCheckDef { const TCHAR* Name; float X,Y; FVector Offset; };
+	const TArray<FCheckDef> Checks={
+		{TEXT("漁村の灯り"),1100,21300,{150,150,120}},{TEXT("峠の茶屋の灯り"),11400,16800,{150,0,120}},
+		{TEXT("オアシスの灯り"),5100,30000,{0,250,120}},{TEXT("火山のふもとの灯り"),900,28900,{150,0,120}},
+		{TEXT("赤土の台地の灯り"),23700,12000,{0,250,120}},{TEXT("雪原の灯り"),20700,28300,{250,0,120}},
+		{TEXT("神殿の灯り"),9000,33700,{0,-250,120}},
+		{TEXT("覇者の道の灯り"),31600,14200,{0,250,120}},
+	};
+	for(auto C:Checks)
+	{
+		Inland(C.X,C.Y,220);
+		const FVector At=K.Ground(C.X,C.Y,2);
+		auto* Point=World->SpawnActor<ARPGAdventureCheckpoint>(At,FRotator::ZeroRotator);
+		Point->DisplayName=C.Name; Point->RespawnOffset=C.Offset;
+		Point->SetActorLabel(FString(TEXT("RPG_"))+C.Name); Point->SetFolderPath(TEXT("RPGAdventure/Checkpoints")); Point->Tags.Add(TEXT("RPGWorld2"));
+		K.Reserve(At,300); ++K.Made;
+	}
+
+	// The bosses of the new lands, in the middle of their places (the legend sleeps until every other boss is beaten).
+	struct FBossDef { ERPGBossKind Kind; float X,Y,Yaw; };
+	const FBossDef Bosses[]={
+		{ERPGBossKind::MarshLord,-3000,28500,90},{ERPGBossKind::SandGiant,10100,33200,180},{ERPGBossKind::LavaWarden,2700,33600,200},
+		{ERPGBossKind::PillarKing,20600,18600,150},{ERPGBossKind::Legend,34200,14400,180},
+	};
+	for(const auto& Def:Bosses)
+	{
+		const FVector At=K.Ground(Def.X,Def.Y,120);
+		const FTransform Where(FRotator(0,Def.Yaw,0),At);
+		// The same Blueprint as Maguro (its body, animation and controller set up there), at Maguro's size.
+		UClass* BossClass=LoadClass<ARPGPrototypeBoss>(nullptr,TEXT("/Game/ChaosImpact/RPGPrototype/BP_RPGMaguroBoss.BP_RPGMaguroBoss_C"));
+		auto* Boss=World->SpawnActorDeferred<ARPGPrototypeBoss>(BossClass?BossClass:ARPGPrototypeBoss::StaticClass(),Where,nullptr,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if(!Boss) { continue; }
+		Boss->Kind=Def.Kind;
+		Boss->FinishSpawning(Where);
+		Boss->SetActorScale3D(FVector(1.6f));
+		Boss->SetActorLabel(FString::Printf(TEXT("RPG_ボス_%s"),*UEnum::GetValueAsString(Def.Kind).RightChop(14)));
+		Boss->SetFolderPath(TEXT("RPGAdventure/Boss")); Boss->Tags.Add(TEXT("RPGWorld2"));
+		K.Reserve(At,700); ++K.Made;
+	}
+
+	// The ways that open as a hero grows: boulders, ice, a leap (each across its secret place's road).
+	struct FGateDef { uint8 Kind; float X,Y,Yaw,Width; };
+	const FGateDef Gates[]={{ARPGGateObstacle::Boulder,10200,22700,55,420},{ARPGGateObstacle::Ice,25800,34500,40,420},{ARPGGateObstacle::Boulder,1500,34700,130,420}};
+	for(const auto& Def:Gates)
+	{
+		const FTransform Where(FRotator(0,Def.Yaw,0),K.Ground(Def.X,Def.Y));
+		auto* Gate=World->SpawnActorDeferred<ARPGGateObstacle>(ARPGGateObstacle::StaticClass(),Where,nullptr,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if(!Gate) { continue; }
+		Gate->Kind=Def.Kind; Gate->Width=Def.Width; Gate->FinishSpawning(Where);
+		Gate->SetActorLabel(FString::Printf(TEXT("RPG_%s_%.0f"),Def.Kind==ARPGGateObstacle::Ice?TEXT("氷の壁"):TEXT("ひびの岩"),Def.X));
+		Gate->SetFolderPath(TEXT("RPGAdventure/Gates")); Gate->Tags.Add(TEXT("RPGWorld2")); K.Reserve(Where.GetLocation(),400); ++K.Made;
+	}
+	{
+		// The leap: from the end of the pillars' road to their top, and back.
+		const FVector A=K.Ground(21450,19650), B=K.Ground(22350,20650);
+		for(const auto& Pair:{TPair<FVector,FVector>(A,B),TPair<FVector,FVector>(B,A)})
+		{
+			auto* Leap=World->SpawnActorDeferred<ARPGLeapPoint>(ARPGLeapPoint::StaticClass(),FTransform(Pair.Key),nullptr,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+			if(!Leap) { continue; }
+			Leap->Partner=Pair.Value; Leap->FinishSpawning(FTransform(Pair.Key));
+			Leap->SetActorLabel(FString::Printf(TEXT("RPG_跳躍台_%.0f"),Pair.Key.X)); Leap->SetFolderPath(TEXT("RPGAdventure/Gates")); Leap->Tags.Add(TEXT("RPGWorld2"));
+			K.Reserve(Pair.Key,300); ++K.Made;
+		}
+	}
+	{
+		// The dojo in the colony: a mat, training posts and a rack beside the master.
+		auto* Dojo=K.Piece(TEXT("RPG_コロニー_道場"),TEXT("こもれびコロニー/道場"),K.Ground(-450,-1050));
+		const FVector C=K.Ground(-450,-1050);
+		K.Part(Dojo,TEXT("Cube"),TEXT("Planks"),C+FVector(0,0,4),FVector(520,420,8));
+		K.Part(Dojo,TEXT("Cube"),TEXT("Banner"),C+FVector(0,0,9),FVector(470,370,2));
+		for(const float S:{-1.0f,1.0f})
+		{
+			const FVector Post=C+FVector(-120,S*150,0);
+			K.Part(Dojo,TEXT("KitCylinder"),TEXT("Timber"),Post+FVector(0,0,80),FVector(30,30,160),FRotator::ZeroRotator,true);
+			K.Part(Dojo,TEXT("KitBlob"),TEXT("Sail"),Post+FVector(0,0,150),FVector(70,70,90));
+		}
+		K.Part(Dojo,TEXT("Cube"),TEXT("Timber"),C+FVector(160,-200,90),FVector(30,160,180),FRotator::ZeroRotator,true);
+		K.Reserve(C,350);
+	}
+
+	// 4. The places' own buildings and landmarks, their edges, then trees, rocks and small things over the new ground only.
+	BuildNewLandmarks(K,R);
+	DressAreaEdges(K,R,1);
+	auto* Grass=K.Piece(TEXT("RPG_草むら2"),TEXT("草花"),FVector::ZeroVector);
+	const auto MakeHISM=[&](AActor* Owner,const TCHAR* Mesh,const TCHAR* Material)
+	{
+		auto* H=NewObject<UHierarchicalInstancedStaticMeshComponent>(Owner); H->SetupAttachment(Owner->GetRootComponent());
+		H->SetStaticMesh(K.Mesh(Mesh)); H->SetMaterial(0,K.Mat(Material)); H->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		H->SetCastShadow(false); H->SetCullDistances(0,9000); Owner->AddInstanceComponent(H); H->RegisterComponent(); return H;
+	};
+	auto* TuftA=MakeHISM(Grass,TEXT("KitTuft"),TEXT("GrassBlade")); auto* TuftB=MakeHISM(Grass,TEXT("KitTuftB"),TEXT("GrassBlade"));
+	auto* Flowers=MakeHISM(Grass,TEXT("KitGem"),TEXT("FlowerWhite")); auto* Stones=MakeHISM(Grass,TEXT("KitRock"),TEXT("Rock"));
+	auto* Cinders=MakeHISM(Grass,TEXT("KitRock"),TEXT("StoneDark")); auto* Drifts=MakeHISM(Grass,TEXT("KitBlobB"),SnowMat);
+	int32 Big=0,Small=0;
+	for(float X=RPGWorld::MinX;X<RPGWorld::MaxX;X+=230)
+	{
+		for(float Y=9000;Y<RPGWorld::MaxY;Y+=230)
+		{
+			const float PX=X+R.FRandRange(-90,90), PY=Y+R.FRandRange(-90,90);
+			if(RPGWorld::PartAt(PX,PY)!=1) { continue; }
+			const RPGWorld::FSample S=RPGWorld::Sample(PX,PY);
+			if(!S.bLand || S.Inside<60) { continue; }
+			const FVector At(PX,PY,S.Height);
+			const EBiome Biome=BiomeAt(PX,PY);
+			const float Track=FMath::Max3(S.Dirt,S.Pavers,S.Cave);
+			float Half=0; FVector Nearest; const float Clear=RPGWorld::RoadDistance(PX,PY,&Half,&Nearest)-Half;
+			const bool bInFront=PX<Nearest.X-50 && Clear<900;
+			const float Roll=R.FRand();
+			const bool bSpot=Track<.3f && Clear>260 && !bInFront && !K.IsReserved(At,260) && S.Inside>140;
+			bool bPlaced=false;
+			switch(Biome)
+			{
+			case EBiome::Snow:
+				if(bSpot && Roll<.06f) { Tree(K,At,R.FRandRange(.9f,1.4f),R,6); bPlaced=true; }
+				else if(Clear>150 && Roll<.1f && !K.IsReserved(At,200)) { Boulder(K,At,R.FRandRange(.5f,1.0f),R,TEXT("Rock"),SnowMat); bPlaced=true; }
+				break;
+			case EBiome::Desert:
+				if(bSpot && Roll<.025f) { Tree(K,At,R.FRandRange(.8f,1.3f),R,7); bPlaced=true; }
+				else if(Clear>150 && Roll<.05f && !K.IsReserved(At,200)) { Boulder(K,At,R.FRandRange(.4f,.9f),R,TEXT("Plaster")); bPlaced=true; }
+				break;
+			case EBiome::Volcano:
+				if(Clear>150 && Roll<.08f && !K.IsReserved(At,200)) { Boulder(K,At,R.FRandRange(.5f,1.1f),R,TEXT("StoneDark")); bPlaced=true; }
+				else if(bSpot && Roll<.1f) { Tree(K,At,R.FRandRange(.9f,1.2f),R,5); bPlaced=true; }
+				break;
+			case EBiome::Swamp:
+				if(bSpot && Roll<.06f) { Tree(K,At,R.FRandRange(.9f,1.3f),R,5); bPlaced=true; }
+				else if(Track<.4f && Roll<.12f && Clear>120 && !K.IsReserved(At,150)) { Mushroom(K,At,R.FRandRange(.7f,1.4f),R,R.FRand()<.6f); bPlaced=true; }
+				break;
+			case EBiome::Beach:
+				if(bSpot && Roll<.04f && S.Height>-20) { Palm(K,At,R); bPlaced=true; }
+				else if(Roll<.06f && Clear>150 && !K.IsReserved(At,200) && S.Height>-60) { Rock(K,At,R.FRandRange(.4f,.8f),R); bPlaced=true; }
+				break;
+			case EBiome::Canyon: case EBiome::Rocky:
+				if(bSpot && Roll<.05f) { Tree(K,At,R.FRandRange(.85f,1.2f),R,1); bPlaced=true; }
+				else if(Track<.3f && Roll<.12f && Clear>150 && !K.IsReserved(At,200)) { Boulder(K,At,R.FRandRange(.5f,1.0f),R,TEXT("Cliff")); bPlaced=true; }
+				break;
+			case EBiome::Blossom:
+				if(bSpot && Roll<.06f) { Tree(K,At,R.FRandRange(.85f,1.15f),R,2); bPlaced=true; }
+				else if(Track<.3f && Roll<.12f && Clear>120 && !K.IsReserved(At,150)) { Bush(K,At,R.FRandRange(.7f,1.0f),R,true); bPlaced=true; }
+				break;
+			default:
+				if(bSpot && Roll<.03f) { Tree(K,At,R.FRandRange(.85f,1.15f),R,0); bPlaced=true; }
+				else if(Track<.3f && Roll<.08f && Clear>120 && !K.IsReserved(At,150)) { Bush(K,At,R.FRandRange(.7f,1.1f),R,R.FRand()<.4f); bPlaced=true; }
+				break;
+			}
+			if(bPlaced) { ++Big; continue; }
+			// Small things: grass where it grows, snow drifts, cinders, pebbles.
+			if(Biome==EBiome::Snow) { if(R.FRand()<.18f) { Drifts->AddInstance(FTransform(FRotator(0,R.FRandRange(0,360),0),FVector(PX,PY,S.Height-6),FVector(R.FRandRange(.6f,1.4f),R.FRandRange(.6f,1.2f),R.FRandRange(.15f,.3f))),true); ++Small; } continue; }
+			if(Biome==EBiome::Volcano) { if(R.FRand()<.3f) { Cinders->AddInstance(FTransform(FRotator(R.FRandRange(-10,10),R.FRandRange(0,360),0),FVector(PX,PY,S.Height-4),FVector(R.FRandRange(.18f,.45f))),true); ++Small; } continue; }
+			if(Biome==EBiome::Desert) { if(R.FRand()<.12f) { Stones->AddInstance(FTransform(FRotator(0,R.FRandRange(0,360),0),FVector(PX,PY,S.Height-4),FVector(R.FRandRange(.15f,.35f))),true); ++Small; } continue; }
+			if(Track<.5f && Biome!=EBiome::Beach)
+			{
+				for(int32 I=0;I<2;++I)
+				{
+					const FVector P(PX+R.FRandRange(-110,110),PY+R.FRandRange(-110,110),0);
+					const RPGWorld::FSample Q=RPGWorld::Sample(P.X,P.Y);
+					if(!Q.bLand || FMath::Max3(Q.Dirt,Q.Pavers,Q.Cave)>.45f || Q.Inside<30 || Q.Sand>.4f) { continue; }
+					(R.FRand()<.5f?TuftA:TuftB)->AddInstance(FTransform(FRotator(0,R.FRandRange(0,360),0),FVector(P.X,P.Y,Q.Height-3),FVector(R.FRandRange(.7f,1.3f))),true); ++Small;
+				}
+				if(Biome==EBiome::Blossom && R.FRand()<.4f) { Flowers->AddInstance(FTransform(FRotator(0,R.FRandRange(0,360),0),FVector(PX,PY,S.Height+14),FVector(.14f,.14f,.1f)),true); ++Small; }
+			}
+			if(R.FRand()<.06f) { Stones->AddInstance(FTransform(FRotator(0,R.FRandRange(0,360),0),FVector(PX,PY,S.Height-4),FVector(R.FRandRange(.18f,.4f))),true); ++Small; }
+		}
+	}
+	UE_LOG(LogTemp,Display,TEXT("RPGWORLD extend: scattered %d trees/rocks and %d small things"),Big,Small);
+	// Round the new rocks: trees on their tops, boulders at their feet.
+	for(const auto& Rk:RPGWorld::Rocks())
+	{
+		if(Rk.Part!=1) { continue; }
+		const EBiome B=BiomeAt(Rk.At.X,Rk.At.Y);
+		const int32 Count=R.RandRange(2,4);
+		for(int32 I=0;I<Count;++I)
+		{
+			const float A=R.FRandRange(0,UE_TWO_PI),D=R.FRandRange(0,.55f);
+			const float X=Rk.At.X+FMath::Cos(A)*Rk.Radius.X*D, Y=Rk.At.Y+FMath::Sin(A)*Rk.Radius.Y*D;
+			const FVector At(X,Y,RPGWorld::Height(X,Y));
+			if(B==EBiome::Snow) { Tree(K,At,R.FRandRange(1.0f,1.5f),R,6); }
+			else if(B==EBiome::Desert) { Spire(K,At,R.FRandRange(300,600),R.FRandRange(220,320),TEXT("Plaster"),R); }
+			else if(B==EBiome::Volcano) { Boulder(K,At,R.FRandRange(1.0f,1.8f),R,TEXT("StoneDark")); }
+			else { Tree(K,At,R.FRandRange(.9f,1.3f),R,B==EBiome::Canyon||B==EBiome::Rocky?1:B==EBiome::Beach?4:0); }
+		}
+	}
+	World->MarkPackageDirty();
+	UE_LOG(LogTemp,Display,TEXT("RPGWORLD extend: made %d actors"),K.Made);
 	return K.Made;
 #else
 	return 0;

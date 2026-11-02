@@ -176,12 +176,16 @@ namespace
 				{
 					return true;
 				}
-				// Verify the diagonal DiagCoreBridge has solid floor at its midpoint over the magma sea
-				const FVector BridgeMid = ForgeStage->GetActorTransform().TransformPosition(
-					FVector(1.0f, 1.0f, 0.0f).GetSafeNormal() * 2150.0f + FVector(0.0f, 0.0f, 30.0f));
-				FHitResult BridgeHit;
-				Test->TestTrue(TEXT("Forge Stage DiagCoreBridge has solid floor"),
-					World->LineTraceSingleByChannel(BridgeHit, BridgeMid + FVector(0.0f, 0.0f, 150.0f), BridgeMid - FVector(0.0f, 0.0f, 150.0f), ECC_WorldStatic));
+				// Verify the deck is one floor: solid out along the diagonal to the corner chamber, and between a bay and a
+				// corner (both over the magma sea when the foundry stood on islands)
+				for (const FVector& Offset : {FVector(1.0f, 1.0f, 0.0f).GetSafeNormal() * 2600.0f, FVector(2600.0f, 1250.0f, 0.0f)})
+				{
+					const FVector Probe = ForgeStage->GetActorTransform().TransformPosition(Offset + FVector(0.0f, 0.0f, 30.0f));
+					FHitResult DeckHit;
+					Test->TestTrue(FString::Printf(TEXT("Forge Stage deck has solid floor at %s"), *Offset.ToCompactString()),
+						World->LineTraceSingleByChannel(DeckHit, Probe + FVector(0.0f, 0.0f, 150.0f), Probe - FVector(0.0f, 0.0f, 150.0f), ECC_WorldStatic)
+						&& DeckHit.ImpactPoint.Z > ForgeStage->GetActorLocation().Z - 10.0f);
+				}
 
 				// Verify the central Crucible Altar spawner only spawns special balls (Normal weight == 0)
 				AChaosImpactBallSpawner* CrucibleSpawner = nullptr;

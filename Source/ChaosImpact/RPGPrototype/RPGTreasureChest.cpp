@@ -158,6 +158,8 @@ bool ARPGTreasureChest::Open(ARPGPrototypeCharacter* Player)
     if(!Item.IsValid()) { return false; }
     Player->OpenedChestIds.Add(ChestId);
     Player->QuestEvent(ERPGQuestEvent::ChestOpened,GetActorLocation());
+    // Gold chests always hold a tune shard, silver ones sometimes.
+    if(Style==ERPGChestStyle::Gold || (Style==ERPGChestStyle::Silver && FMath::FRand()<RPGTuning::SilverChestShardChance)) { Player->AddTuneShards(1,DisplayName); }
 
     // Out they fly: the item high and towards the opener, the rubies in a spray round the front of the chest.
     const FVector Mouth=GetActorLocation()+FVector(0,0,105);
@@ -169,7 +171,7 @@ bool ARPGTreasureChest::Open(ARPGPrototypeCharacter* Player)
         Loot->Item=Item; Loot->Recipient=Player; Loot->bChestLoot=true; Loot->FinishSpawning(ItemAt);
         Loot->Pop(Toward*210+FVector(0,0,760));
     }
-    int32 Left=FMath::RandRange(FMath::Clamp(RubyMin,0,100000),FMath::Clamp(FMath::Max(RubyMin,RubyMax),0,100000));
+    int32 Left=RPGTuning::ChestRubies(FMath::RandRange(FMath::Clamp(RubyMin,0,100000),FMath::Clamp(FMath::Max(RubyMin,RubyMax),0,100000)));
     // Big rubies first, so a rich chest is still a handful of gems, not a hundred.
     TArray<int32> Gems;
     for(const int32 Worth:{50,20,5})

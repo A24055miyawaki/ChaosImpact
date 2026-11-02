@@ -574,4 +574,74 @@ bool FChaosImpactFullscreenSafetyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	/**
+	 * The menu button on the keyboard is Escape (once P): in the training arena Escape opens the pause menu, and Escape
+	 * there closes it again. Run in the training level (?CITraining=1).
+	 */
+	class FEscapePauseCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FEscapePauseCommand(FAutomationTestBase* InTest) : Test(InTest) {}
+
+		virtual bool Update() override
+		{
+			const double Now = FPlatformTime::Seconds();
+			if (Now - StartedAt > 60.0)
+			{
+				Test->AddError(FString::Printf(TEXT("Stuck at step %d."), Step));
+				return true;
+			}
+			AChaosImpactPlayerController* PC = FindSettingsTestController();
+			if (!PC || Now < NextAt)
+			{
+				return false;
+			}
+			switch (Step)
+			{
+			case 0:
+				if (!PC->IsGameplayActive())
+				{
+					return false;
+				}
+				Test->TestTrue(TEXT("The keyboard's menu button is Escape"),
+					ChaosImpactSettings::GetDefaultKey(EChaosImpactDevice::KeyboardMouse, EChaosImpactAction::Pause, 0) == EKeys::Escape);
+				// As the real keyboard's press arrives.
+				PC->InputKey(FInputKeyEventArgs(nullptr, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice(), EKeys::Escape, IE_Pressed,
+					FPlatformTime::Cycles64()));
+				PC->InputKey(FInputKeyEventArgs(nullptr, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice(), EKeys::Escape, IE_Released,
+					FPlatformTime::Cycles64()));
+				++Step;
+				NextAt = Now + 0.5;
+				return false;
+			case 1:
+				Test->TestTrue(TEXT("Escape opens the pause menu"), PC->GetCurrentScreen() == EChaosImpactScreen::Pause);
+				FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(EKeys::Escape, FModifierKeysState(), 0, false, 0, 0));
+				FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(EKeys::Escape, FModifierKeysState(), 0, false, 0, 0));
+				++Step;
+				NextAt = Now + 0.5;
+				return false;
+			default:
+				Test->TestTrue(TEXT("Escape closes it again"), PC->GetCurrentScreen() == EChaosImpactScreen::Playing);
+				return true;
+			}
+		}
+
+	private:
+		FAutomationTestBase* Test;
+		double StartedAt = FPlatformTime::Seconds();
+		double NextAt = 0.0;
+		int32 Step = 0;
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactEscapePauseTest, "ChaosImpact.Training.EscapePause",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FChaosImpactEscapePauseTest::RunTest(const FString&)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FEscapePauseCommand(this));
+	return true;
+}
+
 #endif

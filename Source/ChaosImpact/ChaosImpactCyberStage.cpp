@@ -11,7 +11,6 @@
 #include "Components/PostProcessComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Components/TextRenderComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -25,9 +24,11 @@
 
 namespace CyberStage
 {
-	constexpr float CenterCourtTop = 70.0f;
+	/** The hologram court in the middle: low enough to step up onto from anywhere round it (not only by its ramps). */
+	constexpr float CenterCourtTop = 40.0f;
 	constexpr float OverpassTop = 120.0f;
-	constexpr float WallHeight = 580.0f;
+	/** The sound barriers round the junction (low enough not to throw the lanes along them into deep shadow). */
+	constexpr float WallHeight = 320.0f;
 
 	const FVector QuarterSpawnOffsets[] =
 	{
@@ -67,7 +68,7 @@ FVector AChaosImpactCyberStage::GetGateNormal(const int32 Gate)
 
 AChaosImpactCyberStage::AChaosImpactCyberStage()
 {
-	CrashBallStartOffset = FVector(0, 0, 110);
+	CrashBallStartOffset = FVector(0, 0, CyberStage::CenterCourtTop + 40.0f);
 	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/M_StageMetalFloor.M_StageMetalFloor"));
 	Team0GoalOffset = FVector(-2950, 0, 120);
 	Team1GoalOffset = FVector(2950, 0, 120);
@@ -75,7 +76,7 @@ AChaosImpactCyberStage::AChaosImpactCyberStage()
 	for (const float Sign : {-1.f, 1.f})
 	{
 		FChaosImpactCrashRoutePart Ramp;
-		Ramp.Start = FVector(Sign * 600, 0, 110);
+		Ramp.Start = FVector(Sign * 600, 0, CyberStage::CenterCourtTop + 40.0f);
 		Ramp.End = FVector(Sign * 1350, 0, 0);
 		Ramp.Width = 880;
 		CrashRouteParts.Add(Ramp);
@@ -130,8 +131,8 @@ AChaosImpactCyberStage::AChaosImpactCyberStage()
 		TEXT("/Game/ChaosImpact/solo/Stage2/Materials/MI_Field_Teal.MI_Field_Teal"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FieldAmber(
 		TEXT("/Game/ChaosImpact/solo/Stage1/Materials/MI_NeonField_Amber.MI_NeonField_Amber"));
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Stencil(
-		TEXT("/Engine/EngineMaterials/DefaultTextMaterialOpaque.DefaultTextMaterialOpaque"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Plane(TEXT("/Engine/BasicShapes/Plane.Plane"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WarnMat(TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Warn.M_CIFX_Warn"));
 
 	BoxMesh = Box.Object;
 	ChamferMesh = Chamfer.Succeeded() ? Chamfer.Object : Box.Object;
@@ -146,7 +147,8 @@ AChaosImpactCyberStage::AChaosImpactCyberStage()
 	PaintMaterial = Paint.Succeeded() ? Paint.Object : nullptr;
 	FieldTealMaterial = FieldTeal.Succeeded() ? FieldTeal.Object : GlowMaterial;
 	FieldAmberMaterial = FieldAmber.Succeeded() ? FieldAmber.Object : GlowMaterial;
-	StencilMaterial = Stencil.Object;
+	PlaneMesh = Plane.Object;
+	WarnMaterial = WarnMat.Succeeded() ? WarnMat.Object : nullptr;
 
 	static const TCHAR* const CityPaths[] =
 	{
@@ -272,14 +274,14 @@ void AChaosImpactCyberStage::BuildQuarter(const int32 Quarter)
 	Box(TEXT("HighwayCorner"), Asphalt, FVector(2100.0f, 2100.0f, -50.0f), FVector(1420.0f, 2540.0f, 100.0f), 45.0f, true);
 	Box(TEXT("OuterWall"), Wall, FVector(Half + 30.0f, 0.0f, WallHeight * 0.5f), FVector(60.0f, 3660.0f, WallHeight), 0.0f, true);
 	Box(TEXT("OuterWallCap"), GlowHere, FVector(Half + 30.0f, 0.0f, WallHeight + 6.0f), FVector(72.0f, 3660.0f, 12.0f), 0.0f, false);
-	Box(TEXT("OuterWallNeonLow"), GlowHere, FVector(Half - 3.0f, 0.0f, 240.0f), FVector(6.0f, 3560.0f, 18.0f), 0.0f, false);
-	Box(TEXT("OuterWallNeonHigh"), Glow, FVector(Half - 3.0f, 0.0f, 440.0f), FVector(6.0f, 3560.0f, 10.0f), 0.0f, false);
+	Box(TEXT("OuterWallNeonLow"), GlowHere, FVector(Half - 3.0f, 0.0f, 150.0f), FVector(6.0f, 3560.0f, 18.0f), 0.0f, false);
+	Box(TEXT("OuterWallNeonHigh"), Glow, FVector(Half - 3.0f, 0.0f, 270.0f), FVector(6.0f, 3560.0f, 10.0f), 0.0f, false);
 
 	const FVector BevelMid = CornerDir * (Diagonal + 30.0f);
 	Box(TEXT("BevelWall"), Wall, FVector(BevelMid.X, BevelMid.Y, WallHeight * 0.5f), FVector(60.0f, 2320.0f, WallHeight), 45.0f, true);
 	Box(TEXT("BevelWallCap"), NextGlow, FVector(BevelMid.X, BevelMid.Y, WallHeight + 6.0f), FVector(72.0f, 2320.0f, 12.0f), 45.0f, false);
 	const FVector BevelFace = CornerDir * (Diagonal - 3.0f);
-	Box(TEXT("BevelWallBand"), GlowHere, FVector(BevelFace.X, BevelFace.Y, 280.0f), FVector(6.0f, 2200.0f, 20.0f), 45.0f, false);
+	Box(TEXT("BevelWallBand"), GlowHere, FVector(BevelFace.X, BevelFace.Y, 200.0f), FVector(6.0f, 2200.0f, 20.0f), 45.0f, false);
 
 	// ---- Road markings & crosswalks on the asphalt deck ---------------------------------------------------------
 	for (int32 StripeIdx = -2; StripeIdx <= 2; ++StripeIdx)
@@ -312,22 +314,6 @@ void AChaosImpactCyberStage::BuildQuarter(const int32 Quarter)
 	Ramp(TEXT("OverpassRampS"), Trim, FVector(2900.0f, -1750.0f, 0.0f), FVector(2900.0f, -1250.0f, OverpassTop), 400.0f);
 	// Central step block in front of the overpass so players can also hop/step up from the middle lane.
 	Box(TEXT("OverpassCenterStep"), Trim, FVector(2360.0f, 0.0f, OverpassTop * 0.25f), FVector(280.0f, 520.0f, OverpassTop * 0.5f), 0.0f, true, true);
-
-	// Sector number stencilled on the overpass deck.
-	UTextRenderComponent* SectorText = CreateDefaultSubobject<UTextRenderComponent>(*(TEXT("SectorNumber") + Q));
-	SectorText->SetupAttachment(SceneRoot);
-	SectorText->SetText(FText::FromString(FString::Printf(TEXT("0%d"), Quarter + 1)));
-	SectorText->SetWorldSize(320.0f);
-	if (StencilMaterial)
-	{
-		SectorText->SetTextMaterial(StencilMaterial);
-	}
-	SectorText->SetHorizontalAlignment(EHTA_Center);
-	SectorText->SetVerticalAlignment(EVRTA_TextCenter);
-	SectorText->SetRelativeLocation(CyberStage::Spread(At(2960.0f, -520.0f, OverpassTop + 1.0f)));
-	SectorText->SetRelativeRotation(FRotator(90.0f, 180.0f, 0.0f));
-	SectorText->SetTextRenderColor((StripeColor * 0.65f).ToFColor(true));
-	SectorText->ComponentTags.Add(TEXT("CISectorText"));
 
 	// ---- Bank-shot reflector wall & corner retreat shelter ------------------------------------------------------
 	// Tall 45-degree bank wall outside the Pulse Gate: bounces balls into the corner pocket or across the mid lane.
@@ -366,7 +352,7 @@ void AChaosImpactCyberStage::BuildQuarter(const int32 Quarter)
 	Prop(TEXT("WallBillboard"), Billboard, FVector(Half + 30.0f, 0.0f, WallHeight), 90.0f, 1.4f, false);
 	Prop(TEXT("WallBillboardText"), BillboardText, FVector(Half + 30.0f, 0.0f, WallHeight), 90.0f, 1.4f, false);
 	Prop(TEXT("BevelBillboard"), BillboardStand, FVector(BevelMid.X, BevelMid.Y, WallHeight), 135.0f, 1.15f, false);
-	Prop(TEXT("WallGraffiti"), Graffiti, FVector(Half - 8.0f, -850.0f, 230.0f), 90.0f, 1.0f, false);
+	Prop(TEXT("WallGraffiti"), Graffiti, FVector(Half - 8.0f, -850.0f, 150.0f), 90.0f, 1.0f, false);
 	Prop(TEXT("CornerBusStop"), BusStop, FVector(2820.0f, 2080.0f, 0.0f), 135.0f, 0.95f, true);
 	Prop(TEXT("CornerBin"), TrashBin, FVector(2340.0f, 1390.0f, 0.0f), 0.0f, 1.0f, true);
 }
@@ -413,6 +399,24 @@ void AChaosImpactCyberStage::BuildPulseGate(const int32 Gate)
 	Field->SetCastShadow(false);
 	Field->SetVisibility(false);
 	GateFields.Add(Field);
+
+	// While the barrier is coming: a pale red danger strip on the floor where it will stand (touching it hurts), filling
+	// from one post to the other (the boss's ground warning).
+	UStaticMeshComponent* Area = CreateDefaultSubobject<UStaticMeshComponent>(*(Name + TEXT("WarnArea")));
+	Area->SetupAttachment(SceneRoot);
+	Area->SetStaticMesh(PlaneMesh.Get());
+	if (WarnMaterial)
+	{
+		Area->SetMaterial(0, WarnMaterial.Get());
+	}
+	Area->SetRelativeLocation(Center + FVector(0.0f, 0.0f, 4.0f));
+	Area->SetRelativeRotation(FRotator(0.0f, Yaw + 90.0f, 0.0f));
+	Area->SetRelativeScale3D(FVector(GateHalfWidth * 2.0f + 60.0f, GateWarnDepth, 100.0f) / 100.0f);
+	Area->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Area->SetCastShadow(false);
+	Area->SetGenerateOverlapEvents(false);
+	Area->SetVisibility(false);
+	GateWarnAreas.Add(Area);
 
 	UPointLightComponent* Light = CreateDefaultSubobject<UPointLightComponent>(*(Name + TEXT("Light")));
 	Light->SetupAttachment(SceneRoot);
@@ -620,17 +624,32 @@ UStaticMeshComponent* AChaosImpactCyberStage::AddProp(const FString& Name, UStat
 void AChaosImpactCyberStage::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	MakeWallsSeeThrough({TEXT("OuterWall"), TEXT("BevelWall"), TEXT("Gantry")}, GlowMaterial);
 	ApplyPalette();
 }
 
 void AChaosImpactCyberStage::BeginPlay()
 {
 	Super::BeginPlay();
+	MakeWallsSeeThrough({TEXT("OuterWall"), TEXT("BevelWall"), TEXT("Gantry")}, GlowMaterial);
+	HideNearCamera({TEXT("WallBillboard"), TEXT("BevelBillboard"), TEXT("WallGraffiti")});
 	ApplyPalette();
 	GateFieldLooks.Reset();
 	for (UStaticMeshComponent* Field : GateFields)
 	{
 		GateFieldLooks.Add(Field ? Field->CreateDynamicMaterialInstance(0) : nullptr);
+	}
+	GateWarnLooks.Reset();
+	for (UStaticMeshComponent* Area : GateWarnAreas)
+	{
+		UMaterialInstanceDynamic* Look = Area ? Area->CreateDynamicMaterialInstance(0) : nullptr;
+		if (Look)
+		{
+			Look->SetScalarParameterValue(TEXT("Lane"), 1.0f);
+			Look->SetScalarParameterValue(TEXT("Aspect"), (GateHalfWidth * 2.0f + 60.0f) / GateWarnDepth);
+			Look->SetScalarParameterValue(TEXT("Speed"), 0.6f);
+		}
+		GateWarnLooks.Add(Look);
 	}
 	UpdateGatesLook(0.0f);
 }
@@ -683,15 +702,6 @@ void AChaosImpactCyberStage::ApplyPalette()
 	if (!bApplyDefaultColors)
 	{
 		return;
-	}
-	TArray<UTextRenderComponent*> Texts;
-	GetComponents(Texts);
-	for (UTextRenderComponent* Text : Texts)
-	{
-		if (Text->ComponentHasTag(TEXT("CISectorText")))
-		{
-			Text->SetTextRenderColor((StripeColor * 0.65f).ToFColor(true));
-		}
 	}
 	TArray<UStaticMeshComponent*> Meshes;
 	GetComponents(Meshes);
@@ -1036,6 +1046,24 @@ void AChaosImpactCyberStage::UpdateGatesLook(const float DeltaSeconds)
 		{
 			const float Intensity = bActive ? (8.5f - 3.0f * ActiveT) : (1.5f + 5.0f * Warn);
 			Look->SetScalarParameterValue(TEXT("Intensity"), Intensity);
+		}
+		if (UStaticMeshComponent* Area = GateWarnAreas.IsValidIndex(Gate) ? GateWarnAreas[Gate].Get() : nullptr)
+		{
+			// The danger strip: fades in and fills as the barrier nears, blinking faster; flashes as it forms, then stays
+			// faintly under it while it stands (it still hurts to touch).
+			const bool bShown = Warn > 0.0f || bActive;
+			Area->SetVisibility(bShown);
+			if (UMaterialInstanceDynamic* Look = bShown && GateWarnLooks.IsValidIndex(Gate) ? GateWarnLooks[Gate].Get() : nullptr)
+			{
+				const float Blink = 0.5f + 0.5f * FMath::Sin(LookClock * FMath::Lerp(6.0f, 22.0f, Warn * Warn));
+				const float Formed = bActive ? FMath::Clamp(ActiveT * GateActiveSeconds / 0.35f, 0.0f, 1.0f) : 0.0f;
+				const float Ending = bActive ? FMath::Clamp((1.0f - ActiveT) * GateActiveSeconds / 0.4f, 0.0f, 1.0f) : 1.0f;
+				Look->SetScalarParameterValue(TEXT("Progress"), bActive ? 1.0f : Warn);
+				Look->SetScalarParameterValue(TEXT("Flash"), bActive ? 1.0f - Formed : 0.12f * Blink * Warn);
+				Look->SetScalarParameterValue(TEXT("Opacity"), bActive ? FMath::Lerp(1.0f, 0.45f, Formed) * Ending
+					: FMath::Clamp(Warn * 8.0f, 0.0f, 1.0f));
+				Look->SetScalarParameterValue(TEXT("Intensity"), 1.5f + 0.4f * Blink * Warn);
+			}
 		}
 		if (UPointLightComponent* Light = GateLights.IsValidIndex(Gate) ? GateLights[Gate].Get() : nullptr)
 		{

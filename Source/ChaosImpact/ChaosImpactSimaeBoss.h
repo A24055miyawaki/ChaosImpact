@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactSfx.h"
 #include "ChaosImpactSimaeBoss.generated.h"
 
 class AChaosImpactBall;
@@ -94,6 +95,15 @@ public:
 	bool IsFoe(const AChaosImpactCharacter* Character) const;
 	/** Every nearby player's camera shakes. */
 	void ShakeNearby(const FVector& Where, float Radius, float Strength, float Seconds) const;
+
+	// ---- Online (ChaosImpactSimaeFx::NetHook): what a guest's screen shows of the host's boss.
+	/** One of its clips by number (0 idle, 1 walk, 2 charge, 3 slam, 4 throw, 5 power-up). */
+	void PlayNetClip(int32 Clip, bool bLoop, float Rate);
+	/** The change into full power, as it looks (and the push on this machine's own player). */
+	void PresentFullPower();
+	/** Its defeat, as it looks. */
+	void PresentDefeat();
+	void SetNetAuraTarget(float Target) { AuraTarget = Target; }
 
 	/** The boss bar at the top of the screen while one is fighting (drawn by each player's HUD). */
 	static void PaintHud(const UWorld* World, const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer,
@@ -212,6 +222,12 @@ private:
 
 	// ---- Presentation
 	void PlayClip(UAnimSequence* Clip, bool bLoop, float Rate);
+	/** A sound of its own (online, every screen hears it). */
+	void Sound(EChaosImpactSfx Which, const FVector& Where, float Volume = 1.0f, float Pitch = 1.0f) const;
+	/** The aura's aim (online, sent on when it changes enough). */
+	void SetAuraTarget(float Target);
+	float SentAuraTarget = -1.0f;
+	float SentClipRate = -1.0f;
 	void BuildPresentation();
 	void UpdateAura(float DeltaSeconds);
 	void RebuildAuraFlames(float Time);

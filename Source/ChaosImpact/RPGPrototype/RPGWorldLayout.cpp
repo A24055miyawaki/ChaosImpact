@@ -41,6 +41,31 @@ TArray<FArea> MakeAreas()
 		{TEXT("Pool"),P(35400,4300,960),{650,560},S::Cave,TEXT("水晶洞窟・地底の泉")},
 		{TEXT("Crystal"),P(37200,200,960),{1250,1100},S::Cave,TEXT("水晶洞窟・水晶の広間")},
 		{TEXT("BossHall"),P(40500,200,960),{1800,1550},S::Cave,TEXT("水晶洞窟・水底の大広間")},
+		// 2026-11: the lands east of the old map (Part 1): the coast, the volcano, the desert, the pass and the snowfield.
+		{TEXT("Strand"),P(-1800,16800,20),{1700,1400},S::Sand,TEXT("白砂の浜辺"),1},
+		{TEXT("Harbor"),P(1500,21800,60),{1500,1300},S::Pavers,TEXT("潮騒の漁村"),1},
+		{TEXT("Cape"),P(-4600,22200,300),{1000,900},S::Grass,TEXT("灯台の岬"),1},
+		{TEXT("Marsh"),P(-3000,28500,40),{2200,1700},S::Moss,TEXT("ほたる沼"),1},
+		{TEXT("VolcanoFoot"),P(1200,29500,300),{1000,900},S::Dirt,TEXT("火山のふもと"),1},
+		{TEXT("Crater"),P(2600,33500,700),{1600,1400},S::Dirt,TEXT("灼熱の火口"),1},
+		{TEXT("Dunes"),P(6400,24800,140),{2500,2100},S::Sand,TEXT("陽炎の砂丘"),1},
+		{TEXT("Oasis"),P(5600,30200,100),{1300,1150},S::Grass,TEXT("砂漠のオアシス"),1},
+		{TEXT("SandTemple"),P(9800,33200,300),{1500,1300},S::Pavers,TEXT("砂に眠る神殿"),1},
+		{TEXT("Teahouse"),P(11800,17200,720),{1000,900},S::Pavers,TEXT("峠の茶屋"),1},
+		{TEXT("Mesa"),P(24200,12400,700),{1600,1300},S::Dirt,TEXT("赤土の台地"),1},
+		{TEXT("Pillars"),P(20600,18600,950),{1500,1200},S::Dirt,TEXT("石柱の谷"),1},
+		{TEXT("SnowPass"),P(16400,22800,1100),{1100,950},S::Snow,TEXT("白霧の峠"),1},
+		{TEXT("SnowCamp"),P(21200,28600,1250),{1100,950},S::Snow,TEXT("雪原・入口の野営地"),1},
+		{TEXT("SnowWood"),P(25200,27400,1250),{2000,1700},S::Snow,TEXT("雪原・針葉樹の森"),1},
+		{TEXT("FrozenLake"),P(24600,33000,1250),{1800,1600},S::Snow,TEXT("雪原・凍った湖"),1},
+		{TEXT("Nest"),P(29800,31200,1300),{2050,2050},S::Snow,TEXT("雪原・シマエナガの巣"),1},
+		// The legend's arena, high on the far side of the mesa.
+		{TEXT("Arena"),P(34000,14400,1600),{1800,1800},S::Pavers,TEXT("覇者の闘技場"),1},
+		// Secret places behind the ways that open as a hero grows (boulder, ice, a leap, boulder).
+		{TEXT("SecretSand"),P(11000,24000,260),{700,600},S::Sand,TEXT("砂岩の隠し部屋"),1},
+		{TEXT("SecretIce"),P(26800,35400,1250),{700,600},S::Snow,TEXT("雪原・氷の祠"),1},
+		{TEXT("SecretPeak"),P(22600,20900,1050),{600,520},S::Dirt,TEXT("石柱の頂"),1},
+		{TEXT("SecretLava"),P(600,36000,600),{650,550},S::Dirt,TEXT("火山の隠し洞"),1},
 	};
 }
 TArray<FRoad> MakeRoads()
@@ -82,6 +107,36 @@ TArray<FRoad> MakeRoads()
 		{{P(33800,400,960),P(34800,2500,960),P(36400,2700,960),P(37200,200,960)},520,S::Cave,TEXT("水晶洞窟・南の回廊")},
 		{{P(34800,2500,960),P(35400,4300,960)},380,S::Cave,TEXT("水晶洞窟・地底の泉")},
 		{{P(37200,200,960),P(38700,200,960),P(40500,200,960)},620,S::Cave,TEXT("水晶洞窟・ボス前")},
+		// 2026-11: the roads of the new lands (Part 1).
+		{{P(-2600,8900,20),P(-2300,12800,20),P(-1800,16800,20)},600,S::Sand,TEXT("白砂の浜辺"),1},
+		{{P(-1800,16800,20),P(-200,19300,40),P(1500,21800,60)},600,S::Dirt,TEXT("潮騒の漁村"),1},
+		{{P(-1800,16800,20),P(-3300,19400,150),P(-4600,22200,300)},520,S::Dirt,TEXT("灯台の岬"),1},
+		{{P(1500,21800,60),P(-600,25200,50),P(-3000,28500,40)},560,S::Moss,TEXT("ほたる沼"),1},
+		{{P(-3000,28500,40),P(-1000,29400,150),P(1200,29500,300)},560,S::Dirt,TEXT("火山のふもと"),1},
+		{{P(1200,29500,300),P(2000,31300,500),P(2600,33500,700)},480,S::Dirt,TEXT("灼熱の火口"),1},
+		{{P(1500,21800,60),P(3900,23300,100),P(6400,24800,140)},620,S::Sand,TEXT("陽炎の砂丘"),1},
+		{{P(6400,24800,140),P(6000,27600,120),P(5600,30200,100)},600,S::Sand,TEXT("砂漠のオアシス"),1},
+		{{P(5600,30200,100),P(3400,30000,200),P(1200,29500,300)},520,S::Dirt,TEXT("火山のふもと"),1},
+		{{P(5600,30200,100),P(7600,32200,200),P(9800,33200,300)},600,S::Pavers,TEXT("砂に眠る神殿"),1},
+		{{P(10200,9200,360),P(10900,12300,520),P(11400,15000,660),P(11800,17200,720)},600,S::Dirt,TEXT("風鳴りの峠道"),1},
+		{{P(11800,17200,720),P(10000,20000,480),P(8200,22600,260),P(6400,24800,140)},560,S::Dirt,TEXT("砂丘への下り道"),1},
+		{{P(11800,17200,720),P(14000,19800,900),P(16400,22800,1100)},560,S::Pavers,TEXT("白霧の峠"),1},
+		{{P(22800,5400,560),P(25000,8000,640),P(24200,12400,700)},600,S::Dirt,TEXT("赤土の台地"),1},
+		{{P(24200,12400,700),P(22600,15600,820),P(20600,18600,950)},560,S::Dirt,TEXT("石柱の谷"),1},
+		{{P(20600,18600,950),P(18400,20800,1030),P(16400,22800,1100)},520,S::Dirt,TEXT("石柱の谷"),1},
+		{{P(16400,22800,1100),P(18600,25600,1180),P(21200,28600,1250)},600,S::Snow,TEXT("白霧の峠"),1},
+		{{P(21200,28600,1250),P(23200,27800,1250),P(25200,27400,1250)},560,S::Snow,TEXT("雪原・針葉樹の森"),1},
+		{{P(21200,28600,1250),P(22700,31000,1250),P(24600,33000,1250)},560,S::Snow,TEXT("雪原・凍った湖"),1},
+		{{P(25200,27400,1250),P(26900,29200,1270),P(27500,31200,1290),P(29800,31200,1300)},600,S::Snow,TEXT("雪原・シマエナガの巣"),1},
+		{{P(24600,33000,1250),P(26600,32000,1270),P(27500,31200,1290)},520,S::Snow,TEXT("雪原・凍った湖"),1},
+		{{P(9800,33200,300),P(13600,31600,700),P(16800,29400,1000),P(18600,25600,1180)},500,S::Pavers,TEXT("巡礼の石段"),1},
+		{{P(13000,7000,560),P(12500,10600,620),P(11400,15000,660)},460,S::Dirt,TEXT("水車小屋の高台"),1},
+		{{P(24200,12400,700),P(28000,13600,1050),P(31200,14200,1400),P(34000,14400,1600)},560,S::Pavers,TEXT("覇者の道"),1},
+		{{P(9100,21300,370),P(10200,22700,300),P(11000,24000,260)},320,S::Dirt,TEXT("砂岩の隠し部屋"),1},
+		{{P(24600,33000,1250),P(25800,34500,1250),P(26800,35400,1250)},320,S::Snow,TEXT("雪原・氷の祠"),1},
+		// To the gorge's edge, where a strong dash leaps across to the pillars' top.
+		{{P(20600,18600,950),P(21500,19700,980)},400,S::Dirt,TEXT("石柱の谷"),1},
+		{{P(2600,33500,700),P(1500,34700,650),P(600,36000,600)},320,S::Dirt,TEXT("火山の隠し洞"),1},
 	};
 }
 TArray<FRock> MakeRocks()
@@ -94,6 +149,11 @@ TArray<FRock> MakeRocks()
 		{{29900,3500},{1000,800},1500}, {{26800,-7000},{1000,800},1800}, {{13900,-5600},{800,700},1050},
 		{{17200,-3800},{1300,900},1200}, {{17200,2800},{1300,900},1000}, {{-1400,-6200},{1000,900},700},
 		{{6400,-11200},{1400,1000},900}, {{-9600,1200},{1200,1800},800},
+		// 2026-11 (Part 1).
+		{{2600,18400},{1300,1000},700,1}, {{7600,17800},{1300,1000},1000,1}, {{14600,25200},{1600,1300},1600,1}, {{3600,36400},{1900,1600},2300,1},
+		{{27800,24400},{2000,1400},2400,1}, {{20600,35000},{1800,1600},2200,1}, {{31800,27000},{1600,1600},2600,1}, {{33200,34000},{1800,2000},2600,1},
+		{{26800,15800},{1500,1200},1500,1}, {{19000,13600},{1400,1100},1300,1}, {{-6400,27200},{1400,1100},500,1}, {{13200,22200},{900,800},1100,1},
+		{{9800,28200},{1300,1100},800,1}, {{-200,32800},{1200,1000},900,1},
 	};
 }
 TArray<FGap> MakeGaps()
@@ -201,6 +261,7 @@ FSample Sample(float X,float Y)
 		case ESurface::Sand: Out.Sand=FMath::Max(Out.Sand,Fill); break;
 		case ESurface::Cave: Out.Cave=FMath::Max(Out.Cave,Fill); break;
 		case ESurface::Moss: Out.Moss=FMath::Max(Out.Moss,Fill); break;
+		case ESurface::Snow: Out.Snow=FMath::Max(Out.Snow,Fill); break;
 		default: break;
 		}
 	}
@@ -217,9 +278,22 @@ FSample Sample(float X,float Y)
 		case ESurface::Sand: Out.Sand=FMath::Max(Out.Sand,Smooth(Road.Width*.6f,Road.Width*.2f,C)); break;
 		case ESurface::Cave: Out.Cave=FMath::Max(Out.Cave,Smooth(Road.Width*.7f,Road.Width*.4f,C)); break;
 		case ESurface::Moss: Out.Moss=FMath::Max(Out.Moss,Track); break;
+		case ESurface::Snow:
+			// Snow all across, a trodden track showing faintly down the middle.
+			Out.Snow=FMath::Max(Out.Snow,Smooth(Road.Width*.75f,Road.Width*.3f,C));
+			Out.Dirt=FMath::Max(Out.Dirt,Track*.3f);
+			break;
 		default: break;
 		}
 	}
+	// Regional colour (the terrain's third and fourth UVs).
+	const auto Region=[&](float CX,float CY,float RX,float RY,float Soft)
+	{ return Smooth(1.0f,1.0f-Soft,FMath::Sqrt(FMath::Square((X-CX)/RX)+FMath::Square((Y-CY)/RY))); };
+	Out.Ash=Region(2800,34400,6200,6200,.45f);
+	Out.Dry=Region(7400,28400,7600,8200,.35f);
+	Out.Marsh=Region(-3000,28500,4200,4600,.4f);
+	// The snowfield and its peaks lie under snow everywhere.
+	Out.Snow=FMath::Max(Out.Snow,Smooth(1.12f,.86f,FMath::Sqrt(FMath::Square((X-25200)/7800)+FMath::Square((Y-29800)/7800))));
 	float GapCut=MAX_flt;
 	for(const auto& G:Gaps()) { GapCut=FMath::Min(GapCut,Polyline2D(G.Points,X,Y)-G.Width*.5f-Wobble*.4f); }
 
@@ -241,7 +315,7 @@ FSample Sample(float X,float Y)
 	}
 	const float Off=Smooth(0.0f,Band,NearestDistance);
 	Out.Height=FMath::Lerp(Land,Outside,Off);
-	if(bCave) { Out.Cave=1; Out.Dirt=Out.Pavers=Out.Sand=Out.Moss=0; }
+	if(bCave) { Out.Cave=1; Out.Dirt=Out.Pavers=Out.Sand=Out.Moss=Out.Snow=0; }
 	Out.Inside=BestInside;
 	Out.bLand=BestInside>0;
 	if(GapCut<100)
@@ -254,6 +328,23 @@ FSample Sample(float X,float Y)
 }
 
 float Height(float X,float Y) { return Sample(X,Y).Height; }
+
+uint8 PartAt(float X,float Y)
+{
+	// The shape it is deepest inside (or nearest to): an area or a road.
+	uint8 Part=0; float Best=MAX_flt;
+	for(const auto& A:Areas())
+	{
+		const float D=(FMath::Sqrt(FMath::Square((X-A.At.X)/A.Radius.X)+FMath::Square((Y-A.At.Y)/A.Radius.Y))-1)*FMath::Min(A.Radius.X,A.Radius.Y);
+		if(D<Best) { Best=D; Part=A.Part; }
+	}
+	for(const auto& Road:Roads())
+	{
+		float H=0; const float D=Segment(Road.Points,X,Y,H)-Road.Width*.5f;
+		if(D<Best) { Best=D; Part=Road.Part; }
+	}
+	return Part;
+}
 
 TArray<FBridge> Bridges()
 {

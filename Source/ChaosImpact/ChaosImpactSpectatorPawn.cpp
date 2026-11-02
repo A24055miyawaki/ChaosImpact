@@ -145,9 +145,12 @@ TArray<AChaosImpactCharacter*> AChaosImpactSpectatorPawn::GetFollowTargets() con
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
 		const int32 Order = Competitors.IndexOfByKey(It->GetPlayerState<AChaosImpactPlayerState>());
-		if (Order != INDEX_NONE)
+		if (Order != INDEX_NONE && !It->IsEliminated())
 		{
-			Ordered.Emplace(Order, *It);
+			const auto* ViewerState = GetController() ? GetController()->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+			const auto* TargetState = It->GetPlayerState<AChaosImpactPlayerState>();
+			const bool bMate = Match->IsBattleRoyale() && Match->IsTeamBattle() && ViewerState && TargetState && ViewerState->TeamIndex == TargetState->TeamIndex;
+			Ordered.Emplace(Order - (bMate ? 100 : 0), *It);
 		}
 	}
 	Ordered.Sort([](const TPair<int32, AChaosImpactCharacter*>& A, const TPair<int32, AChaosImpactCharacter*>& B)
@@ -344,6 +347,12 @@ void AChaosImpactSpectatorPawn::Tick(const float DeltaSeconds)
 	}
 	EnsureHud(Viewer);
 	UpdatePlacement(Viewer);
+	if (const auto* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+		Match && Match->IsRoyaleEliminated(Viewer->PlayerState) && !bRoyaleAutoFollow)
+	{
+		CycleFollow(1);
+		bRoyaleAutoFollow = Followed.IsValid();
+	}
 	UpdateViewSync(Viewer, DeltaSeconds);
 	UpdateDevCycle(DeltaSeconds);
 	// Menus (pause, rules, results) keep the keys for themselves.

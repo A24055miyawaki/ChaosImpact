@@ -178,23 +178,19 @@ namespace
 					TEXT("Player count opens controller assignment"))) { return true; }
 					Test->TestTrue(TEXT("Assignment screen names the first player's device"),
 						!PC->GetLocalInputAssignmentForPlayer(0).IsEmpty());
-					// The D-pad presses above made the controller P1's device (the last device used picks it);
-					// start the checks below from keyboard P1.
-					if (PC->WillPrimaryUseGamepad())
-					{
-						PC->TogglePrimaryInputMode();
-					}
-					PC->TogglePrimaryInputMode();
-					Test->TestFalse(TEXT("A controller player waits for a join press"),
+					// Nobody has a device until they press on it: P1 is whoever presses first.
+					Test->TestFalse(TEXT("The first player waits for a press"),
 						PC->AreControllerAssignmentsComplete());
 					MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 77);
 					Test->TestTrue(TEXT("The assignment UI accepts a physical controller button"),
 						PC->IsControllerJoined(77));
 					Test->TestTrue(TEXT("The join press completes the requested controller roster"),
 						PC->AreControllerAssignmentsComplete());
-					PC->TogglePrimaryInputMode();
-					Test->TestTrue(TEXT("Keyboard P1 is ready without a controller"),
-						PC->AreControllerAssignmentsComplete());
+					// Again, the keyboard pressed first this time.
+					PC->PrepareTrainingControllerAssignment(1);
+					MenuKey(EKeys::SpaceBar);
+					Test->TestTrue(TEXT("A keyboard press makes the keyboard P1's"),
+						PC->IsKeyboardMouseAssignedToPlayer(0) && PC->AreControllerAssignmentsComplete());
 					MenuKey(EKeys::Enter);
 					if (!Check(EChaosImpactScreen::CharacterSelect,
 						TEXT("Assignment leads to character select"))) { return true; }
@@ -397,15 +393,15 @@ namespace
 				PauseKey(PC);
 				break;
 			case 11:
-				if (!Check(EChaosImpactScreen::Pause, TEXT("P opens pause"))) { return true; }
+				if (!Check(EChaosImpactScreen::Pause, TEXT("The menu button opens pause"))) { return true; }
 				Test->TestTrue(TEXT("Gameplay is paused"), PC->IsPaused());
 				PausedWorldTime = PC->GetWorld()->GetTimeSeconds();
 				Capture(TEXT("06-Pause.png"));
 				break;
 			case 12:
 				Test->TestEqual(TEXT("World time does not advance behind menu"), PC->GetWorld()->GetTimeSeconds(), PausedWorldTime);
-				MenuKey(EKeys::P);
-				if (!Check(EChaosImpactScreen::Playing, TEXT("P closes pause"))) { return true; }
+				MenuKey(EKeys::Escape);
+				if (!Check(EChaosImpactScreen::Playing, TEXT("Escape closes pause"))) { return true; }
 				Test->TestFalse(TEXT("Resume unpauses gameplay"), PC->IsPaused());
 				if (auto* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
 				{
@@ -425,11 +421,7 @@ namespace
 				break;
 			case 16:
 			{
-				MenuKey(EKeys::Down);
-				MenuKey(EKeys::Enter);
-				if (!Check(EChaosImpactScreen::Pause, TEXT("Trajectory toggle keeps pause open"))) { return true; }
-				Test->TestTrue(TEXT("Pause menu switches from default arc to straight"),
-					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Straight);
+				// (Throws always arc: the pause menu has no trajectory row.)
 				MenuKey(EKeys::Down);
 				MenuKey(EKeys::Enter);
 				if (!Check(EChaosImpactScreen::TrainingOverlay,
@@ -524,8 +516,8 @@ namespace
 				Capture(TEXT("06-Live-Training-Overlay.png"));
 				break;
 			case 18:
-				// Flight, players, targets, CPU, summon type, summon ball, then reset.
-				for (int32 Press = 0; Press < 6; ++Press)
+				// Players, targets, CPU, ball list, summon ball, camera, teams, then reset.
+				for (int32 Press = 0; Press < 7; ++Press)
 				{
 					MenuKey(EKeys::Down);
 				}
@@ -535,8 +527,8 @@ namespace
 			case 19:
 				if (!PC->IsGameplayActive() && Now - TravelStartedAt < 45) { return false; }
 				if (!Check(EChaosImpactScreen::Playing, TEXT("Training retry reloads the stage"))) { return true; }
-				Test->TestTrue(TEXT("Retry preserves selected straight trajectory"),
-					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Straight);
+				Test->TestTrue(TEXT("Throws stay arced after a retry"),
+					PC->GetBallFlightMode() == EChaosImpactBallFlightMode::Arc);
 				if (auto* Pawn = Cast<AChaosImpactCharacter>(PC->GetPawn()))
 				{
 					Test->TestEqual(TEXT("Retry clears carried balls"), Pawn->GetCarriedBallCount(), 0);
@@ -602,6 +594,7 @@ namespace
 				if (!Check(EChaosImpactScreen::OnlinePlayers, TEXT("VS online opens player count from training world"))) { return true; }
 				PC->PrepareTrainingControllerAssignment(1);
 				if (!Check(EChaosImpactScreen::ControllerAssignment, TEXT("Online player count opens assignment"))) { return true; }
+				PC->RegisterKeyboardMouseJoin();
 				Test->TestTrue(TEXT("Keyboard P1 is ready for online"), PC->AreControllerAssignmentsComplete());
 				PC->ConfirmControllerAssignments();
 				if (!Check(EChaosImpactScreen::CharacterSelect, TEXT("Online assignment leads to character select"))) { return true; }
@@ -678,19 +671,21 @@ namespace
 			PC->PrepareTrainingControllerAssignment(2);
 			Test->TestEqual(TEXT("Two-player setup opens the join screen"),
 				PC->GetCurrentScreen(), EChaosImpactScreen::ControllerAssignment);
-			Test->TestFalse(TEXT("Two-player keyboard setup initially waits for P2"),
+			Test->TestFalse(TEXT("Two-player setup initially waits for both"),
 				PC->AreControllerAssignmentsComplete());
 
 			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 77);
 			Test->TestTrue(TEXT("A Slate UI-only gamepad event registers its physical device"),
 				PC->IsControllerJoined(77));
-			Test->TestTrue(TEXT("The UI-only join event completes the two-player roster"),
+			Test->TestFalse(TEXT("One press fills one place"), PC->AreControllerAssignmentsComplete());
+			MenuKey(EKeys::SpaceBar);
+			Test->TestTrue(TEXT("The keyboard pressed second is P2's"), PC->IsKeyboardMouseAssignedToPlayer(1));
+			Test->TestTrue(TEXT("Controller then keyboard completes the two-player roster"),
 				PC->AreControllerAssignmentsComplete());
-			Test->TestEqual(TEXT("The join press does not accidentally activate a menu entry"),
+			Test->TestEqual(TEXT("The join presses do not accidentally activate a menu entry"),
 				PC->GetCurrentScreen(), EChaosImpactScreen::ControllerAssignment);
 
 			PC->ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
-			PC->TogglePrimaryInputMode();
 			PC->PrepareTrainingControllerAssignment(3);
 			MenuDeviceKey(EKeys::Gamepad_FaceButton_Top, 88);
 			// The second pad is a separate Slate user whose keys never reach the menu's focus.
@@ -701,8 +696,8 @@ namespace
 				PC->IsKeyboardMouseAssignedToPlayer(2));
 			Test->TestTrue(TEXT("Controller, controller, keyboard fills a three-player roster"),
 				PC->AreControllerAssignmentsComplete());
-			Test->TestTrue(TEXT("P1 remains controller-only when keyboard joins as P3"),
-				PC->WillPrimaryUseGamepad());
+			Test->TestFalse(TEXT("P1 remains controller-only when keyboard joins as P3"),
+				PC->IsKeyboardMouseAssignedToPlayer(0));
 
 			PC->ShowMenuScreen(EChaosImpactScreen::TrainingSetup);
 			PC->PrepareTrainingControllerAssignment(1);

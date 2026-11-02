@@ -6,6 +6,7 @@
 
 class UStaticMeshComponent;
 class UMaterialInterface;
+class UPrimitiveComponent;
 
 USTRUCT(BlueprintType)
 struct FChaosImpactCrashRoutePart
@@ -29,8 +30,16 @@ class AChaosImpactStageBase : public AActor
 	GENERATED_BODY()
 
 public:
+	AChaosImpactStageBase();
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	/**
+	 * Props up on the walls (billboards, graffiti) that each player's own view drops while that player's camera is
+	 * close to them, so they never stand between the camera and the play (the walls themselves fade by their material:
+	 * see MakeWallsSeeThrough). The player controllers read these every frame.
+	 */
+	const TArray<TWeakObjectPtr<UPrimitiveComponent>>& GetNearCameraParts() const { return NearCameraParts; }
 	/** Half the floor width of the standard stage. */
 	static constexpr float HalfExtent = 3000.0f;
 
@@ -144,4 +153,22 @@ protected:
 
 	/** Stage-relative offsets to world positions. */
 	TArray<FVector> ToWorld(const TArray<FVector>& Offsets) const;
+
+	/**
+	 * Gives the blocks whose names start with one of Prefixes the see-through wall look: they fade out, dithered, where
+	 * they come nearer the camera than the player, so a wall on the camera's side of the arena never hides the floor or
+	 * a player standing by it (Content/ChaosImpact/Versus/M_CI_WallFade, Scripts/Versus/make_wall_fade_materials.py).
+	 * Blocks wearing GlowSource get the glowing version. Call before the palette goes on (it sets their Color).
+	 */
+	void MakeWallsSeeThrough(const TArray<FString>& Prefixes, const UMaterialInterface* GlowSource);
+	/** Lists the components whose names start with one of Prefixes as near-camera parts (GetNearCameraParts). */
+	void HideNearCamera(const TArray<FString>& Prefixes);
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> WallFadeMaterial;
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> WallFadeGlowMaterial;
+
+private:
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> NearCameraParts;
 };

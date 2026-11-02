@@ -137,7 +137,7 @@ struct FRPGTitleLayout
 	static void Header(RPGUI::FCanvas& C, float W, const FString& Title, const FString& Sub)
 	{
 		if (C.IsPainting()) { ChaosImpactPaint::HudText3D(C.At(1, 6), Title, 48, 34, 38, RPGUI::TextMain, ChaosImpactPaint::ETextAlign::Left, TEXT("BlackItalic")); }
-		RPGUI::Label(C, 1, RPGUI::Fit(Sub, W - 100, 17), 52, 88, 17, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, Sub, 52, 88, W - 100, 17, RPGUI::TextSub);
 	}
 
 	static void Layout(RPGUI::FCanvas& C, const URPGTitleWidget& T, float W, float H)
@@ -202,8 +202,8 @@ struct FRPGTitleLayout
 					continue;
 				}
 				const auto& Hero = T.Heroes[View.Entry];
-				RPGUI::Label(C, 1, RPGUI::Fit(Hero.Name, PW - 26, bOn ? 21 : 17, TEXT("Black")), Head.X + 2, PY + 4, bOn ? 21 : 17, RPGUI::TextMain, ETextAlign::Center, TEXT("Black"));
-				RPGUI::Label(C, 1, RPGUI::Fit(FString::Printf(TEXT("Lv.%d　%s"), Hero.Level, ChaosImpactRoster::Get(Hero.Character).Name), PW - 16, 12), Head.X + 2, PY + PH - 20, 12, bTaken ? RPGUI::TextDim : RPGUI::TextSub, ETextAlign::Center);
+				RPGUI::LabelFit(C, 1, Hero.Name, Head.X + 2, PY + 4, PW - 26, bOn ? 21 : 17, RPGUI::TextMain, ETextAlign::Center, TEXT("Black"));
+				RPGUI::LabelFit(C, 1, FString::Printf(TEXT("Lv.%d　%s"), Hero.Level, ChaosImpactRoster::Get(Hero.Character).Name), Head.X + 2, PY + PH - 20, PW - 16, 12, bTaken ? RPGUI::TextDim : RPGUI::TextSub, ETextAlign::Center);
 				// A small pointer from the plate down to the head.
 				if (bOn) { HudPolyArrow(C, Head.X, PY + PH + 2); }
 			}
@@ -302,10 +302,11 @@ struct FRPGTitleLayout
 			// How many play (offline): 2 or more go on to the controller assignment.
 			const float RY = CY + 172;
 			RPGUI::Label(C, 1, TEXT("あそぶ人数"), X0, RY + 12, 19, RPGUI::TextSub);
-			RPGUI::Button(C, 1, X0 + 130, RY, 54, 48, TEXT("‹"), TitleAct::LessPlayers, false, T.Players > 1);
-			if (C.IsPainting()) { ChaosImpactPaint::HudText3D(C.At(1, 6), FString::Printf(TEXT("%d人"), T.Players), X0 + 228, RY + 4, 32, RPGUI::Highlight, ETextAlign::Center); }
-			RPGUI::Button(C, 1, X0 + 272, RY, 54, 48, TEXT("›"), TitleAct::MorePlayers, false, T.Players < 4);
-			RPGUI::Button(C, 1, X0 + CW * 2 + Gap - 280, RY, 280, 54, T.PlayCursor == 1 ? TEXT("合言葉を決める") : T.Players > 1 ? TEXT("コントローラー割り当てへ") : TEXT("キャラクター選択へ"), TitleAct::Ok, true, true, Key(TEXT("Enter"), TEXT("決定")));
+			// (The count a little to the left, so the button beside it has room for its longest label.)
+			RPGUI::Button(C, 1, X0 + 112, RY, 54, 48, TEXT("‹"), TitleAct::LessPlayers, false, T.Players > 1);
+			if (C.IsPainting()) { ChaosImpactPaint::HudText3D(C.At(1, 6), FString::Printf(TEXT("%d人"), T.Players), X0 + 208, RY + 4, 32, RPGUI::Highlight, ETextAlign::Center); }
+			RPGUI::Button(C, 1, X0 + 250, RY, 54, 48, TEXT("›"), TitleAct::MorePlayers, false, T.Players < 4);
+			RPGUI::Button(C, 1, X0 + CW * 2 + Gap - 304, RY, 304, 54, T.PlayCursor == 1 ? TEXT("合言葉を決める") : T.Players > 1 ? TEXT("コントローラー割り当てへ") : TEXT("キャラクター選択へ"), TitleAct::Ok, true, true, Key(TEXT("Enter"), TEXT("決定")));
 			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("オフライン／オンライン")}, {Key(TEXT("←→"), TEXT("左右")), TEXT("人数")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("つぎへ")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("タイトルへ")}});
 			break;
 		}
@@ -328,10 +329,10 @@ struct FRPGTitleLayout
 				const float Y = PY + 128 + Index * 96;
 				const bool bOn = T.OnlineCursor == Index;
 				RPGUI::Button(C, 1, PX + 30, Y, PW - 60, 54, Labels[Index], Actions[Index], bOn, bHasPassword, bOn ? Key(TEXT("Enter"), TEXT("決定")) : FString());
-				RPGUI::Label(C, 1, RPGUI::Fit(Notes[Index], PW - 70, 13), PX + 36, Y + 60, 13, RPGUI::TextDim);
+				RPGUI::LabelFit(C, 1, Notes[Index], PX + 36, Y + 60, PW - 70, 13, RPGUI::TextDim);
 			}
 			const FString Online = URPGOnlineSubsystem::Get(&T) ? URPGOnlineSubsystem::Get(&T)->GetNotice() : FString();
-			if (!Online.IsEmpty()) { RPGUI::Label(C, 1, RPGUI::Fit(Online, PW, 16), W * 0.5f, PY - 30, 16, RPGUI::Bad, ETextAlign::Center); }
+			if (!Online.IsEmpty()) { RPGUI::LabelFit(C, 1, Online, W * 0.5f, PY - 30, PW, 16, RPGUI::Bad, ETextAlign::Center); }
 			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("決定")}, {Key(TEXT("F1"), TEXT("上")), TEXT("おまかせ")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}});
 			break;
 		}
@@ -356,14 +357,14 @@ struct FRPGTitleLayout
 				const bool bOn = T.RoomCursor == Index, bFull = Listing.Players >= URPGOnlineSubsystem::MaxPlayers;
 				C.Hit(PX + 24, Y, PW - 48, 60, Action);
 				RPGUI::Panel(C, 1, PX + 24, Y, PW - 48, 60, bFull ? RPGUI::EStyle::Disabled : bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card, bOn ? RPGUI::Highlight : FLinearColor::Transparent, RPGUI::Cyan);
-				RPGUI::Label(C, 1, RPGUI::Fit(FString::Printf(TEXT("%s の世界"), *Listing.Host), PW - 300, 20), PX + 48, Y + 15, 20, bFull ? RPGUI::TextDim : RPGUI::TextMain);
+				RPGUI::LabelFit(C, 1, FString::Printf(TEXT("%s の世界"), *Listing.Host), PX + 48, Y + 15, PW - 300, 20, bFull ? RPGUI::TextDim : RPGUI::TextMain);
 				RPGUI::Label(C, 1, FString::Printf(TEXT("%d / %d人"), Listing.Players, URPGOnlineSubsystem::MaxPlayers), PX + PW - 170, Y + 17, 18, bFull ? RPGUI::Bad : RPGUI::Highlight, ETextAlign::Right);
 				// Connection: three bars.
 				const int32 Bars = Listing.PingMs < 60 ? 3 : Listing.PingMs < 150 ? 2 : 1;
 				for (int32 Bar = 0; Bar < 3 && C.IsPainting(); ++Bar) { C.At(1, 4).Box(PX + PW - 130 + Bar * 12, Y + 38 - Bar * 8, 8, 10 + Bar * 8, Bar < Bars ? RPGUI::Good : RPGUI::TextDim); }
 			}
 			const FString Notice = Online ? Online->GetNotice() : FString();
-			if (!Notice.IsEmpty()) { RPGUI::Label(C, 1, RPGUI::Fit(Notice, PW, 16), W * 0.5f, H - 120, 16, RPGUI::Bad, ETextAlign::Center); }
+			if (!Notice.IsEmpty()) { RPGUI::LabelFit(C, 1, Notice, W * 0.5f, H - 120, PW, 16, RPGUI::Bad, ETextAlign::Center); }
 			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("この世界に入る")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}});
 			break;
 		}
@@ -620,7 +621,8 @@ void URPGTitleWidget::GoTo(EPage NewPage)
 	else { HideStatues(); }
 	if (auto* P = Player()) { P->SetActorHiddenInGame(Page == EPage::Heroes || Page == EPage::Press); }
 	if (Page == EPage::Look) { ShowLook(LookCursor, ColourCursor); }
-	SetVisibility(Page == EPage::Assigning ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+	// (While the shared assignment is up the title draws nothing, but keeps ticking: it takes over when that is done.)
+	SetVisibility(Page == EPage::Assigning ? ESlateVisibility::HitTestInvisible : ESlateVisibility::SelfHitTestInvisible);
 }
 
 void URPGTitleWidget::ShowLook(int32 Character, int32 Colour) const
@@ -1045,7 +1047,11 @@ void ARPGPrototypeCharacter::BeginHero(const FRPGHeroEntry& Hero)
 	if (UGameplayStatics::DoesSaveGameExist(RPGHeroes::SaveSlot(HeroId), 0) && LoadTestProgress())
 	{ Notice = FString::Printf(TEXT("おかえり、%s（Lv.%d）"), *HeroName, RPGLevel); }
 	else
-	{ AutosaveHero(); Notice = FString::Printf(TEXT("%s の冒険がはじまる"), *HeroName); }
+	{
+		AutosaveHero(); Notice = FString::Printf(TEXT("%s の冒険がはじまる"), *HeroName);
+		// A new hero: the controls first, learned by doing (skippable).
+		StartControlsTutorial();
+	}
 	NoticeUntil = GetWorld()->GetTimeSeconds() + 4;
 }
 

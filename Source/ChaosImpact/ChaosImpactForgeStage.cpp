@@ -12,7 +12,6 @@
 #include "Components/PostProcessComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Components/TextRenderComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -25,20 +24,28 @@
 
 namespace ForgeStage
 {
-	constexpr float CoreRadius = 1520.0f;
-	constexpr float CrucibleTop = 95.0f;
+	/** The foundry deck: half its width, how far back each of its corners is cut (an octagon), and how thick it is. */
+	constexpr float DeckHalf = 3150.0f;
+	constexpr float DeckChamfer = 1000.0f;
+	constexpr float DeckThick = 80.0f;
+	/** The core in the middle (a concrete ring the crucible and the four vents stand in). */
+	constexpr float CoreRadius = 1500.0f;
+	constexpr float CrucibleTop = 35.0f;
+	/** How far out along each diagonal the corner cooling chamber's blast wall stands, and the chamber's own middle. */
+	constexpr float CornerWallDistance = 2950.0f;
+	constexpr float ChamberDistance = 3366.0f;
 
 	const FVector QuarterSpawnOffsets[] =
 	{
-		FVector(2960.0f, 0.0f, 0.0f),                            // behind the container on the cardinal foundry bay
-		FVector(2450.0f, 2450.0f, 0.0f),                         // inside the corner cooling chamber
-		FVector(1220.0f, -520.0f, AChaosImpactForgeStage::CoreDeckZ) // on the central core deck beside the vents
+		FVector(2850.0f, 0.0f, 0.0f),                            // in the foundry bay, behind its container
+		FVector(2380.0f, 2380.0f, 0.0f),                         // in the corner cooling chamber, behind its blast wall
+		FVector(1220.0f, -520.0f, 0.0f)                          // on the core beside a vent
 	};
 
 	const FVector QuarterBallOffsets[] =
 	{
-		FVector(2120.0f, 0.0f, 0.0f),                            // front of the cardinal foundry bay
-		FVector(2220.0f, 2220.0f, 0.0f)                          // entrance of the corner cooling chamber
+		FVector(2050.0f, 0.0f, 0.0f),                            // in front of the foundry bay
+		FVector(1700.0f, 1700.0f, 0.0f)                          // in front of the corner cooling chamber
 	};
 
 	FVector Turn(const FVector& Offset, const int32 Quarter)
@@ -50,29 +57,35 @@ namespace ForgeStage
 	{
 		return FVector(Layout.X * AChaosImpactForgeStage::LayoutScale, Layout.Y * AChaosImpactForgeStage::LayoutScale, Layout.Z);
 	}
+
+	/** The deck's outline brought in by Inset (out, if negative): its eight corners, anticlockwise from the +X side's -Y end. */
+	TArray<FVector> DeckOutline(const float Inset, const float Z)
+	{
+		const float Side = DeckHalf - Inset;
+		const float Cut = DeckHalf - DeckChamfer - Inset * (UE_SQRT_2 - 1.0f);
+		return {FVector(Side, -Cut, Z), FVector(Side, Cut, Z), FVector(Cut, Side, Z), FVector(-Cut, Side, Z),
+			FVector(-Side, Cut, Z), FVector(-Side, -Cut, Z), FVector(-Cut, -Side, Z), FVector(Cut, -Side, Z)};
+	}
 }
 
 FVector AChaosImpactForgeStage::GetVentOffset(const int32 Vent)
 {
-	return ForgeStage::Spread(ForgeStage::Turn(FVector(920.0f, 0.0f, CoreDeckZ), FMath::Clamp(Vent, 0, 3)));
+	return ForgeStage::Spread(ForgeStage::Turn(FVector(920.0f, 0.0f, 0.0f), FMath::Clamp(Vent, 0, 3)));
+}
+
+bool AChaosImpactForgeStage::IsGlowPaint(const uint8 Paint)
+{
+	return Paint == MagmaGlow || Paint == CoolantGlow || Paint == MagmaSea || (Paint >= BayGlow && Paint < BayGlow + 4);
 }
 
 AChaosImpactForgeStage::AChaosImpactForgeStage()
 {
-	CrashBallStartOffset = FVector(0, 0, 95);
+	CrashBallStartOffset = FVector(0, 0, ForgeStage::CrucibleTop);
 	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/M_StageMetalFloor.M_StageMetalFloor"));
 	Team0GoalOffset = FVector(-2990, 0, 0);
 	Team1GoalOffset = FVector(2990, 0, 0);
 	CrashRemovedObstaclePrefixes = {TEXT("BayContainer_Q0"), TEXT("BayContainer_Q2")};
-	CrashBallExtraBallOffsets = {FVector(-1100, 400, 60), FVector(1100, -400, 60), FVector(-2400, 600, 0), FVector(2400, -600, 0)};
-	for (const float Sign : {-1.f, 1.f})
-	{
-		FChaosImpactCrashRoutePart Ramp;
-		Ramp.Start = FVector(Sign * 1420, 0, 60);
-		Ramp.End = FVector(Sign * 2000, 0, 0);
-		Ramp.Width = 900;
-		CrashRouteParts.Add(Ramp);
-	}
+	CrashBallExtraBallOffsets = {FVector(-1100, 400, 0), FVector(1100, -400, 0), FVector(-2400, 600, 0), FVector(2400, -600, 0)};
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	bAlwaysRelevant = true;
@@ -125,8 +138,8 @@ AChaosImpactForgeStage::AChaosImpactForgeStage()
 		TEXT("/Game/ChaosImpact/solo/Stage2/Materials/MI_Gold.MI_Gold"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FieldAmber(
 		TEXT("/Game/ChaosImpact/solo/Stage1/Materials/MI_NeonField_Amber.MI_NeonField_Amber"));
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Stencil(
-		TEXT("/Engine/EngineMaterials/DefaultTextMaterialOpaque.DefaultTextMaterialOpaque"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Plane(TEXT("/Engine/BasicShapes/Plane.Plane"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WarnMat(TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Warn.M_CIFX_Warn"));
 
 	BoxMesh = Box.Object;
 	ConeMesh = Cone.Object;
@@ -142,9 +155,10 @@ AChaosImpactForgeStage::AChaosImpactForgeStage()
 	PaintMaterial = Paint.Succeeded() ? Paint.Object : nullptr;
 	GoldMaterial = GoldMat.Succeeded() ? GoldMat.Object : nullptr;
 	FieldAmberMaterial = FieldAmber.Succeeded() ? FieldAmber.Object : GlowMaterial;
-	StencilMaterial = Stencil.Object;
+	PlaneMesh = Plane.Object;
+	WarnMaterial = WarnMat.Succeeded() ? WarnMat.Object : nullptr;
 
-	BuildCoreDeck();
+	BuildFloor();
 
 	for (int32 Quarter = 0; Quarter < 4; ++Quarter)
 	{
@@ -177,175 +191,167 @@ AChaosImpactForgeStage::AChaosImpactForgeStage()
 	Look.WhiteTemp = 6500.0f;
 }
 
-void AChaosImpactForgeStage::BuildCoreDeck()
+void AChaosImpactForgeStage::BuildFloor()
 {
-	using ForgeStage::CoreRadius;
-	using ForgeStage::CrucibleTop;
-	// Glowing magma sea far below the foundry platforms (-450 cm) over a dark basalt bed.
-	AddBox(TEXT("MagmaSeaSurface"), MagmaGlow, FVector(0.0f, 0.0f, -450.0f), FVector(22000.0f, 22000.0f, 20.0f), 0.0f, false);
+	using namespace ForgeStage;
+	// The magma sea far below (-440): a deep red glow, mostly crusted over with dark basalt plates, glowing through the
+	// cracks between them.
+	AddBox(TEXT("MagmaSeaSurface"), MagmaSea, FVector(0.0f, 0.0f, -450.0f), FVector(22000.0f, 22000.0f, 20.0f), 0.0f, false);
 	AddBox(TEXT("MagmaBed"), Scenery, FVector(0.0f, 0.0f, -520.0f), FVector(22000.0f, 22000.0f, 60.0f), 0.0f, false);
+	FRandomStream Random(61);
+	int32 Crust = 0;
+	for (int32 Row = -5; Row < 5; ++Row)
+	{
+		for (int32 Column = -5; Column < 5; ++Column)
+		{
+			const FVector Cell((Column + 0.5f) * 2200.0f + Random.FRandRange(-380.0f, 380.0f),
+				(Row + 0.5f) * 2200.0f + Random.FRandRange(-380.0f, 380.0f), -441.0f + Random.FRandRange(0.0f, 4.0f));
+			if (FMath::Max(FMath::Abs(Cell.X), FMath::Abs(Cell.Y)) < 2900.0f)
+			{
+				continue;
+			}
+			AddPart(SceneRoot, FString::Printf(TEXT("MagmaCrust%d"), Crust++), DarkSteel, ChamferMesh.Get(), Cell,
+				FVector(Random.FRandRange(1150.0f, 1900.0f), Random.FRandRange(950.0f, 1600.0f), 26.0f),
+				FRotator(0.0f, Random.FRandRange(0.0f, 180.0f), 0.0f), false);
+		}
+	}
 
-	// Central Circular Core Deck (+60 cm) supported by a heavy tapered furnace pedestal reaching into the magma.
-	AddCylinder(TEXT("CoreDeckTop"), SteelFloor, FVector(0.0f, 0.0f, 0.0f), CoreRadius * 2.0f, CoreDeckZ, true);
-	AddCylinder(TEXT("CoreDeckRim"), Concrete, FVector(0.0f, 0.0f, -65.0f), CoreRadius * 2.0f + 80.0f, 65.0f, false);
-	AddPart(SceneRoot, TEXT("CoreFurnaceSub"), DarkSteel, ConeMesh.Get(), FVector(0.0f, 0.0f, -520.0f),
+	// The deck: one wide steel floor, an octagon (a slab across, one at each end, and a square turned to fill each cut
+	// corner, its top a hair lower so no two tops meet flush), on a dark skirt.
+	const auto Octagon = [this](const FString& Name, const uint8 Paint, const float Half, const float Top, const float Thick,
+		const bool bCollision)
+	{
+		const float Straight = Half - DeckChamfer;
+		AddBox(Name + TEXT("Main"), Paint, FVector(0.0f, 0.0f, Top - Thick * 0.5f), FVector(Half * 2.0f, Straight * 2.0f, Thick),
+			0.0f, bCollision);
+		for (const float Sign : {-1.0f, 1.0f})
+		{
+			AddBox(Name + (Sign > 0.0f ? TEXT("End1") : TEXT("End0")), Paint,
+				FVector(0.0f, Sign * (Straight + DeckChamfer * 0.5f), Top - Thick * 0.5f), FVector(Straight * 2.0f, DeckChamfer, Thick),
+				0.0f, bCollision);
+		}
+		for (int32 Corner = 0; Corner < 4; ++Corner)
+		{
+			AddBox(FString::Printf(TEXT("%sCorner%d"), *Name, Corner), Paint, Turn(FVector(Straight, Straight, Top - Thick * 0.5f - 0.5f), Corner),
+				FVector(DeckChamfer * UE_SQRT_2, DeckChamfer * UE_SQRT_2, Thick), 45.0f, bCollision);
+		}
+	};
+	Octagon(TEXT("Deck"), SteelFloor, DeckHalf, 0.0f, DeckThick, true);
+	Octagon(TEXT("DeckSkirt"), DarkSteel, DeckHalf + 40.0f, -DeckThick, 90.0f, false);
+
+	// Under the deck: the furnace the core sits on, reaching down into the magma, and girder legs round it.
+	AddPart(SceneRoot, TEXT("CoreFurnaceSub"), DarkSteel, ConeMesh.Get(), FVector(0.0f, 0.0f, -640.0f),
 		FVector(CoreRadius * 1.9f, CoreRadius * 1.9f, 920.0f), FRotator(180.0f, 0.0f, 0.0f), false);
-	AddRing(TEXT("CoreSubMagmaRing"), MagmaGlow, FVector(0.0f, 0.0f, -180.0f), CoreRadius * 0.86f, 18.0f);
+	AddRing(TEXT("CoreSubMagmaRing"), MagmaGlow, FVector(0.0f, 0.0f, -300.0f), CoreRadius * 0.72f, 18.0f);
+	for (int32 Leg = 0; Leg < 8; ++Leg)
+	{
+		const float Angle = FMath::DegreesToRadians(22.5f + Leg * 45.0f);
+		AddBox(FString::Printf(TEXT("DeckLeg%d"), Leg), DarkSteel, FVector(FMath::Cos(Angle) * 2550.0f, FMath::Sin(Angle) * 2550.0f, -310.0f),
+			FVector(240.0f, 240.0f, 300.0f), 22.5f + Leg * 45.0f, false);
+	}
 
-	// Central Crucible Altar (+95 cm) where the central ball spawner sits.
-	AddCylinder(TEXT("CrucibleStep1"), Concrete, FVector(0.0f, 0.0f, CoreDeckZ), 760.0f, 18.0f, true);
-	AddCylinder(TEXT("CrucibleStep2"), Baffle, FVector(0.0f, 0.0f, CoreDeckZ + 18.0f), 480.0f, 17.0f, true);
-	CrucibleRings.Add(AddRing(TEXT("CrucibleRingOuter"), MagmaGlow, FVector(0.0f, 0.0f, CoreDeckZ + 18.8f), 380.0f, 5.0f));
+	// Inlaid in the floor (none of it collides; each lies a hair above the one under it): the core's concrete ring with a
+	// hazard stripe round its edge and a molten seam inside that.
+	AddCylinder(TEXT("CoreInlay"), Concrete, FVector(0.0f, 0.0f, -0.4f), CoreRadius * 2.0f, 1.0f, false);
+	AddRing(TEXT("CorePerimeterStripe"), Stripe, FVector(0.0f, 0.0f, 0.8f), CoreRadius - 30.0f, 4.0f);
+	AddRing(TEXT("CoreMagmaSeam"), MagmaGlow, FVector(0.0f, 0.0f, 0.9f), CoreRadius - 95.0f, 2.5f);
+
+	// The crucible in the middle, a low two-step altar (its pad only ever gives special balls).
+	AddCylinder(TEXT("CrucibleStep1"), Concrete, FVector(0.0f, 0.0f, 0.0f), 760.0f, 18.0f, true);
+	AddCylinder(TEXT("CrucibleStep2"), Baffle, FVector(0.0f, 0.0f, 18.0f), 480.0f, 17.0f, true);
+	CrucibleRings.Add(AddRing(TEXT("CrucibleRingOuter"), MagmaGlow, FVector(0.0f, 0.0f, 18.8f), 380.0f, 5.0f));
 	CrucibleRings.Add(AddRing(TEXT("CrucibleRingInner"), Gold, FVector(0.0f, 0.0f, CrucibleTop + 0.8f), 235.0f, 5.0f));
-	AddRing(TEXT("CorePerimeterStripe"), Stripe, FVector(0.0f, 0.0f, CoreDeckZ + 0.8f), CoreRadius - 45.0f, 4.0f);
+
+	// The edge, walked round: a steel kerb with a hazard stripe on it, a yellow guard rail on posts (neither rail nor post
+	// collides or casts a shadow), and an invisible fence just outside.
+	const TArray<FVector> KerbLine = DeckOutline(35.0f, 0.0f);
+	const TArray<FVector> FenceLine = DeckOutline(-15.0f, 0.0f);
+	int32 Post = 0;
+	for (int32 Side = 0; Side < KerbLine.Num(); ++Side)
+	{
+		const FVector& From = KerbLine[Side];
+		const FVector& To = KerbLine[(Side + 1) % KerbLine.Num()];
+		const FVector Mid = (From + To) * 0.5f;
+		const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(To.Y - From.Y, To.X - From.X));
+		const float Length = FVector::Dist2D(From, To);
+		AddBox(FString::Printf(TEXT("Kerb%d"), Side), Baffle, Mid + FVector(0.0f, 0.0f, 17.0f), FVector(Length + 40.0f, 70.0f, 34.0f), Yaw,
+			true, true);
+		AddBox(FString::Printf(TEXT("KerbStripe%d"), Side), Stripe, Mid + FVector(0.0f, 0.0f, 34.8f), FVector(Length + 10.0f, 28.0f, 1.4f),
+			Yaw, false);
+		AddBox(FString::Printf(TEXT("Rail%d"), Side), Stripe, Mid + FVector(0.0f, 0.0f, 106.0f), FVector(Length + 8.0f, 8.0f, 8.0f), Yaw, false);
+		AddBox(FString::Printf(TEXT("RailLow%d"), Side), DarkSteel, Mid + FVector(0.0f, 0.0f, 70.0f), FVector(Length, 6.0f, 6.0f), Yaw, false);
+		const int32 Posts = FMath::Max(2, FMath::RoundToInt(Length / 520.0f));
+		for (int32 Index = 0; Index < Posts; ++Index)
+		{
+			AddCylinder(FString::Printf(TEXT("RailPost%d"), Post++), DarkSteel,
+				FMath::Lerp(From, To, static_cast<float>(Index) / Posts) + FVector(0.0f, 0.0f, 34.0f), 10.0f, 72.0f, false);
+		}
+		const FVector& Out0 = FenceLine[Side];
+		const FVector& Out1 = FenceLine[(Side + 1) % FenceLine.Num()];
+		const FVector Extend = (Out1 - Out0).GetSafeNormal() * 30.0f;
+		AddFence(FString::Printf(TEXT("Fence%d"), Side), Out0 - Extend, Out1 + Extend);
+	}
 }
 
 void AChaosImpactForgeStage::BuildQuarter(const int32 Quarter)
 {
-	using ForgeStage::CoreRadius;
+	using namespace ForgeStage;
 	const FString Q = FString::Printf(TEXT("_Q%d"), Quarter);
 	const float Turned = 90.0f * Quarter;
 	const uint8 BayHere = Bay + Quarter;
 	const uint8 DarkHere = BayDark + Quarter;
 	const uint8 GlowHere = BayGlow + Quarter;
 	const uint8 NextBay = Bay + (Quarter + 1) % 4;
-	const uint8 NextGlow = BayGlow + (Quarter + 1) % 4;
 
-	const auto At = [Quarter](const float X, const float Y, const float Z) { return ForgeStage::Turn(FVector(X, Y, Z), Quarter); };
+	const auto At = [Quarter](const float X, const float Y, const float Z) { return Turn(FVector(X, Y, Z), Quarter); };
 	const auto Box = [&](const TCHAR* Name, const uint8 Paint, const FVector& Location, const FVector& Size, const float Yaw,
 		const bool bCollision, const bool bChamfer = false)
 	{
-		return AddBox(FString(Name) + Q, Paint, ForgeStage::Turn(Location, Quarter), Size, Yaw + Turned, bCollision, bChamfer);
-	};
-	const auto Ramp = [&](const TCHAR* Name, const uint8 Paint, const FVector& Low, const FVector& High, const float Width,
-		const uint8 Edge)
-	{
-		return AddRamp(FString(Name) + Q, Paint, ForgeStage::Turn(Low, Quarter), ForgeStage::Turn(High, Quarter), Width, Edge);
+		return AddBox(FString(Name) + Q, Paint, Turn(Location, Quarter), Size, Yaw + Turned, bCollision, bChamfer);
 	};
 
-	const FVector CornerDir = FVector(1.0f, 0.0f, 0.0f).RotateAngleAxis(45.0f, FVector::UpVector);
-	const FVector DiagOrth(-CornerDir.Y, CornerDir.X, 0.0f);
+	// ---- The foundry bay (this quarter's side of the deck): its floor in its colour edged with hazard stripes, its colour
+	// glowing along the kerb, a container in the middle for cover and two coolant tanks.
+	Box(TEXT("BayFloor"), DarkHere, FVector(2585.0f, 0.0f, 0.3f), FVector(1010.0f, 1800.0f, 1.0f), 0.0f, false);
+	Box(TEXT("BayStripeN"), Stripe, FVector(2585.0f, 900.0f, 1.0f), FVector(1010.0f, 26.0f, 1.4f), 0.0f, false);
+	Box(TEXT("BayStripeS"), Stripe, FVector(2585.0f, -900.0f, 1.0f), FVector(1010.0f, 26.0f, 1.4f), 0.0f, false);
+	Box(TEXT("BayStripeFront"), Stripe, FVector(2080.0f, 0.0f, 1.0f), FVector(26.0f, 1826.0f, 1.4f), 0.0f, false);
+	Box(TEXT("BayEdgeGlow"), GlowHere, FVector(DeckHalf - 72.0f, 0.0f, 18.0f), FVector(4.0f, 1800.0f, 12.0f), 0.0f, false);
 
-	// ---- Cardinal Foundry Bay Platform (X = 1950..3250, Y = -850..850, Z = 0) ----------------------------------
-	Box(TEXT("FoundryBayDeck"), SteelFloor, FVector(2600.0f, 0.0f, -35.0f), FVector(1300.0f, 1700.0f, 70.0f), 0.0f, true);
-	Box(TEXT("FoundryBayUnder"), DarkSteel, FVector(2600.0f, 0.0f, -260.0f), FVector(1100.0f, 1460.0f, 380.0f), 0.0f, false);
-	Box(TEXT("FoundryBayBackWall"), Baffle, FVector(3280.0f, 0.0f, 220.0f), FVector(60.0f, 1720.0f, 440.0f), 0.0f, true);
-	Box(TEXT("FoundryBayBackGlow"), GlowHere, FVector(3280.0f, 0.0f, 445.0f), FVector(70.0f, 1720.0f, 10.0f), 0.0f, false);
-	Box(TEXT("FoundryBayBackBand"), GlowHere, FVector(3246.0f, 0.0f, 240.0f), FVector(6.0f, 1620.0f, 18.0f), 0.0f, false);
-	Box(TEXT("FoundryBayStripeN"), Stripe, FVector(2600.0f, 820.0f, 0.8f), FVector(1240.0f, 22.0f, 1.4f), 0.0f, false);
-	Box(TEXT("FoundryBayStripeS"), Stripe, FVector(2600.0f, -820.0f, 0.8f), FVector(1240.0f, 22.0f, 1.4f), 0.0f, false);
+	AddContainer(TEXT("BayContainer") + Q, BayHere, DarkHere, At(2450.0f, 0.0f, 115.0f), FVector(230.0f, 540.0f, 230.0f), Turned);
 
-	// Stencilled bay number on the foundry deck.
-	UTextRenderComponent* BayNumber = CreateDefaultSubobject<UTextRenderComponent>(*(TEXT("BayNumber") + Q));
-	BayNumber->SetupAttachment(SceneRoot);
-	BayNumber->SetText(FText::FromString(FString::Printf(TEXT("B-%d"), Quarter + 1)));
-	BayNumber->SetWorldSize(300.0f);
-	if (StencilMaterial)
+	// Coolant tanks to jump on: two in front of the bay, one by the corner chamber.
+	const FVector Tanks[] = {FVector(2050.0f, -620.0f, 0.0f), FVector(2050.0f, 620.0f, 0.0f), FVector(2700.0f, 1950.0f, 0.0f)};
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Tanks); ++Index)
 	{
-		BayNumber->SetTextMaterial(StencilMaterial);
+		const FString TankName = FString::Printf(TEXT("CoolantTank%d"), Index) + Q;
+		AddCylinder(TankName, Index == 2 ? NextBay : BayHere, Turn(Tanks[Index], Quarter), 150.0f, 95.0f, true);
+		AddCylinder(TankName + TEXT("Cap"), Baffle, Turn(Tanks[Index] + FVector(0.0f, 0.0f, 95.0f), Quarter), 158.0f, 8.0f, false);
+		AddRing(TankName + TEXT("Glow"), CoolantGlow, Turn(Tanks[Index] + FVector(0.0f, 0.0f, 58.0f), Quarter), 78.0f, 8.0f);
 	}
-	BayNumber->SetHorizontalAlignment(EHTA_Center);
-	BayNumber->SetVerticalAlignment(EVRTA_TextCenter);
-	BayNumber->SetRelativeLocation(ForgeStage::Spread(At(3020.0f, -520.0f, 1.0f)));
-	BayNumber->SetRelativeRotation(FRotator(90.0f, 180.0f, 0.0f));
-	BayNumber->SetTextRenderColor((StripeColor * 0.7f).ToFColor(true));
-	BayNumber->ComponentTags.Add(TEXT("CIBayText"));
 
-	// Wide sloped steel ramp connecting the Cardinal Foundry Bay (1950, Z=0) to the Core Deck (1450, Z=60).
-	Ramp(TEXT("CoreMainRamp"), Concrete, FVector(1980.0f, 0.0f, 0.0f), FVector(1420.0f, 0.0f, CoreDeckZ), 620.0f, Stripe);
-	Box(TEXT("CoreRampSupport"), DarkSteel, FVector(1700.0f, 0.0f, -150.0f), FVector(600.0f, 520.0f, 280.0f), 0.0f, false);
+	// Low slag barriers either side, between the bay and the corners.
 	for (const float Side : {-1.0f, 1.0f})
 	{
-		AddFence(FString::Printf(TEXT("CoreRampFence_%d"), Side < 0 ? 0 : 1) + Q,
-			At(1980.0f, Side * 320.0f, 0.0f), At(1420.0f, Side * 320.0f, CoreDeckZ));
+		Box(Side > 0.0f ? TEXT("BarrierN") : TEXT("BarrierS"), Concrete, FVector(2350.0f, Side * 1450.0f, 55.0f),
+			FVector(440.0f, 80.0f, 110.0f), 0.0f, true, true);
+		Box(Side > 0.0f ? TEXT("BarrierStripeN") : TEXT("BarrierStripeS"), Stripe, FVector(2350.0f, Side * 1450.0f, 110.8f),
+			FVector(400.0f, 50.0f, 1.4f), 0.0f, false);
 	}
 
-	// Corrugated industrial container in the middle of the Cardinal Foundry Bay for solid throw cover.
-	AddContainer(TEXT("BayContainer") + Q, BayHere, DarkHere, At(2560.0f, 0.0f, 150.0f), FVector(230.0f, 540.0f, 300.0f), Turned);
+	// ---- The corner cooling chamber (anticlockwise from the bay): a coolant ring on the floor, and a low blast wall with a
+	// coolant light along its top between it and the middle.
+	const FVector CornerDir = FVector(1.0f, 1.0f, 0.0f).GetSafeNormal();
+	AddRing(TEXT("CornerCoolantRing") + Q, CoolantGlow, Turn(CornerDir * ChamberDistance + FVector(0.0f, 0.0f, 1.0f), Quarter), 250.0f, 4.5f);
+	Box(TEXT("CornerWall"), Baffle, CornerDir * CornerWallDistance + FVector(0.0f, 0.0f, 70.0f), FVector(60.0f, 760.0f, 140.0f), 45.0f,
+		true, true);
+	Box(TEXT("CornerWallGlow"), CoolantGlow, CornerDir * CornerWallDistance + FVector(0.0f, 0.0f, 141.0f), FVector(66.0f, 740.0f, 4.0f),
+		45.0f, false);
 
-	// ---- Corner Cooling Chamber (2450, 2450, Z = 0) -------------------------------------------------------------
-	Box(TEXT("CornerChamberDeck"), Concrete, FVector(2450.0f, 2450.0f, -35.0f), FVector(1260.0f, 1260.0f, 70.0f), 45.0f, true, true);
-	Box(TEXT("CornerChamberUnder"), DarkSteel, FVector(2450.0f, 2450.0f, -260.0f), FVector(1020.0f, 1020.0f, 380.0f), 45.0f, false);
-	AddRing(TEXT("CornerCoolantRing") + Q, CoolantGlow, At(2450.0f, 2450.0f, 1.0f), 340.0f, 4.5f);
-	// Outer blast shield wall at the back of the corner chamber so throws bank cleanly and players are sheltered.
-	const FVector CornerBack = CornerDir * (2450.0f * UE_SQRT_2 + 600.0f);
-	Box(TEXT("CornerBlastWall"), Baffle, FVector(CornerBack.X, CornerBack.Y, 210.0f), FVector(64.0f, 1240.0f, 420.0f), 45.0f, true);
-	Box(TEXT("CornerBlastGlow"), CoolantGlow, FVector(CornerBack.X, CornerBack.Y, 424.0f), FVector(72.0f, 1240.0f, 10.0f), 45.0f, false);
-
-	// Diagonal walkway connecting the Corner Cooling Chamber (inner edge at CornerDir * 2835) directly to the Central Core Deck (1440).
-	Ramp(TEXT("DiagCoreBridge"), SteelFloor, CornerDir * 2860.0f, CornerDir * 1440.0f + FVector(0.0f, 0.0f, CoreDeckZ), 380.0f, CoolantGlow);
-	const FVector BridgeMid = CornerDir * 2150.0f + FVector(0.0f, 0.0f, -155.0f);
-	Box(TEXT("DiagBridgeSupport"), DarkSteel, BridgeMid, FVector(1380.0f, 300.0f, 260.0f), 45.0f, false);
-	for (const float Side : {-1.0f, 1.0f})
-	{
-		AddFence(FString::Printf(TEXT("DiagBridgeFence_%d"), Side < 0 ? 0 : 1) + Q,
-			ForgeStage::Turn(CornerDir * 2840.0f + DiagOrth * Side * 200.0f, Quarter),
-			ForgeStage::Turn(CornerDir * 1480.0f + DiagOrth * Side * 200.0f, Quarter));
-	}
-
-	// Two outer catwalk bridges connecting the Corner Chamber (2450, 2450) to the adjacent Cardinal Bays.
-	Box(TEXT("CatwalkToBayA"), Concrete, FVector(2520.0f, 1380.0f, -25.0f), FVector(440.0f, 1140.0f, 50.0f), 0.0f, true);
-	Box(TEXT("CatwalkToBayB"), Concrete, FVector(1380.0f, 2520.0f, -25.0f), FVector(1140.0f, 440.0f, 50.0f), 0.0f, true);
-	Box(TEXT("CatwalkRailA"), Baffle, FVector(2725.0f, 1380.0f, 24.0f), FVector(32.0f, 1080.0f, 48.0f), 0.0f, true, true);
-	Box(TEXT("CatwalkRailB"), Baffle, FVector(1380.0f, 2725.0f, 24.0f), FVector(1080.0f, 32.0f, 48.0f), 0.0f, true, true);
-	for (const float Side : {-225.0f, 225.0f})
-	{
-		AddFence(FString::Printf(TEXT("CatwalkFenceA_%d"), Side < 0 ? 0 : 1) + Q,
-			At(2520.0f + Side, 820.0f, 0.0f), At(2520.0f + Side, 1940.0f, 0.0f));
-		AddFence(FString::Printf(TEXT("CatwalkFenceB_%d"), Side < 0 ? 0 : 1) + Q,
-			At(820.0f, 2520.0f + Side, 0.0f), At(1940.0f, 2520.0f + Side, 0.0f));
-	}
-
-	// ---- Angled Steel Baffle Reflector Wall & Coolant Cylinders -------------------------------------------------
-	// Positioned on the outer edge of the Core Deck at (890, 890) facing 45 deg for pinball bank shots.
-	Box(TEXT("CoreBaffleWall"), Baffle, FVector(890.0f, 890.0f, CoreDeckZ + 135.0f), FVector(64.0f, 480.0f, 270.0f), 45.0f, true, true);
-	Box(TEXT("CoreBaffleTopGlow"), GlowHere, FVector(890.0f, 890.0f, CoreDeckZ + 274.0f), FVector(72.0f, 484.0f, 8.0f), 45.0f, false);
-	Box(TEXT("CoreBaffleMidGlow"), MagmaGlow, FVector(890.0f, 890.0f, CoreDeckZ + 140.0f), FVector(72.0f, 486.0f, 16.0f), 45.0f, false);
-
-	// Jumpable Coolant Cylinders on the foundry bay and corner chamber.
-	const FVector Cylinders[] = {
-		FVector(2160.0f, -580.0f, 0.0f),
-		FVector(2160.0f, 580.0f, 0.0f),
-		FVector(2750.0f, 2150.0f, 0.0f)
-	};
-	for (int32 Idx = 0; Idx < UE_ARRAY_COUNT(Cylinders); ++Idx)
-	{
-		const FString CylName = FString::Printf(TEXT("CoolantTank%d"), Idx) + Q;
-		AddCylinder(CylName, Idx == 2 ? NextBay : BayHere, ForgeStage::Turn(Cylinders[Idx], Quarter), 150.0f, 95.0f, true);
-		AddCylinder(CylName + TEXT("Cap"), Baffle, ForgeStage::Turn(Cylinders[Idx] + FVector(0.0f, 0.0f, 95.0f), Quarter), 158.0f, 8.0f, false);
-		AddRing(CylName + TEXT("Glow"), CoolantGlow, ForgeStage::Turn(Cylinders[Idx] + FVector(0.0f, 0.0f, 58.0f), Quarter), 78.0f, 8.0f);
-	}
-
-	// Invisible safety fences around the remaining open edges of the Core Deck, Bay, and Corner Chamber.
-	for (int32 Seg = 0; Seg < 4; ++Seg)
-	{
-		const float DegA = 11.5f + Seg * 6.625f;
-		const float DegB = 11.5f + (Seg + 1) * 6.625f;
-		const FVector P0(FMath::Cos(FMath::DegreesToRadians(DegA)) * CoreRadius, FMath::Sin(FMath::DegreesToRadians(DegA)) * CoreRadius, CoreDeckZ);
-		const FVector P1(FMath::Cos(FMath::DegreesToRadians(DegB)) * CoreRadius, FMath::Sin(FMath::DegreesToRadians(DegB)) * CoreRadius, CoreDeckZ);
-		AddFence(FString::Printf(TEXT("CoreArcFenceA_%d"), Seg) + Q, ForgeStage::Turn(P0, Quarter), ForgeStage::Turn(P1, Quarter));
-		AddFence(FString::Printf(TEXT("CoreArcFenceB_%d"), Seg) + Q, ForgeStage::Turn(FVector(P0.X, -P0.Y, CoreDeckZ), Quarter), ForgeStage::Turn(FVector(P1.X, -P1.Y, CoreDeckZ), Quarter));
-	}
-	AddFence(TEXT("BayFrontFenceN") + Q, At(1950.0f, 310.0f, 0.0f), At(1950.0f, 850.0f, 0.0f));
-	AddFence(TEXT("BayFrontFenceS") + Q, At(1950.0f, -310.0f, 0.0f), At(1950.0f, -850.0f, 0.0f));
-	AddFence(TEXT("BayInnerFenceN") + Q, At(1950.0f, 850.0f, 0.0f), At(2300.0f, 850.0f, 0.0f));
-	AddFence(TEXT("BayInnerFenceS") + Q, At(1950.0f, -850.0f, 0.0f), At(2300.0f, -850.0f, 0.0f));
-	AddFence(TEXT("BayOuterFenceN") + Q, At(2740.0f, 850.0f, 0.0f), At(3250.0f, 850.0f, 0.0f));
-	AddFence(TEXT("BayOuterFenceS") + Q, At(2740.0f, -850.0f, 0.0f), At(3250.0f, -850.0f, 0.0f));
-
-	// Corner Cooling Chamber open-edge safety fences (leaving openings for DiagCoreBridge and CatwalkToBayA/B).
-	const FVector ChamberInner = CornerDir * (2450.0f * UE_SQRT_2 - 630.0f);
-	const FVector ChamberCenter = CornerDir * (2450.0f * UE_SQRT_2);
-	AddFence(TEXT("CornerInnerFenceA") + Q,
-		ForgeStage::Turn(ChamberInner - DiagOrth * 190.0f, Quarter), ForgeStage::Turn(ChamberInner - DiagOrth * 630.0f, Quarter));
-	AddFence(TEXT("CornerInnerFenceB") + Q,
-		ForgeStage::Turn(ChamberInner + DiagOrth * 190.0f, Quarter), ForgeStage::Turn(ChamberInner + DiagOrth * 630.0f, Quarter));
-	AddFence(TEXT("CornerSideFenceA") + Q,
-		ForgeStage::Turn(ChamberCenter + CornerDir * 120.0f - DiagOrth * 630.0f, Quarter),
-		ForgeStage::Turn(ChamberCenter + CornerDir * 600.0f - DiagOrth * 630.0f, Quarter));
-	AddFence(TEXT("CornerSideFenceB") + Q,
-		ForgeStage::Turn(ChamberCenter + CornerDir * 120.0f + DiagOrth * 630.0f, Quarter),
-		ForgeStage::Turn(ChamberCenter + CornerDir * 600.0f + DiagOrth * 630.0f, Quarter));
+	// ---- A steel baffle on the core's edge, turned 45 deg for bank shots.
+	Box(TEXT("CoreBaffleWall"), Baffle, FVector(900.0f, 900.0f, 100.0f), FVector(64.0f, 480.0f, 200.0f), 45.0f, true, true);
+	Box(TEXT("CoreBaffleTopGlow"), GlowHere, FVector(900.0f, 900.0f, 202.0f), FVector(72.0f, 484.0f, 6.0f), 45.0f, false);
+	Box(TEXT("CoreBaffleMidGlow"), MagmaGlow, FVector(900.0f, 900.0f, 104.0f), FVector(72.0f, 486.0f, 14.0f), 45.0f, false);
 }
 
 void AChaosImpactForgeStage::BuildThermalVent(const int32 Vent)
@@ -369,12 +375,19 @@ void AChaosImpactForgeStage::BuildThermalVent(const int32 Vent)
 	Disc->SetMaterial(0, FieldAmberMaterial.Get());
 	VentDiscs.Add(Disc);
 
-	UStaticMeshComponent* WarnBeam = AddCylinder(Name + TEXT("WarnBeam"), MagmaGlow, At, 95.0f, 2800.0f, false);
-	WarnBeam->SetMaterial(0, FieldAmberMaterial.Get());
-	WarnBeam->SetVisibility(false);
-	VentWarnBeams.Add(WarnBeam);
+	// While it is about to erupt: a pale red danger area over the grate that fills toward its edge (the boss's ground
+	// warning; not one of the palette's, so it keeps its own colour).
+	UStaticMeshComponent* Area = AddPart(SceneRoot, Name + TEXT("WarnArea"), Scenery, PlaneMesh.Get(), At + FVector(0.0f, 0.0f, 4.0f),
+		FVector(VentRadius * 2.0f + 90.0f, VentRadius * 2.0f + 90.0f, 100.0f), FRotator::ZeroRotator, false);
+	if (WarnMaterial)
+	{
+		Area->SetMaterial(0, WarnMaterial.Get());
+	}
+	Area->ComponentTags.Reset();
+	Area->SetVisibility(false);
+	VentWarnAreas.Add(Area);
 
-	UStaticMeshComponent* EruptBeam = AddCylinder(Name + TEXT("EruptBeam"), MagmaGlow, At, VentRadius * 2.0f, 2800.0f, false);
+	UStaticMeshComponent* EruptBeam = AddCylinder(Name + TEXT("EruptBeam"), MagmaGlow, At, VentRadius * 2.0f, 700.0f, false);
 	EruptBeam->SetMaterial(0, FieldAmberMaterial.Get());
 	EruptBeam->SetVisibility(false);
 	VentEruptBeams.Add(EruptBeam);
@@ -515,9 +528,8 @@ UStaticMeshComponent* AChaosImpactForgeStage::AddPart(USceneComponent* Parent, c
 	Block->SetGenerateOverlapEvents(false);
 	Block->bEditableWhenInherited = true;
 
-	const bool bGlow = Paint == MagmaGlow || Paint == CoolantGlow || (Paint >= BayGlow && Paint < BayGlow + 4);
 	UMaterialInterface* Surface = FlatMaterial.Get();
-	if (bGlow)
+	if (IsGlowPaint(Paint))
 	{
 		Surface = GlowMaterial.Get();
 	}
@@ -614,9 +626,14 @@ void AChaosImpactForgeStage::BeginPlay()
 	{
 		VentDiscLooks.Add(Disc ? Disc->CreateDynamicMaterialInstance(0) : nullptr);
 	}
-	for (UStaticMeshComponent* Beam : VentWarnBeams)
+	for (UStaticMeshComponent* Area : VentWarnAreas)
 	{
-		VentWarnLooks.Add(Beam ? Beam->CreateDynamicMaterialInstance(0) : nullptr);
+		UMaterialInstanceDynamic* Look = Area ? Area->CreateDynamicMaterialInstance(0) : nullptr;
+		if (Look)
+		{
+			Look->SetScalarParameterValue(TEXT("Lane"), 0.0f);
+		}
+		VentWarnLooks.Add(Look);
 	}
 	for (UStaticMeshComponent* Beam : VentEruptBeams)
 	{
@@ -639,7 +656,8 @@ FLinearColor AChaosImpactForgeStage::GetPaintColor(const uint8 Paint) const
 		return BayColors.IsValidIndex(Quarter) ? BayColors[Quarter] : FLinearColor(1.0f, 0.32f, 0.02f);
 	};
 	if (Paint >= BayGlow) { return BayAt(Paint - BayGlow); }
-	if (Paint >= BayDark) { return BayAt(Paint - BayDark) * 0.35f; }
+	// (Muted toward dark steel: the bays' floors only tell the quarters apart, they must not shout.)
+	if (Paint >= BayDark) { return BayAt(Paint - BayDark) * 0.09f + FLinearColor(0.035f, 0.035f, 0.04f); }
 	if (Paint >= Bay) { return BayAt(Paint - Bay); }
 	switch (Paint)
 	{
@@ -648,6 +666,7 @@ FLinearColor AChaosImpactForgeStage::GetPaintColor(const uint8 Paint) const
 	case Baffle: return BaffleColor;
 	case Stripe: return StripeColor;
 	case MagmaGlow: return MagmaGlowColor;
+	case MagmaSea: return MagmaSeaColor;
 	case CoolantGlow: return CoolantGlowColor;
 	case DarkSteel: return FLinearColor(0.045f, 0.05f, 0.065f);
 	case Gold: return FLinearColor(1.0f, 0.72f, 0.12f);
@@ -675,15 +694,6 @@ void AChaosImpactForgeStage::ApplyPalette()
 	{
 		return;
 	}
-	TArray<UTextRenderComponent*> Texts;
-	GetComponents(Texts);
-	for (UTextRenderComponent* Text : Texts)
-	{
-		if (Text->ComponentHasTag(TEXT("CIBayText")))
-		{
-			Text->SetTextRenderColor((StripeColor * 0.7f).ToFColor(true));
-		}
-	}
 	TArray<UStaticMeshComponent*> Meshes;
 	GetComponents(Meshes);
 	for (UStaticMeshComponent* Block : Meshes)
@@ -703,16 +713,18 @@ void AChaosImpactForgeStage::ApplyPalette()
 			continue;
 		}
 		const FLinearColor Color = GetPaintColor(Paint);
-		if (Paint == MagmaGlow || Paint == CoolantGlow || (Paint >= BayGlow && Paint < BayGlow + 4))
+		if (IsGlowPaint(Paint))
 		{
 			Material->SetVectorParameterValue(TEXT("Color"), Color);
-			Material->SetScalarParameterValue(TEXT("Intensity"), GlowIntensity);
+			Material->SetScalarParameterValue(TEXT("Intensity"), Paint == MagmaSea ? 1.0f : GlowIntensity);
 		}
 		else
 		{
 			Material->SetVectorParameterValue(TEXT("Color"), Color);
 			Material->SetVectorParameterValue(TEXT("Base Color"), Color);
 			Material->SetVectorParameterValue(TEXT("BaseColor"), Color);
+			// (The steel floor's material takes its colour as a tint over its plate pattern.)
+			Material->SetVectorParameterValue(TEXT("Tint"), Color);
 			Material->SetScalarParameterValue(TEXT("Roughness"), Paint == SteelFloor ? 0.35f : 0.55f);
 		}
 	}
@@ -977,39 +989,48 @@ void AChaosImpactForgeStage::UpdateVentsLook(const float DeltaSeconds)
 		const bool bErupt = bSelected && Progress >= 1.0f;
 		const float EruptT = bErupt ? Progress - 1.0f : 0.0f;
 
+		// The grate: a slow glow at rest; dimmed while it warns (so the red danger area over it reads); blinding as it erupts.
 		const float Rest = 0.7f + 0.3f * FMath::Sin(LookClock * 1.8f + Vent);
-		const float Flicker = Warn > 0.0f ? (2.5f + 7.0f * Warn) * (0.6f + 0.4f * FMath::Sin(LookClock * (12.0f + 26.0f * Warn))) : 0.0f;
 		if (UMaterialInstanceDynamic* Look = VentDiscLooks.IsValidIndex(Vent) ? VentDiscLooks[Vent].Get() : nullptr)
 		{
-			Look->SetScalarParameterValue(TEXT("Intensity"), bErupt ? 14.0f : Rest + Flicker);
+			Look->SetScalarParameterValue(TEXT("Intensity"), bErupt ? 14.0f : Warn > 0.0f ? 0.15f : Rest);
 		}
 		if (UStaticMeshComponent* Ring = VentRings.IsValidIndex(Vent) ? VentRings[Vent].Get() : nullptr)
 		{
 			const float Scale = (VentRadius / 70.0f) * (1.0f + (Warn > 0.0f ? 0.05f * FMath::Sin(LookClock * 18.0f) : 0.0f));
 			Ring->SetRelativeScale3D(FVector(Scale, Scale, (5.0f + Warn * 18.0f) / 13.0f));
 		}
-		if (UStaticMeshComponent* WarnBeam = VentWarnBeams.IsValidIndex(Vent) ? VentWarnBeams[Vent].Get() : nullptr)
+		if (UStaticMeshComponent* Area = VentWarnAreas.IsValidIndex(Vent) ? VentWarnAreas[Vent].Get() : nullptr)
 		{
-			WarnBeam->SetVisibility(Warn > 0.0f);
-			WarnBeam->SetRelativeScale3D(FVector(0.9f + Warn * 1.6f, 0.9f + Warn * 1.6f, 28.0f));
-			if (UMaterialInstanceDynamic* Look = VentWarnLooks.IsValidIndex(Vent) ? VentWarnLooks[Vent].Get() : nullptr)
+			// The danger area: fades in, fills from the middle to the edge as the eruption nears, blinking faster, then
+			// flashes white as it erupts and fades with the plume.
+			const bool bShown = Warn > 0.0f || (bErupt && EruptT < 1.0f);
+			Area->SetVisibility(bShown);
+			if (UMaterialInstanceDynamic* Look = bShown && VentWarnLooks.IsValidIndex(Vent) ? VentWarnLooks[Vent].Get() : nullptr)
 			{
-				Look->SetScalarParameterValue(TEXT("Intensity"), 2.2f + 6.5f * Warn);
+				const float Blink = 0.5f + 0.5f * FMath::Sin(LookClock * FMath::Lerp(6.0f, 22.0f, Warn * Warn));
+				Look->SetScalarParameterValue(TEXT("Progress"), bErupt ? 1.0f : Warn);
+				Look->SetScalarParameterValue(TEXT("Flash"), bErupt ? 1.0f - EruptT : 0.12f * Blink * Warn);
+				Look->SetScalarParameterValue(TEXT("Opacity"), bErupt ? 1.0f - EruptT : FMath::Clamp(Warn * 8.0f, 0.0f, 1.0f));
+				Look->SetScalarParameterValue(TEXT("Intensity"), 1.5f + 0.4f * Blink * Warn);
 			}
 		}
 		if (UStaticMeshComponent* EruptBeam = VentEruptBeams.IsValidIndex(Vent) ? VentEruptBeams[Vent].Get() : nullptr)
 		{
 			EruptBeam->SetVisibility(bErupt);
 			const float Width = (VentRadius * 2.0f / 100.0f) * (EruptT < 0.18f ? 1.15f : 1.0f - 0.65f * FMath::Square((EruptT - 0.18f) / 0.82f));
-			EruptBeam->SetRelativeScale3D(FVector(Width, Width, 28.0f));
+			// A short plume, see-through, so whoever stands behind it stays in sight.
+			EruptBeam->SetRelativeScale3D(FVector(Width, Width, 7.0f * (EruptT < 0.18f ? EruptT / 0.18f : 1.0f)));
 			if (UMaterialInstanceDynamic* Look = VentEruptLooks.IsValidIndex(Vent) ? VentEruptLooks[Vent].Get() : nullptr)
 			{
-				Look->SetScalarParameterValue(TEXT("Intensity"), 11.0f * (1.0f - EruptT) + 2.5f);
+				Look->SetScalarParameterValue(TEXT("Intensity"), 4.5f * (1.0f - EruptT) + 1.2f);
 			}
 		}
 		if (UPointLightComponent* Light = VentLights.IsValidIndex(Vent) ? VentLights[Vent].Get() : nullptr)
 		{
-			Light->SetIntensity(bErupt ? 85000.0f * (1.0f - EruptT) + 7000.0f : Warn * 28000.0f + 1800.0f);
+			// Red while it warns (the danger), the magma's own orange as it erupts.
+			Light->SetLightColor(Warn > 0.0f ? FLinearColor(1.0f, 0.25f, 0.2f) : FLinearColor(1.0f, 0.38f, 0.05f));
+			Light->SetIntensity(bErupt ? 85000.0f * (1.0f - EruptT) + 7000.0f : Warn * 14000.0f + 1800.0f);
 		}
 	}
 }

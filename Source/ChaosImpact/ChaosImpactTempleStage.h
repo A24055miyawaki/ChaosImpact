@@ -38,20 +38,22 @@ struct FChaosImpactTempleAssets
 	UMaterialInterface* Cloud = nullptr;
 	UMaterialInterface* Pine = nullptr;
 	UMaterialInterface* Bark = nullptr;
+	/** The ground warning shared with the boss's attacks (a pale red area filling toward its edge). */
+	UMaterialInterface* Warn = nullptr;
 };
 
 /**
- * VS ステージ3: the sky temple (after solo stage 15's temple over the sea of clouds at sunset). Nine floating islands,
- * four-fold symmetric so no side is better:
- *  - the temple island in the middle: a three-step altar (its ball pad only ever gives special balls: 祝福の祭壇) in a
- *    circle of eight columns
- *  - four islands north, south, east and west, on wide bridges, each with a seal in its middle where a pillar of light
- *    comes down now and then (光の柱: warned a moment before; whoever is in it when it strikes takes 1 and is thrown up;
- *    a dash goes through it)
- *  - four small islands at the corners on narrow bridges between those, each with a portal gate facing the middle:
- *    walking into one comes straight out of the opposite corner's, and a ball thrown into one flies on out of that
+ * VS ステージ3: the sky temple (after solo stage 15's temple over the sea of clouds at sunset). One wide floating plateau,
+ * a square with rounded corners, four-fold symmetric so no side is better and with room to move everywhere:
+ *  - the plaza in the middle: a low three-step altar (its ball pad only ever gives special balls: 祝福の祭壇) with four
+ *    columns round it
+ *  - four seals north, south, east and west where a pillar of light comes down now and then (光の柱: its seal turns into
+ *    a pale red danger area that fills toward its edge before it strikes; whoever is in it then takes 1 and is thrown
+ *    up; a dash goes through it)
+ *  - four portal gates in the corners facing the middle, each pair in its own colour with arrows on the floor leading
+ *    in: walking into one comes straight out of the opposite corner's, and a ball thrown into one flies on out of that
  *    one (and hurts whoever it meets there)
- * The island edges hold players in (invisible walls that stop characters only: a ball thrown off an island falls).
+ * The plateau's edge holds players in (invisible walls that stop characters only: a ball thrown off it falls).
  * Beyond: the sea of clouds, drifting islets and a great stone ring turning slowly behind the temple.
  */
 UCLASS(Blueprintable, meta=(DisplayName="Chaos Impact Temple Stage"))
@@ -71,11 +73,14 @@ public:
 	virtual bool IsOutside(const FVector& Location) const override;
 
 	static constexpr float TempleHalfExtent = 3500.0f;
-	static constexpr float CentreRadius = 1550.0f;
-	static constexpr float SideDistance = 2700.0f;
-	static constexpr float SideRadius = 800.0f;
-	static constexpr float CornerDistance = 2350.0f;
-	static constexpr float CornerRadius = 620.0f;
+	/** The plateau: half its width, and the radius its corners are rounded to. */
+	static constexpr float DeckHalf = 3150.0f;
+	static constexpr float DeckCornerRadius = 1100.0f;
+	/** The plaza in the middle (a pale stone circle the altar stands in). */
+	static constexpr float PlazaRadius = 1500.0f;
+	/** How far the seals stand from the middle (north, east, south and west), and the corners' portal gates. */
+	static constexpr float SideDistance = 2150.0f;
+	static constexpr float CornerDistance = 2300.0f;
 	static constexpr float SealRadius = 380.0f;
 	static constexpr float PillarWarnSeconds = 2.6f;
 	static constexpr float PillarStrikeSeconds = 1.2f;
@@ -141,10 +146,11 @@ private:
 		float Radius, float Thickness);
 	/** A wall that stops characters only (balls and floor traces pass through it). */
 	void AddFence(const FString& Name, const FVector& From, const FVector& To);
-	/** A floating island: a flagstone top at Height, a stone lip, a rock tapering away underneath. */
-	void BuildIsland(const FString& Name, const FVector& Centre, float Radius, float Depth, const TArray<float>& OpeningsYaw,
-		const TArray<float>& OpeningWidths);
-	void BuildBridge(const FString& Name, const FVector& From, const FVector& To, float Width);
+	/**
+	 * The plateau: its flagstone floor (a square with rounded corners), the pale plaza and the paths inlaid in it, the
+	 * kerb and invisible fence round its edge, and the rock it floats on.
+	 */
+	void BuildDeck();
 	void BuildColumn(const FString& Name, const FVector& At, float Height);
 	void BuildSeal(int32 Seal);
 	void BuildPortal(int32 Portal);
@@ -178,6 +184,9 @@ private:
 	TArray<TObjectPtr<UStaticMeshComponent>> PillarBeams;
 	UPROPERTY()
 	TArray<TObjectPtr<UStaticMeshComponent>> PillarWarnBeams;
+	/** Each seal's danger area, shown only while its pillar is coming (the boss's ground warning). */
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> PillarWarnAreas;
 	UPROPERTY()
 	TArray<TObjectPtr<UPointLightComponent>> SealLights;
 	UPROPERTY()
@@ -189,6 +198,8 @@ private:
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> PillarLooks;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> WarnLooks;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WarnAreaLooks;
 
 	/** Server: when the next pillar comes, and who it already struck. */
 	double NextPillarAt = -1.0;

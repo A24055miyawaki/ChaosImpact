@@ -3,6 +3,7 @@
 #include "RPGSnowField.h"
 #include "RPGPrototypeHUD.h"
 #include "RPGAdventure.h"
+#include "RPGQuests.h"
 #include "RPGWorldLayout.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -152,9 +153,11 @@ public:
             const int32 Money=A->GetRubies(),Items=A->GetBag().Num();
             for(int32 I=0;I<3;++I) { A->ActivateQuest(I); }
             Test->TestEqual(TEXT("Three rewards added to own bag"),A->GetBag().Num(),Items+3);
-            Test->TestEqual(TEXT("Quest ruby rewards exactly once"),A->GetRubies(),Money+360);
+            // (The quest table's own rewards: they were halved in 2026-11.)
+            const int32 Reward=RPGQuests::Get(0).Rubies+RPGQuests::Get(1).Rubies+RPGQuests::Get(2).Rubies;
+            Test->TestEqual(TEXT("Quest ruby rewards exactly once"),A->GetRubies(),Money+Reward);
             for(int32 I=0;I<3;++I) { A->ActivateQuest(I); }
-            Test->TestEqual(TEXT("Repeated report cannot duplicate rewards"),A->GetRubies(),Money+360);
+            Test->TestEqual(TEXT("Repeated report cannot duplicate rewards"),A->GetRubies(),Money+Reward);
             A->SetQuestMenuOpen(false); Test->TestTrue(TEXT("Quest progress can be saved"),A->SaveTestProgress(Slot));
             A->Quests[2]=FRPGAdventureProgress{};
             Test->TestTrue(TEXT("Quest progress can be loaded"),A->LoadTestProgress(Slot));

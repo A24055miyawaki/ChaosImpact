@@ -115,6 +115,21 @@ void ARPGPrototypeCharacter::OnRep_Downed()
 	if (!bDowned && !IsEliminated() && IsLocallyControlled()) { ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiConfirm, .8f); }
 }
 
+void ARPGPrototypeCharacter::GiveUpDowned()
+{
+	if (!bDowned) { return; }
+	TutorialEvent(TEXT("Revive"));
+	if (HasAuthority()) { ServerGiveUpDowned_Implementation(); } else { ServerGiveUpDowned(); }
+}
+
+void ARPGPrototypeCharacter::ServerGiveUpDowned_Implementation()
+{
+	if (!bDowned || bGrunt || !GetWorld()) { return; }
+	UE_LOG(LogTemp, Log, TEXT("RPG down: %s gives up waiting and respawns"), *GetName());
+	// The usual knockout (a moment), then up at the respawn point.
+	FinishDowned(false);
+}
+
 void ARPGPrototypeCharacter::FinishDowned(bool bRevived)
 {
 	if (!bDowned) { return; }
@@ -161,7 +176,12 @@ void ARPGPrototypeCharacter::TickDownAndCare(float DeltaSeconds)
 			if (ReviveProgress > 0.05f) { UE_LOG(LogTemp, Log, TEXT("RPG revive of %s restarts (helper %s -> %s)"), *GetName(), *GetNameSafe(Reviver.Get()), *GetNameSafe(Helper)); }
 			Reviver = Helper; ReviveProgress = Helper ? DeltaSeconds / RPGTuning::ReviveHoldSeconds : 0.0f;
 		}
-		if (ReviveProgress >= 1) { FinishDowned(true); }
+		if (ReviveProgress >= 1)
+		{
+			// The helper's quests ("仲間を助けて").
+			if (ARPGPrototypeCharacter* Done = Reviver.Get()) { Done->CreditQuestEvent(ERPGQuestEvent::Revived, GetActorLocation()); }
+			FinishDowned(true);
+		}
 		return;
 	}
 	if (IsEliminated()) { SafeGround.Reset(); GroundedSince = -1; return; }

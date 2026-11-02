@@ -100,13 +100,43 @@ inline void Label(const FCanvas& C, const int32 Level, const FString& Text, cons
 	if (C.IsPainting()) { C.At(Level, 6).Text(Text, X, Y, Size, Color, Align, Face); }
 }
 
-/** Text shortened with "…" to fit Width. */
+/** Text shortened with "…" to fit Width (the last resort: LabelFit and Button first draw it a little smaller). */
 inline FString Fit(const FString& Text, const float Width, const float Size, const FName Face = TEXT("Bold"))
 {
 	if (Measure(Text, Size, Face) <= Width) { return Text; }
+#if !UE_BUILD_SHIPPING
+	// Development builds name every text still cut, once, so its layout can be given the room (search "RPGUI cut").
+	static TSet<FString> Reported;
+	if (Reported.Num() < 500 && !Reported.Contains(Text)) { Reported.Add(Text); UE_LOG(LogTemp, Display, TEXT("RPGUI cut text: \"%s\" (width %.0f, size %.1f)"), *Text, Width, Size); }
+#endif
 	FString Out = Text;
 	while (Out.Len() > 1 && Measure(Out + TEXT("…"), Size, Face) > Width) { Out.LeftChopInline(1); }
 	return Out + TEXT("…");
+}
+
+/** The size that fits Text in Width: Size when it fits, else a little smaller (down to MinScale of it, never below 10). */
+inline float FitSize(const FString& Text, const float Width, const float Size, const FName Face = TEXT("Bold"), const float MinScale = 0.72f)
+{
+	const float Wide = Measure(Text, Size, Face);
+	if (Wide <= Width || Wide <= 0.0f) { return Size; }
+	const float Least = FMath::Min(Size, FMath::Max(10.0f, Size * MinScale));
+	// Width grows with the size, so the first guess is close; a few half steps settle the rounding.
+	float Shown = FMath::Max(Least, FMath::FloorToFloat(Size * Width / Wide * 2.0f) * 0.5f);
+	for (int32 Step = 0; Step < 6 && Shown > Least && Measure(Text, Shown, Face) > Width; ++Step) { Shown = FMath::Max(Least, Shown - 0.5f); }
+	return Shown;
+}
+
+/** Whether Text fits in Width on one line, counting the little shrinking LabelFit may do. */
+inline bool Fits(const FString& Text, const float Width, const float Size, const FName Face = TEXT("Bold"))
+{ return Measure(Text, FitSize(Text, Width, Size, Face), Face) <= Width; }
+
+/** One line in Width: drawn a little smaller when long, and cut with "…" only when even that is not enough. */
+inline void LabelFit(const FCanvas& C, const int32 Level, const FString& Text, const float X, const float Y, const float Width, const float Size,
+	const FLinearColor& Color, const ETextAlign Align = ETextAlign::Left, const FName Face = TEXT("Bold"))
+{
+	if (!C.IsPainting()) { return; }
+	const float Shown = FitSize(Text, Width, Size, Face);
+	Label(C, Level, Fit(Text, Width, Shown, Face), X, Y + (Size - Shown) * 0.45f, Shown, Color, Align, Face);
 }
 
 /** Lines of Text broken at a measured width (Japanese has no spaces, so per character; "\n" also breaks). */
@@ -135,14 +165,17 @@ inline TArray<FString> WrapLines(const FString& Text, const float Width, const f
 inline int32 Wrap(const FCanvas& C, const int32 Level, const FString& Text, const float X, const float Y, const float Width, const float Size,
 	const FLinearColor& Color, const int32 MaxLines = 3, const float LineHeight = 0.0f)
 {
-	TArray<FString> Lines = WrapLines(Text, Width, Size);
+	// Too long for its lines: a little smaller first (down to 80%), "…" only when even that is not enough.
+	float Shown = Size;
+	TArray<FString> Lines = WrapLines(Text, Width, Shown);
+	while (Lines.Num() > MaxLines && Shown > FMath::Max(10.0f, Size * 0.8f)) { Shown -= 1.0f; Lines = WrapLines(Text, Width, Shown); }
 	const float Step = LineHeight > 0.0f ? LineHeight : Size + 7.0f;
 	const int32 Count = FMath::Min(Lines.Num(), MaxLines);
 	for (int32 Row = 0; Row < Count; ++Row)
 	{
 		FString Line = Lines[Row];
-		if (Row == Count - 1 && Lines.Num() > Count) { Line = Fit(Line + TEXT("…………"), Width, Size); }
-		Label(C, Level, Line, X, Y + Row * Step, Size, Color);
+		if (Row == Count - 1 && Lines.Num() > Count) { Line = Fit(Line + TEXT("…………"), Width, Shown); }
+		Label(C, Level, Line, X, Y + Row * Step + (Size - Shown) * 0.45f, Shown, Color);
 	}
 	return Count;
 }
@@ -236,10 +269,11 @@ inline void Button(FCanvas& C, const int32 Level, const float X, const float Y, 
 	const EStyle Style = !bEnabled ? EStyle::Disabled : bPrimary ? (bHover ? EStyle::PrimaryHover : EStyle::Primary)
 		: bSelected ? EStyle::Selected : bHover ? EStyle::Hover : EStyle::Card;
 	Panel(C, Level, X, Y, W, H, Style, bPrimary || !bEnabled ? FLinearColor::Transparent : bSelected ? Highlight : WithAlpha(Cyan, 0.6f));
-	const float Size = H >= 44.0f ? 19.0f : H >= 34.0f ? 16.0f : 14.0f;
 	const float KeyW = Key.IsEmpty() || !bEnabled ? 0.0f : FMath::Max(H * 0.62f, Measure(Key, H * 0.62f * 0.58f) + H * 0.62f * 0.6f) + 10.0f;
+	const float Room = W - KeyW - (KeyW > 0.0f ? 24.0f : 8.0f);
+	const float Size = FitSize(Text, Room, H >= 44.0f ? 19.0f : H >= 34.0f ? 16.0f : 14.0f);
 	const FLinearColor TextColor = !bEnabled ? TextDim : bPrimary ? Navy : TextMain;
-	Label(C, Level, Fit(Text, W - KeyW - (KeyW > 0.0f ? 24.0f : 8.0f), Size), X + (W - KeyW) * 0.5f + 2.0f, Y + (H - Size) * 0.5f - Size * 0.2f, Size, TextColor, ETextAlign::Center);
+	Label(C, Level, Fit(Text, Room, Size), X + (W - KeyW) * 0.5f + 2.0f, Y + (H - Size) * 0.5f - Size * 0.2f, Size, TextColor, ETextAlign::Center);
 	if (KeyW > 0.0f) { Keycap(C, Level, Key, X + W - KeyW - 4.0f, Y + H * 0.19f, H * 0.62f); }
 }
 

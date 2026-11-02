@@ -3,6 +3,7 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactPlayerController.h"
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactGameState.h"
@@ -148,6 +149,8 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 	}
 	Data.bTeams = Match->IsTeamBattle();
 	Data.bCrashBall = Match->Rules.bCrashBall;
+	Data.bDuel = Match->IsDuel();
+	Data.bBattleRoyale = Match->IsBattleRoyale();
 	Data.bCrashKnockout = Match->Crash.bKnockout;
 	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
 	const UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
@@ -188,6 +191,20 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 		{
 			Entry.Rank += Ranking[Other]->Points > Member->Points ? 1 : 0;
 		}
+		if (Data.bDuel)
+		{
+			const int32 Side = Match->Duel.SideOf(Member);
+			Entry.RoundsWon = Side != INDEX_NONE ? Match->Duel.Wins[Side] : 0;
+			Entry.Rank = Match->Duel.MatchWinner == INDEX_NONE || Side == Match->Duel.MatchWinner ? 1 : 2;
+		}
+		if (Data.bBattleRoyale)
+		{
+			if (const auto* Royale = Match->GetRoyaleEntry(Member))
+			{
+				Entry.Rank = FMath::Max(1, Royale->Place);
+				Entry.Character = Royale->Character; Entry.Colour = Royale->Colour; Entry.Name = Royale->Name;
+			}
+		}
 		if (Data.bTeams && Entry.Team >= 0)
 		{
 			// Each team in its colour, its members a little lighter or darker in turn.
@@ -202,25 +219,44 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 		}
 		Data.Entries.Add(Entry);
 	}
+	if (Data.bBattleRoyale)
+	{
+		// Keep departed entrants in the results too; their replicated snapshot survives the connection.
+		for (const auto& Royale : Match->Royale.Entries)
+		{
+			if (!Ranking.Contains(Royale.Member.Get()))
+			{
+				FChaosImpactResultEntry Entry;
+				Entry.Name = Royale.Name; Entry.Character = Royale.Character; Entry.Colour = Royale.Colour;
+				Entry.Team = Royale.Team; Entry.Rank = FMath::Max(1, Royale.Place);
+				Entry.Color = Data.bTeams ? ChaosImpactMatch::GetTeamColor(Entry.Team) : ResultsPalette[Data.Entries.Num() % UE_ARRAY_COUNT(ResultsPalette)];
+				Data.Entries.Add(Entry);
+			}
+		}
+		Data.Entries.StableSort([](const auto& A, const auto& B) { return A.Rank < B.Rank; });
+	}
 	if (Data.bTeams)
 	{
 		for (int32 Team = 0; Team < Match->Rules.TeamCount; ++Team)
 		{
-			Data.TeamTotals.Add({Team, Data.bCrashBall ? 100 - Match->GetCrashCount(Team) : Match->GetTeamPoints(Team)});
+			Data.TeamTotals.Add({Team, Data.bBattleRoyale && Match->Royale.TeamPlaces.IsValidIndex(Team) ? Match->Royale.TeamPlaces[Team]
+				: Data.bCrashBall ? 100 - Match->GetCrashCount(Team) : Match->GetTeamPoints(Team)});
 		}
-		Data.TeamTotals.StableSort([](const TPair<int32, int32>& A, const TPair<int32, int32>& B) { return A.Value > B.Value; });
+		Data.TeamTotals.StableSort([&Data](const TPair<int32, int32>& A, const TPair<int32, int32>& B) { return Data.bBattleRoyale ? A.Value < B.Value : A.Value > B.Value; });
 		Data.bTie = Data.TeamTotals.Num() > 1 && Data.TeamTotals[0].Value == Data.TeamTotals[1].Value;
 		const int32 Winner = Data.TeamTotals.IsEmpty() ? 0 : Data.TeamTotals[0].Key;
 		Data.WinnerColor = ChaosImpactMatch::GetTeamColor(Winner);
 		Data.WinnerName = FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Winner));
-		Data.Headline = Data.bTie ? FString(TEXT("DRAW")) : FString(TEXT("WINNER"));
+		Data.Headline = Data.bTie ? FString(Data.bBattleRoyale ? TEXT("同率1位") : TEXT("DRAW")) : FString(TEXT("WINNER"));
 	}
 	else
 	{
-		Data.bTie = Data.Entries.Num() > 1 && Data.Entries[0].Points == Data.Entries[1].Points;
+		Data.bTie = Data.bDuel ? Match->Duel.MatchWinner == INDEX_NONE
+			: Data.bBattleRoyale ? Data.Entries.Num() > 1 && Data.Entries[1].Rank == 1
+			: Data.Entries.Num() > 1 && Data.Entries[0].Points == Data.Entries[1].Points;
 		Data.WinnerColor = Data.Entries.IsEmpty() ? FLinearColor::White : ChaosImpactRoster::GetColourSwatch(Data.Entries[0].Colour);
 		Data.WinnerName = Data.Entries.IsEmpty() ? FString() : Data.Entries[0].Name;
-		Data.Headline = Data.bTie ? FString(TEXT("DRAW")) : FString(TEXT("WINNER"));
+		Data.Headline = Data.bTie ? FString(Data.bBattleRoyale ? TEXT("同率1位") : TEXT("DRAW")) : FString(TEXT("WINNER"));
 	}
 	return Data;
 }
@@ -557,7 +593,16 @@ void AChaosImpactPodiumStage::BuildArena()
 
 	// Who stands where: the winner (or winning team) in front, the next two behind on either side.
 	Places.Reset();
-	if (Data.bTeams)
+	if (Data.bDuel || Data.bBattleRoyale)
+	{
+		for (int32 Rank = 1; Rank <= 3; ++Rank)
+		{
+			TArray<int32> Members;
+			for (int32 I = 0; I < Data.Entries.Num(); ++I) { if (Data.Entries[I].Rank == Rank) { Members.Add(I); } }
+			Places.Add(Members);
+		}
+	}
+	else if (Data.bTeams)
 	{
 		for (int32 Rank = 0; Rank < FMath::Min(Data.TeamTotals.Num(), 3); ++Rank)
 		{
@@ -911,6 +956,11 @@ void UChaosImpactResultsView::Leave()
 	Stop();
 }
 
+float UChaosImpactResultsView::GetAutoReturnRemaining() const
+{
+	return bActive && bOnline ? FMath::Max(0.f, ChaosImpactMatch::OnlineResultsReturnSeconds - FMath::Max(ShowSeconds, 0.f)) : -1.f;
+}
+
 void UChaosImpactResultsView::ShowStats()
 {
 	if (Page == 0 && CanAdvance())
@@ -979,6 +1029,11 @@ void UChaosImpactResultsView::Tick(APlayerController* Owner, const float DeltaSe
 		}
 	}
 	ShowSeconds = static_cast<float>(FPlatformTime::Seconds() - StartedAtReal);
+	if (bOnline && GetAutoReturnRemaining() <= 0.f)
+	{
+		if (auto* PC = Cast<AChaosImpactPlayerController>(Owner)) { PC->ReturnToLobbyFromResults(); }
+		return;
+	}
 	if (Podium)
 	{
 		if (!Podium->IsBuilt())
@@ -1033,6 +1088,15 @@ int32 UChaosImpactResultsView::Paint(const FGeometry& Allotted, FSlateWindowElem
 	{
 		Top = PaintStatsPage(Design, Elements, Top + 1);
 	}
+	if (const float Left = GetAutoReturnRemaining(); Left >= 0.f)
+	{
+		const ResultsPaint::FPainter Timer{Allotted, Elements, Top + 1};
+		const float X = Size.X - 258.f * Scale, Y = 18.f * Scale;
+		Timer.Box(X, Y, 238.f * Scale, 36.f * Scale, ResultsPaint::WithAlpha(ResultsPaint::Ink, .88f));
+		Timer.Box(X, Y, 3.f * Scale, 36.f * Scale, ResultsPaint::Ice);
+		Timer.Text(FString::Printf(TEXT("あと%d秒で戻ります"), FMath::CeilToInt(Left)), X + 119.f * Scale, Y + 6.f * Scale,
+			18.f * Scale, ResultsPaint::Paper, ResultsPaint::ETextAlign::Center, TEXT("Bold"), 1.f, ResultsPaint::Ink);
+	}
 	// Coming in: from black.
 	const float In = FMath::Clamp(ShowSeconds / 0.25f, 0.0f, 1.0f);
 	if (In < 1.0f)
@@ -1074,18 +1138,35 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 	// Second and third (and their teams): a tag over each head as they appear.
 	if (Podium && Page == 0)
 	{
+		TArray<int32> TaggedTeams;
+		TArray<FVector2D> TagPositions;
 		for (int32 Entry = 0; Entry < Data.Entries.Num(); ++Entry)
 		{
 			FVector Head;
 			FVector2D Spot;
 			float AppearAt = 0.0f;
 			const FChaosImpactResultEntry& Item = Data.Entries[Entry];
-			const bool bWinnerSide = Data.bTeams ? (!Data.TeamTotals.IsEmpty() && Item.Team == Data.TeamTotals[0].Key) : Entry == 0;
+			const bool bWinnerSide = Data.bBattleRoyale || Data.bDuel ? Item.Rank == 1 : Data.bTeams ? (!Data.TeamTotals.IsEmpty() && Item.Team == Data.TeamTotals[0].Key) : Entry == 0;
 			if (bWinnerSide || !Podium->GetFigureHead(Entry, Head, &AppearAt) || !Podium->Project(Head, Spot))
 			{
 				continue;
 			}
-			const float TagIn = ResultsPaint::EaseOut((S - AppearAt - 0.25f) / 0.3f);
+			const bool bTeamTag = Data.bBattleRoyale && Data.bTeams;
+			int32 TeamMembers = 1;
+			if (bTeamTag)
+			{
+				if (TaggedTeams.Contains(Item.Team)) { continue; }
+				TaggedTeams.Add(Item.Team);
+				FVector Sum = Head;
+				for (int32 Other = Entry + 1; Other < Data.Entries.Num(); ++Other)
+				{
+					FVector OtherHead;
+					if (Data.Entries[Other].Team == Item.Team && Podium->GetFigureHead(Other, OtherHead)) { Sum += OtherHead; ++TeamMembers; }
+				}
+				if (!Podium->Project(Sum / TeamMembers, Spot)) { continue; }
+			}
+			const float TagAt = Data.bBattleRoyale || Data.bDuel ? FMath::Max(AppearAt + .25f, Stage::SettledAt) : AppearAt + .25f;
+			const float TagIn = ResultsPaint::EaseOut((S - TagAt) / 0.3f);
 			if (TagIn <= 0.0f)
 			{
 				continue;
@@ -1095,7 +1176,17 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 			const float Fit = FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f);
 			const FVector2D Pixel(Size.X * 0.5f + (Spot.X - 0.5f) * AChaosImpactPodiumStage::PictureWidth * Cover,
 				Size.Y * 0.5f + (Spot.Y - 0.5f) * AChaosImpactPodiumStage::PictureHeight * Cover);
-			const FVector2D Point((Pixel.X - Size.X * 0.5f) / Fit + 800.0f, (Pixel.Y - Size.Y * 0.5f) / Fit + 450.0f);
+			FVector2D Point((Pixel.X - Size.X * 0.5f) / Fit + 800.0f, (Pixel.Y - Size.Y * 0.5f) / Fit + 450.0f);
+			if (Data.bBattleRoyale || Data.bDuel)
+			{
+				Point.X = FMath::Clamp(Point.X, 130., 1470.);
+				Point.Y = FMath::Clamp(Point.Y, 100., 790.);
+				for (const FVector2D& Previous : TagPositions)
+				{
+					if (FMath::Abs(Point.X - Previous.X) < 235. && FMath::Abs(Point.Y - Previous.Y) < 64.) { Point.Y = Previous.Y - 64.; }
+				}
+				TagPositions.Add(Point);
+			}
 			const FGeometry TagSpace = ResultsPaint::MakeSkewed(Design, static_cast<float>(Point.X) - 110.0f, static_cast<float>(Point.Y) - 40.0f,
 				220.0f, 56.0f, -0.2f);
 			const ResultsPaint::FPainter Tag{TagSpace, Elements, Layer + 2, TagIn};
@@ -1104,8 +1195,9 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 			const FString Place = Item.Rank == 1 ? TEXT("1ST") : Item.Rank == 2 ? TEXT("2ND") : Item.Rank == 3 ? TEXT("3RD") : FString::Printf(TEXT("%dTH"), Item.Rank);
 			Tag.Text(Place, 18.0f, 4.0f, 18.0f, Item.Rank == 2 ? FLinearColor(0.8f, 0.88f, 1.0f) : FLinearColor(1.0f, 0.62f, 0.3f),
 				ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
-			Tag.Text(FString::Printf(TEXT("%d pt"), Item.Points), 206.0f, 6.0f, 16.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
-			Tag.Text(Item.Name, 18.0f, 26.0f, 20.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
+			Tag.Text(bTeamTag ? FString::Printf(TEXT("%d人"), TeamMembers) : Data.ScoreText(Item), 206.0f, 6.0f, 16.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
+			Tag.Text(bTeamTag ? FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Item.Team)) : Item.Name,
+				18.0f, 26.0f, 20.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
 		}
 	}
 
@@ -1113,21 +1205,29 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 	if (Page == 0)
 	{
 		int32 Row = 0;
-		for (int32 Entry = Data.bTeams ? Data.Entries.Num() : 3; Entry < Data.Entries.Num(); ++Entry, ++Row)
+		TArray<int32> ListedTeams;
+		for (int32 Entry = Data.bBattleRoyale ? 0 : Data.bTeams ? Data.Entries.Num() : 3; Entry < Data.Entries.Num(); ++Entry)
 		{
+			const FChaosImpactResultEntry& Item = Data.Entries[Entry];
+			if (Data.bBattleRoyale)
+			{
+				if (Item.Rank <= 3 || (Data.bTeams && ListedTeams.Contains(Item.Team))) { continue; }
+				if (Data.bTeams) { ListedTeams.Add(Item.Team); }
+			}
 			const float RowIn = ResultsPaint::EaseOut((S - Stage::SecondAt - 0.6f - Row * 0.08f) / 0.3f);
 			if (RowIn <= 0.0f)
 			{
 				continue;
 			}
-			const FChaosImpactResultEntry& Item = Data.Entries[Entry];
 			const float Y = 86.0f + Row * 40.0f;
 			const ResultsPaint::FPainter R{Design, Elements, Layer + 2, RowIn};
 			R.Box(1200.0f + (1.0f - RowIn) * 40.0f, Y, 360.0f, 34.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.72f));
 			R.Box(1200.0f + (1.0f - RowIn) * 40.0f, Y, 4.0f, 34.0f, Item.Color);
 			R.Text(FString::FromInt(Item.Rank), 1226.0f, Y + 4.0f, 20.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Center, TEXT("BlackItalic"));
-			R.Text(Item.Name, 1250.0f, Y + 5.0f, 18.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
-			R.Text(FString::Printf(TEXT("%d pt"), Item.Points), 1548.0f, Y + 6.0f, 17.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
+			R.Text(Data.bBattleRoyale && Data.bTeams ? FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Item.Team)) : Item.Name,
+				1250.0f, Y + 5.0f, 18.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
+			R.Text(Data.ScoreText(Item), 1548.0f, Y + 6.0f, 17.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
+			++Row;
 		}
 	}
 
@@ -1149,20 +1249,28 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		if (Data.bTie)
 		{
 			TArray<FString> Tied;
-			for (const FChaosImpactResultEntry& Item : Data.Entries)
+			if (Data.bBattleRoyale && Data.bTeams)
 			{
-				if (Item.Rank == 1)
+				for (const auto& Team : Data.TeamTotals)
 				{
-					Tied.Add(Item.Name);
+					if (Team.Value == 1) { Tied.Add(FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Team.Key))); }
 				}
 			}
+			else
+			{
+				for (const FChaosImpactResultEntry& Item : Data.Entries) { if (Item.Rank == 1) { Tied.Add(Item.Name); } }
+			}
 			Names = FString::Join(Tied, TEXT(" ・ "));
+			if (Data.bBattleRoyale && !Data.bTeams && Tied.Num() > 3) { Names = FString::Printf(TEXT("%d人が同率1位"), Tied.Num()); }
 		}
-		N.Text(Names, 120.0f + (1.0f - NameIn) * 120.0f, 16.0f, 62.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 4.0f, ResultsPaint::Ink);
+		const float NameSize = Data.bBattleRoyale && Data.bTie ? FMath::Clamp(940.f / FMath::Max(Names.Len() * .9f, 1.f), 24.f, 62.f) : 62.f;
+		N.Text(Names, 120.0f + (1.0f - NameIn) * 120.0f, 16.0f, NameSize, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 4.0f, ResultsPaint::Ink);
 		if (!Data.Entries.IsEmpty())
 		{
 			const int32 Points = Data.bTeams && !Data.TeamTotals.IsEmpty() ? Data.TeamTotals[0].Value : Data.Entries[0].Points;
-			const FString Line = Data.bCrashBall ? FString::Printf(TEXT("%s  %d : %d"), Data.bCrashKnockout ? TEXT("KNOCKOUT") : TEXT("カウント"),
+			const FString Line = Data.bBattleRoyale ? FString(TEXT("BATTLE ROYALE  ・  生存順位"))
+				: Data.bDuel ? FString::Printf(TEXT("ROUND  %d - %d"), Data.Entries[0].RoundsWon, Data.Entries.Num() > 1 ? Data.Entries[1].RoundsWon : 0)
+				: Data.bCrashBall ? FString::Printf(TEXT("%s  %d : %d"), Data.bCrashKnockout ? TEXT("KNOCKOUT") : TEXT("カウント"),
 				100 - Data.TeamTotals[0].Value, 100 - Data.TeamTotals[1].Value) : Data.bTeams ? FString::Printf(TEXT("TEAM %d pt"), Points)
 				: FString::Printf(TEXT("%d pt   KO %d"), Points, Data.Entries[0].Knockouts);
 			N.Text(Line, 140.0f, 124.0f, 24.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 2.0f, ResultsPaint::Ink);
@@ -1173,7 +1281,7 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		const FGeometry Head = ResultsPaint::MakeSkewed(Design, 40.0f + Shake, 430.0f, 1000.0f, 170.0f, -0.18f, Slam);
 		const ResultsPaint::FPainter H{Head, Elements, Layer + 5, ResultsPaint::EaseOut(T / 0.12f) * Dim};
 		H.Text(Data.Headline, 30.0f, 0.0f, 132.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 7.0f, Data.WinnerColor);
-		if (Data.bTeams && !Data.bTie)
+		if (Data.bTeams && !Data.bTie && !Data.bBattleRoyale)
 		{
 			H.Text(FString::Printf(TEXT("%sの勝ち！"), *Data.WinnerName), 600.0f, 118.0f, 30.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left,
 				TEXT("Black"), 3.0f, ResultsPaint::Ink);
@@ -1272,7 +1380,7 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	const double Now = FPlatformTime::Seconds();
 	const ResultsPaint::FPainter P{Design, Elements, Layer, Alpha};
 	P.Text(TEXT("MATCH STATS"), 60.0f + Slide, 34.0f, 46.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, Data.WinnerColor);
-	P.Text(TEXT("成績とポイントの流れ"), 64.0f + Slide, 92.0f, 18.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
+	P.Text(Data.bBattleRoyale ? TEXT("生存順位と体力の流れ") : Data.bDuel ? TEXT("獲得ラウンドと対戦成績") : TEXT("成績とポイントの流れ"), 64.0f + Slide, 92.0f, 18.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
 
 	// ---- Table (left) ----
 	struct FColumn { const TCHAR* Title; float X; };
@@ -1284,7 +1392,8 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	P.Text(TEXT("なまえ"), 120.0f + Slide, TableTop + 5.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
 	for (const FColumn& Column : Columns)
 	{
-		P.Text(Column.Title, Column.X + Slide, TableTop + 5.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
+		const TCHAR* Title = Column.X == 430.f ? (Data.bBattleRoyale ? TEXT("") : Data.bDuel ? TEXT("勝数") : TEXT("pt")) : Column.Title;
+		P.Text(Title, Column.X + Slide, TableTop + 5.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
 	}
 	const int32 Count = Data.Entries.Num();
 	for (int32 Index = 0; Index < Count; ++Index)
@@ -1316,7 +1425,7 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 		RT.Text(Item.Name, NameX + Slide, TextY, 20.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
 		// Burns of a fire zone count as hits too, so a few throws can make many: shown up to 100%.
 		const int32 Accuracy = Item.Throws > 0 ? FMath::Min(100, FMath::RoundToInt(100.0f * Item.Hits / Item.Throws)) : 0;
-		const FString Values[] = {FString::FromInt(Item.Points), FString::FromInt(Item.Knockouts), FString::FromInt(Item.Throws),
+		const FString Values[] = {Data.bBattleRoyale ? FString() : FString::FromInt(Data.bDuel ? Item.RoundsWon : Item.Points), FString::FromInt(Item.Knockouts), FString::FromInt(Item.Throws),
 			FString::FromInt(Item.Hits), Item.Throws > 0 ? FString::Printf(TEXT("%d%%"), Accuracy) : FString(TEXT("-")),
 			FString::FromInt(Item.TimesHit), FString::FromInt(Item.Dodges)};
 		for (int32 Column = 0; Column < UE_ARRAY_COUNT(Columns); ++Column)
@@ -1351,12 +1460,12 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	// A scale of whole numbers on each of the four lines.
 	Highest = FMath::Max(4, FMath::DivideAndRoundUp(Highest, 4) * 4);
 	const ResultsPaint::FPainter G{Design, Elements, Layer + 1, Alpha};
-	G.Text(TEXT("ポイントの流れ"), 850.0f + Slide, 140.0f, 22.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
+	G.Text(Data.bBattleRoyale ? TEXT("残りHPの流れ") : Data.bDuel ? TEXT("獲得ラウンドの流れ") : TEXT("ポイントの流れ"), 850.0f + Slide, 140.0f, 22.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
 	if (bOne)
 	{
 		const FChaosImpactResultEntry& Item = Data.Entries[GraphFocus];
 		G.Box(1056.0f + Slide, 140.0f, 6.0f, 30.0f, Item.Color);
-		G.Text(FString::Printf(TEXT("%s  %d pt"), *Item.Name, Item.Points), 1072.0f + Slide, 142.0f, 20.0f, Item.Color,
+		G.Text(FString::Printf(TEXT("%s  %s"), *Item.Name, *Data.ScoreText(Item)), 1072.0f + Slide, 142.0f, 20.0f, Item.Color,
 			ResultsPaint::ETextAlign::Left, TEXT("Black"));
 		G.Text(TEXT("もう一度えらぶと全員"), GraphRight, 146.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
 	}

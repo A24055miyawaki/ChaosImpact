@@ -12,8 +12,9 @@
 namespace
 {
 	/**
-	 * Aim assist reaching far: an opponent 28 m off, 20 degrees from where the mouse aims, draws a charged throw's aim
-	 * onto it. Training arena with one CPU (?CITraining=1?CICPUCount=1?CITargets=0).
+	 * A mouse aims exactly (2026-11): with an opponent 28 m off and 20 degrees from where the mouse points, a charged
+	 * throw's aim stays on the cursor (the charge magnet is for sticks), and the drawn arrow points straight at the
+	 * cursor on screen. Training arena with one CPU (?CITraining=1?CICPUCount=1?CITargets=0).
 	 */
 	class FAimAssistCommand : public IAutomationLatentCommand
 	{
@@ -39,11 +40,13 @@ namespace
 			}
 			if (Stage > 0)
 			{
-				// The mouse points straight along Toward, 20 degrees off the opponent.
+				// The mouse points straight along Toward, 20 degrees off the opponent (at the arrow's own height).
 				FVector2D Screen;
-				if (PC->ProjectWorldLocationToScreen(Player->GetActorLocation() + Toward * 450.0f, Screen))
+				if (PC->ProjectWorldLocationToScreen(Player->GetActorLocation() + FVector(0, 0, AChaosImpactCharacter::AimGuideHeight)
+					+ Toward * 450.0f, Screen))
 				{
 					PC->SetMouseLocation(FMath::RoundToInt(Screen.X), FMath::RoundToInt(Screen.Y));
+					Cursor = FVector2D(FMath::RoundToInt(Screen.X), FMath::RoundToInt(Screen.Y));
 				}
 			}
 			if (Now < NextAt)
@@ -115,10 +118,20 @@ namespace
 			}
 			case 2:
 			{
-				const FVector ToOpponent = (Opponent->GetActorLocation() - Player->GetActorLocation()).GetSafeNormal2D();
-				const float After = FMath::RadiansToDegrees(FMath::Acos(FVector::DotProduct(Player->GetAimDirection(), ToOpponent)));
-				UE_LOG(LogTemp, Display, TEXT("AIMASSIST charging: %.1f degrees off the opponent 28 m away"), After);
-				Test->TestTrue(TEXT("Charging, the aim is drawn onto an opponent far off"), After < 7.0f);
+				const float OffCursor = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(Player->GetAimDirection(), Toward), -1.0, 1.0)));
+				UE_LOG(LogTemp, Display, TEXT("AIMASSIST charging: %.2f degrees off where the mouse points"), OffCursor);
+				Test->TestTrue(TEXT("Charging, a mouse's aim stays where it points"), OffCursor < 1.0f);
+				// The arrow as drawn: from its start toward its end, it points at the cursor.
+				const FVector Start = Player->GetAimGuideStartWorldLocation();
+				FVector2D From, To;
+				if (PC->ProjectWorldLocationToScreen(Start, From) && PC->ProjectWorldLocationToScreen(Start + Player->GetAimDirection() * Player->GetAimGuideLength(), To))
+				{
+					const FVector2D Arrow = (To - From).GetSafeNormal(), Pointer = (Cursor - From).GetSafeNormal();
+					const float Off = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector2D::DotProduct(Arrow, Pointer), -1.0, 1.0)));
+					UE_LOG(LogTemp, Display, TEXT("AIMASSIST arrow on screen: %.2f degrees off the cursor"), Off);
+					Test->TestTrue(TEXT("The arrow points at the cursor"), Off < 1.5f);
+				}
+				else { Test->AddError(TEXT("The arrow is not on screen.")); }
 				Player->RequestCancelThrow();
 				return true;
 			}
@@ -143,6 +156,7 @@ namespace
 		double NextAt = 0.0;
 		int32 Stage = 0;
 		FVector Toward = FVector::ForwardVector;
+		FVector2D Cursor = FVector2D::ZeroVector;
 		TWeakObjectPtr<AChaosImpactCharacter> Opponent;
 	};
 }

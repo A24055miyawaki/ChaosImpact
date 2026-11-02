@@ -24,13 +24,18 @@ enum class ERPGQuestKind : uint8
 	Beacon,    // light rest beacons (checkpoints)
 	Bounty,    // defeat enemies of the thrower role
 	Special,   // defeat enemies with a special ball
+	// Multiplayer only (2026-11): offered while two or more play together.
+	Revive,    // help downed teammates up
+	TeamHunt,  // defeat enemies with a teammate close by (in named places, if any)
+	TeamBoss,  // defeat a boss with a teammate close by
+	Named,     // defeat a named enemy (2026-11)
 };
 
 /** Where a quest comes from. Board / Person are offered when talked to; the rest are found in the field. */
 enum class ERPGQuestFrom : uint8 { Board, Person, Beacon, Merchant, Region, BountyDrop, FirstSpecial };
 
 /** Things that happen in play and may move quests on. */
-enum class ERPGQuestEvent : uint8 { Kill, ChestOpened, BeaconLit, MerchantVisited, Upgraded, Tuned, RegionEntered, ItemObtained };
+enum class ERPGQuestEvent : uint8 { Kill, ChestOpened, BeaconLit, MerchantVisited, Upgraded, Tuned, RegionEntered, ItemObtained, Revived };
 
 /** How a quest looks to one player right now. */
 enum class ERPGQuestState : uint8 { Hidden, Locked, Offered, Active, Ready, Done };
@@ -78,6 +83,8 @@ struct FRPGQuestDef
 	int32 RewardRarity;
 	/** How the player learns of a field quest, shown in the journal. */
 	const TCHAR* FoundBy;
+	/** Only offered while two or more players are in the world (the board's "マルチ" quests). */
+	bool bMulti = false;
 };
 
 namespace RPGQuests
@@ -94,6 +101,10 @@ namespace RPGQuests
 	ERPGQuestState State(const ARPGPrototypeCharacter* Player, int32 Index);
 	/** "あと：…を完了" for a locked quest. */
 	FString UnlockHint(int32 Index);
+	/** The dojo's master among the givers (talking to them opens the lessons). */
+	inline constexpr int32 DojoMaster = 10;
+	/** Two or more players in the world (multiplayer-only quests can be taken and counted). */
+	bool IsTogether(const ARPGPrototypeCharacter* Player);
 	/** "外の敵を倒す　2 / 4" or the state. */
 	FString Progress(const ARPGPrototypeCharacter* Player, int32 Index);
 	FString RewardText(int32 Index);

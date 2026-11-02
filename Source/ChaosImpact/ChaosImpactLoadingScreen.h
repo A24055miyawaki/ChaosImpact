@@ -20,6 +20,9 @@ enum class EChaosImpactLoadingKind : uint8
 	RoomCreate,
 	RoomJoin,
 	RoomLeave,
+	/** An online room moving to its match's own level, and back to its lobby after. */
+	RoomMatch,
+	RoomLobby,
 	Title,
 	/** Not loading at all: the little games played for their own sake (from the settings). */
 	Arcade,

@@ -73,6 +73,8 @@ namespace
 		case EChaosImpactLoadingKind::RoomCreate: return TEXT("部屋をつくっています");
 		case EChaosImpactLoadingKind::RoomJoin: return TEXT("部屋に入っています");
 		case EChaosImpactLoadingKind::RoomLeave: return TEXT("部屋から出ています");
+		case EChaosImpactLoadingKind::RoomMatch: return TEXT("対戦ステージへ移動しています");
+		case EChaosImpactLoadingKind::RoomLobby: return TEXT("ロビーへもどっています");
 		case EChaosImpactLoadingKind::Arcade: return TEXT("ミニゲーム");
 		case EChaosImpactLoadingKind::SoloTitle: return TEXT("ソロモードを準備しています");
 		case EChaosImpactLoadingKind::SoloMap: return TEXT("ワールドマップへ移動しています");

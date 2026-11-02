@@ -117,7 +117,8 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
         PaintSharedHUD(Geometry,Elements,Base+3,Time);
         if(MiniRevealAlpha>0) { PaintMiniMenu(Geometry,Elements,Base+25,Time); }
         if(Player->IsQuestMenuOpen()) { PaintAdventure(Geometry,Elements,Base+30,Time); }
-        return Base+49;
+        PaintAdventureMap(Geometry,Elements,Base+50,Time);
+        return Base+129;
     }
     const bool Split=GetGameInstance() && GetGameInstance()->GetLocalPlayers().Num()>1;
     const float Scale=BattleScale(Size,Split);
@@ -145,21 +146,30 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
             const auto State=Boss->GetBossState();
             if(State==ERPGBossState::Defeated)
             {
+                // Beaten: next time it is its strong version.
                 if(Boss->CanRetry(Player))
                 {
-                    InteractionPrompt(Design,Elements,Base+3,W,H-280,PC->IsUsingGamepad()?TEXT("上ボタン"):TEXT("E"),FString::Printf(TEXT("Lv.%d に再挑戦"),Boss->GetRPGLevel()),Gold);
+                    InteractionPrompt(Design,Elements,Base+3,W,H-280,PC->IsUsingGamepad()?TEXT("上ボタン"):TEXT("E"),FString::Printf(TEXT("強化版 Lv.%d に挑む"),Boss->GetRPGLevel()),Gold);
                 }
+                continue;
+            }
+            if(Boss->IsAsleep())
+            {
+                // The legend: asleep until every other boss has fallen to someone here.
+                if(Distance<1600)
+                { InteractionPrompt(Design,Elements,Base+3,W,H-280,TEXT("眠り"),FString::Printf(TEXT("%s — 各地のボスをすべて倒すと目を覚ます（あと%d体）"),*Boss->GetBossName(),Boss->GetBossesLeftToWake()),Gold); }
                 continue;
             }
             if(Boss->IsBossActive() || (Distance<1500 && !Player->IsEliminated()))
             {
-                const float X=W*.5f-210,Y=Split?80:14;
-                Card(P,X,Y,420,62,Boss->IsEnraged()?Fire:Ice);
-                Front.Text(TEXT("暴走マグロ"),X+16,Y+8,21,Paper,ETextAlign::Left,TEXT("Bold"));
-                Front.Text(FString::Printf(TEXT("Lv.%d"),Boss->GetRPGLevel()),X+176,Y+12,16,Paper,ETextAlign::Left,TEXT("Bold"));
-                Front.Text(FString::Printf(TEXT("%.0f / %.0f"),Boss->GetHealth(),Boss->GetMaxHealth()),X+404,Y+12,15,Paper,ETextAlign::Right,TEXT("Bold"));
-                Mid.Box(X+16,Y+38,388,10,Ink);
-                Front.Box(X+16,Y+38,388*FMath::Clamp(Boss->GetHealth()/Boss->GetMaxHealth(),0.0f,1.0f),10,State==ERPGBossState::Recovery?Gold:Fire);
+                const FString Name=Boss->GetBossName();
+                const float BarW=FMath::Max(420.0f,HudMeasure(Name,21,TEXT("Bold"))+260),X=W*.5f-BarW*.5f,Y=Split?80:14;
+                Card(P,X,Y,BarW,62,Boss->IsStrongVersion()?Violet:Boss->IsEnraged()?Fire:Ice);
+                Front.Text(Name,X+16,Y+8,21,Paper,ETextAlign::Left,TEXT("Bold"));
+                Front.Text(FString::Printf(TEXT("Lv.%d"),Boss->GetRPGLevel()),X+28+HudMeasure(Name,21,TEXT("Bold")),Y+12,16,Paper,ETextAlign::Left,TEXT("Bold"));
+                Front.Text(FString::Printf(TEXT("%.0f / %.0f"),Boss->GetHealth(),Boss->GetMaxHealth()),X+BarW-16,Y+12,15,Paper,ETextAlign::Right,TEXT("Bold"));
+                Mid.Box(X+16,Y+38,BarW-32,10,Ink);
+                Front.Box(X+16,Y+38,(BarW-32)*FMath::Clamp(Boss->GetHealth()/FMath::Max(1.0f,Boss->GetMaxHealth()),0.0f,1.0f),10,State==ERPGBossState::Recovery?Gold:Fire);
             }
             const FVector Floor=Boss->GetActorLocation()-FVector(0,0,Boss->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()-5);
             if(State==ERPGBossState::ChargeTell)
@@ -173,6 +183,38 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
                 { FVector2D Screen; if(!Project(V,Screen)) { Visible=false; break; } Points.Add(Screen); }
                 if(Visible)
                 { HudPoly(WorldPaint,Points,SolidFill(FLinearColor(1,.07f,.05f,.3f)),1); for(int32 I=0;I<4;++I) { if(FVector2D::DistSquared(Points[I],Points[(I+1)%4])>.01) { WorldPaint.Line(Points[I],Points[(I+1)%4],Fire,3*Scale); } } }
+            }
+            // Geysers: a circle under each spot, filling as it comes due.
+            if(State==ERPGBossState::GeyserTell || State==ERPGBossState::Geyser)
+            {
+                for(const FVector& Spot:Boss->GetGeyserSpots())
+                {
+                    FVector2D Previous=FVector2D::ZeroVector; bool HasPrevious=false;
+                    for(int32 I=0;I<=40;++I)
+                    {
+                        const float A=2*PI*I/40; FVector2D Screen=FVector2D::ZeroVector;
+                        const bool Visible=Project(Spot+FVector(FMath::Cos(A),FMath::Sin(A),0)*ARPGPrototypeBoss::GeyserRadius+FVector(0,0,6),Screen);
+                        if(Visible && HasPrevious && FVector2D::DistSquared(Previous,Screen)>.01) { WorldPaint.Line(Previous,Screen,Fire,(State==ERPGBossState::Geyser?6:3)*Scale); }
+                        Previous=Screen; HasPrevious=Visible;
+                    }
+                    FVector2D Middle; if(Project(Spot+FVector(0,0,6),Middle)) { WorldPaint.Disc(Middle,9*Scale,WithAlpha(Fire,.8f)); }
+                }
+            }
+            // The whirlpool: how far it pulls, and the middle that bursts.
+            if(State==ERPGBossState::VortexTell || State==ERPGBossState::Vortex)
+            {
+                for(const float Radius:{ARPGPrototypeBoss::VortexRadius,ARPGPrototypeBoss::VortexCore})
+                {
+                    const bool bCore=Radius<1000;
+                    FVector2D Previous=FVector2D::ZeroVector; bool HasPrevious=false;
+                    for(int32 I=0;I<=64;++I)
+                    {
+                        const float A=2*PI*I/64+(bCore?0:Time*1.5f); FVector2D Screen=FVector2D::ZeroVector;
+                        const bool Visible=Project(Floor+FVector(FMath::Cos(A),FMath::Sin(A),0)*Radius,Screen);
+                        if(Visible && HasPrevious && FVector2D::DistSquared(Previous,Screen)>.01 && (bCore || I%2==0)) { WorldPaint.Line(Previous,Screen,bCore?Fire:Ice,(bCore?4:2)*Scale); }
+                        Previous=Screen; HasPrevious=Visible;
+                    }
+                }
             }
             if(State==ERPGBossState::LeapTell || State==ERPGBossState::Wave)
             {
@@ -195,18 +237,26 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
             const bool bPower=It->IsBossPoweringUp();
             const FLinearColor BarColor=It->IsBossFullPower()?FLinearColor(1,.12f,.18f):Ice;
             Card(P,X,Y,460,62,It->IsBossFullPower()?Fire:Ice);
-            Front.Text(TEXT("シマエナガ"),X+16,Y+8,21,Paper,ETextAlign::Left,TEXT("Bold"));
+            Front.Text(It->IsStrongVersion()?TEXT("真・シマエナガ"):TEXT("シマエナガ"),X+16,Y+8,21,Paper,ETextAlign::Left,TEXT("Bold"));
             Front.Text(FString::Printf(TEXT("Lv.%d"),It->GetRPGLevel()),X+190,Y+12,16,Paper,ETextAlign::Left,TEXT("Bold"));
             Front.Text(FString::Printf(TEXT("%.0f / %.0f"),It->GetHealth(),It->GetMaxHealth()),X+444,Y+12,15,Paper,ETextAlign::Right,TEXT("Bold"));
             Mid.Box(X+16,Y+38,428,10,Ink);
             FPainter Bar=Front; Bar.Alpha=bPower?.55f+.45f*FMath::Sin(Time*14):1;
             Bar.Box(X+16,Y+38,428*FMath::Clamp(It->GetHealth()/It->GetMaxHealth(),0.0f,1.0f),10,BarColor);
         }
+        // A named one: its gold name over its head while it is close.
+        for(TActorIterator<ARPGPrototypeCharacter> It(GetWorld());It;++It)
+        {
+            if(!It->IsNamed() || It->IsEliminated() || FVector::DistSquared2D(It->GetActorLocation(),Player->GetActorLocation())>FMath::Square(2800.0f)) { continue; }
+            FVector2D At;
+            if(!Project(It->GetActorLocation()+FVector(0,0,112*It->GetActorScale3D().Z),At)) { continue; }
+            HudAbove(WorldPaint).Text(It->NamedTitle,At.X,At.Y-46*Scale,17*Scale,Gold,ETextAlign::Center,TEXT("Black"),2);
+        }
         for(TActorIterator<ARPGPrototypeCharacter> It(GetWorld());It;++It)
         {
             if(Cast<ARPGPrototypeBoss>(*It) || It->IsCrowdControlImmune() || !It->IsGrunt() || It->IsEliminated() || It->GetLastDamagedAt()<=0 || Now-It->GetLastDamagedAt()>4) { continue; }
             FVector2D At;
-            if(!Project(It->GetActorLocation()+FVector(0,0,112),At)) { continue; }
+            if(!Project(It->GetActorLocation()+FVector(0,0,112*It->GetActorScale3D().Z),At)) { continue; }
             const double L=At.X-48*Scale,R=At.X+48*Scale,Y=At.Y;
             const TArray<FVector2D> Shape{FVector2D(L+3*Scale,Y),FVector2D(R,Y),
                 FVector2D(R-3*Scale,Y+8*Scale),FVector2D(L,Y+8*Scale)};
@@ -377,7 +427,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
             UI::FCanvas C; C.Geometry=&Design; C.Elements=&Elements; C.Layer=Base+3; C.Time=Time;
             UI::Panel(C,0,X,Y,CardW,82,UI::EStyle::Card,UI::RarityColor(I.Rarity),UI::RarityColor(I.Rarity));
             UI::ItemIcon(C,0,FVector2D(X+46,Y+41),22,I);
-            UI::Label(C,0,UI::Fit(I.Name(),220,21),X+86,Y+8,21,I.Rarity==ERPGPrototypeRarity::Normal?UI::TextMain:UI::RarityColor(I.Rarity));
+            UI::LabelFit(C,0,I.Name(),X+86,Y+8,220,21,I.Rarity==ERPGPrototypeRarity::Normal?UI::TextMain:UI::RarityColor(I.Rarity));
             float ChipX=X+86;
             ChipX+=UI::Chip(C,0,UI::RarityName(I.Rarity),ChipX,Y+44,UI::RarityColor(I.Rarity),12,true)+5;
             ChipX+=UI::Chip(C,0,FString::Printf(TEXT("Lv.%d"),I.Level),ChipX,Y+44,UI::TextSub,12)+5;
@@ -416,9 +466,12 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
         {
             HudText3D(Front,TEXT("KNOCK OUT"),W*.5f,H*.36f,61,FireFill.Top,ETextAlign::Center);
             const float Left=Player->GetRPGRespawnLeft();
+            const int32 Lost=Player->GetDeathRubyLoss();
             Card(P,W-300,H-295,270,90,Fire);
             Front.Text(TEXT("入口から復活"),W-165,H-282,22,Paper,ETextAlign::Center);
             HudText3D(Front,Left>0?FString::Printf(TEXT("%.1f"),Left):TEXT("..."),W-165,H-255,33,Paper,ETextAlign::Center);
+            // What it cost, just above the card (below it are the ball dock's labels).
+            if(Lost>0) { Front.Text(FString::Printf(TEXT("ルビー -%s"),*FString::FormatAsNumber(Lost)),W-165,H-326,20,Paper,ETextAlign::Center,TEXT("Bold"),2); }
         }
     }
     else
@@ -427,19 +480,31 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
     }
     if(MiniRevealAlpha>0 && (!Player->IsBagOpen() || Player->UsesMiniMenu())) { PaintMiniMenu(Geometry,Elements,Base+25,Time); }
     PaintAdventure(Geometry,Elements,Base+30,Time);
+    PaintAdventureMap(Geometry,Elements,Base+50,Time);
     if(Now<Player->NoticeUntil && !Player->HasConfirmation() && !Player->IsQuestMenuOpen())
     {
-        // Over the menu footer while the bag is open (the hints come back when it fades).
-        RPGPrototypeUI::FCanvas Toast; Toast.Geometry=&Design; Toast.Elements=&Elements; Toast.Layer=Base+40;
+        // Over the menu footer while the bag is open (the hints come back when it fades); over the whole map too.
+        RPGPrototypeUI::FCanvas Toast; Toast.Geometry=&Design; Toast.Elements=&Elements; Toast.Layer=Player->IsMapOpen()?Base+110:Base+40;
         // In play: below the quest banner and between the quest cards (left) and the buttons (right).
         const float Y=Player->IsBagOpen()?H-50:170;
         const float ToastWidth=FMath::Clamp(HudMeasure(Player->Notice,18,TEXT("Bold"))+64,320.0f,Player->IsBagOpen()?W-64:FMath::Max(320.0f,W-720));
         const float Fade=FMath::Clamp(static_cast<float>(Player->NoticeUntil-Now)*4.0f,0.0f,1.0f);
         if(Fade>0)
         {
-            RPGPrototypeUI::Panel(Toast,0,W*.5f-ToastWidth*.5f,Y,ToastWidth,40,RPGPrototypeUI::EStyle::Card,RPGPrototypeUI::Highlight);
+            // A long notice takes two lines (a little smaller if it must), never cut short. Over the bag's footer: one line, smaller.
+            float TextSize=18; TArray<FString> Lines=RPGPrototypeUI::WrapLines(Player->Notice,ToastWidth-30,TextSize);
+            const int32 MaxLines=Player->IsBagOpen()?1:2;
+            while(Lines.Num()>MaxLines && TextSize>13) { TextSize-=1; Lines=RPGPrototypeUI::WrapLines(Player->Notice,ToastWidth-30,TextSize); }
+            const int32 Count=FMath::Clamp(Lines.Num(),1,MaxLines);
+            const float Below=Player->IsBagOpen()?0.0f:(Count-1)*24.0f;
+            RPGPrototypeUI::Panel(Toast,0,W*.5f-ToastWidth*.5f,Y,ToastWidth,40+Below,RPGPrototypeUI::EStyle::Card,RPGPrototypeUI::Highlight);
             FPainter Text=Toast.At(0,6); Text.Alpha=Fade;
-            Text.Text(RPGPrototypeUI::Fit(Player->Notice,ToastWidth-30,18),W*.5f,Y+8,18,Paper,ETextAlign::Center,TEXT("Bold"));
+            for(int32 Row=0;Row<Count && Lines.IsValidIndex(Row);++Row)
+            {
+                FString Line=Lines[Row];
+                if(Row==Count-1 && Lines.Num()>Count) { for(int32 More=Row+1;More<Lines.Num();++More) { Line+=Lines[More]; } Line=RPGPrototypeUI::Fit(Line,ToastWidth-30,TextSize); }
+                Text.Text(Line,W*.5f,Y+8+(18-TextSize)*.45f+Row*24,TextSize,Paper,ETextAlign::Center,TEXT("Bold"));
+            }
         }
     }
     // Someone pressed a pad nobody holds: a small join hint on player 1's screen, between HP and the balls.
@@ -454,7 +519,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
             Join.At(0,6).Text(Hint,W*.5f,JY+6,16,Paper,ETextAlign::Center,TEXT("Bold"));
         }
     }
-    return Base+49;
+    return Base+129;
 }
 int32 URPGPrototypeHUD::GetPointerAction() const
 {

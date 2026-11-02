@@ -18,6 +18,49 @@ struct FChaosImpactRankInfo
 	TArray<FString> Recent;
 };
 
+/** A player's ランダムマッチ 1v1 record, as the relay keeps it (RankBook.records). */
+struct FChaosImpactDuelRecord
+{
+	int32 Wins = 0;
+	int32 Losses = 0;
+	int32 Draws = 0;
+	/** The last results, oldest first: "W", "L" or "D". */
+	TArray<FString> Recent;
+
+	int32 GetGames() const { return Wins + Losses + Draws; }
+};
+
+/** This player's ランダムマッチ records: the 1v1s and the 8-player matches. */
+struct FChaosImpactRecords
+{
+	bool bKnown = false;
+	FChaosImpactDuelRecord Duel;
+	int32 FfaGames = 0;
+	int32 FfaWins = 0;
+	int32 FfaTop3 = 0;
+	/** Average place (0 before the first match). */
+	float FfaAverage = 0.0f;
+	/** The last places, oldest first: X the place, Y out of how many. */
+	TArray<FIntPoint> FfaRecent;
+};
+
+/** A ランダムマッチ 1v1 the relay found: who it is against and where both stand on accepting it. */
+struct FChaosImpactDuelOffer
+{
+	FString MatchId;
+	FString Name;
+	int32 Character = 0;
+	int32 Colour = 0;
+	bool bKeyboard = false;
+	FChaosImpactDuelRecord Record;
+	/** Round trip through the relay, the most it takes (a direct line, found once they connect, is quicker). */
+	int32 PingMs = 0;
+	/** FPlatformTime seconds the offer runs out. */
+	double EndsAt = 0.0;
+	bool bAccepted = false;
+	bool bOpponentAccepted = false;
+};
+
 /** What became of a ランクマッチ's result on the relay. */
 enum class EChaosImpactRankReportState : uint8
 {

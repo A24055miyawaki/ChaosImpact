@@ -1,4 +1,5 @@
 #include "RPGPrototype.h"
+#include "RPGTutorial.h"
 #include "RPGTuning.h"
 #include "ChaosImpactPlayerController.h"
 #include "Engine/World.h"
@@ -58,10 +59,11 @@ int32 FRPGPrototypeItem::SalvageValue() const
     using namespace RPGTuning;
     return FMath::Clamp<int64>((SalvageBase+Level*SalvagePerLevel+Enhancement*SalvagePerEnhance)*SalvageRarityMultiplier[FMath::Clamp(static_cast<int32>(Rarity),0,3)],1,CostCap);
 }
+// (A grown colony's workshop is cheaper: RPGColony::Discount.)
 int32 FRPGPrototypeItem::UpgradeCost() const
-{ using namespace RPGTuning; return FMath::Clamp<int64>(UpgradeBase+Level*UpgradePerLevel+Enhancement*UpgradePerEnhance,1,CostCap); }
+{ using namespace RPGTuning; return FMath::Clamp<int64>(FMath::RoundToInt64((UpgradeBase+static_cast<int64>(Level)*UpgradePerLevel)*(1+FMath::Max(0,Enhancement)*static_cast<double>(UpgradeGrowth))*(1-RPGColony::Discount())),1,CostCap); }
 int32 FRPGPrototypeItem::TuneCost() const
-{ using namespace RPGTuning; return FMath::Clamp<int64>(TuneBase+Level*TunePerLevel+static_cast<int32>(Rarity)*TunePerRarity,1,CostCap); }
+{ using namespace RPGTuning; return FMath::Clamp<int64>(FMath::RoundToInt((TuneBase+Level*TunePerLevel+static_cast<int32>(Rarity)*TunePerRarity)*(1-RPGColony::Discount())),1,CostCap); }
 TArray<int32> FRPGPrototypeItem::TuneOfferIndices(int32 Socket) const
 {
     TArray<int32> Candidates;
@@ -144,6 +146,14 @@ bool ARPGPrototypeCharacter::IsEquipped(const FGuid& Id) const
 }
 void ARPGPrototypeCharacter::AddRubies(int32 Amount)
 { Rubies=FMath::Clamp<int64>(static_cast<int64>(Rubies)+FMath::Max(0,Amount),0,RPGTuning::RubyCap); }
+void ARPGPrototypeCharacter::LoseRubiesOnDeath()
+{
+    // Rubies are kept on the player's own machine, so the loss is taken there (online too).
+    if(bGrunt || !IsLocallyControlled() || IsInTitle() || !GetWorld()) { return; }
+    DeathRubyLoss=FMath::Clamp(FMath::FloorToInt(static_cast<double>(Rubies)*RPGTuning::DeathRubyLoss),0,Rubies); Rubies-=DeathRubyLoss;
+    if(DeathRubyLoss>0) { Notice=FString::Printf(TEXT("倒れてルビーを %d 失った"),DeathRubyLoss); NoticeUntil=GetWorld()->GetTimeSeconds()+4; }
+    ShowLesson(TEXT("Defeat"));
+}
 void ARPGPrototypeCharacter::PickUpRubies(int32 Amount)
 {
     AddRubies(Amount);
@@ -197,7 +207,8 @@ bool ARPGPrototypeCharacter::OpenMerchant(ARPGPrototypeMerchant* Merchant)
     if(!IsValid(Merchant) || FindMerchant()!=Merchant || IsEliminated() || IsChargingThrow() || IsThrowReleasePending()) { return false; }
     ActiveMerchant=Merchant; SetBagOpen(true); if(!bBagOpen) { ActiveMerchant.Reset(); return false; }
     QuestEvent(ERPGQuestEvent::MerchantVisited,GetActorLocation());
-    PendingTune=PendingSalvage=INDEX_NONE; SwitchInventoryPage(1); return true;
+    ShowLesson(TEXT("Workshop"));
+    PendingTune=PendingSalvage=INDEX_NONE; RefreshShopStock(); SwitchInventoryPage(1); return true;
 }
 bool ARPGPrototypeCharacter::IsAtMerchant() const
 { return bBagOpen && ActiveMerchant.IsValid() && FindMerchant()==ActiveMerchant.Get(); }
@@ -210,8 +221,9 @@ bool ARPGPrototypeCharacter::UpgradeItem(int32 Index)
     const int32 Cost=I.UpgradeCost();
     if(Rubies<Cost) { Notice=TEXT("ルビーが足りません"); NoticeUntil=GetWorld()->GetTimeSeconds()+2; return false; }
     if(I.Enhancement==MAX_int32) { return false; }
-    Rubies-=Cost; ++I.Enhancement; RebuildEquipment(); QuestEvent(ERPGQuestEvent::Upgraded,GetActorLocation());
-    Notice=FString::Printf(TEXT("%s +%d に強化"),*I.Name(),I.Enhancement); NoticeUntil=GetWorld()->GetTimeSeconds()+2; return true;
+    const bool bMerchantUp=SpendAtMerchant(Cost); ++I.Enhancement; RebuildEquipment(); QuestEvent(ERPGQuestEvent::Upgraded,GetActorLocation()); TutorialEvent(TEXT("Upgrade"));
+    Notice=FString::Printf(TEXT("%s +%d に強化"),*I.Name(),I.Enhancement); NoticeUntil=GetWorld()->GetTimeSeconds()+2;
+    if(bMerchantUp) { AnnounceMerchantLevel(); } return true;
 }
 bool ARPGPrototypeCharacter::ApplyTune(int32 Index,int32 Definition,int32 Socket)
 {
@@ -227,12 +239,20 @@ bool ARPGPrototypeCharacter::ApplyTune(int32 Index,int32 Definition,int32 Socket
     if(!I.Tunes[Socket].Key.IsNone() && PendingTune!=Definition)
     { PendingTune=Definition; Notice=TEXT("付け替えると現在のチューンが消えます。もう一度押して決定"); NoticeUntil=GetWorld()->GetTimeSeconds()+3; return false; }
     const int32 Cost=I.TuneCost(); if(Rubies<Cost) { Notice=TEXT("ルビーが足りません"); NoticeUntil=GetWorld()->GetTimeSeconds()+2; return false; }
-    Rubies-=Cost;
+    if(TuneShards<RPGTuning::ShardsPerTune) { Notice=TEXT("チューンの欠片が足りません（レベルが上がると1つ手に入ります）"); NoticeUntil=GetWorld()->GetTimeSeconds()+3; return false; }
+    const bool bMerchantUp=SpendAtMerchant(Cost); TuneShards-=RPGTuning::ShardsPerTune;
     // Hidden rolls are fixed for this paid offer generation; reopening does not reroll them.
     FRandomStream Roll(HashCombine(HashCombine(GetTypeHash(I.Id),GetTypeHash(D.Key)),I.TuneOfferGeneration));
     I.Tunes[Socket]={D.Key,RPGEquipment::RollValue(D,&Roll),1}; PendingTune=INDEX_NONE;
-    ++I.TuneOfferGeneration; TuneSelection=0; QuestEvent(ERPGQuestEvent::Tuned,GetActorLocation());
-    RebuildEquipment(); Notice=D.Name+TEXT(" を付けました"); NoticeUntil=GetWorld()->GetTimeSeconds()+2; return true;
+    ++I.TuneOfferGeneration; TuneSelection=0; QuestEvent(ERPGQuestEvent::Tuned,GetActorLocation()); TutorialEvent(TEXT("Upgrade"));
+    RebuildEquipment(); Notice=D.Name+TEXT(" を付けました"); NoticeUntil=GetWorld()->GetTimeSeconds()+2;
+    if(bMerchantUp) { AnnounceMerchantLevel(); } return true;
+}
+void ARPGPrototypeCharacter::AddTuneShards(int32 Amount,const FString& Why)
+{
+    if(bGrunt || Amount<=0) { return; }
+    TuneShards=FMath::Min(RPGTuning::ShardCap,TuneShards+Amount);
+    if(!Why.IsEmpty() && GetWorld()) { Notice=FString::Printf(TEXT("%s　チューンの欠片 +%d（%d）"),*Why,Amount,TuneShards); NoticeUntil=GetWorld()->GetTimeSeconds()+3; }
 }
 bool ARPGPrototypeCharacter::UpgradeTune(int32 Index,int32 Socket)
 {
@@ -240,7 +260,9 @@ bool ARPGPrototypeCharacter::UpgradeTune(int32 Index,int32 Socket)
     auto& I=Bag[Index]; auto& A=I.Tunes[Socket]; if(A.Key.IsNone() || A.Rank>=RPGTuning::TuneMaxRank) { return false; }
     const int32 Cost=I.TuneCost()*A.Rank;
     if(Rubies<Cost) { Notice=TEXT("ルビーが足りません"); NoticeUntil=GetWorld()->GetTimeSeconds()+2; return false; }
-    Rubies-=Cost; ++A.Rank; RebuildEquipment(); Notice=TEXT("チューンのランクを上げました"); NoticeUntil=GetWorld()->GetTimeSeconds()+2; return true;
+    if(TuneShards<A.Rank) { Notice=FString::Printf(TEXT("チューンの欠片が足りません（ランクUPには%d個）"),A.Rank); NoticeUntil=GetWorld()->GetTimeSeconds()+3; return false; }
+    const bool bMerchantUp=SpendAtMerchant(Cost); TuneShards-=A.Rank; ++A.Rank; RebuildEquipment(); Notice=TEXT("チューンのランクを上げました"); NoticeUntil=GetWorld()->GetTimeSeconds()+2;
+    if(bMerchantUp) { AnnounceMerchantLevel(); } return true;
 }
 void ARPGPrototypeCharacter::RebuildEquipment()
 {
@@ -362,6 +384,7 @@ void ARPGPrototypeCharacter::NavigateBag(int32 Direction)
 {
 	if(HasConfirmation()) { return; }
 	if(BagPage==3) { SettingsSelection=FMath::Clamp(SettingsSelection+Direction,0,5); return; }
+    if(BagPage==ERPGBagPage::Shop) { ShopSelection=FMath::Clamp(ShopSelection+Direction,0,FMath::Max(0,GetShopStock().Num()-1)); DetailScroll=0; return; }
     if(bChoosingDestination) { EquipTargetSlot=Direction<0?1:2; return; }
     if(BagPage==0 && !bChoosingEquipment)
     { const int32 Group=EquipmentSelection<3?0:EquipmentSelection<7?1:2,Col=EquipmentSelection-(Group==0?0:Group==1?3:7),Next=FMath::Clamp(Group+Direction,0,2); SelectEquipment((Next==0?0:Next==1?3:7)+FMath::Min(Col,Next==1?3:2)); return; }
@@ -433,10 +456,10 @@ bool ARPGPrototypeCharacter::HandleBagKey(FKey Key)
         else { EquipTargetSlot=Left?1:2; } return true;
     }
     if(Key==EKeys::Q || Key==EKeys::Gamepad_LeftShoulder)
-    { const TArray<int32> Pages=IsAtMerchant()?TArray<int32>{0,4,1,2,3}:TArray<int32>{0,4,3}; SwitchInventoryPage(Pages[(FMath::Max(0,Pages.Find(BagPage))+Pages.Num()-1)%Pages.Num()]); return true; }
+    { const TArray<int32> Pages=IsAtMerchant()?TArray<int32>{0,4,1,2,5,3}:TArray<int32>{0,4,3}; SwitchInventoryPage(Pages[(FMath::Max(0,Pages.Find(BagPage))+Pages.Num()-1)%Pages.Num()]); return true; }
     if(Key==EKeys::E || Key==EKeys::Gamepad_RightShoulder)
-    { const TArray<int32> Pages=IsAtMerchant()?TArray<int32>{0,4,1,2,3}:TArray<int32>{0,4,3}; SwitchInventoryPage(Pages[(FMath::Max(0,Pages.Find(BagPage))+1)%Pages.Num()]); return true; }
-    if(Key==EKeys::Delete || Key==EKeys::Gamepad_FaceButton_Left) { if(!(BagPage==0 && !bChoosingEquipment)) { SalvageItem(BagSelection); } return true; }
+    { const TArray<int32> Pages=IsAtMerchant()?TArray<int32>{0,4,1,2,5,3}:TArray<int32>{0,4,3}; SwitchInventoryPage(Pages[(FMath::Max(0,Pages.Find(BagPage))+1)%Pages.Num()]); return true; }
+    if(Key==EKeys::Delete || Key==EKeys::Gamepad_FaceButton_Left) { if(!(BagPage==0 && !bChoosingEquipment) && BagPage!=ERPGBagPage::Shop) { SalvageItem(BagSelection); } return true; }
     if((Key==EKeys::PageDown || Key==EKeys::PageUp) && BagPage==ERPGBagPage::Tune)
     {
         // The tune page uses up/down for the offers, so the page keys pick the ball.
@@ -451,13 +474,14 @@ bool ARPGPrototypeCharacter::HandleBagKey(FKey Key)
     if(Key==EKeys::SpaceBar || Key==EKeys::Gamepad_FaceButton_Top)
     {
         if(BagPage==ERPGBagPage::Tune) { UpgradeTune(BagSelection,TuneSocket); }
-        else if(Key==EKeys::Gamepad_FaceButton_Top && BagPage!=ERPGBagPage::Settings && !(BagPage==0 && !bChoosingEquipment)) { ToggleItemLock(BagSelection); }
+        else if(Key==EKeys::Gamepad_FaceButton_Top && BagPage!=ERPGBagPage::Settings && BagPage!=ERPGBagPage::Shop && !(BagPage==0 && !bChoosingEquipment)) { ToggleItemLock(BagSelection); }
         return true;
     }
-    if(Key==EKeys::F) { if(BagPage!=ERPGBagPage::Settings && !(BagPage==0 && !bChoosingEquipment)) { ToggleItemLock(BagSelection); } return true; }
+    if(Key==EKeys::F) { if(BagPage!=ERPGBagPage::Settings && BagPage!=ERPGBagPage::Shop && !(BagPage==0 && !bChoosingEquipment)) { ToggleItemLock(BagSelection); } return true; }
     if(Key==EKeys::Enter || Key==EKeys::Gamepad_FaceButton_Bottom)
     {
         if(BagPage==1) { UpgradeItem(BagSelection); }
+        else if(BagPage==ERPGBagPage::Shop) { BuyShopItem(ShopSelection); }
         else if(BagPage==2) { const auto Offers=GetTuneOffers(BagSelection,TuneSocket); if(Offers.IsValidIndex(TuneSelection)) { ApplyTune(BagSelection,Offers[TuneSelection],TuneSocket); } }
         else { EquipBagItem(BagSelection,EquipTargetSlot); }
         return true;

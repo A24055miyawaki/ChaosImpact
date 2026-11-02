@@ -29,6 +29,13 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable,Category="RPG World",meta=(WorldContext="WorldContextObject"))
 	static int32 PopulateLevel(UObject* WorldContextObject);
+	/**
+	 * Adds the lands of the 2026-11 expansion (RPGWorld Part 1) to the open level without touching the rest: terrain
+	 * tiles it does not show yet, chests, enemy groups, beacons, landmarks and scenery there, and clears old scenery
+	 * that stands where the new roads go. Running it again replaces only what it made. Returns the number of actors made.
+	 */
+	UFUNCTION(BlueprintCallable,Category="RPG World",meta=(WorldContext="WorldContextObject"))
+	static int32 ExtendLevel(UObject* WorldContextObject);
 	UFUNCTION(BlueprintPure,Category="RPG World")
 	static float GetGroundHeight(float X,float Y);
 };

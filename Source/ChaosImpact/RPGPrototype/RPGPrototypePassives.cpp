@@ -1,5 +1,6 @@
 #include "RPGPrototype.h"
 #include "RPGTuning.h"
+#include "RPGFieldEvents.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -78,6 +79,7 @@ void ARPGPrototypeCharacter::TickEquipment(float Dt)
 {
     const double Now=GetWorld()->GetTimeSeconds();
     if(bWasEliminated && !IsEliminated()) { RevivedAt=Now; Shield=0; Statuses.Empty(); ComboTargets.Empty(); KnockbackDistance=0; KnockbackResistanceUntil=0; }
+    if(!bWasEliminated && IsEliminated()) { LoseRubiesOnDeath(); }
     bWasEliminated=IsEliminated(); if(IsEliminated()) { return; }
     if(ComboTargets.Num()>128) { ComboTargets.Empty(); }
     const FVector At=GetActorLocation(); const float Moved=FVector::Dist2D(At,LastTravelPosition);
@@ -109,12 +111,14 @@ void ARPGPrototypeCharacter::TickEquipment(float Dt)
               && FVector::DistSquared2D(At,It->GetActorLocation())<FMath::Square(900.0f)) { SpeedBonus+=BadgeMod(TEXT("MoveEscape")); break; } }
     }
     if(IsChargingThrow()) { SpeedBonus+=BadgeMod(TEXT("ChargeMove"))*.35f; }
-    const float GruntSpeed=SpawnPoint.IsValid() && SpawnPoint->bEncounterGroup ? (EncounterRole==ERPGGruntRole::Chaser?330.f:270.f) : 245.f;
+    const float GruntSpeed=SpawnPoint.IsValid() && SpawnPoint->bEncounterGroup ? (EncounterRole==ERPGGruntRole::Chaser?330.f:EncounterRole==ERPGGruntRole::Charger?310.f
+        :EncounterRole==ERPGGruntRole::Bomber?250.f:EncounterRole==ERPGGruntRole::Sniper?240.f:270.f) : 245.f;
     BaseMaxWalkSpeed=(bGrunt?GruntSpeed:VSBaseSpeed)*FMath::Clamp(1+(SpeedBonus-Status(TEXT("Slow")))*.01f,RPGTuning::MoveSpeedMin,RPGTuning::MoveSpeedMax);
     if(!IsTrainingMenuFrozen() && !IsIceFrozen()) { GetCharacterMovement()->MaxWalkSpeed=IsRPGStunned()?0:BaseMaxWalkSpeed; }
     StaminaRegenPerSecond=VSStaminaRegen*(1+(BadgeMod(TEXT("Stamina"))+(Now-LastAttackAt>3 && Moved>0?BadgeMod(TEXT("MoveBreathe")):0))*.01f);
     StaminaRecoveredPerBallHit=VSStaminaHit*(1+BadgeMod(TEXT("HitStamina"))*.01f);
-    DashCooldownSeconds=VSDashCD*FMath::Max(RPGTuning::DashCooldownFloor,1-BadgeMod(TEXT("DashCD"))*.01f);
+    // The dojo's dash lessons make it come back sooner too.
+    DashCooldownSeconds=VSDashCD*(DashSkill>=4?.65f:DashSkill>=2?.8f:1.0f)*FMath::Max(RPGTuning::DashCooldownFloor,1-BadgeMod(TEXT("DashCD"))*.01f);
     if(!IsChargingThrow()) { MaxChargeSeconds=VSChargeTime*FMath::Max(RPGTuning::ChargeTimeFloor,1-(GetAttack(SelectedAttack).Mod(TEXT("Charge"))+BadgeMod(TEXT("GearCharge")))*.01f); }
     if(!bGrunt && bOutOfCombat) { RestoreHP(MaxHealth*BadgeMod(TEXT("Regen"))*.01f*Dt); }
     if(Status(TEXT("Smoke"))>0 && Now-LastAttackAt>2) { RestoreHP(MaxHealth*Status(TEXT("SmokeHeal"))*.01f*Dt); }
@@ -142,7 +146,9 @@ float ARPGPrototypeCharacter::OutgoingDamage(const FRPGPrototypeItem& I,ARPGProt
     }
     if(I.Type==EChaosImpactBallType::Fire) { Bonus+=Target->Status(TEXT("Heat"))*I.Mod(TEXT("Heat")); }
     if(Target->IsIceFrozen()) { Bonus+=I.Mod(TEXT("Shatter")); }
-    return Amount*(1+FMath::Clamp(Bonus,0.0f,RPGTuning::DamageBonusCapPercent)*.01f);
+    // A storm: the field's enemies (not its bosses) hit harder in it.
+    const float Storm=bGrunt && SpawnPoint.IsValid() && ARPGFieldEvents::IsStormAt(GetWorld(),GetActorLocation())?RPGTuning::StormEnemyPower:1.0f;
+    return Amount*Storm*(1+FMath::Clamp(Bonus,0.0f,RPGTuning::DamageBonusCapPercent)*.01f);
 }
 void ARPGPrototypeCharacter::RegisterRPGHit(ARPGPrototypeCharacter* Target,const FRPGPrototypeItem& I,float Applied,bool Proc)
 {

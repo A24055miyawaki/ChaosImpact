@@ -49,7 +49,11 @@ public:
 	virtual float TakeDamage(float Amount, const FDamageEvent& Event, AController* EventInstigator, AActor* Causer) override;
 	virtual bool IsCrowdControlImmune() const override { return true; }
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	void Bind(AChaosImpactSimaeBoss* InBoss, int32 InLevel);
+	void Bind(AChaosImpactSimaeBoss* InBoss, int32 InLevel, bool bStrong = false);
+	/** When the fight starts: more health for each player more in the nest. */
+	void ScaleForHeroes(int32 Count);
+	/** The strong version (after it has been beaten once). */
+	bool IsStrongVersion() const { return (BossFlags & 8) != 0; }
 	AChaosImpactSimaeBoss* GetBoss() const { return Boss.Get(); }
 	bool IsAwake() const;
 	bool IsDefeated() const { return bRewarded; }
@@ -60,18 +64,19 @@ protected:
 	virtual void BeginPlay() override;
 private:
 	UPROPERTY(Replicated) TObjectPtr<AChaosImpactSimaeBoss> Boss;
-	/** 1 awake, 2 full power, 4 powering up. */
+	/** 1 awake, 2 full power, 4 powering up, 8 the strong version. */
 	UPROPERTY(Replicated) uint8 BossFlags = 0;
 	bool bRewarded = false;
+	bool bStrongVersion = false;
+	float BaseMaxHealth = 0;
 };
 
 /**
- * The snowfield: built when the adventure opens, off the main map, and reached through a gate near the colony board.
- * A camp (warm light, the watcher ユキ, a rest beacon), a pine wood and a frozen lake with enemy groups, and at the far
- * end the Shima-enaga's nest: a walled ring where the boss sleeps until a player walks in. The entrance freezes shut
- * while it fights; all players knocked out or gone resets it, and it comes back a while after it is beaten.
- *
- * Removable: everything is created at run time from this class; no level asset is changed.
+ * The Shima-enaga's nest in the snowfield (since 2026-11 the snowfield is part of the adventure map, up the misty pass
+ * north-east of the fort: its camp, wood, lake, beacon and enemy groups are the map's own, see RPGWorldLayout and the
+ * builder). This actor stands in the middle of the nest area and makes the nest at run time: a walled ring where the
+ * boss sleeps until a player walks in. The entrance (south) freezes shut while it fights; all players knocked out or
+ * gone resets it, and it comes back a while after it is beaten.
  */
 UCLASS()
 class ARPGSnowField : public AActor
@@ -85,8 +90,7 @@ public:
 	static ARPGSnowField* Find(const UWorld* World);
 	/** Place names inside the snowfield ("雪原・…"), empty outside it. */
 	static FString RegionAt(const UWorld* World, const FVector& At);
-	/** Where the snowfield starts (a little in front of its gate) and the nest's middle. */
-	FVector ArrivalPoint() const;
+	/** The nest's middle, on its floor. */
 	FVector NestCenter() const;
 	float NestRadius() const { return 1700; }
 	/** The boss is awake and the nest is shut. */
@@ -95,11 +99,9 @@ public:
 	AChaosImpactSimaeBoss* GetBoss() const;
 	/** Tests: brings the boss back at once (asleep). */
 	void ResetBoss();
-	/** World position of the snowfield's origin (its middle). */
-	static FVector Origin() { return FVector(15000, 62000, 0); }
-	/** Half size of the snow plain. */
-	static FVector2D HalfSize() { return FVector2D(7200, 4600); }
-	/** Level of the boss and of the enemy groups. */
+	/** Where the nest is on the map (the adventure world at the origin): the middle of its area, on the ground. */
+	static FVector Origin();
+	/** Level of the boss (the snowfield's enemy groups are a little below it). */
 	static constexpr int32 BossLevel = 12;
 protected:
 	virtual void BeginPlay() override;
@@ -107,7 +109,6 @@ private:
 	void Build();
 	UStaticMeshComponent* Part(const TCHAR* Shape, const TCHAR* Material, const FVector& At, const FVector& Size,
 		const FRotator& Rotation = FRotator::ZeroRotator, bool bSolid = false);
-	void Pine(const FVector& At, float Scale);
 	void Lantern(const FVector& At);
 	void SpawnBoss();
 	void SetNestClosed(bool bClosed);
@@ -118,4 +119,6 @@ private:
 	bool bFighting = false;
 	double EmptySince = -1;
 	double DefeatedAt = -1;
+	/** Times beaten in this world (from the second fight on it is its strong version). */
+	int32 Defeats = 0;
 };

@@ -14,7 +14,6 @@ class UPostProcessComponent;
 class USceneComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
-class UTextRenderComponent;
 
 /**
  * VS ステージ4 (ネオン・ハイウェイ交差点): a night-time cybernetic highway junction for up to 8 players.
@@ -22,15 +21,15 @@ class UTextRenderComponent;
  * hologram court, the elevated outer highway lanes, corner retreat pockets, and ball pads.
  *
  * Layout & tactical features:
- *  - Central Hologram Court (+70 cm): an octagonal raised stage reached by four wide cardinal ramps, surrounded by
+ *  - Central Hologram Court (+40 cm): an octagonal raised stage, a step up from anywhere or by four wide ramps, surrounded by
  *    four angled reflector pylons and four 45-degree bank-shot walls.
  *  - Outer Highway Overpasses (+120 cm): four perimeter lanes with two wide side ramps each, overlooking the main
  *    asphalt deck and offering flanking routes and cover behind vehicles and bus stops.
  *  - Corner Retreat Pockets (0 cm): sheltered by L-shaped neon sound barriers and urban props.
  *  - Pulse Barrier Gates (パルス・バリアゲート): four diagonal energy gates between the central court and corners,
- *    synchronized across all machines via server world time. While closed, they bounce flying balls with a 1.25x
- *    speed boost (creating dynamic bank-shot angles) and knock back non-dashing characters, while dashing characters
- *    pass through unharmed.
+ *    synchronized across all machines via server world time. Before a barrier forms, a pale red danger strip fills
+ *    on the floor where it will stand. While closed, they bounce flying balls with a 1.25x speed boost (creating
+ *    dynamic bank-shot angles) and knock back non-dashing characters, while dashing characters pass through unharmed.
  *
  * Editing: make a Blueprint of this class or edit the actor placed in Lvl_VS_Stage4. Every block has
  * bEditableWhenInherited = true and a CIPaint<N> tag; turn off bApplyDefaultColors to keep custom editor materials.
@@ -57,6 +56,8 @@ public:
 	static constexpr float BevelLine = 5200.0f;
 	static constexpr float GateHalfWidth = 310.0f;
 	static constexpr float GateHeight = 320.0f;
+	/** How deep (across the gate) its danger strip on the floor is: the barrier's hurting reach, with a margin. */
+	static constexpr float GateWarnDepth = 250.0f;
 
 	/** Seconds between one Pulse Barrier Gate cycle and the next (server). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Cyber Stage|Gimmick", meta=(ClampMin="4.0"))
@@ -223,6 +224,13 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> GateFieldLooks;
 
+	/** Each gate's danger strip on the floor, shown while its barrier is coming and (faintly) while it stands. */
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TArray<TObjectPtr<UStaticMeshComponent>> GateWarnAreas;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> GateWarnLooks;
+
 	enum ECity : uint8
 	{
 		TwistedTower, EcoSlope, EcoTerrace, Billboard, BillboardText, BillboardStand, Graffiti, Spotlight,
@@ -240,6 +248,8 @@ private:
 	TObjectPtr<UStaticMesh> CylinderMesh;
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> RingMesh;
+	UPROPERTY()
+	TObjectPtr<UStaticMesh> PlaneMesh;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> FlatMaterial;
@@ -258,9 +268,9 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> FieldTealMaterial;
 	UPROPERTY()
-	TObjectPtr<UMaterialInterface> FieldAmberMaterial;
+	TObjectPtr<UMaterialInterface> WarnMaterial;
 	UPROPERTY()
-	TObjectPtr<UMaterialInterface> StencilMaterial;
+	TObjectPtr<UMaterialInterface> FieldAmberMaterial;
 
 	double NextGateAt = -1.0;
 	bool bGateLocked = false;

@@ -6,6 +6,10 @@
 #include "RPGSnowField.h"
 #include "RPGPrototypeUIKit.h"
 #include "RPGOnline.h"
+#include "RPGNavigation.h"
+#include "RPGTutorial.h"
+#include "RPGFieldEvents.h"
+#include "RPGWorldLayout.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactGameState.h"
 #include "GameFramework/GameStateBase.h"
@@ -35,7 +39,7 @@ constexpr float QuestW = 780, QuestH = 500;
 float QuestPanelScale(FVector2D Size) { return FMath::Min(Size.X * (Size.X > Size.Y * 1.2f ? 0.76f : 0.96f) / QuestW, Size.Y * 0.86f / QuestH); }
 
 /** Quest panel actions (mouse). */
-namespace QuestAct { enum : int32 { Close = 1, Primary = 20, Decline = 21, Track = 22, TabBase = 30, ConfirmNo = 900, ConfirmYes = 901, RowBase = 100, TravelRowBase = 300 }; }
+namespace QuestAct { enum : int32 { Close = 1, Primary = 20, Decline = 21, Track = 22, TabBase = 30, ConfirmNo = 900, ConfirmYes = 901, RowBase = 100, TravelRowBase = 300, SkillRowBase = 400, MenuRowBase = 500, TutorialRowBase = 600, Donate = 23 }; }
 
 const TCHAR* StateName(ERPGQuestState S)
 {
@@ -121,9 +125,9 @@ void TravelPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		if (!C.IsPainting()) { continue; }
 		RPGUI::Panel(C, 1, ListX, Y, ListW, RowH - 6, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : Point.bVisited ? RPGUI::EStyle::Card : RPGUI::EStyle::Disabled,
 			bOn ? RPGUI::Highlight : FLinearColor::Transparent, Point.bColony ? RPGUI::Highlight : Point.bVisited ? RPGUI::Good : RPGUI::TextDim);
-		RPGUI::Label(C, 1, RPGUI::Fit(Point.bVisited ? Point.Name : FString(TEXT("？？？")), ListW - 120, 17), ListX + 18, Y + 3, 17, Point.bVisited ? RPGUI::TextMain : RPGUI::TextDim);
+		RPGUI::LabelFit(C, 1, Point.bVisited ? Point.Name : FString(TEXT("？？？")), ListX + 18, Y + 3, ListW - 120, 17, Point.bVisited ? RPGUI::TextMain : RPGUI::TextDim);
 		const FString Sub = !Point.bVisited ? FString(TEXT("まだ灯りをともしていない")) : World ? World->RegionName(Point.At) : FString();
-		RPGUI::Label(C, 1, RPGUI::Fit(Sub, ListW - 120, 12), ListX + 18, Y + 26, 12, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, Sub, ListX + 18, Y + 26, ListW - 120, 12, RPGUI::TextSub);
 		if (Point.bVisited) { RPGUI::Label(C, 1, FString::Printf(TEXT("%dm"), FMath::RoundToInt(FVector::Dist2D(Point.At, P->GetActorLocation()) / 100)), ListX + ListW - 14, Y + 13, 15, RPGUI::TextSub, ETextAlign::Right); }
 	}
 	// The chosen place.
@@ -134,7 +138,7 @@ void TravelPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		float Y = 70;
 		RPGUI::Chip(C, 1, Point.bColony ? TEXT("コロニー") : TEXT("休息の灯り"), DX, Y, Point.bColony ? RPGUI::Highlight : RPGUI::Good, 13, true);
 		Y += 30;
-		RPGUI::Label(C, 1, RPGUI::Fit(Point.bVisited ? Point.Name : FString(TEXT("？？？")), DW, 26, TEXT("Black")), DX, Y, 26, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+		RPGUI::LabelFit(C, 1, Point.bVisited ? Point.Name : FString(TEXT("？？？")), DX, Y, DW, 26, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
 		Y += 44;
 		const FString Body = !Point.bVisited ? FString(TEXT("まだ行っていない灯りです。近くまで行って灯りをともすと、ここへ移動できるようになります。"))
 			: Point.bColony ? FString(TEXT("こもれびコロニーの広場へ戻ります。依頼人や商人、掲示板があります。"))
@@ -150,7 +154,7 @@ void TravelPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		}
 		FString Why;
 		const bool bCan = Point.bVisited && P->CanFastTravel(&Why);
-		if (!bCan && Point.bVisited) { RPGUI::Label(C, 1, RPGUI::Fit(Why, DW, 14), DX, QuestH - 112, 14, RPGUI::Bad); }
+		if (!bCan && Point.bVisited) { RPGUI::LabelFit(C, 1, Why, DX, QuestH - 112, DW, 14, RPGUI::Bad); }
 		RPGUI::Button(C, 1, DX, QuestH - 84, DW, 46, Point.bVisited ? TEXT("ここへ移動する") : TEXT("まだ移動できない"), QuestAct::Primary, bCan, bCan, M.Key(TEXT("Enter"), TEXT("決定")));
 	}
 	float FX = 20;
@@ -206,12 +210,12 @@ void MembersPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		RPGUI::Panel(C, 1, 18, RY, QuestW - 36, 64, bMe ? RPGUI::EStyle::Selected : RPGUI::EStyle::Card, bMe ? RPGUI::Highlight : FLinearColor::Transparent, ChaosImpactRoster::GetColourSwatch(FMath::Max(0, Member->ColourChoice)));
 		if (!C.IsPainting() || !Hero) { continue; }
 		// Name, character and where they are.
-		RPGUI::Label(C, 1, RPGUI::Fit(Hero->GetHeroLabel(), 200, 20, TEXT("Black")), 40, RY + 6, 20, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+		RPGUI::LabelFit(C, 1, Hero->GetHeroLabel(), 40, RY + 6, 200, 20, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
 		float ChipX = 40 + FMath::Min(200.0f, RPGUI::Measure(Hero->GetHeroLabel(), 20, TEXT("Black"))) + 10;
 		if (Member->bHostMachine && bOnline) { ChipX += RPGUI::Chip(C, 1, TEXT("ホスト"), ChipX, RY + 9, RPGUI::Highlight, 11, true) + 4; }
 		if (bMe) { RPGUI::Chip(C, 1, TEXT("あなた"), ChipX, RY + 9, RPGUI::Cyan, 11); }
 		const FString Where = Adventure ? Adventure->RegionName(Hero->GetActorLocation()) : FString();
-		RPGUI::Label(C, 1, RPGUI::Fit(FString::Printf(TEXT("%s　%s"), ChaosImpactRoster::Get(Member->CharacterIndex).Name, *Where), 290, 13), 40, RY + 38, 13, RPGUI::TextSub);
+		RPGUI::LabelFit(C, 1, FString::Printf(TEXT("%s　%s"), ChaosImpactRoster::Get(Member->CharacterIndex).Name, *Where), 40, RY + 38, 290, 13, RPGUI::TextSub);
 		// Level and HP.
 		RPGUI::Label(C, 1, FString::Printf(TEXT("Lv.%d"), Hero->GetRPGLevel()), 350, RY + 9, 20, RPGUI::Highlight, ETextAlign::Left, TEXT("Black"));
 		const float Ratio = Hero->IsDowned() || Hero->IsEliminated() ? 0.0f : FMath::Clamp(Hero->GetHealth() / FMath::Max(1.0f, Hero->GetMaxHealth()), 0.0f, 1.0f);
@@ -238,9 +242,243 @@ void MembersPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	}
 }
 
+/** The dojo: the master's lessons for tackle and dash, each level by level. */
+void TrainingPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
+{
+	const auto* P = M.P;
+	if (C.IsPainting())
+	{
+		RPGUI::Panel(C, 0, 0, 0, QuestW, QuestH, RPGUI::EStyle::Panel, WithAlpha(RPGUI::Highlight, 0.85f));
+		C.At(0, 3).Box(7, 5, QuestW - 14, QuestH - 10, FLinearColor(0.014f, 0.022f, 0.046f, 0.97f));
+		C.At(0, 4).Box(18, 54, QuestW - 36, 2, WithAlpha(RPGUI::Highlight, 0.45f));
+	}
+	RPGUI::Label(C, 1, TEXT("道場"), 22, 12, 24, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+	RPGUI::Chip(C, 1, TEXT("師範 ゴウ"), 34 + RPGUI::Measure(TEXT("道場"), 24, TEXT("Black")), 18, RPGUI::Highlight, 13, true);
+	RPGUI::Button(C, 1, QuestW - 60, 10, 44, 34, TEXT("×"), QuestAct::Close);
+	const FString Shards = FString::Printf(TEXT("チューンの欠片 %d"), P->GetTuneShards());
+	RPGUI::Label(C, 1, Shards, QuestW - 80, 20, 15, RPGUI::Cyan, ETextAlign::Right);
+	RPGUI::Rubies(C, 1, P->GetRubies(), QuestW - 80 - RPGUI::Measure(Shards, 15) - 24, 18, 18, ETextAlign::Right);
+	RPGUI::Label(C, 1, TEXT("鍛えるほど、行ける場所が増える。岩を砕くタックル、谷を越えるダッシュ……"), 24, 66, 14, RPGUI::TextSub);
+	for (int32 Which = 0; Which < 2; ++Which)
+	{
+		const float Y = 96 + Which * 168;
+		const int32 Level = Which == 0 ? P->GetTackleLevel() : P->GetDashLevel();
+		const int32 Action = QuestAct::SkillRowBase + Which;
+		const bool bOn = P->TrainingSelection == Which;
+		C.Hit(18, Y, QuestW - 36, 158, Action);
+		RPGUI::Panel(C, 1, 18, Y, QuestW - 36, 158, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card, bOn ? RPGUI::Highlight : FLinearColor::Transparent);
+		RPGUI::Label(C, 1, Which == 0 ? TEXT("タックル") : TEXT("ダッシュ"), 40, Y + 10, 22, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+		RPGUI::Label(C, 1, FString::Printf(TEXT("Lv.%d / 4"), Level), 170, Y + 16, 16, RPGUI::Highlight, ETextAlign::Left, TEXT("Bold"));
+		// What it can do already.
+		const RPGTuning::FSkillStep* Steps = Which == 0 ? RPGTuning::TackleSteps : RPGTuning::DashSteps;
+		float ChipX = 260;
+		for (int32 Step = 0; Step < 3; ++Step)
+		{ ChipX += RPGUI::Chip(C, 1, Steps[Step].Name, ChipX, Y + 14, Level >= Step + 2 ? RPGUI::Good : RPGUI::TextDim, 11, Level >= Step + 2) + 6; }
+		if (Level >= 4) { RPGUI::Label(C, 1, TEXT("極めた。ここから先は自分で磨くしかない。"), 40, Y + 60, 16, RPGUI::Good); continue; }
+		// The next lesson: what it does, what it takes.
+		const RPGTuning::FSkillStep& Next = Steps[Level - 1];
+		RPGUI::Label(C, 1, FString::Printf(TEXT("次の修行：%s"), Next.Name), 40, Y + 50, 18, RPGUI::TextMain, ETextAlign::Left, TEXT("Bold"));
+		RPGUI::LabelFit(C, 1, Next.Effect, 40, Y + 78, QuestW - 260, 14, RPGUI::TextSub);
+		float NeedX = 40;
+		const auto Need = [&](const FString& Text, bool bMet)
+		{ NeedX += RPGUI::Chip(C, 1, Text, NeedX, Y + 110, bMet ? RPGUI::Good : RPGUI::Bad, 12, false) + 8; };
+		Need(FString::Printf(TEXT("Lv.%d"), Next.MinLevel), P->GetRPGLevel() >= Next.MinLevel);
+		if (Next.Boss >= 0) { Need(Next.Boss == 0 ? TEXT("暴走マグロ撃破") : TEXT("シマエナガ撃破"), (P->GetBossesBeaten() & (1 << Next.Boss)) != 0); }
+		Need(FString::Printf(TEXT("ルビー %d"), Next.Rubies), P->GetRubies() >= Next.Rubies);
+		if (Next.Shards > 0) { Need(FString::Printf(TEXT("欠片 %d"), Next.Shards), P->GetTuneShards() >= Next.Shards); }
+		RPGUI::Button(C, 1, QuestW - 264, Y + 96, 226, 46, TEXT("修行する"), bOn ? QuestAct::Primary : Action, true, P->CanLearnSkill(Which), bOn ? M.Key(TEXT("Enter"), TEXT("決定")) : FString());
+	}
+	float FX = 20;
+	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("修行する")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}};
+	for (const auto& Hint : Hints)
+	{
+		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, FX, QuestH - 30, 22);
+		RPGUI::Label(C, 1, Hint.Value, FX + KeyW + 5, QuestH - 29, 14, RPGUI::TextSub);
+		FX += KeyW + RPGUI::Measure(Hint.Value, 14) + 18;
+	}
+}
+
+/** The panels' common frame (title, close button). */
+void MenuFrame(RPGUI::FCanvas& C, const FString& Title, const FLinearColor& Accent)
+{
+	if (C.IsPainting())
+	{
+		RPGUI::Panel(C, 0, 0, 0, QuestW, QuestH, RPGUI::EStyle::Panel, WithAlpha(Accent, 0.85f));
+		C.At(0, 3).Box(7, 5, QuestW - 14, QuestH - 10, FLinearColor(0.014f, 0.022f, 0.046f, 0.97f));
+		C.At(0, 4).Box(18, 54, QuestW - 36, 2, WithAlpha(Accent, 0.45f));
+	}
+	RPGUI::Label(C, 1, Title, 22, 12, 24, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+	RPGUI::Button(C, 1, QuestW - 60, 10, 44, 34, TEXT("×"), QuestAct::Close);
+}
+void MenuHints(RPGUI::FCanvas& C, const TArray<TPair<FString, FString>>& Hints)
+{
+	float FX = 20;
+	for (const auto& Hint : Hints)
+	{
+		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, FX, QuestH - 30, 22);
+		RPGUI::Label(C, 1, Hint.Value, FX + KeyW + 5, QuestH - 29, 14, RPGUI::TextSub);
+		FX += KeyW + RPGUI::Measure(Hint.Value, 14) + 18;
+	}
+}
+FString PlayTimeText(int32 Seconds) { return FString::Printf(TEXT("%d時間%02d分"), Seconds / 3600, (Seconds / 60) % 60); }
+/** Place names as the map shows them (the part before "・"), each once, in map order. */
+TArray<FString> PlaceGroups()
+{
+	TArray<FString> Out;
+	for (const RPGWorld::FArea& A : RPGWorld::Areas())
+	{
+		FString Name = A.Region; int32 Dot = INDEX_NONE;
+		if (Name.FindChar(TEXT('・'), Dot)) { Name.LeftInline(Dot); }
+		Out.AddUnique(Name);
+	}
+	return Out;
+}
+
+/** The adventure menu (P / Esc / Start): where to go, and the hero at a glance. */
+void AdventureMenuLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
+{
+	const auto* P = M.P;
+	MenuFrame(C, TEXT("冒険メニュー"), RPGUI::Cyan);
+	RPGUI::Chip(C, 1, P->GetHeroLabel(), 30 + RPGUI::Measure(TEXT("冒険メニュー"), 24, TEXT("Black")), 18, RPGUI::Cyan, 13, true);
+	const auto& Entries = RPGTutorial::MenuEntries();
+	for (int32 Index = 0; Index < Entries.Num(); ++Index)
+	{
+		const float Y = 70 + Index * 44;
+		const int32 Action = QuestAct::MenuRowBase + Index;
+		const bool bOn = P->MenuSelection == Index;
+		C.Hit(18, Y, 300, 40, Action);
+		RPGUI::Panel(C, 1, 18, Y, 300, 40, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card, bOn ? RPGUI::Cyan : FLinearColor::Transparent);
+		RPGUI::Label(C, 1, Entries[Index].Value, 40, Y + 8, 18, bOn ? RPGUI::TextMain : RPGUI::TextSub, ETextAlign::Left, TEXT("Bold"));
+	}
+	// The hero.
+	const float X = 340, W = QuestW - X - 18;
+	RPGUI::Panel(C, 1, X, 70, W, 392, RPGUI::EStyle::Card, FLinearColor::Transparent);
+	RPGUI::Label(C, 1, FString::Printf(TEXT("Lv.%d"), P->GetRPGLevel()), X + 20, 84, 30, RPGUI::Highlight, ETextAlign::Left, TEXT("Black"));
+	RPGUI::Label(C, 1, FString::Printf(TEXT("XP %d / %d"), P->GetXP(), P->GetRequiredXP()), X + 130, 96, 15, RPGUI::TextSub);
+	ProgressBar(C, 1, X + 20, 128, W - 40, 6, static_cast<float>(P->GetXP()) / FMath::Max(1, P->GetRequiredXP()), RPGUI::Cyan);
+	int32 QuestsDone = 0;
+	for (int32 Index = 0; Index < RPGQuests::Num(); ++Index) { if (RPGQuests::State(P, Index) == ERPGQuestState::Done) { ++QuestsDone; } }
+	const int32 Stage = RPGColony::WorldStage(P->GetWorld());
+	const TArray<TPair<FString, FString>> Rows{
+		{TEXT("ルビー"), FString::FromInt(P->GetRubies())},
+		{TEXT("チューンの欠片"), FString::FromInt(P->GetTuneShards())},
+		{TEXT("タックル / ダッシュ"), FString::Printf(TEXT("Lv.%d / Lv.%d"), P->GetTackleLevel(), P->GetDashLevel())},
+		{TEXT("依頼"), FString::Printf(TEXT("%d / %d 達成"), QuestsDone, RPGQuests::Num())},
+		{TEXT("倒したボス"), FString::Printf(TEXT("%d / 7"), FMath::CountBits(static_cast<uint64>(P->GetBossesBeaten() & 0x7F)))},
+		{TEXT("見つけた土地"), FString::Printf(TEXT("%d か所"), P->VisitedPlaces.Num())},
+		{TEXT("コロニー"), RPGColony::StageName(Stage)},
+		{TEXT("遊んだ時間"), PlayTimeText(P->PlaySeconds)}};
+	for (int32 Row = 0; Row < Rows.Num(); ++Row)
+	{
+		const float Y = 152 + Row * 36;
+		RPGUI::Label(C, 1, Rows[Row].Key, X + 24, Y, 16, RPGUI::TextSub);
+		RPGUI::Label(C, 1, Rows[Row].Value, X + W - 24, Y, 16, RPGUI::TextMain, ETextAlign::Right, TEXT("Bold"));
+	}
+	MenuHints(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {M.Key(TEXT("Enter"), TEXT("A")), TEXT("決定")}, {M.Key(TEXT("Esc"), TEXT("B")), TEXT("閉じる")}});
+}
+
+/** The adventure log: the record, places found, the colony. */
+void AdventureLogLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
+{
+	const auto* P = M.P;
+	UWorld* World = P->GetWorld();
+	MenuFrame(C, TEXT("冒険手帳"), RPGUI::Highlight);
+	// The record.
+	int32 Chests = 0, ChestsOpened = 0, Beacons = 0, Lit = 0;
+	for (TActorIterator<ARPGTreasureChest> It(World); It; ++It) { ++Chests; ChestsOpened += It->IsOpenedBy(P) ? 1 : 0; }
+	for (TActorIterator<ARPGAdventureCheckpoint> It(World); It; ++It) { ++Beacons; Lit += P->TravelPoints.Contains(ARPGPrototypeCharacter::TravelKey(*It)) ? 1 : 0; }
+	const TArray<FString> Places = PlaceGroups();
+	int32 Found = 0;
+	for (const FString& Place : Places) { if (P->VisitedPlaces.ContainsByPredicate([&](const FString& V) { return V.StartsWith(Place); })) { ++Found; } }
+	RPGUI::Section(C, 1, TEXT("記録"), 24, 66, 240);
+	const TArray<TPair<FString, FString>> Rows{
+		{TEXT("見つけた土地"), FString::Printf(TEXT("%d / %d"), Found, Places.Num())},
+		{TEXT("開けた宝箱"), FString::Printf(TEXT("%d / %d"), ChestsOpened, Chests)},
+		{TEXT("ともした灯り"), FString::Printf(TEXT("%d / %d"), Lit, Beacons)},
+		{TEXT("遊んだ時間"), PlayTimeText(P->PlaySeconds)}};
+	for (int32 Row = 0; Row < Rows.Num(); ++Row)
+	{
+		RPGUI::Label(C, 1, Rows[Row].Key, 24, 96 + Row * 30, 15, RPGUI::TextSub);
+		RPGUI::Label(C, 1, Rows[Row].Value, 250, 96 + Row * 30, 15, RPGUI::TextMain, ETextAlign::Right, TEXT("Bold"));
+	}
+	// The bosses.
+	RPGUI::Section(C, 1, TEXT("ボス"), 24, 226, 240);
+	const TCHAR* Bosses[] = {TEXT("暴走マグロ"), TEXT("シマエナガ"), TEXT("ほたる沼の主"), TEXT("砂に眠る巨兵"), TEXT("火口の番人"), TEXT("石柱の王"), TEXT("伝説の投手")};
+	for (int32 Boss = 0; Boss < 7; ++Boss)
+	{
+		const bool bBeaten = (P->GetBossesBeaten() & (1 << Boss)) != 0;
+		RPGUI::Label(C, 1, bBeaten ? Bosses[Boss] : TEXT("？？？"), 24, 254 + Boss * 24, 14, bBeaten ? RPGUI::Good : RPGUI::TextDim);
+		if (bBeaten) { RPGUI::Label(C, 1, TEXT("撃破"), 250, 254 + Boss * 24, 13, RPGUI::Good, ETextAlign::Right); }
+	}
+	// Places found (a page of them; ↑↓ scrolls).
+	const float PX = 290, PW = QuestW - PX - 18;
+	RPGUI::Section(C, 1, TEXT("土地"), PX, 66, PW);
+	const int32 PerPage = 14;
+	const int32 First = FMath::Clamp(P->LogScroll, 0, FMath::Max(0, Places.Num() - PerPage));
+	for (int32 Row = 0; Row < PerPage && First + Row < Places.Num(); ++Row)
+	{
+		const FString& Place = Places[First + Row];
+		const bool bFound = P->VisitedPlaces.ContainsByPredicate([&](const FString& V) { return V.StartsWith(Place); });
+		const float Y = 94 + Row * 22;
+		RPGUI::Label(C, 1, bFound ? Place : FString(TEXT("？？？")), PX + 6, Y, 14, bFound ? RPGUI::TextMain : RPGUI::TextDim);
+		if (bFound) { RPGUI::Label(C, 1, TEXT("発見"), PX + PW / 2 - 10, Y, 12, RPGUI::Good, ETextAlign::Right); }
+	}
+	// The colony.
+	const int32 Stage = RPGColony::StageFor(P->ColonyPoints);
+	const float CY = 410;
+	RPGUI::Label(C, 1, FString::Printf(TEXT("コロニー：%s"), RPGColony::StageName(RPGColony::WorldStage(World))), PX + PW / 2 + 10, 94, 15, RPGUI::Highlight, ETextAlign::Left, TEXT("Bold"));
+	const int32 Next = Stage < RPGColony::MaxStage ? RPGColony::StagePoints[Stage + 1] : RPGColony::StagePoints[RPGColony::MaxStage];
+	RPGUI::Label(C, 1, Stage < RPGColony::MaxStage ? FString::Printf(TEXT("発展 %d / %d"), P->ColonyPoints, Next) : FString(TEXT("これ以上ない発展")), PX + PW / 2 + 10, 120, 13, RPGUI::TextSub);
+	ProgressBar(C, 1, PX + PW / 2 + 10, 142, PW / 2 - 20, 6, Stage < RPGColony::MaxStage ? static_cast<float>(P->ColonyPoints - RPGColony::StagePoints[Stage]) / FMath::Max(1, Next - RPGColony::StagePoints[Stage]) : 1.0f, RPGUI::Highlight);
+	for (int32 Gift = 1; Gift <= RPGColony::MaxStage; ++Gift)
+	{ RPGUI::Wrap(C, 1, FString::Printf(TEXT("%d. %s"), Gift, RPGColony::StageGift(Gift)), PX + PW / 2 + 10, 160 + (Gift - 1) * 44, PW / 2 - 24, 12, Gift <= Stage ? RPGUI::Good : RPGUI::TextDim, 2, 17); }
+	RPGUI::Wrap(C, 1, TEXT("依頼の達成と、掲示板での寄付で発展する"), PX + PW / 2 + 10, CY - 2, PW / 2 - 24, 12, RPGUI::TextDim, 2, 17);
+	MenuHints(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("土地をめくる")}, {M.Key(TEXT("Esc"), TEXT("B")), TEXT("メニューへ")}});
+}
+
+/** Tutorials to read again (and the controls to do again). */
+void TutorialListLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
+{
+	const auto* P = M.P;
+	MenuFrame(C, TEXT("チュートリアル"), RPGUI::Good);
+	const auto& Lessons = RPGTutorial::Lessons();
+	const int32 PerPage = 9;
+	const int32 First = FMath::Clamp(P->TutorialSelection - PerPage / 2, 0, FMath::Max(0, Lessons.Num() - PerPage));
+	for (int32 Row = 0; Row < PerPage && First + Row < Lessons.Num(); ++Row)
+	{
+		const int32 Index = First + Row;
+		const auto& Lesson = Lessons[Index];
+		const bool bSeen = Lesson.Id == RPGTutorial::ControlsId || P->TutorialsDone.Contains(Lesson.Id);
+		const float Y = 70 + Row * 44;
+		const int32 Action = QuestAct::TutorialRowBase + Index;
+		const bool bOn = P->TutorialSelection == Index;
+		C.Hit(18, Y, 300, 40, Action);
+		RPGUI::Panel(C, 1, 18, Y, 300, 40, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card, bOn ? RPGUI::Good : FLinearColor::Transparent);
+		RPGUI::Label(C, 1, bSeen ? Lesson.Title : TEXT("（まだ出会っていない）"), 38, Y + 9, 16, bSeen ? RPGUI::TextMain : RPGUI::TextDim, ETextAlign::Left, TEXT("Bold"));
+	}
+	RPGUI::ScrollBar(C, 1, 324, 70, PerPage * 44 - 4, First, PerPage, Lessons.Num());
+	const auto& Chosen = Lessons[FMath::Clamp(P->TutorialSelection, 0, Lessons.Num() - 1)];
+	const bool bSeen = Chosen.Id == RPGTutorial::ControlsId || P->TutorialsDone.Contains(Chosen.Id);
+	const float X = 344, W = QuestW - X - 18;
+	RPGUI::Panel(C, 1, X, 70, W, 392, RPGUI::EStyle::Card, FLinearColor::Transparent);
+	RPGUI::Label(C, 1, bSeen ? Chosen.Title : TEXT("？？？"), X + 20, 84, 22, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
+	if (bSeen)
+	{
+		RPGUI::Wrap(C, 1, Chosen.Body, X + 20, 128, W - 40, 16, RPGUI::TextMain, 8, 26);
+		if (Chosen.TryKeyboard) { RPGUI::Wrap(C, 1, FString(TEXT("やってみよう：")) + (M.bPad ? Chosen.TryPad : Chosen.TryKeyboard), X + 20, 350, W - 40, 15, RPGUI::Good, 2, 22); }
+		RPGUI::Button(C, 1, X + W - 220, 406, 200, 44, Chosen.Id == RPGTutorial::ControlsId ? TEXT("もう一度やる") : TEXT("表示する"), QuestAct::Primary, true, true, M.Key(TEXT("Enter"), TEXT("A")));
+	}
+	else { RPGUI::Wrap(C, 1, TEXT("冒険の中で出会うと、ここで見返せるようになる。"), X + 20, 128, W - 40, 16, RPGUI::TextDim, 3, 26); }
+	MenuHints(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {M.Key(TEXT("Enter"), TEXT("A")), TEXT("見る・やる")}, {M.Key(TEXT("Esc"), TEXT("B")), TEXT("メニューへ")}});
+}
+
 void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 {
 	if (M.P->QuestGiver == ARPGPrototypeCharacter::TravelPanel) { TravelPanelLayout(C, M); return; }
+	if (M.P->QuestGiver == ARPGPrototypeCharacter::TrainingPanel) { TrainingPanelLayout(C, M); return; }
+	if (M.P->QuestGiver == ARPGPrototypeCharacter::MenuPanel) { AdventureMenuLayout(C, M); return; }
+	if (M.P->QuestGiver == ARPGPrototypeCharacter::LogPanel) { AdventureLogLayout(C, M); return; }
+	if (M.P->QuestGiver == ARPGPrototypeCharacter::TutorialPanel) { TutorialListLayout(C, M); return; }
 	if (M.P->QuestGiver == ARPGPrototypeCharacter::MembersPanel) { MembersPanelLayout(C, M); return; }
 	const auto* P = M.P;
 	const bool bJournal = P->QuestGiver < 0;
@@ -257,21 +495,22 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	RPGUI::Label(C, 1, bJournal ? TEXT("依頼の記録") : Giver->Name, 70, 12, 24, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
 	if (Giver) { RPGUI::Chip(C, 1, Giver->Role, 80 + RPGUI::Measure(Giver->Name, 24, TEXT("Black")), 18, RPGUI::TextSub, 13); }
 	RPGUI::Button(C, 1, QuestW - 60, 10, 44, 34, TEXT("×"), QuestAct::Close);
+	// The board takes gifts for the colony.
+	if (P->QuestGiver == 0) { RPGUI::Button(C, 1, QuestW - 290, 10, 220, 34, TEXT("寄付 ◆200"), QuestAct::Donate, false, P->GetRubies() >= 200, M.Key(TEXT("G"), TEXT("LB"))); }
 	const TArray<int32> List = P->QuestPanelList();
 	float ListTop = 66;
 	if (bJournal)
 	{
-		// Tabs: what you are doing, what you could take on, what is done.
-		const TCHAR* Tabs[] = {TEXT("進行中"), TEXT("受けられる"), TEXT("完了")};
-		int32 Counts[3] = {0, 0, 0};
+		// Tabs: what you are doing, and what is done (quests not taken on are shown by whoever offers them).
+		const TCHAR* Tabs[] = {TEXT("進行中"), TEXT("完了")};
+		int32 Counts[2] = {0, 0};
 		for (int32 Index = 0; Index < RPGQuests::Num(); ++Index)
 		{
 			const auto S = RPGQuests::State(P, Index);
 			if (S == ERPGQuestState::Active || S == ERPGQuestState::Ready) { ++Counts[0]; }
-			else if (S == ERPGQuestState::Offered || S == ERPGQuestState::Locked) { ++Counts[1]; }
-			else if (S == ERPGQuestState::Done) { ++Counts[2]; }
+			else if (S == ERPGQuestState::Done) { ++Counts[1]; }
 		}
-		for (int32 Tab = 0; Tab < 3; ++Tab)
+		for (int32 Tab = 0; Tab < 2; ++Tab)
 		{
 			const float X = 18 + Tab * 128;
 			const int32 Action = QuestAct::TabBase + Tab;
@@ -288,8 +527,8 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	const int32 At = FMath::Max(0, List.Find(P->QuestSelection)), First = FMath::Clamp(At - MaxRows + 1, 0, FMath::Max(0, List.Num() - MaxRows));
 	if (List.IsEmpty())
 	{
-		const FString Empty = Giver ? FString(Giver->Idle) : P->QuestTab == 0 ? FString(TEXT("進行中の依頼はありません。掲示板や人に話しかけてみよう。"))
-			: P->QuestTab == 1 ? FString(TEXT("受けられる依頼はありません。")) : FString(TEXT("まだ完了した依頼はありません。"));
+		const FString Empty = Giver ? FString(Giver->Idle) : P->QuestTab == 0 ? FString(TEXT("進行中の依頼はありません。掲示板や「！」の人に話しかけてみよう。"))
+			: FString(TEXT("まだ完了した依頼はありません。"));
 		RPGUI::Wrap(C, 1, Empty, 40, ListTop + 30, QuestW - 80, 18, RPGUI::TextSub, 3, 28);
 	}
 	for (int32 Row = 0; Row < MaxRows && First + Row < List.Num(); ++Row)
@@ -305,13 +544,14 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		RPGUI::Panel(C, 1, ListX, Y, ListW, RowH - 6, bOn ? RPGUI::EStyle::Selected : C.IsHovered(Action) ? RPGUI::EStyle::Hover : RPGUI::EStyle::Card,
 			bOn ? RPGUI::Highlight : FLinearColor::Transparent, RPGQuests::KindColor(D.Kind));
 		// Name on its own line (full width); kind, progress and state below it.
-		RPGUI::Label(C, 1, RPGUI::Fit(S == ERPGQuestState::Locked ? FString(TEXT("？？？")) : FString(D.Name), ListW - 32, 17), ListX + 18, Y + 2, 17,
-			S == ERPGQuestState::Done || S == ERPGQuestState::Locked ? RPGUI::TextDim : RPGUI::TextMain);
+		RPGUI::LabelFit(C, 1, S == ERPGQuestState::Locked ? FString(TEXT("？？？")) : FString(D.Name), ListX + 18, Y + 2, ListW - 32, 17, S == ERPGQuestState::Done || S == ERPGQuestState::Locked ? RPGUI::TextDim : RPGUI::TextMain);
 		float ChipRight = ListX + ListW - 14;
 		ChipRight -= RPGUI::Chip(C, 1, StateName(S), ChipRight, Y + 26, StateColor(S), 10, S == ERPGQuestState::Ready, ETextAlign::Right) + 4;
 		if (P->TrackedQuest == Index) { ChipRight -= RPGUI::Chip(C, 1, TEXT("追跡"), ChipRight, Y + 26, RPGUI::Cyan, 10, false, ETextAlign::Right) + 4; }
-		const FString Sub = S == ERPGQuestState::Locked ? RPGQuests::UnlockHint(Index) : S == ERPGQuestState::Active ? RPGQuests::Progress(P, Index) : RPGQuests::KindName(D.Kind);
-		RPGUI::Label(C, 1, RPGUI::Fit(Sub, ChipRight - ListX - 22, 12), ListX + 18, Y + 28, 12, RPGUI::TextSub);
+		FString Sub = S == ERPGQuestState::Locked ? RPGQuests::UnlockHint(Index) : S == ERPGQuestState::Active ? RPGQuests::Progress(P, Index) : RPGQuests::KindName(D.Kind);
+		// Too long for the row: the count alone (the panel beside it has the whole objective).
+		if (S == ERPGQuestState::Active && !RPGUI::Fits(Sub, ChipRight - ListX - 22, 12)) { Sub = FString::Printf(TEXT("進み具合 %d / %d"), P->Quests[Index].Count, D.Goal); }
+		RPGUI::LabelFit(C, 1, Sub, ListX + 18, Y + 28, ChipRight - ListX - 22, 12, RPGUI::TextSub);
 	}
 	// The selected quest.
 	const float DX = 306, DW = QuestW - DX - 18, DY = 66;
@@ -324,7 +564,9 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		float ChipX = DX;
 		ChipX += RPGUI::Chip(C, 1, RPGQuests::KindName(D.Kind), ChipX, Y, RPGQuests::KindColor(D.Kind), 13, true) + 6;
 		ChipX += RPGUI::Chip(C, 1, StateName(S), ChipX, Y, StateColor(S), 13) + 8;
-		RPGUI::Label(C, 1, RPGUI::Fit(RPGQuests::SourceText(Index), DX + DW - ChipX, 13), ChipX, Y + 3, 13, RPGUI::TextDim);
+		const FString Source = RPGQuests::SourceText(Index);
+		if (RPGUI::Fits(Source, DX + DW - ChipX, 13)) { RPGUI::LabelFit(C, 1, Source, ChipX, Y + 3, DX + DW - ChipX, 13, RPGUI::TextDim); }
+		else { RPGUI::LabelFit(C, 1, Source, DX, Y + 27, DW, 13, RPGUI::TextDim); Y += 22; }
 		Y += 30;
 		RPGUI::Label(C, 1, S == ERPGQuestState::Locked ? FString(TEXT("？？？")) : FString(D.Name), DX, Y, 26, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
 		Y += 44;
@@ -396,7 +638,7 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		RPGUI::DialogVeil(C, 7, 5, QuestW - 14, QuestH - 10);
 		RPGUI::Panel(C, 2, QuestW * 0.5f - 260, QuestH * 0.5f - 90, 520, 180, RPGUI::EStyle::Panel, RPGUI::Highlight);
 		RPGUI::Label(C, 2, FString::Printf(TEXT("「%s」を受けますか？"), RPGQuests::Get(P->QuestSelection).Name), QuestW * 0.5f, QuestH * 0.5f - 66, 21, RPGUI::TextMain, ETextAlign::Center);
-		RPGUI::Label(C, 2, RPGUI::Fit(FString(TEXT("報酬：")) + RPGQuests::RewardText(P->QuestSelection), 480, 15), QuestW * 0.5f, QuestH * 0.5f - 28, 15, RPGUI::TextSub, ETextAlign::Center);
+		RPGUI::LabelFit(C, 2, FString(TEXT("報酬：")) + RPGQuests::RewardText(P->QuestSelection), QuestW * 0.5f, QuestH * 0.5f - 28, 480, 15, RPGUI::TextSub, ETextAlign::Center);
 		RPGUI::Button(C, 2, QuestW * 0.5f - 236, QuestH * 0.5f + 20, 220, 46, TEXT("やめておく"), QuestAct::ConfirmNo, false, true, M.Key(TEXT("Esc"), TEXT("戻る")));
 		RPGUI::Button(C, 2, QuestW * 0.5f + 16, QuestH * 0.5f + 20, 220, 46, TEXT("受ける"), QuestAct::ConfirmYes, true, true, M.Key(TEXT("Enter"), TEXT("決定")));
 		C.bInModal = false;
@@ -422,6 +664,23 @@ FGeometry URPGPrototypeHUD::QuestPanelGeometry(const FGeometry& Geometry) const
 	return ChaosImpactPaint::MakeAnchor(Area,(Size.X-QuestW*Scale)*.5f,Size.Y-QuestH*Scale-12+(QuestH*Scale+24)*(1-Reveal),Scale);
 }
 
+void URPGPrototypeHUD::PaintAdventureMap(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer,float Time) const
+{
+	const auto* Player=Cast<ARPGPrototypeCharacter>(GetOwningPlayerPawn()); const auto* PC=Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if(!Player || !PC || !ARPGAdventureWorld::Find(GetWorld()) || Player->IsQuestMenuOpen() || Player->IsInTitle() || (Player->IsBagOpen() && !Player->UsesMiniMenu())) { return; }
+	const FVector2D Size=OwnerMenuGeometry(Geometry).GetLocalSize(); const bool Split=GetGameInstance() && GetGameInstance()->GetLocalPlayers().Num()>1;
+	const float Scale=FMath::Min(Size.X/(Split?960.0f:1280.0f),Size.Y/(Split?600.0f:720.0f)); if(Scale<=0) { return; }
+	const float W=Size.X/Scale,H=Size.Y/Scale;
+	const FGeometry Design=ChaosImpactPaint::MakeAnchor(OwnerMenuGeometry(Geometry),0,0,Scale);
+	if(Player->IsMapOpen()) { RPGMap::PaintFull(Design,Elements,Layer+20,W,H,Player,Time,PC->IsUsingGamepad()); return; }
+	if(Player->GetMapMode()==ARPGPrototypeCharacter::MapNearby) { RPGMap::PaintNearby(Design,Elements,Layer,W,H,Player,Time,PC->IsUsingGamepad()); return; }
+	// A shared screen: one minimap (player 1's), every player on it.
+	const auto* Mode=GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>();
+	if(Mode && Mode->UsesSharedScreen() && Player->GetLocalRPGIndex()!=0) { return; }
+	if(Player->IsBagOpen()) { return; }
+	RPGMap::PaintMini(Design,Elements,Layer,W,H,Player,Time,PC->IsUsingGamepad());
+}
+
 void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer,float Time) const
 {
 	const auto* Player=Cast<ARPGPrototypeCharacter>(GetOwningPlayerPawn()); const auto* World=ARPGAdventureWorld::Find(GetWorld());
@@ -433,16 +692,50 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 	const FGeometry Design=ChaosImpactPaint::MakeAnchor(OwnerMenuGeometry(Geometry),0,0,Scale);
 	RPGUI::FCanvas C; C.Geometry=&Design; C.Elements=&Elements; C.Layer=Layer+3; C.Time=Time;
 	const double Now=GetWorld()->GetTimeSeconds();
-	if(!Player->IsQuestMenuOpen())
+	// A storm over this player: snow or sand blowing along the top and bottom edges (never over the middle).
+	if(!Player->IsMapOpen() && C.IsPainting() && ARPGFieldEvents::IsStormAt(GetWorld(),Player->GetActorLocation()))
 	{
-		HudText3D(C.At(0,6),World->RegionName(Player->GetActorLocation()),22,18,25,RPGUI::TextMain,ETextAlign::Left,TEXT("Bold"));
+		const ARPGFieldEvents* Events=ARPGFieldEvents::Find(GetWorld());
+		const bool bSnow=Events && Events->GetTitle()==TEXT("吹雪");
+		// A haze round the edges (blue-white, or dusty brown that shows on sand) and lighter streaks blowing through it.
+		const FLinearColor Dust=bSnow?FLinearColor(.8f,.87f,1.0f,1):FLinearColor(.55f,.36f,.17f,1);
+		const FLinearColor Streak=bSnow?FLinearColor(1,1,1,1):FLinearColor(1.0f,.9f,.7f,1);
+		FPainter Veil=C.At(0,0);
+		for(int32 Ring=0;Ring<8;++Ring)
+		{
+			const float In=Ring*16.0f; Veil.Alpha=.42f*FMath::Square((8-Ring)/8.0f);
+			Veil.Box(In,In,W-In*2,16,Dust); Veil.Box(In,H-In-16,W-In*2,16,Dust);
+			Veil.Box(In,In+16,16,H-In*2-32,Dust); Veil.Box(W-In-16,In+16,16,H-In*2-32,Dust);
+		}
+		Veil.Alpha=.7f;
+		for(int32 I=0;I<40;++I)
+		{
+			const float Speed=(bSnow?150.0f:260.0f)*(1+(I%3)*.35f);
+			const float X=FMath::Fmod(I*517.3f+static_cast<float>(Now)*Speed,W+200)-100;
+			const float Band=FMath::Fmod(I*71.9f,H*.2f);
+			const float Y=I%2?Band:H-Band;
+			Veil.Line(FVector2D(X,Y),FVector2D(X+(bSnow?10.0f:42.0f),Y+(bSnow?6.0f:3.0f)),Streak,bSnow?3.5f:2.5f);
+		}
+	}
+	// (The whole map covers all of this while it is open.)
+	if(!Player->IsQuestMenuOpen() && !Player->IsMapOpen())
+	{
+		const FString Here=World->RegionName(Player->GetActorLocation());
+		HudText3D(C.At(0,6),Here,22,18,25,RPGUI::TextMain,ETextAlign::Left,TEXT("Bold"));
+		// A field event going on: what, and how long it has left (beside the place's name).
+		if(const ARPGFieldEvents* Events=ARPGFieldEvents::Find(GetWorld()); Events && Events->GetKind()!=ARPGFieldEvents::None)
+		{
+			const int32 Left=FMath::CeilToInt(Events->GetSecondsLeft());
+			const bool bHere=ARPGFieldEvents::IsStormAt(GetWorld(),Player->GetActorLocation());
+			RPGUI::Label(C,1,FString::Printf(TEXT("★ %s %d:%02d"),*Events->GetTitle(),Left/60,Left%60),22+RPGUI::Measure(Here,25)+18,24,16,bHere?RPGUI::Bad:RPGUI::Highlight,ETextAlign::Left,TEXT("Bold"));
+		}
 		// Journal shortcut (clickable) and up to three active quests, the tracked one first.
 		const float ChipW=RPGUI::Keycap(C,1,bPad?TEXT("↓"):TEXT("J"),22,58,24);
 		RPGUI::Label(C,1,TEXT("依頼の記録"),22+ChipW+6,58,16,RPGUI::TextSub);
 		const float TravelChipW=RPGUI::Keycap(C,1,bPad?TEXT("→"):TEXT("M"),180,58,24);
-		RPGUI::Label(C,1,TEXT("ファストトラベル"),180+TravelChipW+6,58,16,RPGUI::TextSub);
-		const float MembersChipW=RPGUI::Keycap(C,1,bPad?TEXT("←"):TEXT("O"),360,58,24);
-		RPGUI::Label(C,1,TEXT("マルチ"),360+MembersChipW+6,58,16,RPGUI::TextSub);
+		RPGUI::Label(C,1,TEXT("マップ"),180+TravelChipW+6,58,16,RPGUI::TextSub);
+		const float MembersChipW=RPGUI::Keycap(C,1,bPad?TEXT("←"):TEXT("O"),290,58,24);
+		RPGUI::Label(C,1,TEXT("マルチ"),290+MembersChipW+6,58,16,RPGUI::TextSub);
 		TArray<int32> Shown;
 		if(Player->TrackedQuest!=INDEX_NONE) { const auto S=RPGQuests::State(Player,Player->TrackedQuest); if(S==ERPGQuestState::Active || S==ERPGQuestState::Ready) { Shown.Add(Player->TrackedQuest); } }
 		for(int32 Index=0;Index<RPGQuests::Num() && Shown.Num()<3;++Index)
@@ -452,16 +745,66 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 			const int32 Index=Shown[Row]; const auto& D=RPGQuests::Get(Index); const auto S=RPGQuests::State(Player,Index);
 			const float Y=90+Row*62;
 			RPGUI::Panel(C,0,22,Y,310,54,RPGUI::EStyle::Card,Index==Player->TrackedQuest?RPGUI::Highlight:FLinearColor::Transparent,RPGQuests::KindColor(D.Kind));
-			RPGUI::Label(C,0,RPGUI::Fit(D.Name,230,16),40,Y+3,16,RPGUI::TextMain);
+			RPGUI::LabelFit(C,0,D.Name,40,Y+3,230,16,RPGUI::TextMain);
 			RPGUI::Chip(C,0,RPGQuests::KindName(D.Kind),318,Y+5,RPGQuests::KindColor(D.Kind),10,false,ETextAlign::Right);
 			const auto& Q=Player->Quests[Index];
-			if(S==ERPGQuestState::Ready) { RPGUI::Label(C,0,RPGUI::Fit(RPGQuests::Progress(Player,Index),280,13),40,Y+29,13,RPGUI::Good); }
+			if(S==ERPGQuestState::Ready) { RPGUI::LabelFit(C,0,RPGQuests::Progress(Player,Index),40,Y+29,280,13,RPGUI::Good); }
 			else
 			{
-				RPGUI::Label(C,0,RPGUI::Fit(FString::Printf(TEXT("%s"),D.Objective),200,13),40,Y+27,13,RPGUI::TextSub);
+				RPGUI::LabelFit(C,0,FString::Printf(TEXT("%s"),D.Objective),40,Y+27,200,13,RPGUI::TextSub);
 				RPGUI::Label(C,0,FString::Printf(TEXT("%d/%d"),Q.Count,D.Goal),318,Y+27,13,RPGUI::Highlight,ETextAlign::Right);
 				ProgressBar(C,0,40,Y+45,278,4,static_cast<float>(Q.Count)/FMath::Max(1,D.Goal),RPGQuests::KindColor(D.Kind));
 			}
+		}
+		// The tutorial: a step of the controls, or a lesson (bottom middle, out of the fight's way).
+		{
+			const int32 Step=Player->GetControlsStep();
+			const auto* Lesson=RPGTutorial::FindLesson(Player->GetActiveLesson());
+			const auto& Steps=RPGTutorial::ControlsSteps();
+			if((Step>=0 && Steps.IsValidIndex(Step)) || Lesson)
+			{
+				RPGUI::FCanvas T=C; T.Layer=Layer+24;
+				const bool bDone=Player->IsTutorialDoneShown();
+				// Bottom left, above the health bar: out of the middle of the field (the hero stands there).
+				const float CW=460,CX=22;
+				FString Head,Title,Body,Try;
+				if(Step>=0) { Head=FString::Printf(TEXT("操作チュートリアル  %d / %d"),Step+1,Steps.Num()); Title=Steps[Step].Title; Try=bPad?Steps[Step].PadText:Steps[Step].KeyboardText; }
+				else { Head=TEXT("チュートリアル"); Title=Lesson->Title; Body=Lesson->Body; if(Lesson->TryKeyboard) { Try=FString(TEXT("やってみよう："))+(bPad?Lesson->TryPad:Lesson->TryKeyboard); } }
+				const int32 BodyLines=Body.IsEmpty()?0:FMath::Min(5,RPGUI::WrapLines(Body,CW-40,14).Num());
+				const int32 TryLines=Try.IsEmpty()?0:FMath::Min(2,RPGUI::WrapLines(Try,CW-110,16).Num());
+				const float CH=60+BodyLines*20+TryLines*24+30;
+				const float CY=H-176-CH;
+				RPGUI::Panel(T,0,CX,CY,CW,CH,RPGUI::EStyle::Card,bDone?RPGUI::Good:RPGUI::Cyan,bDone?RPGUI::Good:RPGUI::Cyan);
+				RPGUI::Label(T,0,Head,CX+18,CY+8,12,RPGUI::Cyan,ETextAlign::Left,TEXT("Bold"));
+				RPGUI::Label(T,0,Title,CX+18,CY+26,20,RPGUI::TextMain,ETextAlign::Left,TEXT("Black"));
+				float TY=CY+58;
+				if(BodyLines) { RPGUI::Wrap(T,0,Body,CX+18,TY,CW-40,14,RPGUI::TextSub,5,20); TY+=BodyLines*20; }
+				if(TryLines)
+				{
+					RPGUI::Wrap(T,0,Try,CX+18,TY+2,CW-110,16,bDone?RPGUI::Good:RPGUI::Highlight,2,24);
+					if(bDone) { RPGUI::Label(T,0,TEXT("できた！"),CX+CW-18,TY+2,18,RPGUI::Good,ETextAlign::Right,TEXT("Black")); }
+					TY+=TryLines*24;
+				}
+				const FString Skip=Step>=0?FString(bPad?TEXT("L3 で次へ・長押しで終わる"):TEXT("Backspace で次へ・長押しで終わる"))
+					:FString(bPad?TEXT("L3 で閉じる（メニューで見返せる）"):TEXT("Backspace で閉じる（メニューで見返せる）"));
+				RPGUI::Label(T,0,Skip,CX+CW-18,CY+CH-22,12,RPGUI::TextDim,ETextAlign::Right);
+				// Where the controls are up to.
+				if(Step>=0 && T.IsPainting()) { FPainter Dots=T.At(0,4); for(int32 I=0;I<Steps.Num();++I) { Dots.Disc(FVector2D(CX+22+I*14,CY+CH-14),4,I<Step?RPGUI::Good:I==Step?RPGUI::Cyan:RPGUI::TextDim); } }
+			}
+		}
+		// A new place: its name for a moment, and how strong its enemies are.
+		const float CardAge=Now-Player->PlaceCardAt;
+		if(CardAge>=0 && CardAge<3.6f && !Player->PlaceCardName.IsEmpty() && C.IsPainting())
+		{
+			const float Alpha=FMath::Clamp(FMath::Min(CardAge*3,(3.6f-CardAge)*1.5f),0.0f,1.0f);
+			RPGUI::FCanvas Card=C; Card.Layer=Layer+22;
+			FPainter Words=Card.At(0,6); Words.Alpha=Alpha;
+			const float CY=12;  // top middle: above the quest banner and the notice, clear of the field
+			Words.Text(TEXT("新しい土地"),W*.5f,CY,14,RPGUI::Highlight,ETextAlign::Center,TEXT("Bold"),2,Navy);
+			Words.Text(Player->PlaceCardName,W*.5f,CY+20,30,RPGUI::TextMain,ETextAlign::Center,TEXT("Black"),3,Navy);
+			Words.Text(Player->PlaceCardLevel>0?FString::Printf(TEXT("推奨 Lv.%d"),Player->PlaceCardLevel):FString(TEXT("おだやかな場所")),W*.5f,CY+64,15,
+				Player->PlaceCardLevel>Player->GetRPGLevel()+2?RPGUI::Bad:RPGUI::TextSub,ETextAlign::Center,TEXT("Bold"),2,Navy);
+			FPainter Rule=Card.At(0,4); Rule.Alpha=Alpha*.8f; Rule.Box(W*.5f-170,CY+58,340,2,RPGUI::Highlight);
 		}
 		// A short banner when a quest is found, taken on or finished. Below the boss bar, never over the middle.
 		const float BannerAge=Now-Player->QuestBannerAt;
@@ -477,7 +820,8 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 				HudShard(Fade,{FVector2D(BX+10,BY),FVector2D(BX+BW,BY),FVector2D(BX+BW-10,BY+64),FVector2D(BX,BY+64)},RPGUI::StyleFill(RPGUI::EStyle::Card),2,FVector2D(3,4));
 				FPainter Text=B.At(0,6); Text.Alpha=Alpha;
 				Text.Text(Player->QuestBannerLabel,BX+28,BY+8,14,Player->QuestBannerLabel.Contains(TEXT("達成"))?RPGUI::Good:RPGUI::Highlight,ETextAlign::Left,TEXT("Bold"));
-				Text.Text(RPGUI::Fit(D.Name,BW-150,22),BX+28,BY+28,22,RPGUI::TextMain,ETextAlign::Left,TEXT("Bold"));
+				const float NameSize=RPGUI::FitSize(D.Name,BW-150,22);
+				Text.Text(RPGUI::Fit(D.Name,BW-150,NameSize),BX+28,BY+28+(22-NameSize)*.45f,NameSize,RPGUI::TextMain,ETextAlign::Left,TEXT("Bold"));
 				Text.Text(Player->QuestBannerLabel.Contains(TEXT("話"))?FString(bPad?TEXT("↓ で確認"):TEXT("J で確認")):RPGQuests::KindName(D.Kind),BX+BW-24,BY+34,15,RPGUI::TextSub,ETextAlign::Right,TEXT("Bold"));
 				FPainter Edge=B.At(0,3); Edge.Alpha=Alpha; Edge.Box(BX+10,BY+1,BW-12,2,RPGQuests::KindColor(D.Kind));
 			}
@@ -490,9 +834,14 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 			{
 				RPGUI::FCanvas Hint=C; Hint.Layer=Layer+8;
 				const FString Line=TEXT("近くの仲間に長押しで起こしてもらおう");
-				const float HW=RPGUI::Measure(Line,19)+60;
-				RPGUI::Panel(Hint,0,W*.5f-HW*.5f,H-285,HW,46,RPGUI::EStyle::Card,RPGUI::Bad,RPGUI::Bad);
+				const FString GiveUp=Use+TEXT(" 長押しで 復活地点からやりなおす");
+				const float HW=FMath::Max(RPGUI::Measure(Line,19),RPGUI::Measure(GiveUp,16))+60;
+				RPGUI::Panel(Hint,0,W*.5f-HW*.5f,H-285,HW,72,RPGUI::EStyle::Card,RPGUI::Bad,RPGUI::Bad);
 				RPGUI::Label(Hint,0,Line,W*.5f,H-275,19,RPGUI::TextMain,ETextAlign::Center);
+				RPGUI::Label(Hint,0,GiveUp,W*.5f,H-249,16,RPGUI::TextSub,ETextAlign::Center);
+				// The hold fills a bar under it.
+				if(const float Progress=FMath::Clamp(Player->GetGiveUpProgress(),0.0f,1.0f); Progress>0)
+				{ FPainter Bar=Hint.At(0,1); Bar.Box(W*.5f-HW*.5f+12,H-221,(HW-24)*Progress,4,RPGUI::Highlight); }
 			}
 			else if(const auto* Chest=ARPGTreasureChest::Nearest(Player)) { AdventurePrompt(Design,Elements,Layer+8,W,H-285,Use,Chest->DisplayName+TEXT("を開ける"),RPGUI::Highlight); }
 			else if(const auto* Giver=ARPGQuestGiver::Nearest(Player)) { AdventurePrompt(Design,Elements,Layer+8,W,H-285,Use,FString(TEXT("話す："))+RPGQuests::Givers()[FMath::Clamp(Giver->GiverId,0,RPGQuests::Givers().Num()-1)].Name,RPGUI::Cyan); }
@@ -573,6 +922,30 @@ void URPGPrototypeHUD::ActivateAdventureAction(int32 Action)
 {
 	auto* Player=Cast<ARPGPrototypeCharacter>(GetOwningPlayerPawn()); if(!Player || !Player->IsQuestMenuOpen() || Action==0) { return; }
 	if(Player->IsMembersOpen()) { if(Action==QuestAct::Close) { Player->SetQuestMenuOpen(false); } return; }
+	if(Player->IsAdventureMenuOpen())
+	{
+		if(Action==QuestAct::Close) { Player->SetQuestMenuOpen(false); return; }
+		if(Action>=QuestAct::MenuRowBase && Action<QuestAct::MenuRowBase+RPGTutorial::MenuEntries().Num())
+		{ const int32 Entry=Action-QuestAct::MenuRowBase; if(Player->MenuSelection==Entry) { Player->ActivateMenuEntry(Entry); } else { Player->MenuSelection=Entry; } return; }
+		if(Action>=QuestAct::TutorialRowBase && Action<QuestAct::TutorialRowBase+RPGTutorial::Lessons().Num())
+		{
+			const int32 Entry=Action-QuestAct::TutorialRowBase;
+			if(Player->TutorialSelection==Entry) { Player->HandleMenuKey(EKeys::Enter); } else { Player->TutorialSelection=Entry; }
+			return;
+		}
+		if(Action==QuestAct::Primary) { Player->HandleMenuKey(EKeys::Enter); }
+		return;
+	}
+	if(Action==QuestAct::Donate) { Player->DonateToColony(); return; }
+	if(Player->IsTrainingOpen())
+	{
+		if(Action==QuestAct::Close) { Player->SetQuestMenuOpen(false); return; }
+		if(Action==QuestAct::Primary) { Player->LearnSkill(Player->TrainingSelection); return; }
+		// A second click on the chosen lesson learns it.
+		if(Action>=QuestAct::SkillRowBase && Action<QuestAct::SkillRowBase+2)
+		{ const int32 Which=Action-QuestAct::SkillRowBase; if(Player->TrainingSelection==Which) { Player->LearnSkill(Which); } else { Player->TrainingSelection=Which; } }
+		return;
+	}
 	if(Player->IsTravelOpen())
 	{
 		if(Action==QuestAct::Close) { Player->SetQuestMenuOpen(false); return; }
@@ -600,7 +973,7 @@ void URPGPrototypeHUD::ActivateAdventureAction(int32 Action)
 		else { Player->QuestSelection=Action-QuestAct::RowBase; }
 		return;
 	}
-	if(Action>=QuestAct::TabBase && Action<QuestAct::TabBase+3) { Player->SetQuestTab(Action-QuestAct::TabBase); return; }
+	if(Action>=QuestAct::TabBase && Action<QuestAct::TabBase+2) { Player->SetQuestTab(Action-QuestAct::TabBase); return; }
 	if(Action==QuestAct::Primary) { Player->RequestQuestPrimary(); return; }
 	if(Action==QuestAct::Track) { Player->ToggleQuestTrack(Player->QuestSelection); }
 }

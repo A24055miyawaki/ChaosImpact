@@ -5,6 +5,7 @@
 #include "ChaosImpactSimaeBossFx.generated.h"
 
 class AChaosImpactBall;
+class AChaosImpactCharacter;
 class AChaosImpactFxKit;
 class AChaosImpactSimaeBoss;
 class UAudioComponent;
@@ -32,7 +33,9 @@ namespace ChaosImpactSimaeFx
 
 	/**
 	 * Online (the RPG sets NetHook; empty everywhere else): a host's warnings, blasts and flames, sent to its guests'
-	 * screens. Kind: 0 circle, 1 lane, 2 blast, 3 flames, 4 a lane re-aimed, 5 a warning gone off.
+	 * screens. Kind: 0 circle, 1 lane, 2 blast, 3 flames, 4 a lane re-aimed, 5 a warning gone off, 6 a falling snowball,
+	 * 7 a goukyu's wind, 8 snow powder (bFlag: a burst), 9 a camera shake, 10 a sound, 11 the boss's clip, 12 its change
+	 * into full power, 13 its aura's strength, 14 its defeat.
 	 */
 	struct FNetFx
 	{
@@ -46,6 +49,19 @@ namespace ChaosImpactSimaeFx
 		FLinearColor Color = FLinearColor::Red;
 	};
 	extern TFunction<void(UWorld*, const FNetFx&)> NetHook;
+	/** Sends one to the guests (a host only, while NetHook is set and nothing is muting it). */
+	CHAOSIMPACT_API void SendFx(UWorld* World, const FNetFx& Fx);
+	/**
+	 * While one of these lives nothing is sent: a guest makes that part itself (a snowball's landing, the change into
+	 * full power), so the host's own pieces of it would only be doubled.
+	 */
+	struct CHAOSIMPACT_API FNetFxMute
+	{
+		FNetFxMute();
+		~FNetFxMute();
+	};
+	/** Online: a boss's hit on someone whose own machine moves them (the RPG sends it there). */
+	extern TFunction<void(AChaosImpactCharacter*, const FVector& Knockback, bool bDropBalls)> StrikeHook;
 }
 
 /** A warning laid on the ground: a circle that fills up, or a lane with arrows running along it, until it goes off. */

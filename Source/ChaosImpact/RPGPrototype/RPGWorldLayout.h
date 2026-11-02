@@ -11,12 +11,13 @@
  */
 namespace RPGWorld
 {
-enum class ESurface : uint8 { Grass, Dirt, Pavers, Sand, Cave, Moss };
+enum class ESurface : uint8 { Grass, Dirt, Pavers, Sand, Cave, Moss, Snow };
 
-struct FRoad { TArray<FVector> Points; float Width=600; ESurface Path=ESurface::Dirt; const TCHAR* Region=TEXT(""); };
-struct FArea { FName Id; FVector At; FVector2D Radius; ESurface Fill=ESurface::Grass; const TCHAR* Region=TEXT(""); };
+/** Part: 0 the first map, 1 the lands added in 2026-11 (the editor's ExtendLevel builds only those into the level). */
+struct FRoad { TArray<FVector> Points; float Width=600; ESurface Path=ESurface::Dirt; const TCHAR* Region=TEXT(""); uint8 Part=0; };
+struct FArea { FName Id; FVector At; FVector2D Radius; ESurface Fill=ESurface::Grass; const TCHAR* Region=TEXT(""); uint8 Part=0; };
 /** Rock standing up out of the gorge or the ground, Top high: never walkable (its sides are cliffs). */
-struct FRock { FVector2D At; FVector2D Radius; float Top=0; };
+struct FRock { FVector2D At; FVector2D Radius; float Top=0; uint8 Part=0; };
 /** A gorge cut across land (a river far below); roads cross it on bridges. */
 struct FGap { TArray<FVector2D> Points; float Width=600; };
 struct FBridge { FVector At; float Yaw=0; float Length=0; float Width=0; };
@@ -28,7 +29,9 @@ struct FSample
 	bool bLand=false;
 	/** How far inside walkable ground (negative outside). */
 	float Inside=0;
-	float Dirt=0, Pavers=0, Sand=0, Cave=0, Moss=0;
+	float Dirt=0, Pavers=0, Sand=0, Cave=0, Moss=0, Snow=0;
+	/** Regional colour: cinders round the volcano, dry grass round the desert, the marsh's dark wet green. */
+	float Ash=0, Dry=0, Marsh=0;
 };
 
 const TArray<FRoad>& Roads();
@@ -48,10 +51,12 @@ const FArea* FindArea(FName Id);
 FString RegionAt(const FVector& At);
 bool IsCave(float X, float Y);
 bool IsSea(float X, float Y);
+/** Which part of the map the walkable ground nearest a point belongs to (FArea::Part). */
+uint8 PartAt(float X, float Y);
 /** Distance from a point to the nearest road's centre line (and that road's half width). */
 float RoadDistance(float X, float Y, float* HalfWidth=nullptr, FVector* Nearest=nullptr);
 
-constexpr float MinX=-12000, MaxX=44000, MinY=-15200, MaxY=14400;
+constexpr float MinX=-12000, MaxX=44000, MinY=-15200, MaxY=38000;
 constexpr float VoidHeight=-900;
 constexpr float SeaLevel=-70;
 constexpr float RiverLevel=-760;

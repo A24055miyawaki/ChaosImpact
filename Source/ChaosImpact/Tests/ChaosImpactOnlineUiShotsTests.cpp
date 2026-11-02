@@ -53,10 +53,11 @@ namespace
 				return false;
 			}
 			static const EChaosImpactScreen Screens[] = {EChaosImpactScreen::VSSelect, EChaosImpactScreen::OnlinePlayers,
+				EChaosImpactScreen::MultiReady, EChaosImpactScreen::OnlinePrivate, EChaosImpactScreen::OnlineRecord,
 				EChaosImpactScreen::OnlineName, EChaosImpactScreen::OnlinePassword, EChaosImpactScreen::OnlineRoomName,
 				EChaosImpactScreen::RoomList, EChaosImpactScreen::OnlineStatus};
-			static const TCHAR* Names[] = {TEXT("1_VSSelect"), TEXT("2_Players"), TEXT("3_Name"), TEXT("4_Password"),
-				TEXT("5_RoomName"), TEXT("6_RoomList"), TEXT("7_Status")};
+			static const TCHAR* Names[] = {TEXT("1_VSSelect"), TEXT("2_Players"), TEXT("2a_OnlineMenu"), TEXT("2b_Private"),
+				TEXT("2c_Record"), TEXT("3_Name"), TEXT("4_Password"), TEXT("5_RoomName"), TEXT("6_RoomList"), TEXT("7_Status")};
 			if (Index == 0 && !bShown && Now - StartedAt < 4.0)
 			{
 				return false;
@@ -67,7 +68,15 @@ namespace
 			}
 			if (!bShown)
 			{
-				PC->ShowMenuScreen(Screens[Index]);
+				// (戦績 asks the relay for the latest, as the menu does.)
+				if (Screens[Index] == EChaosImpactScreen::OnlineRecord)
+				{
+					PC->OpenOnlineRecord();
+				}
+				else
+				{
+					PC->ShowMenuScreen(Screens[Index]);
+				}
 				bShown = true;
 				NextAt = Now + 0.9;
 				return false;

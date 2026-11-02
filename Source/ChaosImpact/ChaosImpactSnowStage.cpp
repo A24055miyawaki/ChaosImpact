@@ -22,10 +22,16 @@
 
 namespace SnowStage
 {
-	constexpr float PondFloorZ = -60.0f;
+	/** The frozen pond: a step down from the veranda (low enough to step back up anywhere). */
+	constexpr float PondFloorZ = -20.0f;
 	constexpr float VerandaZ = 0.0f;
 	constexpr float BridgeCrownZ = 28.0f;
-	constexpr float WallHeight = 560.0f;
+	/** The sanctuary's white plaster walls (low enough to see over, and so not to shade the veranda). */
+	constexpr float WallHeight = 300.0f;
+	/** The wind's lanes on the floor: how far apart across the wind the two crossing the pond and the two outside it run. */
+	constexpr float WindLaneInner = 1000.0f;
+	constexpr float WindLaneOuter = 2550.0f;
+	constexpr float WindLaneWidth = 700.0f;
 
 	const FVector QuarterSpawnOffsets[] =
 	{
@@ -67,7 +73,8 @@ AChaosImpactSnowStage::AChaosImpactSnowStage()
 	CrashBallStartOffset = FVector(0, 0, 16);
 	Team0GoalOffset = FVector(-2750, 0, 0);
 	Team1GoalOffset = FVector(2750, 0, 0);
-	CrashBallExtraBallOffsets = {FVector(-900, 500, -60), FVector(900, -500, -60), FVector(-2200, 600, 0), FVector(2200, -600, 0)};
+	CrashBallExtraBallOffsets = {FVector(-900, 500, SnowStage::PondFloorZ), FVector(900, -500, SnowStage::PondFloorZ), FVector(-2200, 600, 0),
+		FVector(2200, -600, 0)};
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	bAlwaysRelevant = true;
@@ -120,6 +127,8 @@ AChaosImpactSnowStage::AChaosImpactSnowStage()
 		TEXT("/Game/ChaosImpact/solo/Stage14/Materials/MI_Pine.MI_Pine"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Bark(
 		TEXT("/Game/ChaosImpact/solo/Stage14/Materials/MI_PineBark.MI_PineBark"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Plane(TEXT("/Engine/BasicShapes/Plane.Plane"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WarnMat(TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Warn.M_CIFX_Warn"));
 
 	BoxMesh = Box.Object;
 	ConeMesh = Cone.Object;
@@ -136,6 +145,8 @@ AChaosImpactSnowStage::AChaosImpactSnowStage()
 	FieldSoftMaterial = FieldSoft.Succeeded() ? FieldSoft.Object : GlowMaterial;
 	PineMaterial = Pine.Succeeded() ? Pine.Object : nullptr;
 	BarkMaterial = Bark.Succeeded() ? Bark.Object : nullptr;
+	PlaneMesh = Plane.Object;
+	WarnMaterial = WarnMat.Succeeded() ? WarnMat.Object : nullptr;
 
 	BuildFrozenPondAndCenter();
 
@@ -180,8 +191,8 @@ void AChaosImpactSnowStage::BuildFrozenPondAndCenter()
 	AddRing(TEXT("PondFrostOuter"), Glow, FVector(0.0f, 0.0f, PondFloorZ + 0.8f), 1320.0f, 4.0f);
 	AddRing(TEXT("PondFrostInner"), Glow, FVector(0.0f, 0.0f, PondFloorZ + 1.0f), 780.0f, 3.5f);
 
-	// Central Wind-Dial Island (0 cm, 60 cm above the pond) with 4 wide step-ramps and a central dais (16 cm).
-	AddCylinder(TEXT("CenterIslandBase"), SnowStone, FVector(0.0f, 0.0f, PondFloorZ), 940.0f, 60.0f, true);
+	// Central Wind-Dial Island (0 cm, a step above the pond) with 4 wide step-ramps and a central dais (16 cm).
+	AddCylinder(TEXT("CenterIslandBase"), SnowStone, FVector(0.0f, 0.0f, PondFloorZ), 940.0f, -PondFloorZ, true);
 	AddCylinder(TEXT("CenterIslandDais"), GoldTrim, FVector(0.0f, 0.0f, 0.0f), 460.0f, 16.0f, true);
 	AddRing(TEXT("CenterIslandGoldRing"), GoldTrim, FVector(0.0f, 0.0f, 16.8f), 225.0f, 4.5f);
 	AddRing(TEXT("CenterIslandRuneRing"), Glow, FVector(0.0f, 0.0f, 1.0f), 450.0f, 4.0f);
@@ -224,6 +235,43 @@ void AChaosImpactSnowStage::BuildFrozenPondAndCenter()
 		Streamer->SetCastShadow(false);
 		Streamer->SetVisibility(false);
 		WindStreamers.Add(Streamer);
+	}
+
+	// The wind's lanes on the floor, turned to the way it will blow: pale blue arrows (the boss's ground warning in the
+	// colour of ice) racing downwind, filling from the upwind side while it is coming. Two cross the pond (a lane for
+	// the veranda each side and one for the pond between, each lying on its own floor) and two run along the verandas.
+	WindLaneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("WindLaneRoot"));
+	WindLaneRoot->SetupAttachment(SceneRoot);
+	const auto AddLane = [this](const FString& Name, const float FromX, const float ToX, const float Y, const float Z, const int32 Stage)
+	{
+		UStaticMeshComponent* Lane = CreateDefaultSubobject<UStaticMeshComponent>(*Name);
+		Lane->SetupAttachment(WindLaneRoot);
+		Lane->SetStaticMesh(PlaneMesh.Get());
+		if (WarnMaterial)
+		{
+			Lane->SetMaterial(0, WarnMaterial.Get());
+		}
+		Lane->SetRelativeLocation(FVector((FromX + ToX) * 0.5f, Y, Z));
+		Lane->SetRelativeScale3D(FVector((ToX - FromX) / 100.0f, SnowStage::WindLaneWidth / 100.0f, 1.0f));
+		Lane->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Lane->SetCastShadow(false);
+		Lane->SetGenerateOverlapEvents(false);
+		Lane->SetVisibility(false);
+		WindLanes.Add(Lane);
+		WindLaneStages.Add(Stage);
+		WindLaneAspects.Add((ToX - FromX) / SnowStage::WindLaneWidth);
+	};
+	constexpr float PondEdge = 1900.0f;
+	constexpr float VerandaEnd = 3240.0f;
+	for (const float Side : {-1.0f, 1.0f})
+	{
+		const FString Tag = Side > 0.0f ? TEXT("L") : TEXT("R");
+		const float Y = Side * SnowStage::WindLaneInner;
+		AddLane(TEXT("WindLaneUp") + Tag, -VerandaEnd, -PondEdge - 40.0f, Y, 3.0f, 0);
+		AddLane(TEXT("WindLanePond") + Tag, -PondEdge + 20.0f, PondEdge - 20.0f, Y, PondFloorZ + 3.0f, 1);
+		AddLane(TEXT("WindLaneDown") + Tag, PondEdge + 40.0f, VerandaEnd, Y, 3.0f, 2);
+		const float OuterEnd = BevelLine - SnowStage::WindLaneOuter - SnowStage::WindLaneWidth * 0.5f - 120.0f;
+		AddLane(TEXT("WindLaneOuter") + Tag, -OuterEnd, OuterEnd, Side * SnowStage::WindLaneOuter, 3.0f, -1);
 	}
 }
 
@@ -277,15 +325,18 @@ void AChaosImpactSnowStage::BuildQuarter(const int32 Quarter)
 
 	// Outer castle-garden walls with snow-topped roof tiles and warm glowing paper-screen windows.
 	Box(TEXT("OuterWall"), Wall, FVector(Half + 30.0f, 0.0f, WallHeight * 0.5f), FVector(60.0f, 3460.0f, WallHeight), 0.0f, true);
-	Box(TEXT("OuterWallSnow"), SnowStone, FVector(Half + 30.0f, 0.0f, WallHeight + 10.0f), FVector(96.0f, 3500.0f, 20.0f), 0.0f, false);
-	Box(TEXT("OuterWallBeamLow"), DarkTimber, FVector(Half - 4.0f, 0.0f, 180.0f), FVector(10.0f, 3400.0f, 24.0f), 0.0f, false);
-	Box(TEXT("OuterWallGlowBand"), GlowHere, FVector(Half - 3.0f, 0.0f, 340.0f), FVector(6.0f, 3200.0f, 16.0f), 0.0f, false);
+	Box(TEXT("OuterWallFooting"), DarkTimber, FVector(Half - 2.0f, 0.0f, 35.0f), FVector(8.0f, 3440.0f, 70.0f), 0.0f, false);
+	Box(TEXT("OuterWallGlowBand"), GlowHere, FVector(Half - 3.0f, 0.0f, 175.0f), FVector(6.0f, 3200.0f, 14.0f), 0.0f, false);
+	Box(TEXT("OuterWallRoof"), DarkTimber, FVector(Half + 30.0f, 0.0f, WallHeight + 18.0f), FVector(170.0f, 3540.0f, 36.0f), 0.0f, false, true);
+	Box(TEXT("OuterWallSnow"), SnowStone, FVector(Half + 30.0f, 0.0f, WallHeight + 42.0f), FVector(150.0f, 3520.0f, 14.0f), 0.0f, false, true);
 
 	const FVector BevelMid = CornerDir * (Diagonal + 30.0f);
 	Box(TEXT("BevelWall"), Wall, FVector(BevelMid.X, BevelMid.Y, WallHeight * 0.5f), FVector(60.0f, 2320.0f, WallHeight), 45.0f, true);
-	Box(TEXT("BevelWallSnow"), SnowStone, FVector(BevelMid.X, BevelMid.Y, WallHeight + 10.0f), FVector(96.0f, 2360.0f, 20.0f), 45.0f, false);
 	const FVector BevelFace = CornerDir * (Diagonal - 3.0f);
-	Box(TEXT("BevelWallGlow"), GlowHere, FVector(BevelFace.X, BevelFace.Y, 340.0f), FVector(6.0f, 2100.0f, 16.0f), 45.0f, false);
+	Box(TEXT("BevelWallFooting"), DarkTimber, FVector(BevelFace.X, BevelFace.Y, 35.0f), FVector(8.0f, 2300.0f, 70.0f), 45.0f, false);
+	Box(TEXT("BevelWallGlow"), GlowHere, FVector(BevelFace.X, BevelFace.Y, 175.0f), FVector(6.0f, 2100.0f, 14.0f), 45.0f, false);
+	Box(TEXT("BevelWallRoof"), DarkTimber, FVector(BevelMid.X, BevelMid.Y, WallHeight + 18.0f), FVector(170.0f, 2400.0f, 36.0f), 45.0f, false, true);
+	Box(TEXT("BevelWallSnow"), SnowStone, FVector(BevelMid.X, BevelMid.Y, WallHeight + 42.0f), FVector(150.0f, 2380.0f, 14.0f), 45.0f, false, true);
 
 	// ---- Center Wind-Dial Island step-ramp ----------------------------------------------------------------------
 	Ramp(TEXT("CenterStepRamp"), SnowStone, FVector(560.0f, 0.0f, PondFloorZ), FVector(420.0f, 0.0f, 0.0f), 340.0f, GoldTrim);
@@ -464,7 +515,11 @@ UStaticMeshComponent* AChaosImpactSnowStage::AddPart(USceneComponent* Parent, co
 	{
 		Surface = PaleStoneMaterial.Get();
 	}
-	else if ((Paint == Wall || Paint == DarkTimber) && DarkStoneMaterial)
+	else if (Paint == Wall && PaleStoneMaterial)
+	{
+		Surface = PaleStoneMaterial.Get();
+	}
+	else if (Paint == DarkTimber && DarkStoneMaterial)
 	{
 		Surface = DarkStoneMaterial.Get();
 	}
@@ -475,6 +530,11 @@ UStaticMeshComponent* AChaosImpactSnowStage::AddPart(USceneComponent* Parent, co
 	else if (Paint == PineGreen && PineMaterial)
 	{
 		Surface = PineMaterial.Get();
+	}
+	else if (Paint == Ice)
+	{
+		// Matte (the gloss paint has no roughness to turn down, and its sun glint whited out the middle of the stage).
+		Surface = FlatMaterial.Get();
 	}
 	else if (GlossPaintMaterial)
 	{
@@ -539,13 +599,27 @@ UStaticMeshComponent* AChaosImpactSnowStage::AddRamp(const FString& Name, const 
 void AChaosImpactSnowStage::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	MakeWallsSeeThrough({TEXT("OuterWall"), TEXT("BevelWall")}, GlowMaterial);
 	ApplyPalette();
 }
 
 void AChaosImpactSnowStage::BeginPlay()
 {
 	Super::BeginPlay();
+	MakeWallsSeeThrough({TEXT("OuterWall"), TEXT("BevelWall")}, GlowMaterial);
 	ApplyPalette();
+	WindLaneLooks.Reset();
+	for (int32 Index = 0; Index < WindLanes.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Look = WindLanes[Index] ? WindLanes[Index]->CreateDynamicMaterialInstance(0) : nullptr;
+		if (Look)
+		{
+			Look->SetScalarParameterValue(TEXT("Lane"), 1.0f);
+			Look->SetScalarParameterValue(TEXT("Aspect"), WindLaneAspects.IsValidIndex(Index) ? WindLaneAspects[Index] : 4.0f);
+			Look->SetVectorParameterValue(TEXT("Color"), WindLaneColor);
+		}
+		WindLaneLooks.Add(Look);
+	}
 
 	if (bSpawnWinterDecor && GetWorld() && GetNetMode() != NM_DedicatedServer)
 	{
@@ -693,7 +767,7 @@ void AChaosImpactSnowStage::ApplyPalette()
 			Material->SetVectorParameterValue(TEXT("Color"), Color);
 			Material->SetVectorParameterValue(TEXT("Base Color"), Color);
 			Material->SetVectorParameterValue(TEXT("BaseColor"), Color);
-			const float Roughness = (Paint == Ice || Paint == Crystal) ? 0.08f : Paint == GoldTrim ? 0.25f : 0.6f;
+			const float Roughness = Paint == Ice ? 0.45f : Paint == Crystal ? 0.08f : Paint == GoldTrim ? 0.25f : 0.6f;
 			Material->SetScalarParameterValue(TEXT("Roughness"), Roughness);
 		}
 	}
@@ -869,6 +943,41 @@ void AChaosImpactSnowStage::UpdateWindLook(const float DeltaSeconds)
 				Streamer->SetRelativeScale3D(FVector(bActive ? 9.5f : 4.2f, 0.18f, 0.03f));
 			}
 		}
+	}
+	if (WindLaneRoot && WindDirectionIndex >= 0)
+	{
+		WindLaneRoot->SetRelativeRotation(FRotator(0.0f, 90.0f * WindDirectionIndex, 0.0f));
+	}
+	// The lanes: fade in and fill from the upwind side, one floor after the next, while it is coming; arrows racing
+	// downwind while it blows, fading as it dies down.
+	const float Warn = bWarning ? Progress : 0.0f;
+	const float Blow = bActive ? Progress - 1.0f : 0.0f;
+	for (int32 Index = 0; Index < WindLanes.Num(); ++Index)
+	{
+		UStaticMeshComponent* Lane = WindLanes[Index];
+		if (!Lane)
+		{
+			continue;
+		}
+		Lane->SetVisibility(bWarning || bActive);
+		if (!(bWarning || bActive))
+		{
+			continue;
+		}
+		UMaterialInstanceDynamic* Look = WindLaneLooks.IsValidIndex(Index) ? WindLaneLooks[Index].Get() : nullptr;
+		if (!Look)
+		{
+			continue;
+		}
+		const int32 Stage = WindLaneStages.IsValidIndex(Index) ? WindLaneStages[Index] : -1;
+		const float Fill = Stage < 0 ? Warn : FMath::Clamp(Warn * 3.0f - Stage, 0.0f, 1.0f);
+		const float Blink = 0.5f + 0.5f * FMath::Sin(LookClock * FMath::Lerp(5.0f, 16.0f, Warn * Warn));
+		Look->SetScalarParameterValue(TEXT("Progress"), bActive ? 1.0f : Fill);
+		Look->SetScalarParameterValue(TEXT("Flash"), bActive ? FMath::Max(0.0f, 1.0f - Blow * 6.0f) * 0.8f : 0.1f * Blink * Warn);
+		Look->SetScalarParameterValue(TEXT("Opacity"), bActive ? 0.85f * (1.0f - FMath::Square(FMath::Max(0.0f, Blow - 0.7f) / 0.3f))
+			: FMath::Clamp(Warn * 6.0f, 0.0f, 1.0f));
+		Look->SetScalarParameterValue(TEXT("Speed"), bActive ? 3.2f : 1.0f);
+		Look->SetScalarParameterValue(TEXT("Intensity"), 1.3f + 0.3f * Blink * Warn);
 	}
 	for (int32 Dir = 0; Dir < CompassArrows.Num(); ++Dir)
 	{

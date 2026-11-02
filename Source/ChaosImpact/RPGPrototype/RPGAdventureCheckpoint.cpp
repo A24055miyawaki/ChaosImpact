@@ -68,4 +68,5 @@ void ARPGPrototypeCharacter::ActivateAdventureCheckpoint(ARPGAdventureCheckpoint
     TArray<FString> Names; for(TActorIterator<ARPGAdventureCheckpoint> It(GetWorld());It;++It) { Names.AddUnique(It->DisplayName); }
     Names.Sort();
     QuestEvent(ERPGQuestEvent::BeaconLit,Checkpoint->GetActorLocation(),FMath::Clamp(Names.IndexOfByKey(Checkpoint->DisplayName),0,7));
+    ShowLesson(TEXT("Beacon"));
 }

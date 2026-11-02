@@ -99,7 +99,11 @@ void URPGPrototypeHUD::PaintSharedHUD(const FGeometry& Geometry,FSlateWindowElem
         else { RPGPrototypePaint::Ball(F,At,R-3,EChaosImpactBallType::Normal,Time,false); F.Text(TEXT("—"),At.X,At.Y-10,16,Muted,ETextAlign::Center); }
     }
     if(P->IsChargingThrow()) { F.Arc(Dock.BallCenter(P->GetSelectedAttack()),32,-90,-90+360*P->GetThrowChargeAlpha(),Gold,3); }
-    if(P->IsEliminated()) { HudText3D(F,FString::Printf(TEXT("復活まで %.1f秒"),P->GetRPGRespawnLeft()),X+Col*.5f,H-229,18,Paper,ETextAlign::Center); }
+    if(P->IsEliminated())
+    {
+        HudText3D(F,FString::Printf(TEXT("復活まで %.1f秒"),P->GetRPGRespawnLeft()),X+Col*.5f,H-229,18,Paper,ETextAlign::Center);
+        if(P->GetDeathRubyLoss()>0) { F.Text(FString::Printf(TEXT("ルビー -%d"),P->GetDeathRubyLoss()),X+Col*.5f,H-204,15,Paper,ETextAlign::Center,TEXT("Bold")); }
+    }
     else if(!P->IsBagOpen() && !P->IsQuestMenuOpen())
     {
         FString Hint;

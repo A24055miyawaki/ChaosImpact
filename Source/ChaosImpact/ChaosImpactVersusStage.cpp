@@ -167,14 +167,24 @@ UStaticMeshComponent* AChaosImpactVersusStage::CreateBlock(const FName& Name, co
 void AChaosImpactVersusStage::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	if (bApplyDefaultColors)
+	{
+		MakeWallsSeeThrough(BoundaryWallNames, nullptr);
+	}
 	ApplyStageColors();
 }
 
 void AChaosImpactVersusStage::BeginPlay()
 {
 	Super::BeginPlay();
+	if (bApplyDefaultColors)
+	{
+		MakeWallsSeeThrough(BoundaryWallNames, nullptr);
+	}
 	ApplyStageColors();
 }
+
+const TArray<FString> AChaosImpactVersusStage::BoundaryWallNames = {TEXT("NorthWall"), TEXT("SouthWall"), TEXT("EastWall"), TEXT("WestWall")};
 
 void AChaosImpactVersusStage::ApplyStageColors()
 {

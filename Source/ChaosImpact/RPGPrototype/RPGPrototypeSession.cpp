@@ -34,6 +34,7 @@ void ARPGPrototypeCharacter::InitializeRPGPreferences()
         GConfig->GetBool(TEXT("ChaosImpact.RPGPrototype"),*FString::Printf(TEXT("MiniMenuP%d"),GetLocalRPGIndex()+1),bPreferMiniMenu,GGameUserSettingsIni);
         GConfig->GetInt(TEXT("ChaosImpact.RPGPrototype"),*FString::Printf(TEXT("BagSortP%d"),GetLocalRPGIndex()+1),BagSort,GGameUserSettingsIni);
         BagSort=FMath::Clamp(BagSort,0,ERPGBagSort::Count-1);
+        GConfig->GetBool(TEXT("ChaosImpact.RPGPrototype"),*FString::Printf(TEXT("GuideP%d"),GetLocalRPGIndex()+1),bGuideOn,GGameUserSettingsIni);
     }
     if(UGameplayStatics::DoesSaveGameExist(GetTestSaveSlot(),0))
     { if(const auto* Save=Cast<URPGPrototypeSave>(UGameplayStatics::LoadGameFromSlot(GetTestSaveSlot(),0))) { SaveSummary=Save->SavedAt.ToString(TEXT("%m/%d %H:%M")); } }
@@ -56,11 +57,13 @@ bool ARPGPrototypeCharacter::SaveTestProgress(const FString& SlotOverride)
     ARPGRubyGem::CollectAllFor(this);
     auto* Save=Cast<URPGPrototypeSave>(UGameplayStatics::CreateSaveGameObject(URPGPrototypeSave::StaticClass()));
     if(!Save) { return false; }
-    Save->Items=Bag; Save->Level=RPGLevel; Save->XP=XP; Save->Rubies=Rubies; Save->SelectedAttack=SelectedAttack;
+    Save->Items=Bag; Save->Level=RPGLevel; Save->XP=XP; Save->Rubies=Rubies; Save->SelectedAttack=SelectedAttack; Save->TuneShards=TuneShards; Save->BossesBeaten=BossesBeaten; Save->TackleLevel=TackleSkill; Save->DashLevel=DashSkill;
+    Save->Explored=Explored; Save->VisitedPlaces=VisitedPlaces; Save->TutorialsDone=TutorialsDone; Save->ColonyPoints=ColonyPoints; Save->PlaySeconds=PlaySeconds;
     Save->HP=Health; Save->Stamina=Stamina; Save->SavedAt=FDateTime::Now();
     Save->Quests=Quests;
     Save->OpenedChestIds=OpenedChestIds.Array();
     Save->TravelPoints=TravelPoints;
+    Save->MerchantXP=MerchantXP; Save->ShopRotation=ShopRotation; Save->ShopStock=ShopStock;
     for(const auto& I:Attacks) { Save->AttackIds.Add(I.Id); }
     for(const auto& I:Badges) { Save->BadgeIds.Add(I.Id); }
     for(const auto& I:Gears) { Save->GearIds.Add(I.Id); }
@@ -148,9 +151,25 @@ bool ARPGPrototypeCharacter::LoadTestProgress(const FString& SlotOverride)
     for(auto& I:NewAttacks) { Migrate(I); } for(auto& I:NewBadges) { Migrate(I); } for(auto& I:NewGears) { Migrate(I); }
     Bag=Save->Items; for(auto& I:Bag) { Migrate(I); }
     Attacks=NewAttacks; Badges=NewBadges; Gears=NewGears; RPGLevel=Save->Level; XP=Save->XP; Rubies=Save->Rubies; SelectedAttack=Save->SelectedAttack;
+    TuneShards=FMath::Clamp(Save->TuneShards,0,RPGTuning::ShardCap);
+    BossesBeaten=Save->BossesBeaten&0x7F;
+    if(!HasAuthority() && IsLocallyControlled()) { ServerSetBossesBeaten(BossesBeaten); }
+    TackleSkill=static_cast<uint8>(FMath::Clamp(Save->TackleLevel,1,4)); DashSkill=static_cast<uint8>(FMath::Clamp(Save->DashLevel,1,4));
+    ApplySkills();
+    if(Save->Explored.Num()<=4096) { Explored=Save->Explored; }
+    // A hero from before the map had fog: the old lands (they have been there) start uncovered.
+    if(Save->Explored.IsEmpty() && Save->Level>1) { RevealFirstLands(); }
+    VisitedPlaces=Save->VisitedPlaces; TutorialsDone=Save->TutorialsDone;
+    ColonyPoints=FMath::Max(0,Save->ColonyPoints); PlaySeconds=FMath::Max(0,Save->PlaySeconds);
     Quests=Save->Quests; Quests.SetNum(RPGQuests::Num()); TrackedQuest=INDEX_NONE;
     OpenedChestIds=MoveTemp(NewOpened);
     TravelPoints=Save->TravelPoints;
+    // The shop: a broken saved line-up is only dropped (a new one is made), never a reason to refuse the save.
+    MerchantXP=FMath::Clamp(Save->MerchantXP,0,1000000000); ShopStockLevel=GetMerchantLevel(); CaravanStock.Reset(); CaravanStockEvent=-1; ShopSelection=0;
+    const bool bStockOK=Save->ShopStock.Num()<=RPGTuning::ShopStockCount && !Save->ShopStock.ContainsByPredicate([](const FRPGPrototypeItem& I)
+        { return !I.IsValid() || I.Kind!=ERPGItemKind::Ball || !RPGEquipment::BallRoster().Contains(I.Type) || I.Level<1 || I.Level>RPGTuning::MaxLevel
+            || static_cast<int32>(I.Rarity)>3 || I.Enhancement!=0 || !FMath::IsFinite(I.Power) || I.Power<=0 || !FMath::IsFinite(I.Cooldown) || I.Cooldown<=0 || I.Intrinsics.Num()>2; });
+    ShopStock=bStockOK?Save->ShopStock:TArray<FRPGPrototypeItem>(); ShopRotation=bStockOK?Save->ShopRotation:-1;
     if(!Attacks[SelectedAttack].IsValid()) { SelectedAttack=0; }
     ItemReadyAt.Empty(); for(const auto& C:Save->Cooldowns) { ItemReadyAt.Add(C.Item,GetWorld()->GetTimeSeconds()+C.Remaining); }
     for(int32 S=0;S<3;++S) { ReadyAt[S]=ItemReadyAt.FindRef(Attacks[S].Id); }
@@ -192,10 +211,20 @@ bool ARPGPrototypePlayerController::InputKey(const FInputKeyEventArgs& Params)
           else { P->HandleQuestKey(Params.Key); } }
         return true;
     }
+    // The whole map: its own keys (close, fast travel, the light line); moving and the rest go on as usual.
+    if(P->GetMapMode()!=ARPGPrototypeCharacter::MapClosed && Pressed && P->HandleMapKey(Params.Key)) { return true; }
     if(Pressed && (Params.Key==EKeys::F5 || Params.Key==EKeys::F9))
     { if(P->HasConfirmation()) { return true; } P->SetBagOpen(true); if(P->IsBagOpen()) { P->BagPage=3; P->RequestSessionAction(Params.Key==EKeys::F5?1:2); } return true; }
-    if(ChaosImpactSettings::IsActionKey(this,EChaosImpactAction::Pause,Params.Key) && P->UsesMiniMenu())
-    { if(Pressed) { P->SetBagOpen(!P->IsBagOpen()); P->BagPage=3; } return true; }
+    if(ChaosImpactSettings::IsActionKey(this,EChaosImpactAction::Pause,Params.Key))
+    {
+        if(Pressed)
+        {
+            if(P->IsBagOpen()) { P->SetBagOpen(false); }
+            else if(P->GetMapMode()!=ARPGPrototypeCharacter::MapClosed) { P->SetMapMode(ARPGPrototypeCharacter::MapClosed); }
+            else { P->OpenAdventureMenu(); }
+        }
+        return true;
+    }
     if(Params.Key==EKeys::Tab || Params.Key==EKeys::Gamepad_Special_Left)
     { if(Pressed) { if(P->IsBagOpen()) { P->HandleBagKey(Params.Key); } else { P->SetBagOpen(true); } } return true; }
     if(P->IsBagOpen())

@@ -31,6 +31,8 @@ namespace RPGMenuAction
 		SelectPrev = 742, SelectNext = 743, // previous / next item of the list (mini tune page)
 		EquipSpecial1 = 745, EquipSpecial2 = 746,
 		Sort = 750, Lock = 751, BulkSalvage = 752,
+		ShopRowBase = 760,    // + shop line-up row 0-5
+		Buy = 770,
 		DialogCancel = 900, DialogOk = 901,
 	};
 }
@@ -59,6 +61,8 @@ public:
 	int32 MiniActionAt(FVector2D At) const;
 	int32 GetBagPointerAction() const;
 	void PaintAdventure(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer,float Time) const;
+	/** The minimap in the corner, or the whole map over the screen while it is open (RPGNavigation.cpp draws them). */
+	void PaintAdventureMap(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer,float Time) const;
 	int32 GetAdventurePointerAction() const;
 	void ActivateAdventureAction(int32 Action);
 	float GetMiniRevealAlpha() const { return MiniRevealAlpha; }

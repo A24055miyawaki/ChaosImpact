@@ -59,6 +59,7 @@ namespace
 				ReadyKey = ChaosImpactSettings::GetActiveKey(ChaosImpactSettings::GetPlayerProfile(PC),
 					EChaosImpactDevice::KeyboardMouse, EChaosImpactAction::LobbyReady, 0);
 				Test->TestTrue(TEXT("Host can close with another member"), PC->CanCloseRecruitment());
+				Test->TestTrue(TEXT("Spectating can be changed while recruiting"), PC->CanToggleSpectating());
 				Key(ReadyKey, IE_Pressed);
 				return Wait(.55);
 			case 1:
@@ -88,6 +89,19 @@ namespace
 				return Wait(1.6);
 			case 5:
 				Test->TestTrue(TEXT("Full keyboard hold closes recruitment"), Room->bRecruitmentClosed);
+				Test->TestFalse(TEXT("Spectating input locks as soon as recruitment closes"), PC->CanToggleSpectating());
+				{
+					auto* Own = PC->GetPlayerState<AChaosImpactPlayerState>();
+					APawn* OriginalPawn = PC->GetPawn();
+					// Exercise the server RPC directly, bypassing the input/menu check.
+					PC->ServerSetSpectating(true);
+					Test->TestFalse(TEXT("Host rejects becoming a spectator after the deadline"), Own->bSpectating);
+					Own->bSpectating = true;
+					PC->ServerSetSpectating(false);
+					Test->TestTrue(TEXT("Host rejects returning from spectator after the deadline"), Own->bSpectating);
+					Own->bSpectating = false;
+					Test->TestTrue(TEXT("Rejected switches preserve the pawn"), PC->GetPawn() == OriginalPawn);
+				}
 				Test->TestEqual(TEXT("Full hold opens rule selection"), PC->GetCurrentScreen(), EChaosImpactScreen::MatchRules);
 				Key(ReadyKey, IE_Released);
 				PC->ResumeGameplay();
@@ -107,6 +121,7 @@ namespace
 			case 6:
 				Test->TestEqual(TEXT("Back in the lobby"), Room->Phase, EChaosImpactOnlinePhase::Lobby);
 				Test->TestFalse(TEXT("Recruitment reopens"), Room->bRecruitmentClosed);
+				Test->TestTrue(TEXT("Spectating unlocks for the next recruitment"), PC->CanToggleSpectating());
 				Test->TestFalse(TEXT("Old confirmation removed"), Room->bRulesDecided);
 				Test->TestEqual(TEXT("No automatic-start deadline"), Room->ReadyDeadline, 0.);
 				Test->TestTrue(TEXT("Last rule choice retained"), Room->Rules.bDuel);

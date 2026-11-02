@@ -6,14 +6,16 @@
 #include "Interfaces/OnlineSessionInterface.h"
 #include "OnlineSessionSettings.h"
 #include "Containers/Ticker.h"
+#include "ChaosImpactRelay.h"
 #include "RPGPrototype.h"
 #include "RPGOnline.generated.h"
 
 class UNetDriver;
 
 /**
- * Online play for the RPG (like VS: LAN, found by a password). Up to four players share one world, hosted by the
- * machine that opened it; everyone else joins it while it is being played.
+ * Online play for the RPG, found by a password like VS rooms: over the internet through the relay when one is set
+ * (ChaosImpactRelay: the players talk directly where they can), else on the LAN. Up to four players share one world,
+ * hosted by the machine that opened it; everyone else joins it while it is being played.
  *
  * Who decides what:
  * - The host runs the world: enemies, bosses, balls and their hits, hearts and herbs, and every hero's HP, down
@@ -65,6 +67,10 @@ public:
 private:
 	TMap<int32, TWeakObjectPtr<AChaosImpactSimaeWarning>> GuestWarnings;
 public:
+	/** The colony this world shows: the host's (RPGColony). */
+	UPROPERTY(Replicated) int32 ColonyStage = 0;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+public:
 	virtual void Tick(float DeltaSeconds) override;
 };
 
@@ -77,7 +83,10 @@ struct FRPGWorldListing
 	FString Host;
 	int32 Players = 1;
 	int32 PingMs = 0;
+	/** LAN: the session to join. */
 	FOnlineSessionSearchResult Result;
+	/** Internet: the world's room on the relay. */
+	int32 RelayPort = 0;
 };
 
 UCLASS()
@@ -127,6 +136,24 @@ private:
 	void HandleMapLoaded(UWorld* World);
 	void LostConnection(const FString& Error);
 	bool TickRefresh(float DeltaSeconds);
+
+	// ---- Over the internet (the relay's rooms, versioned apart from VS: see RelayVersion)
+	static FString RelayVersion();
+	void RelayCreate();
+	void RelayHeartbeat();
+	void RelaySearch();
+	void StartRelayTunnel();
+	void StopRelay();
+	bool bRelay = false;
+	FString RelayRoomId;
+	FString RelayRoomKey;
+	int32 RelayRoomPort = 0;
+	/** Bumped on every new world or search: answers to older requests are ignored. */
+	int32 RelayGeneration = 0;
+	bool bRelayRequestInFlight = false;
+	double NextHeartbeatAt = 0;
+	TUniquePtr<FChaosImpactRelayTunnel> Tunnel;
+	TUniquePtr<FChaosImpactRelayGuestTunnel> GuestTunnel;
 	/** Development: two copies of the game on one PC play together (-CIRPGNet=host|guest -CIRPGNetPass=...). */
 	void TickSmoke();
 	FString SmokeRole, SmokePassword;
@@ -134,6 +161,7 @@ private:
 	double SmokeAt = 0, SmokeT0 = 0;
 	bool bSmokeShotDowned = false;
 	int32 Money = 0, SmokeTicks = 0;
+	bool bSmokeEventSeen = false;
 	ERPGOnlineState State = ERPGOnlineState::Offline;
 	FString Password;
 	FString Notice;

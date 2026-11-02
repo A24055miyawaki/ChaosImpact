@@ -1,4 +1,5 @@
 #include "RPGPrototype.h"
+#include "RPGSnowField.h"
 #include "RPGTuning.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHazardZone.h"
@@ -18,6 +19,7 @@
 #include "RPGAdventure.h"
 #include "RPGHealing.h"
 #include "RPGOnline.h"
+#include "RPGFieldEvents.h"
 #include "ChaosImpactGameViewportClient.h"
 
 ARPGPrototypeLoot::ARPGPrototypeLoot()
@@ -349,9 +351,18 @@ void ARPGPrototypeGameMode::RewardEnemy(ARPGPrototypeCharacter* Enemy,bool bBoss
 	{
 		FRPGKillCredit Credit;
 		Credit.Level=Enemy->GetRPGLevel(); Credit.bBoss=bBoss; Credit.At=Enemy->GetActorLocation();
+		if(const auto* Boss=Cast<ARPGPrototypeBoss>(Enemy)) { Credit.BossId=Boss->GetBossId(); } else if(Cast<ARPGSimaeBody>(Enemy)) { Credit.BossId=1; }
 		Credit.DropChance=Spawn?FMath::Clamp(Spawn->DropChance,0.0f,1.0f):RPGTuning::DefaultDropChance;
-		// For quests: 1 the boss, 2 a thrower-role enemy, 4 finished by this player's special ball.
-		Credit.Detail=(bBoss?1:0)|(Enemy->EncounterRole==ERPGGruntRole::Thrower && !bBoss?2:0);
+		// A storm: better odds for whatever is beaten in it.
+		if(ARPGFieldEvents::IsStormAt(GetWorld(),Enemy->GetActorLocation())) { Credit.DropChance=FMath::Min(1.0f,Credit.DropChance*RPGTuning::StormDropFactor); }
+		Credit.bNamed=Enemy->IsNamed() && !bBoss;
+		// For quests: 1 the boss, 2 a thrower-role enemy, 4 finished by this player's special ball, 8 a teammate close by, 16 a named one.
+		Credit.Detail=(bBoss?1:0)|(Enemy->EncounterRole==ERPGGruntRole::Thrower && !bBoss?2:0)|(Credit.bNamed?16:0);
+		for(TActorIterator<ARPGPrototypeCharacter> It(GetWorld());It;++It)
+		{
+			if(*It==Player || It->IsGrunt() || It->IsEliminated() || It->IsInTitle()) { continue; }
+			if(FVector::DistSquared2D(It->GetActorLocation(),Enemy->GetActorLocation())<FMath::Square(RPGTuning::TeamQuestRadius)) { Credit.Detail|=8; break; }
+		}
 		if(Player==Source)
 		{
 			const auto* Shot=Cast<ARPGPrototypeBall>(Causer); const auto* Field=Cast<ARPGPrototypeEffect>(Causer);

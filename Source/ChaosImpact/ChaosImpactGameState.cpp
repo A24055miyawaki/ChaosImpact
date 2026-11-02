@@ -29,6 +29,7 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, LongestHit);
 	DOREPLIFETIME(AChaosImpactPlayerState, PointsHistory);
 	DOREPLIFETIME(AChaosImpactPlayerState, bViewingResults);
+	DOREPLIFETIME(AChaosImpactPlayerState, bWantsRematch);
 }
 
 void AChaosImpactPlayerState::ResetMatchStats()
@@ -50,6 +51,7 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactGameState, bOnlineRoom);
+	DOREPLIFETIME(AChaosImpactGameState, bRoomMatchLevel);
 	DOREPLIFETIME(AChaosImpactGameState, Phase);
 	DOREPLIFETIME(AChaosImpactGameState, PhaseEndsAt);
 	DOREPLIFETIME(AChaosImpactGameState, PhaseStartedAt);
@@ -68,6 +70,25 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, MatchmadeExpected);
 	DOREPLIFETIME(AChaosImpactGameState, MatchmadeDeadline);
 	DOREPLIFETIME(AChaosImpactGameState, Duel);
+	DOREPLIFETIME(AChaosImpactGameState, Royale);
+}
+
+const FChaosImpactRoyaleEntry* AChaosImpactGameState::GetRoyaleEntry(const APlayerState* Member) const
+{
+	return Member ? Royale.Entries.FindByPredicate([Member](const auto& Entry) { return Entry.Member == Member; }) : nullptr;
+}
+
+bool AChaosImpactGameState::IsRoyaleEliminated(const APlayerState* Member) const
+{
+	const auto* Entry = GetRoyaleEntry(Member);
+	return IsBattleRoyale() && Entry && Entry->bOut;
+}
+
+float AChaosImpactGameState::GetRoyaleTeamHealth(const int32 Team) const
+{
+	float Health = 0.f;
+	for (const auto& Entry : Royale.Entries) { if (!Entry.bOut && Entry.Team == Team) { Health += Entry.Health; } }
+	return Health;
 }
 
 bool AChaosImpactGameState::IsDuelLive() const
@@ -202,6 +223,13 @@ TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetRanking() const
 	const bool bDuel = IsDuel();
 	Ranking.StableSort([this, bDuel](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B)
 	{
+		if (IsBattleRoyale())
+		{
+			const auto* EA = GetRoyaleEntry(&A); const auto* EB = GetRoyaleEntry(&B);
+			const int32 RA = EA && EA->Place > 0 ? EA->Place : 1;
+			const int32 RB = EB && EB->Place > 0 ? EB->Place : 1;
+			return RA < RB;
+		}
 		// A duel goes by the rounds won first.
 		const int32 SideA = bDuel ? Duel.SideOf(&A) : INDEX_NONE;
 		const int32 SideB = bDuel ? Duel.SideOf(&B) : INDEX_NONE;

@@ -24,6 +24,17 @@ namespace
 	constexpr double RelayKeepAliveSeconds = 2.0;
 	/** A remote player's local socket is closed after this long without traffic. */
 	constexpr double RelayClientIdleSeconds = 60.0;
+	/** A direct line is probed this often until it answers, and this often while it does. */
+	constexpr double DirectSeekSeconds = 0.2;
+	constexpr double DirectKeepSeconds = 0.5;
+	/** No answer for this long: the game's packets go back through the relay. */
+	constexpr double DirectStaleSeconds = 2.5;
+	/** A guest's line the relay has not mentioned for this long is forgotten (they left). */
+	constexpr double DirectForgetSeconds = 15.0;
+	/** A guest tells the relay its addresses this often; that also keeps it in the room while its packets go directly. */
+	constexpr double GuestIntroduceSeconds = 1.0;
+	/** b"CI2P...." + client id + token. */
+	constexpr int32 DirectHeaderSize = 20;
 	bool bAutoWebSocket = false;
 
 	FString RelaySetting(const TCHAR* Key, const TCHAR* Argument)
@@ -73,6 +84,87 @@ namespace
 		}
 		OutPort = FCString::Atoi(*PortText);
 		return !OutHost.IsEmpty() && OutPort > 0;
+	}
+
+	uint32 ReadId(const uint8* Data)
+	{
+		return (uint32(Data[0]) << 24) | (uint32(Data[1]) << 16) | (uint32(Data[2]) << 8) | uint32(Data[3]);
+	}
+
+	void WriteId(uint8* Data, const uint32 Id)
+	{
+		Data[0] = uint8(Id >> 24);
+		Data[1] = uint8(Id >> 16);
+		Data[2] = uint8(Id >> 8);
+		Data[3] = uint8(Id);
+	}
+
+	bool IsMessage(const uint8* Data, const int32 Size, const char* Magic, const int32 MinSize = 8)
+	{
+		return Size >= MinSize && FMemory::Memcmp(Data, Magic, 8) == 0;
+	}
+
+	/** A probe or an answer of a direct line (never the game's). */
+	bool IsDirectProbe(const uint8* Data, const int32 Size)
+	{
+		return IsMessage(Data, Size, "CI2PPROB") || IsMessage(Data, Size, "CI2PRPLY");
+	}
+
+	/** [ChaosImpact.Online] DirectConnect=0 (or -CIDirect=0): always through the relay. */
+	bool AllowDirect()
+	{
+		const FString Value = RelaySetting(TEXT("DirectConnect"), TEXT("CIDirect="));
+		return !Value.Equals(TEXT("0")) && !Value.Equals(TEXT("false"), ESearchCase::IgnoreCase);
+	}
+
+	/**
+	 * b"CI2PPRIV" + this machine's own network addresses with the socket's port ("192.168.1.5:61234,..."), for the
+	 * relay to pass on: a player on the same network (or PC) reaches this one there, without going out and back in.
+	 */
+	TArray<uint8> MakePrivateMessage(const int32 Port)
+	{
+		TArray<uint8> Message;
+		Message.Append(reinterpret_cast<const uint8*>("CI2PPRIV"), 8);
+		TArray<TSharedPtr<FInternetAddr>> Adapters;
+		if (Port <= 0 || !Sockets() || !Sockets()->GetLocalAdapterAddresses(Adapters))
+		{
+			return Message;
+		}
+		FString Text;
+		int32 Count = 0;
+		for (const TSharedPtr<FInternetAddr>& Adapter : Adapters)
+		{
+			if (!Adapter || Adapter->GetProtocolType() != FNetworkProtocolTypes::IPv4)
+			{
+				continue;
+			}
+			uint32 Ip = 0;
+			Adapter->GetIp(Ip);
+			// Not loopback (127.x) or link-local (169.254.x): no other machine reaches those.
+			if (Ip == 0 || (Ip >> 24) == 127 || (Ip >> 16) == 0xA9FE)
+			{
+				continue;
+			}
+			Text += FString::Printf(TEXT("%s%u.%u.%u.%u:%d"), Text.IsEmpty() ? TEXT("") : TEXT(","), Ip >> 24, (Ip >> 16) & 255,
+				(Ip >> 8) & 255, Ip & 255, Port);
+			if (++Count == 3)
+			{
+				break;
+			}
+		}
+		const FTCHARToUTF8 Utf8(*Text);
+		Message.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+		return Message;
+	}
+
+	/** Binds a UDP socket to every local address on a free port (so its port is known before it sends). */
+	bool BindAnyPort(FSocket& Socket)
+	{
+		TSharedRef<FInternetAddr> Any = Sockets()->CreateInternetAddr();
+		bool bValid = false;
+		Any->SetIp(TEXT("0.0.0.0"), bValid);
+		Any->SetPort(0);
+		return bValid && Socket.Bind(*Any);
 	}
 
 	FSocket* MakeUdpSocket(const TCHAR* Description)
@@ -166,7 +258,8 @@ void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(T
 		RequestWebSocket(Body, RequestId, MoveTemp(OnReply));
 		return;
 	}
-	Async(EAsyncExecution::ThreadPool, [Server, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
+	// A thread of its own: the shared pool can be busy for seconds (loading, shaders), and the queue's polls must not wait.
+	Async(EAsyncExecution::Thread, [Server, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
 	{
 		TSharedPtr<FJsonObject> Reply;
 		int32 RoundTripMs = 0;
@@ -225,6 +318,155 @@ void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(T
 	});
 }
 
+// ---------------------------------------------------------------------------------------------------- Direct line
+
+void FChaosImpactDirectPath::Learn(const uint8* Data, const int32 Size, const double Now)
+{
+	if (Size < DirectHeaderSize)
+	{
+		return;
+	}
+	const uint32 Id = ReadId(Data + 8);
+	if (Id != ClientId || FMemory::Memcmp(Token, Data + 12, sizeof(Token)) != 0)
+	{
+		// Someone new (or the same guest come back): nothing known about them yet.
+		ClientId = Id;
+		FMemory::Memcpy(Token, Data + 12, sizeof(Token));
+		Heard.Reset();
+		Address.Reset();
+		LastAnswerAt = -100.0;
+		bDirect = false;
+	}
+	LastIntroducedAt = Now;
+	const FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Data + DirectHeaderSize), Size - DirectHeaderSize);
+	const FString Text(Converted.Length(), Converted.Get());
+	// "pub=ip:port;priv=ip:port,ip:port": the address the relay sees, then those on their own network.
+	TArray<FString> Parts;
+	Text.ParseIntoArray(Parts, TEXT(";"));
+	TArray<TSharedRef<FInternetAddr>> Found;
+	for (const FString& Part : Parts)
+	{
+		FString Name, List;
+		if (!Part.Split(TEXT("="), &Name, &List))
+		{
+			continue;
+		}
+		TArray<FString> Entries;
+		List.ParseIntoArray(Entries, TEXT(","));
+		for (const FString& Entry : Entries)
+		{
+			FString Ip, PortText;
+			if (!Entry.Split(TEXT(":"), &Ip, &PortText, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+			{
+				continue;
+			}
+			const int32 Port = FCString::Atoi(*PortText);
+			TSharedRef<FInternetAddr> Candidate = Sockets()->CreateInternetAddr();
+			bool bValid = false;
+			Candidate->SetIp(*Ip, bValid);
+			if (!bValid || Port <= 0 || Port > 65535)
+			{
+				continue;
+			}
+			Candidate->SetPort(Port);
+			if (!Found.ContainsByPredicate([&Candidate](const TSharedRef<FInternetAddr>& Known) { return *Known == *Candidate; }))
+			{
+				Found.Add(Candidate);
+			}
+		}
+	}
+	Candidates = MoveTemp(Found);
+}
+
+void FChaosImpactDirectPath::Probe(FSocket& Socket, const double Now)
+{
+	if (Candidates.IsEmpty() || Now - LastIntroducedAt > DirectForgetSeconds)
+	{
+		return;
+	}
+	const FInternetAddr* Direct = GetDirect(Now);
+	if (Now - LastProbeAt < (Direct ? DirectKeepSeconds : DirectSeekSeconds))
+	{
+		return;
+	}
+	LastProbeAt = Now;
+	uint8 Message[DirectHeaderSize];
+	FMemory::Memcpy(Message, "CI2PPROB", 8);
+	WriteId(Message + 8, ClientId);
+	FMemory::Memcpy(Message + 12, Token, sizeof(Token));
+	int32 Sent = 0;
+	if (Direct)
+	{
+		Socket.SendTo(Message, DirectHeaderSize, Sent, *Direct);
+		return;
+	}
+	for (const TSharedRef<FInternetAddr>& Candidate : Candidates)
+	{
+		Socket.SendTo(Message, DirectHeaderSize, Sent, *Candidate);
+	}
+}
+
+bool FChaosImpactDirectPath::Receive(FSocket& Socket, const uint8* Data, const int32 Size, const FInternetAddr& From, const double Now)
+{
+	const bool bProbe = IsMessage(Data, Size, "CI2PPROB", DirectHeaderSize);
+	if (ClientId == 0 || (!bProbe && !IsMessage(Data, Size, "CI2PRPLY", DirectHeaderSize)) || ReadId(Data + 8) != ClientId
+		|| FMemory::Memcmp(Data + 12, Token, sizeof(Token)) != 0)
+	{
+		return false;
+	}
+	if (!IsFrom(From))
+	{
+		if (Heard.Num() >= 4)
+		{
+			Heard.RemoveAt(0);
+		}
+		Heard.Add(From.Clone());
+	}
+	if (bProbe)
+	{
+		uint8 Answer[DirectHeaderSize];
+		FMemory::Memcpy(Answer, Data, DirectHeaderSize);
+		FMemory::Memcpy(Answer, "CI2PRPLY", 8);
+		int32 Sent = 0;
+		Socket.SendTo(Answer, DirectHeaderSize, Sent, From);
+		return true;
+	}
+	// An answer: this way gets there and back. The first address to answer stays while it keeps answering.
+	const bool bAnswering = Address.IsValid() && Now - LastAnswerAt < DirectStaleSeconds;
+	if (!bAnswering || *Address == From)
+	{
+		if (!Address.IsValid() || !(*Address == From))
+		{
+			Address = From.Clone();
+		}
+		LastAnswerAt = Now;
+	}
+	return true;
+}
+
+bool FChaosImpactDirectPath::IsFrom(const FInternetAddr& From) const
+{
+	return Heard.ContainsByPredicate([&From](const TSharedRef<FInternetAddr>& Known) { return *Known == From; });
+}
+
+const FInternetAddr* FChaosImpactDirectPath::GetDirect(const double Now)
+{
+	const bool bAnswering = Address.IsValid() && Now - LastAnswerAt < DirectStaleSeconds;
+	if (bAnswering != bDirect)
+	{
+		bDirect = bAnswering;
+		if (bAnswering)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Direct connection %u: %s"), ClientId, *Address->ToString(true));
+		}
+		else
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Direct connection %u lost: through the relay"), ClientId);
+		}
+	}
+	return bAnswering ? Address.Get() : nullptr;
+}
+
 // ---------------------------------------------------------------------------------------------------- Tunnel
 
 FChaosImpactRelayTunnel::FChaosImpactRelayTunnel(const FString& InRelayHost, const int32 InRoomPort, const FString& InRoomKey,
@@ -256,7 +498,15 @@ bool FChaosImpactRelayTunnel::Start()
 		WebSocket = MakeShared<FChaosImpactRelayWebSocket>();
 		if (!WebSocket->Start(ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort))) { WebSocket.Reset(); return false; }
 	}
-	else { RelaySocket = MakeUdpSocket(TEXT("ChaosImpact relay tunnel")); }
+	else
+	{
+		RelaySocket = MakeUdpSocket(TEXT("ChaosImpact relay tunnel"));
+		// A known port, for the guests on this network (unbound, it would only get one on its first send).
+		if (RelaySocket && !BindAnyPort(*RelaySocket))
+		{
+			UE_LOG(LogChaosImpact, Warning, TEXT("Relay tunnel: could not bind its socket (only through the relay)"));
+		}
+	}
 	if (!bWss && !RelaySocket)
 	{
 		return false;
@@ -353,8 +603,16 @@ uint32 FChaosImpactRelayTunnel::Run()
 	TArray<uint8> Hello;
 	Hello.Append(reinterpret_cast<const uint8*>("CIH1"), 4);
 	Hello.Append(reinterpret_cast<const uint8*>(Key.Get()), Key.Length());
+	// Direct lines: over UDP only (a WebSocket host has no address the guests could reach).
+	const bool bDirect = RelaySocket && !WebSocket && AllowDirect();
+	const TArray<uint8> Private = bDirect ? MakePrivateMessage(RelaySocket->GetPortNo()) : TArray<uint8>();
 	TSharedRef<FInternetAddr> From = Sockets()->CreateInternetAddr();
 	TArray<uint8> WsPacket;
+	bool bFromRelay = true;
+	// -CINetStats: what went each way, every five seconds.
+	const bool bStats = FParse::Param(FCommandLine::Get(), TEXT("CINetStats"));
+	double LastStatsAt = FPlatformTime::Seconds();
+	int32 FromGuestsDirect = 0, FromGuestsRelay = 0, ToGame = 0, FromGame = 0, ToGuestsDirect = 0, ToGuestsRelay = 0;
 	const auto ReceiveRelay = [&]()
 	{
 		if (WebSocket)
@@ -364,60 +622,112 @@ uint32 FChaosImpactRelayTunnel::Run()
 			FMemory::Memcpy(Buffer, WsPacket.GetData(), Size); return Size;
 		}
 		int32 Size = 0;
-		if (RelaySocket->RecvFrom(Buffer, sizeof(Buffer), Size, *From)) { return Size; }
+		if (RelaySocket->RecvFrom(Buffer, sizeof(Buffer), Size, *From))
+		{
+			bFromRelay = *From == *RelayAddr;
+			return Size;
+		}
 		return 0;
 	};
 	while (!bStopping)
 	{
 		const double Now = FPlatformTime::Seconds();
 		bool bBusy = false;
+		if (bStats && Now - LastStatsAt >= 5.0)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("NETSTATS host tunnel: guests %d direct / %d relay -> game %d; game %d -> guests %d direct / %d relay (%d socket(s))"),
+				FromGuestsDirect, FromGuestsRelay, ToGame, FromGame, ToGuestsDirect, ToGuestsRelay, Clients.Num());
+			LastStatsAt = Now;
+			FromGuestsDirect = FromGuestsRelay = ToGame = FromGame = ToGuestsDirect = ToGuestsRelay = 0;
+		}
+		if (bResetClients.Exchange(false))
+		{
+			TArray<uint32> Ids;
+			Clients.GetKeys(Ids);
+			for (const uint32 ClientId : Ids)
+			{
+				CloseClient(ClientId);
+			}
+		}
 		if (Now - LastKeepAlive >= RelayKeepAliveSeconds)
 		{
 			LastKeepAlive = Now;
 			SendToRelay(Hello.GetData(), Hello.Num());
+			if (bDirect)
+			{
+				SendToRelay(Private.GetData(), Private.Num());
+			}
 		}
-		// From the relay: a remote player's packet for the game, or news about them.
+		// From the relay: a remote player's packet for the game, or news about them. From elsewhere: a guest, directly.
 		int32 Read = 0;
 		while ((Read = ReceiveRelay()) > 0)
 		{
 			bBusy = true;
-			if (Read >= 4 && FMemory::Memcmp(Buffer, "CIHK", 4) == 0)
+			if (!bFromRelay)
+			{
+				if (bDirect)
+				{
+					FromGuestsDirect += IsDirectProbe(Buffer, Read) ? 0 : 1;
+					ReceiveDirect(Buffer, Read, *From, Now);
+				}
+			}
+			else if (Read >= 4 && FMemory::Memcmp(Buffer, "CIHK", 4) == 0)
 			{
 				LastAckAt = Now;
 			}
+			else if (IsMessage(Buffer, Read, "CI2PPEER", DirectHeaderSize))
+			{
+				if (bDirect)
+				{
+					Peers.FindOrAdd(ReadId(Buffer + 8)).Learn(Buffer, Read, Now);
+				}
+			}
 			else if (Read > 8 && FMemory::Memcmp(Buffer, "CIRD", 4) == 0)
 			{
-				const uint32 ClientId = (uint32(Buffer[4]) << 24) | (uint32(Buffer[5]) << 16) | (uint32(Buffer[6]) << 8) | uint32(Buffer[7]);
-				if (FClient* Client = FindOrOpenClient(ClientId, Now))
+				// (A guest's own message to the relay, passed on by a relay from before direct lines: not the game's.)
+				if (IsMessage(Buffer + 8, Read - 8, "CI2PPRIV"))
+				{
+					continue;
+				}
+				++FromGuestsRelay;
+				if (FClient* Client = FindOrOpenClient(ReadId(Buffer + 4), Now))
 				{
 					Client->LastSeen = Now;
 					int32 Sent = 0;
 					Client->Socket->SendTo(Buffer + 8, Read - 8, Sent, *LocalGameAddr);
+					++ToGame;
 				}
 			}
 			else if (Read >= 8 && FMemory::Memcmp(Buffer, "CIRX", 4) == 0)
 			{
-				CloseClient((uint32(Buffer[4]) << 24) | (uint32(Buffer[5]) << 16) | (uint32(Buffer[6]) << 8) | uint32(Buffer[7]));
+				CloseClient(ReadId(Buffer + 4));
+				Peers.Remove(ReadId(Buffer + 4));
 			}
 		}
-		// From the game: packets for each remote player, back through the relay.
+		// From the game: packets for each remote player, directly while their line answers, else through the relay.
 		TArray<uint32, TInlineAllocator<16>> Idle;
 		for (TPair<uint32, FClient>& Pair : Clients)
 		{
 			FClient& Client = Pair.Value;
-			Buffer[0] = 'C';
-			Buffer[1] = 'I';
-			Buffer[2] = 'H';
-			Buffer[3] = 'D';
-			Buffer[4] = uint8(Pair.Key >> 24);
-			Buffer[5] = uint8(Pair.Key >> 16);
-			Buffer[6] = uint8(Pair.Key >> 8);
-			Buffer[7] = uint8(Pair.Key);
+			FChaosImpactDirectPath* Peer = Peers.Find(Pair.Key);
+			FMemory::Memcpy(Buffer, "CIHD", 4);
+			WriteId(Buffer + 4, Pair.Key);
 			while (Client.Socket->RecvFrom(Buffer + 8, RelayMaxDatagram, Read, *From) && Read > 0)
 			{
 				bBusy = true;
 				Client.LastSeen = Now;
-				SendToRelay(Buffer, Read + 8);
+				++FromGame;
+				if (const FInternetAddr* Direct = Peer ? Peer->GetDirect(Now) : nullptr)
+				{
+					int32 Sent = 0;
+					RelaySocket->SendTo(Buffer + 8, Read, Sent, *Direct);
+					++ToGuestsDirect;
+				}
+				else
+				{
+					SendToRelay(Buffer, Read + 8);
+					++ToGuestsRelay;
+				}
 			}
 			if (Now - Client.LastSeen > RelayClientIdleSeconds)
 			{
@@ -427,6 +737,15 @@ uint32 FChaosImpactRelayTunnel::Run()
 		for (const uint32 ClientId : Idle)
 		{
 			CloseClient(ClientId);
+		}
+		for (auto It = Peers.CreateIterator(); It; ++It)
+		{
+			if (Now - It->Value.LastIntroducedAt > DirectForgetSeconds)
+			{
+				It.RemoveCurrent();
+				continue;
+			}
+			It->Value.Probe(*RelaySocket, Now);
 		}
 		if (!bBusy)
 		{
@@ -438,11 +757,40 @@ uint32 FChaosImpactRelayTunnel::Run()
 	return 0;
 }
 
+void FChaosImpactRelayTunnel::ReceiveDirect(const uint8* Data, const int32 Size, const FInternetAddr& From, const double Now)
+{
+	if (IsDirectProbe(Data, Size))
+	{
+		for (TPair<uint32, FChaosImpactDirectPath>& Pair : Peers)
+		{
+			if (Pair.Value.Receive(*RelaySocket, Data, Size, From, Now))
+			{
+				break;
+			}
+		}
+		return;
+	}
+	// The game's packet from a guest, at an address that probed with their token (anything else is dropped).
+	for (TPair<uint32, FChaosImpactDirectPath>& Pair : Peers)
+	{
+		if (Pair.Value.IsFrom(From))
+		{
+			if (FClient* Client = FindOrOpenClient(Pair.Key, Now))
+			{
+				Client->LastSeen = Now;
+				int32 Sent = 0;
+				Client->Socket->SendTo(Data, Size, Sent, *LocalGameAddr);
+			}
+			return;
+		}
+	}
+}
+
 FChaosImpactRelayGuestTunnel::~FChaosImpactRelayGuestTunnel() { Shutdown(); }
 
 bool FChaosImpactRelayGuestTunnel::Start()
 {
-	Socket = MakeUdpSocket(TEXT("ChaosImpact WSS guest loopback"));
+	Socket = MakeUdpSocket(TEXT("ChaosImpact relay guest loopback"));
 	if (!Socket) { return false; }
 	TSharedRef<FInternetAddr> Local = Sockets()->CreateInternetAddr();
 	bool bValid = false; Local->SetIp(TEXT("127.0.0.1"), bValid); Local->SetPort(0);
@@ -450,10 +798,24 @@ bool FChaosImpactRelayGuestTunnel::Start()
 	Socket->GetAddress(*Local);
 	LocalPort = Local->GetPort();
 	if (LocalPort <= 0) { Shutdown(); return false; }
-	WebSocket = MakeShared<FChaosImpactRelayWebSocket>();
-	if (!WebSocket->Start(ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort))) { Shutdown(); return false; }
-	Thread = FRunnableThread::Create(this, TEXT("ChaosImpactWSSGuest"), 0, TPri_AboveNormal);
-	UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS guest: 127.0.0.1:%d -> %s"), LocalPort, *ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort));
+	FString Target;
+	if (ChaosImpactRelay::UseWebSocket())
+	{
+		Target = ChaosImpactRelay::GetRoomWebSocketUrl(RoomPort);
+		WebSocket = MakeShared<FChaosImpactRelayWebSocket>();
+		if (!WebSocket->Start(Target)) { Shutdown(); return false; }
+	}
+	else
+	{
+		FString RelayHost;
+		int32 DirectoryPort = 0;
+		RelayAddr = SplitServer(ChaosImpactRelay::GetServer(), RelayHost, DirectoryPort) ? Resolve(RelayHost, RoomPort) : nullptr;
+		Outside = RelayAddr ? MakeUdpSocket(TEXT("ChaosImpact relay guest")) : nullptr;
+		if (!Outside || !BindAnyPort(*Outside)) { Shutdown(); return false; }
+		Target = RelayAddr->ToString(true);
+	}
+	Thread = FRunnableThread::Create(this, TEXT("ChaosImpactRelayGuest"), 0, TPri_AboveNormal);
+	UE_LOG(LogChaosImpact, Log, TEXT("Relay guest tunnel: 127.0.0.1:%d -> %s"), LocalPort, *Target);
 	return Thread != nullptr;
 }
 
@@ -462,9 +824,92 @@ void FChaosImpactRelayGuestTunnel::Shutdown()
 	if (Thread) { bStopping = true; Thread->WaitForCompletion(); delete Thread; Thread = nullptr; }
 	if (WebSocket) { WebSocket->Shutdown(); WebSocket.Reset(); }
 	if (Socket) { Sockets()->DestroySocket(Socket); Socket = nullptr; }
+	if (Outside) { Sockets()->DestroySocket(Outside); Outside = nullptr; }
 }
 
 uint32 FChaosImpactRelayGuestTunnel::Run()
+{
+	return WebSocket ? RunWebSocket() : RunUdp();
+}
+
+uint32 FChaosImpactRelayGuestTunnel::RunUdp()
+{
+	uint8 Buffer[RelayMaxDatagram];
+	TSharedRef<FInternetAddr> From = Sockets()->CreateInternetAddr();
+	TSharedPtr<FInternetAddr> GameAddress;
+	const bool bDirect = AllowDirect();
+	const TArray<uint8> Private = MakePrivateMessage(bDirect ? Outside->GetPortNo() : 0);
+	double LastIntroducedAt = -100.0;
+	// -CINetStats: what went each way, every five seconds.
+	const bool bStats = FParse::Param(FCommandLine::Get(), TEXT("CINetStats"));
+	double LastStatsAt = FPlatformTime::Seconds();
+	int32 FromGame = 0, ToHostDirect = 0, ToRelay = 0, FromHostDirect = 0, FromRelay = 0, ToGame = 0;
+	// Development: -CIDevDropTravel=<seconds> loses the game's packets that long after its second move to a next level
+	// (the third connection), as a stalled connection would, to see it made again.
+	float DevDropSeconds = 0.0f;
+	FParse::Value(FCommandLine::Get(), TEXT("CIDevDropTravel="), DevDropSeconds);
+	int32 GameAddresses = 0;
+	double DevDropUntil = 0.0;
+	while (!bStopping)
+	{
+		const double Now = FPlatformTime::Seconds();
+		int32 Read = 0;
+		int32 Sent = 0;
+		if (bStats && Now - LastStatsAt >= 5.0)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("NETSTATS guest tunnel: game %d -> host %d direct / %d relay; host %d direct / %d relay -> game %d (%s)"),
+				FromGame, ToHostDirect, ToRelay, FromHostDirect, FromRelay, ToGame, GameAddress ? *GameAddress->ToString(true) : TEXT("no game"));
+			LastStatsAt = Now;
+			FromGame = ToHostDirect = ToRelay = FromHostDirect = FromRelay = ToGame = 0;
+		}
+		// Every second: where this guest can be reached (the relay answers with the host's addresses).
+		if (Now - LastIntroducedAt >= GuestIntroduceSeconds)
+		{
+			LastIntroducedAt = Now;
+			Outside->SendTo(Private.GetData(), Private.Num(), Sent, *RelayAddr);
+		}
+		while (Socket->RecvFrom(Buffer, sizeof(Buffer), Read, *From) && Read > 0)
+		{
+			// The game comes from a new port each time it connects again (the room's next level); answers follow it.
+			if (!GameAddress || !(*From == *GameAddress))
+			{
+				GameAddress = From->Clone();
+				DevDropUntil = ++GameAddresses == 3 && DevDropSeconds > 0.0f ? Now + DevDropSeconds : 0.0;
+			}
+			if (Now < DevDropUntil)
+			{
+				continue;
+			}
+			const FInternetAddr* Direct = Host.GetDirect(Now);
+			Outside->SendTo(Buffer, Read, Sent, Direct ? *Direct : *RelayAddr);
+			++FromGame;
+			++(Direct ? ToHostDirect : ToRelay);
+		}
+		while (Outside->RecvFrom(Buffer, sizeof(Buffer), Read, *From) && Read > 0)
+		{
+			if (*From == *RelayAddr)
+			{
+				if (IsMessage(Buffer, Read, "CI2PHOST", DirectHeaderSize))
+				{
+					if (bDirect) { Host.Learn(Buffer, Read, Now); }
+					continue;
+				}
+			}
+			// From elsewhere: the host's probe or answer, or the game's packet from where the host was heard.
+			else if (Host.Receive(*Outside, Buffer, Read, *From, Now) || IsDirectProbe(Buffer, Read) || !Host.IsFrom(*From))
+			{
+				continue;
+			}
+			++(*From == *RelayAddr ? FromRelay : FromHostDirect);
+			if (GameAddress) { Socket->SendTo(Buffer, Read, Sent, *GameAddress); ++ToGame; }
+		}
+		Host.Probe(*Outside, Now);
+		Outside->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMicroseconds(500));
+	}
+	return 0;
+}
+
+uint32 FChaosImpactRelayGuestTunnel::RunWebSocket()
 {
 	uint8 Buffer[RelayMaxDatagram];
 	TSharedRef<FInternetAddr> From = Sockets()->CreateInternetAddr();
@@ -475,8 +920,10 @@ uint32 FChaosImpactRelayGuestTunnel::Run()
 		int32 Read = 0;
 		while (Socket->RecvFrom(Buffer, sizeof(Buffer), Read, *From) && Read > 0)
 		{
-			if (!GameAddress) { GameAddress = From->Clone(); }
-			if (*From == *GameAddress) { WebSocket->Send(Buffer, Read); }
+			// This machine's game is the only one sending here; it comes from a new port each time it connects again
+			// (the room moving to its next level), and the answers follow it there.
+			if (!GameAddress || !(*From == *GameAddress)) { GameAddress = From->Clone(); }
+			WebSocket->Send(Buffer, Read);
 		}
 		while (WebSocket->Receive(Data))
 		{

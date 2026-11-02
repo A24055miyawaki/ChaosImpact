@@ -125,7 +125,7 @@ async def start_server(relay, bind, port, ssl_context=None):
                 writer.cancel()
                 await asyncio.gather(writer, return_exceptions=True)
             if room and addr in room.clients:
-                client_id, _ = room.clients.pop(addr)
+                client_id = room.clients.pop(addr)[0]
                 room.addresses.pop(client_id, None)
                 if room.host_addr:
                     room.send(b"CIRX" + client_id.to_bytes(4, "big"), room.host_addr)

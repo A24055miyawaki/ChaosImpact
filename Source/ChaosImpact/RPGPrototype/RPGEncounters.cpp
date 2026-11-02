@@ -1,7 +1,12 @@
 #include "RPGPrototype.h"
+#include "RPGEnemyMoves.h"
+#include "RPGTuning.h"
 #include "RPGAdventure.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 bool ARPGPrototypeSpawnPoint::FindMemberFloor(int32 Slot, FVector& At) const
@@ -68,6 +73,23 @@ void ARPGPrototypeSpawnPoint::TickEncounter(ARPGPrototypeGameMode* Mode,double N
     if(bWaveSpawned || Distance>PreloadRadius || Now<NextSpawnAt || (bCleared && Distance<EngageRadius+250.f)) { return; }
     const int32 Total=FMath::Clamp(ChaserCount,0,8)+FMath::Clamp(ThrowerCount,0,8);
     if(Total==0) { return; }
+    // Who does what: the group's chasers and throwers, some of them (by its level) a charger, a bomber or a sniper.
+    TArray<ERPGGruntRole> Roles;
+    for(int32 Slot=0;Slot<Total;++Slot) { Roles.Add(Slot<FMath::Clamp(ChaserCount,0,8)?ERPGGruntRole::Chaser:ERPGGruntRole::Thrower); }
+    const auto Swap=[&](ERPGGruntRole From,ERPGGruntRole To) { const int32 At=Roles.FindLast(From); if(At!=INDEX_NONE) { Roles[At]=To; } };
+    if(EnemyLevel>=3) { Swap(ERPGGruntRole::Chaser,ERPGGruntRole::Charger); }
+    if(EnemyLevel>=5) { Swap(ERPGGruntRole::Thrower,ERPGGruntRole::Bomber); }
+    if(EnemyLevel>=7) { Swap(ERPGGruntRole::Thrower,ERPGGruntRole::Sniper); }
+    if(EnemyLevel>=9) { Swap(ERPGGruntRole::Chaser,ERPGGruntRole::Bomber); }
+    const int32 EliteSlot=EnemyLevel>=RPGTuning::EliteFromLevel && FMath::FRand()<RPGTuning::EliteChance?FMath::RandRange(0,Total-1):INDEX_NONE;
+    // Now and then a named one with them (one at a time in the whole world).
+    int32 NamedSlot=INDEX_NONE;
+    if(EnemyLevel>=RPGTuning::NamedFromLevel && (FMath::FRand()<RPGTuning::NamedChance || FParse::Param(FCommandLine::Get(),TEXT("CINamed"))))
+    {
+        bool bAny=false;
+        for(TActorIterator<ARPGPrototypeCharacter> It(GetWorld());It;++It) { if(It->IsNamed() && !It->IsEliminated()) { bAny=true; break; } }
+        if(!bAny) { NamedSlot=FMath::RandRange(0,Total-1); }
+    }
     for(int32 Slot=0;Slot<Total;++Slot)
     {
         FVector At;
@@ -77,10 +99,11 @@ void ARPGPrototypeSpawnPoint::TickEncounter(ARPGPrototypeGameMode* Mode,double N
             ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
         if(!Grunt) { continue; }
         Grunt->SetEnemy(true,EnemyLevel); Grunt->SpawnPoint=this; Grunt->EncounterHome=At;
-        Grunt->EncounterRole=Slot<FMath::Clamp(ChaserCount,0,8)?ERPGGruntRole::Chaser:ERPGGruntRole::Thrower;
+        Grunt->EncounterRole=Roles[Slot];
         Grunt->SetCPUNumber(Slot+1); Grunt->FinishSpawning(Where);
+        if(Slot==NamedSlot) { Grunt->MakeNamed(); } else if(Slot==EliteSlot) { Grunt->MakeElite(); }
         Grunt->EncounterHome=Grunt->GetActorLocation();
-        Grunt->GetCharacterMovement()->MaxWalkSpeed=Grunt->EncounterRole==ERPGGruntRole::Chaser?330.f:270.f;
+
         auto* CPU=GetWorld()->SpawnActor<ARPGPrototypeGruntController>();
         if(CPU) { CPU->Possess(Grunt); }
         // Bind through the game mode, just like the legacy single-enemy spawner.
@@ -129,6 +152,8 @@ void ARPGPrototypeGruntController::TickEncounter(float DeltaSeconds)
     auto* Target=Camp->GetEncounterTarget();
     const double Now=GetWorld()->GetTimeSeconds();
     const bool Aggro=Camp->bEnabled && Target && !Target->IsEliminated();
+    // Standing still for its own warned attack (the charge itself is the warning's doing).
+    if(Now<HoldUntil) { return; }
     if(Grunt->IsChargingThrow())
     {
         if(!Aggro) { Grunt->CancelChargingThrow(); NextThrowAt=Now+1; }
@@ -149,13 +174,18 @@ void ARPGPrototypeGruntController::TickEncounter(float DeltaSeconds)
         FHitResult Wall;
         const bool Blocked=Aggro && GetWorld()->LineTraceSingleByObjectType(Wall,Here,Goal,FCollisionObjectQueryParams(ECC_WorldStatic),Q);
         if(Now>=NextWanderAt) { StrafeSign=FMath::RandBool()?1:-1; NextWanderAt=Now+FMath::FRandRange(1.5f,2.8f); }
+        // How close each keeps: chasers in your face, chargers at a run-up, bombers and snipers well back.
+        const ERPGGruntRole GruntRole=Grunt->EncounterRole;
+        const float Far=Chaser?300:GruntRole==ERPGGruntRole::Charger?650:GruntRole==ERPGGruntRole::Bomber?900:GruntRole==ERPGGruntRole::Sniper?1400:780;
+        const float Near=Chaser?145:GruntRole==ERPGGruntRole::Charger?300:GruntRole==ERPGGruntRole::Bomber?550:GruntRole==ERPGGruntRole::Sniper?1000:470;
         if(!Aggro)
         {
             const FVector Patrol=Grunt->EncounterHome+FVector(FMath::Cos(Now*.3+Grunt->GetCPUNumber()),FMath::Sin(Now*.3+Grunt->GetCPUNumber()),0)*55;
             if(FVector::DistSquared2D(Patrol,Here)>FMath::Square(45.f)) { Desired=(Patrol-Here).GetSafeNormal2D(); }
         }
-        else if(Blocked || Distance>(Chaser?300:780)) { Desired=Toward; }
-        else if(Distance<(Chaser?145:470)) { Desired=-Toward; }
+        else if(TrySpecialAttack(Grunt,Target,Distance,Blocked,Now)) { EncounterMove=FVector::ZeroVector; return; }
+        else if(Blocked || Distance>Far) { Desired=Toward; }
+        else if(Distance<Near) { Desired=-Toward; }
         else { Desired=FVector::CrossProduct(FVector::UpVector,Toward)*StrafeSign*.6f; }
         FVector Separate=FVector::ZeroVector;
         for(const auto& Other:Camp->Members)
@@ -175,7 +205,7 @@ void ARPGPrototypeGruntController::TickEncounter(float DeltaSeconds)
             EncounterMove=Move; break;
         }
         EncounterMoveScale=Aggro?1.f:.65f;
-        if(Aggro)
+        if(Aggro && (Chaser || GruntRole==ERPGGruntRole::Thrower))
         {
             Grunt->SetAIAimDirection(Toward);
             const float Range=Chaser?420.f:1150.f;
@@ -195,4 +225,39 @@ void ARPGPrototypeGruntController::TickEncounter(float DeltaSeconds)
     }
     // Supply input every frame, unlike the legacy controller's 0.1s-tick movement pulses.
     if(!EncounterMove.IsNearlyZero()) { Grunt->AddMovementInput(EncounterMove,EncounterMoveScale); }
+}
+
+bool ARPGPrototypeGruntController::TrySpecialAttack(ARPGPrototypeCharacter* Grunt,ARPGPrototypeCharacter* Target,float Distance,bool bBlocked,double Now)
+{
+    const ERPGGruntRole GruntRole=Grunt->EncounterRole;
+    if(GruntRole==ERPGGruntRole::Chaser || GruntRole==ERPGGruntRole::Thrower || Now<NextThrowAt) { return false; }
+    auto* Mode=GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>();
+    const FVector Here=Grunt->GetActorLocation();
+    const FVector Toward=(Target->GetActorLocation()-Here).GetSafeNormal2D();
+    // Its hits grow with its level (an elite's harder still).
+    const float Power=(RPGTuning::EnemyPowerBase+(Grunt->GetRPGLevel()-1)*RPGTuning::EnemyPowerPerLevel)*(Grunt->IsElite()?RPGTuning::ElitePower:1.0f);
+    if(GruntRole==ERPGGruntRole::Charger)
+    {
+        if(Distance>900 || bBlocked || !Mode || !Mode->ReserveGruntAttack(Grunt,Target,1.3f)) { return false; }
+        Grunt->SetAIAimDirection(Toward);
+        ARPGGroundStrike::Lane(Grunt,ARPGGroundStrike::Charge,Here,Toward,FMath::Min(Distance+250,1000.0f),95,.75f,Power*1.25f);
+        HoldUntil=Now+.75; NextThrowAt=Now+4.2+FMath::FRandRange(0.0,1.0);
+        return true;
+    }
+    if(GruntRole==ERPGGruntRole::Bomber)
+    {
+        if(Distance>1150 || !Mode || !Mode->ReserveGruntAttack(Grunt,Target,1.4f)) { return false; }
+        // Where they are about to be.
+        const FVector Lead=(Target->GetVelocity()*.8f).GetClampedToMaxSize2D(400);
+        ARPGGroundStrike::Lob(Grunt,Target->GetActorLocation()+Lead,FMath::Min(210.0f+Grunt->GetRPGLevel()*3,280.0f),1.15f,Power*1.3f);
+        HoldUntil=Now+.4; NextThrowAt=Now+4.0+FMath::FRandRange(0.0,1.0);
+        return true;
+    }
+    // The sniper: a long thin line, then a shot straight through.
+    if(Distance>1800 || bBlocked || !Mode || !Mode->ReserveGruntAttack(Grunt,Target,1.6f)) { return false; }
+    const FVector Aim=(Target->GetActorLocation()+(Target->GetVelocity()*.5f).GetClampedToMaxSize2D(300)-Here).GetSafeNormal2D();
+    Grunt->SetAIAimDirection(Aim);
+    ARPGGroundStrike::Lane(Grunt,ARPGGroundStrike::Snipe,Here+Aim*60,Aim,1900,50,1.25f,Power*1.6f);
+    HoldUntil=Now+1.25; NextThrowAt=Now+5.0+FMath::FRandRange(0.0,1.2);
+    return true;
 }

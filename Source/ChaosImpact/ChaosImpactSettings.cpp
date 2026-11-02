@@ -224,6 +224,15 @@ namespace
 						Profile.Keys[Device][Action][Slot] = Keys[Slot].IsValid() ? Keys[Slot] : FKey();
 					}
 				}
+				// The menu button moved from P to Escape: a profile still on the old default follows it.
+				if (Device == 0)
+				{
+					FKey& PauseKey = Profile.Keys[Device][static_cast<int32>(EAction::Pause)][0];
+					if (PauseKey == EKeys::P)
+					{
+						PauseKey = EKeys::Escape;
+					}
+				}
 				// Old profiles predate tackle. Keep custom bindings; migrate only the old RMB cancel default.
 				FString SavedTackle;
 				if (!GConfig->GetString(*Section, *FString::Printf(TEXT("%s_Tackle"), DeviceTag(static_cast<EDevice>(Device))), SavedTackle, GGameUserSettingsIni))
@@ -537,7 +546,7 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 		case EChaosImpactAction::MoveDown: return bMouse ? FKey() : EKeys::S;
 		case EChaosImpactAction::MoveLeft: return bMouse ? FKey() : EKeys::A;
 		case EChaosImpactAction::MoveRight: return bMouse ? FKey() : EKeys::D;
-		case EChaosImpactAction::Pause: return bMouse ? FKey() : EKeys::P;
+		case EChaosImpactAction::Pause: return bMouse ? FKey() : EKeys::Escape;
 		case EChaosImpactAction::TrainingMenu: return bMouse ? FKey() : EKeys::T;
 		case EChaosImpactAction::LobbyReady: return GetKey(Profile, Device, Action, Slot);
 		case EChaosImpactAction::LobbySpectate: return GetKey(Profile, Device, Action, Slot);
@@ -641,7 +650,7 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 		case EAction::Jump: return Slot == 0 ? EKeys::SpaceBar : FKey();
 		case EAction::SwapBall: return Slot == 0 ? EKeys::Q : FKey();
 		case EAction::DropBall: return Slot == 0 ? EKeys::F : FKey();
-		case EAction::Pause: return Slot == 0 ? EKeys::P : FKey();
+		case EAction::Pause: return Slot == 0 ? EKeys::Escape : FKey();
 		case EAction::TrainingMenu: return Slot == 0 ? EKeys::T : EKeys::Hyphen;
 		case EAction::LobbyReady: return Slot == 0 ? EKeys::R : FKey();
 		case EAction::LobbySpectate: return Slot == 0 ? EKeys::V : FKey();

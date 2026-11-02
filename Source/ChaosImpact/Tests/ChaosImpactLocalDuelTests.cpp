@@ -5,6 +5,7 @@
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactResults.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/DamageEvents.h"
@@ -279,6 +280,17 @@ namespace
 				}
 				Test->TestEqual(TEXT("The player wins the match"), Duel.MatchWinner, 0);
 				Test->TestTrue(TEXT("2 - 1"), Duel.Wins[0] == 2 && Duel.Wins[1] == 1);
+				{
+					// Deliberately give the loser more points: round wins must still determine every result display.
+					auto* Loser = CastChecked<AChaosImpactPlayerState>(Match->Duel.Sides[1]);
+					const int32 OldPoints = Loser->Points;
+					Loser->Points = 999;
+					const auto Data = FChaosImpactResultsData::Capture(Match, PC);
+					Test->TestTrue(TEXT("Results identify duel rules"), Data.bDuel);
+					Test->TestFalse(TEXT("Round winner is not a point-based draw"), Data.bTie);
+					Test->TestTrue(TEXT("Duel podium follows rounds, not points"), Data.Entries.Num() == 2 && Data.Entries[0].Rank == 1 && Data.Entries[0].RoundsWon == 2 && Data.Entries[1].Rank == 2 && Data.Entries[1].RoundsWon == 1);
+					Loser->Points = OldPoints;
+				}
 				Test->TestEqual(TEXT("The winner tops the ranking"), Match->GetRanking().IsEmpty() ? nullptr
 					: static_cast<APlayerState*>(Match->GetRanking()[0]), Duel.Sides[0].Get());
 				Shot(TEXT("9_YouWin.png"));

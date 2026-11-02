@@ -263,8 +263,4 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> PaintMaterial;
-
-	/** Letters painted on the deck (the berth numbers). */
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> StencilMaterial;
 };

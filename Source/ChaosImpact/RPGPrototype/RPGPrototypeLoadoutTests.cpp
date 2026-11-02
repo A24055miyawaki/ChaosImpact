@@ -36,7 +36,8 @@ public:
         {
             OriginalMini=P->UsesMiniMenu(); if(OriginalMini) { P->ToggleMenuStyle(); }
             for(TActorIterator<ARPGPrototypeCharacter> It(W);It;++It) { if(It->IsGrunt()) { It->SetTrainingMenuFrozen(true); } }
-            for(TActorIterator<ARPGPrototypeBoss> It(W);It;++It) { Boss=*It; }
+            // The ruins' Maguro (more bosses stand elsewhere since 2026-11).
+            for(TActorIterator<ARPGPrototypeBoss> It(W);It;++It) { if(It->Kind==ERPGBossKind::Maguro) { Boss=*It; } }
             if(!Test->TestTrue(TEXT("Far-field Maguro is placed"),Boss.IsValid())) { return true; }
             Test->TestTrue(TEXT("Maguro is in the ruins, not colony"),Boss->GetActorLocation().X>12500 && !World->IsInColony(Boss->GetActorLocation()));
             Test->TestEqual(TEXT("Maguro starts at level 10"),Boss->GetRPGLevel(),10);

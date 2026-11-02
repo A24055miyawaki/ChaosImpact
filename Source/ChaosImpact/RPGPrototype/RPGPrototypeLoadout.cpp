@@ -42,10 +42,11 @@ void ARPGPrototypeCharacter::CancelEquipmentChange()
 }
 void ARPGPrototypeCharacter::SwitchInventoryPage(int32 Page)
 {
-    if(HasConfirmation() || Page<0 || Page>4 || ((Page==1 || Page==2) && !IsAtMerchant())) { return; }
+    if(HasConfirmation() || Page<0 || Page>ERPGBagPage::Shop || ((Page==1 || Page==2 || Page==ERPGBagPage::Shop) && !IsAtMerchant())) { return; }
     BagPage=Page; bChoosingEquipment=bChoosingDestination=false; DetailScroll=TuneSelection=0;
     // Tunes exist only for balls, so the tune workshop always lists balls.
     if(Page==ERPGBagPage::Tune) { BagFilter=ERPGBagFilter::Ball; }
+    if(Page==ERPGBagPage::Shop) { RefreshShopStock(); ShopSelection=FMath::Clamp(ShopSelection,0,FMath::Max(0,GetShopStock().Num()-1)); ShowLesson(TEXT("Shop")); }
     if(Page==0) { SelectEquipment(EquipmentSelection); }
     else { const auto List=FilteredBag(); if(!List.Contains(BagSelection)) { BagSelection=List.Num()?List[0]:INDEX_NONE; } }
 }

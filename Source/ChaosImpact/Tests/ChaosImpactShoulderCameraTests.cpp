@@ -144,8 +144,8 @@ namespace
 				}
 				PC->ToggleTrainingOverlay();
 				Test->TestEqual(TEXT("Training menu includes camera without losing ball list"),PC->GetMenuWidget()->GetEntryCount(),9);
-				for (int I = 0; I < 6; ++I) { PC->GetMenuWidget()->Navigate(EKeys::Down); }
-				Test->TestEqual(TEXT("Camera is menu row 6"),PC->GetMenuWidget()->GetSelectedIndex(),6);
+				for (int I = 0; I < 5; ++I) { PC->GetMenuWidget()->Navigate(EKeys::Down); }
+				Test->TestEqual(TEXT("Camera is menu row 5"),PC->GetMenuWidget()->GetSelectedIndex(),5);
 				PC->GetMenuWidget()->ConfirmSelection();
 				Test->TestTrue(TEXT("Menu actually switches camera"),PC->IsTrainingShoulderCameraEnabled());
 				Shot(TEXT("01-TrainingMenu.png"));
@@ -187,8 +187,7 @@ namespace
 			case 7:
 				Test->TestEqual(TEXT("Release actually throws one held ball"),Player->GetCarriedBallCount(),1);
 				ClearBalls();
-				// Compare real ball launch parameters for every kind, both flight modes, three charges and two pitches.
-				for (int ModeIndex = 0; ModeIndex < 2; ++ModeIndex)
+				// Compare real ball launch parameters for every kind, three charges and two pitches.
 				{
 					for (int TypeIndex = 0; TypeIndex < ChaosImpactBallTypes::Count; ++TypeIndex)
 					{
@@ -205,7 +204,6 @@ namespace
 								SpeedA == SpeedB && UpA == UpB && ModeA == ModeB && OverA == OverB);
 						}
 					}
-					PC->ToggleBallFlightMode();
 				}
 				Camera->AddLookDegrees(-Camera->GetViewRotation().Yaw,-Camera->GetViewRotation().Pitch - 12);
 				{

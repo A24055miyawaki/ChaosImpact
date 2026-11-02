@@ -331,7 +331,9 @@ namespace
 				return false;
 			}
 			case 100:
-				// Thrown for real: from over the head.
+				// Thrown for real: from over the head. (The CPU stands aside: a big snowball now comes down on whoever is in
+				// its way, and the hit with its big size is tried below on its own.)
+				Restore(CPU, Origin - Toward * 900.0f);
 				Player->BeginThrowInput();
 				Player->EndThrowInput();
 				Stage = 101;

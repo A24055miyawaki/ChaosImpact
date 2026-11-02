@@ -102,6 +102,8 @@ public:
 	void CancelChargingThrow();
 	/** Server: knocked loose: every ball carried falls and rolls away (a charge is called off). */
 	virtual void LoseCarriedBalls();
+	/** This character's tackle has just hit someone (the host). */
+	virtual void OnTackledSomeone(AChaosImpactCharacter* Victim) {}
 	void BeginThrowInput();
 	/** Hardware input only: synchronizes the polling fallback without changing the scripted/CPU API. */
 	void BeginBoundThrowInput();
@@ -131,6 +133,8 @@ public:
 	UChaosImpactBallFormComponent* GetBallForm() const { return BallForm; }
 	bool IsInBallForm() const;
 	UChaosImpactTackleComponent* GetTackle() const { return Tackle; }
+	/** A model of its own (an RPG boss's) whatever its player state says; INDEX_NONE for the usual pick. */
+	int32 LookOverride = INDEX_NONE;
 	FVector GetBuddyHoldLocation(int32 Slot) const;
 	/** Snow: how far (0-1) the snowball in Slot has grown as its carrier walked; 0 for any other ball. */
 	float GetSnowGrowth(int32 Slot) const;
@@ -170,6 +174,11 @@ public:
 		float& OutUpSpeed, EChaosImpactBallFlightMode& OutMode, bool& bOutOverhead) const;
 	/** Where a ball held up over the head sits, from the capsule's centre. */
 	FVector GetOverheadHoldOffset(EChaosImpactBallType Type, float Scale) const;
+	/**
+	 * How fast a big snowball leaves over the head: FullSpeed, or slower so it comes down on the nearest opponent standing
+	 * in its way (ahead, within its full reach and within its width of the aim) instead of sailing over them.
+	 */
+	float GetOverheadSnowSpeed(float Scale, float FullSpeed) const;
 	/** Seconds until this character could start a dash (0: now): stamina, the cooldown and a dash in progress. */
 	float GetDashReadyInSeconds() const;
 	/** Seconds left of the dash in progress (0 when not dashing). */
@@ -240,6 +249,9 @@ public:
 	void RequestAIDash(const FVector& Direction);
 	/** Freezes only character actions; the world and physics keep ticking. */
 	void SetTrainingMenuFrozen(bool bFrozen);
+	/** Server-only royale transitions; do not teleport, pause, cancel actions or clear in-flight balls. */
+	void PrepareBattleSuddenDeath();
+	void EliminateFromBattleRoyale();
 	bool IsTrainingMenuFrozen() const { return bTrainingMenuFrozen; }
 	/** On solo mode's world map: the player only walks (the map takes clicks and the confirm button), no battle HUD. */
 	void SetMapWalker(bool bWalker);
@@ -255,6 +267,8 @@ public:
 	bool IsThrowAnimationPlaying() const { return bThrowAnimationActive; }
 	bool IsPersonalAimGuideVisible() const;
 	float GetAimGuideLength() const { return AimGuideLength; }
+	/** The aim arrow's height over the character's middle (it lies flat there; mouse aim reads the cursor in that plane). */
+	static constexpr float AimGuideHeight = 54.0f;
 	FVector GetAimGuideStartWorldLocation() const;
 	bool IsEliminated() const { return bEliminated; }
 	/** The last-hit smoke is rising from this character. */
@@ -477,7 +491,15 @@ protected:
 	 * to meet them (where a runner will be when the ball gets there), and how closely Direction already points at them.
 	 */
 	bool FindAimAssistTarget(const FVector& Direction, float AngleDegrees, FVector& OutToward, float& OutDot) const;
+	/** A point in the world under the mouse (where to walk, where a nova lands): what the cursor is over. */
 	bool FindMouseAimPoint(FVector& OutAimPoint) const;
+	/**
+	 * Which way to aim at the mouse: toward the point under the cursor in the aim arrow's own flat plane, so the arrow
+	 * (and the throw, the dash, the tackle) points exactly at the cursor on screen.
+	 */
+	bool FindMouseAimDirection(FVector& OutDirection) const;
+	/** The mouse's ray into the world, from the absolute pointer the painted reticle is drawn at. */
+	bool DeprojectMouseRay(FVector& OutOrigin, FVector& OutDirection) const;
 	void TryCreateChargeWidget();
 	bool SpawnBall(float ChargeAlpha);
 	void UpdateBallPresentation();
@@ -1072,6 +1094,7 @@ protected:
 	float ServerAuthoritativeUntil = 0.0f;
 	/** Set while applying a client-reported hit, whose dash invulnerability was already checked by the owner. */
 	bool bApplyingReportedHit = false;
+	bool bApplyingRoyaleElimination = false;
 	/** The owner already started the throw motion locally; skip the echo from the server. */
 	bool bPredictedThrowAnimation = false;
 	/** Client: the cosmetic ball thrown on this screen before the server's ball arrives. */

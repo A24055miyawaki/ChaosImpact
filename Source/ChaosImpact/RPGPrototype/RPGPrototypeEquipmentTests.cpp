@@ -147,7 +147,8 @@ public:
             if(!Test->TestTrue(TEXT("Placed merchant exists"),Merchant.IsValid())) { return true; }
             P->SetActorLocation(Merchant->GetActorLocation()+FVector(210,0,110),false,nullptr,ETeleportType::TeleportPhysics);
             if(!Test->TestTrue(TEXT("Interaction opens merchant"),P->OpenMerchant(Merchant.Get()))) { return true; }
-            P->AddRubies(10000); auto Ball=FRPGPrototypeItem::Make(EChaosImpactBallType::Fire,3,ERPGPrototypeRarity::Legend);
+            // Tunes cost tune shards too (2026-11).
+            P->AddRubies(10000); P->AddTuneShards(30,FString()); auto Ball=FRPGPrototypeItem::Make(EChaosImpactBallType::Fire,3,ERPGPrototypeRarity::Legend);
             Ball.Intrinsics={{TEXT("FPillar"),32,1},{TEXT("FWalk"),16,1}};
             const auto& Pool=RPGEquipment::Tunes(EChaosImpactBallType::Fire);
             Trail=Pool.IndexOfByPredicate([](const FRPGModDefinition& D){return D.Key==TEXT("FireTrail");});

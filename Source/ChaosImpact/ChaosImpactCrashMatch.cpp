@@ -160,6 +160,7 @@ void AChaosImpactGameMode::UpdateCrashMatch()
 void AChaosImpactGameMode::HandleMatchTimeExpired()
 {
 	auto* Match = GetGameState<AChaosImpactGameState>();
+	if (Match && Match->IsBattleRoyale()) { HandleRoyaleTimeExpired(); return; }
 	if (!Match || !Match->Rules.bCrashBall) { EndMatch(); return; }
 	UpdateCrashMatch();
 	if (Match->Phase != EChaosImpactOnlinePhase::Match) { return; }

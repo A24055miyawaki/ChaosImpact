@@ -5,6 +5,7 @@
 #include "ChaosImpactMatchAnnouncerWidget.generated.h"
 
 class UChaosImpactResultsView;
+class UChaosImpactChargeWidget;
 class AChaosImpactGameState;
 
 /**
@@ -30,6 +31,9 @@ protected:
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactResultsView> ResultsView;
+	/** Current P1 room presentation, reused in the full viewport rather than clipped inside P1's half. */
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactChargeWidget> OnlineRoomOverlay;
 
 	/**
 	 * クラッシュボール: both teams' counts beside the clock, and under it the gauge from the red goal to the blue
@@ -52,6 +56,18 @@ private:
 		const AChaosImpactGameState& Match, float Time) const;
 	/** The duel's side shown on the left: this player's own (side 0 when watching or sharing the screen). */
 	int32 GetDuelLeftSide(const AChaosImpactGameState& Match) const;
+	/**
+	 * バトルロイヤル: the clock in the middle (red-hot at the end, orange through sudden death), the survivors on its left,
+	 * and under it everyone as a tile with their health, going dark with their place as they fall.
+	 */
+	void PaintRoyaleHUD(const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer, const AChaosImpactGameState& Match) const;
+	/** What the royale HUD showed last, so changes play out (a tile breaking, the count flashing, the last two). */
+	mutable double RoyaleTrackedStart = -1.0;
+	mutable TArray<double> RoyaleOutSeenAt;
+	mutable int32 RoyaleShownAlive = -1;
+	mutable double RoyaleAliveChangedAt = -100.0;
+	mutable int32 RoyaleShownSides = -1;
+	mutable double RoyaleLastTwoAt = -100.0;
 
 	/** The call-outs' sounds (the countdown's ticks, GO!, the last minute, FINISH, the podium), as each arrives. */
 	void UpdateSounds();

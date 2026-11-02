@@ -197,7 +197,7 @@ void AChaosImpactSimaeBoss::SetDormant(const bool bNewDormant)
 		WakeTime = GetWorld()->GetTimeSeconds();
 		RestLeft = 1.0f;
 		ShakeNearby(GetActorLocation(), 5000.0f, 0.35f, 0.6f);
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindTornado, GetActorLocation(), 1.0f, 0.55f);
+		Sound(EChaosImpactSfx::WindTornado, GetActorLocation(), 1.0f, 0.55f);
 		AChaosImpactSimaeBlast::Play(GetWorld(), ChaosImpactSimaeFx::FindGround(GetWorld(), GetActorLocation(), this), 700.0f, 0.0f, false, 0);
 	}
 }
@@ -265,8 +265,11 @@ bool AChaosImpactSimaeBoss::Strike(AChaosImpactSimaeBoss* Boss, AChaosImpactChar
 	{
 		Victim->LoseCarriedBalls();
 	}
-	Victim->ApplyBlastKnockback(Boss->KeepInArena(Victim, Knockback));
+	const FVector Knock = Boss->KeepInArena(Victim, Knockback);
+	Victim->ApplyBlastKnockback(Knock);
 	Victim->AddCameraShake(0.7f, 0.45f);
+	// Online: someone moved by their own machine is thrown there.
+	if (ChaosImpactSimaeFx::StrikeHook) { ChaosImpactSimaeFx::StrikeHook(Victim, Knock, bDropBalls); }
 	return true;
 }
 
@@ -375,6 +378,12 @@ FVector AChaosImpactSimaeBoss::KeepInArena(const AChaosImpactCharacter* Victim, 
 
 void AChaosImpactSimaeBoss::ShakeNearby(const FVector& Where, const float Radius, const float Strength, const float Seconds) const
 {
+	if (HasAuthority())
+	{
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 9; Fx.A = Where; Fx.F0 = Radius; Fx.F1 = Strength; Fx.F2 = Seconds;
+		ChaosImpactSimaeFx::SendFx(GetWorld(), Fx);
+	}
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
 		if (It->IsPlayerControlled() && It->IsLocallyControlled())
@@ -608,7 +617,7 @@ void AChaosImpactSimaeBoss::BeginMove(const EChaosImpactSimaeMove NewMove)
 		MovePoint = ChaosImpactSimaeFx::FindGround(World, Landing + Toward * Reach, this);
 		MoveWarning = AChaosImpactSimaeWarning::SpawnCircle(World, MovePoint, Radius, SlamImpactAt / MoveRate, SimaeWarningRed);
 		PlayClip(SlamClip, false, MoveRate);
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharThrowHeavy, MoveStart, 1.0f, 0.5f);
+		Sound(EChaosImpactSfx::CharThrowHeavy, MoveStart, 1.0f, 0.5f);
 		break;
 	}
 	case EChaosImpactSimaeMove::Throw:
@@ -645,7 +654,7 @@ void AChaosImpactSimaeBoss::BeginMove(const EChaosImpactSimaeMove NewMove)
 	case EChaosImpactSimaeMove::Avalanche:
 		MoveRate = 1.7f;
 		PlayClip(PowerUpClip, false, MoveRate);
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, MoveStart, 0.8f, 0.6f);
+		Sound(EChaosImpactSfx::NovaCharge, MoveStart, 0.8f, 0.6f);
 		break;
 	case EChaosImpactSimaeMove::Charge:
 	{
@@ -740,7 +749,7 @@ void AChaosImpactSimaeBoss::TickSlam(const float DeltaSeconds)
 			// Up it goes: snow blown off the ground where it jumped.
 			ChaosImpactSimaeFx::PlaySnowDust(GetWorld(), ChaosImpactSimaeFx::FindGround(GetWorld(), GetActorLocation(), this),
 				380.0f, 0.2f, 60.0f);
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindGust, GetActorLocation(), 1.0f, 0.6f);
+			Sound(EChaosImpactSfx::WindGust, GetActorLocation(), 1.0f, 0.6f);
 		}
 		const float Air = Smooth01((MoveTime - SlamTakeoff) / (SlamImpactAt - SlamTakeoff));
 		FVector At = FMath::Lerp(MoveStart, Landing, Air);
@@ -812,8 +821,8 @@ void AChaosImpactSimaeBoss::SlamImpact()
 	}
 	ChaosImpactSimaeFx::PlaySnowBurst(World, Ground, 1.0f);
 	ShakeNearby(Ground, Radius * 3.5f, 1.0f, 0.7f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBlast, Ground, 1.0f, bFullPower ? 0.6f : 0.75f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SnowBurst, Ground, 1.0f, 0.6f);
+	Sound(EChaosImpactSfx::NovaBlast, Ground, 1.0f, bFullPower ? 0.6f : 0.75f);
+	Sound(EChaosImpactSfx::SnowBurst, Ground, 1.0f, 0.6f);
 }
 
 // ---- 剛球
@@ -914,7 +923,7 @@ void AChaosImpactSimaeBoss::ReleaseGoukyu()
 	const FVector Ground = ChaosImpactSimaeFx::FindGround(World, GetActorLocation(), this);
 	AChaosImpactSimaeBlast::Play(World, Ground + MoveDirection * 150.0f, 260.0f, Heat, false, 0);
 	ShakeNearby(Start, 2500.0f, 0.6f, 0.4f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharThrowHeavy, Start, 1.0f, 0.55f);
+	Sound(EChaosImpactSfx::CharThrowHeavy, Start, 1.0f, 0.55f);
 }
 
 // ---- 雪崩落とし
@@ -976,7 +985,7 @@ void AChaosImpactSimaeBoss::DropAvalanche()
 	// The roar: a shock round it, and the ground shakes.
 	AChaosImpactSimaeBlast::Play(World, Floor, 700.0f, bFullPower ? 1.0f : 0.0f, false, 0);
 	ShakeNearby(Floor, 6000.0f, 0.55f, 1.1f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindTornado, Floor, 1.0f, 0.5f);
+	Sound(EChaosImpactSfx::WindTornado, Floor, 1.0f, 0.5f);
 }
 
 // ---- 突進
@@ -1018,7 +1027,7 @@ void AChaosImpactSimaeBoss::TickCharge(const float DeltaSeconds)
 			MoveWarning.Reset();
 			Movement->MaxWalkSpeed = ChargeSpeed * Tempo();
 			PlayClip(ChargeClip, true, 1.25f * Tempo());
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::DriveBurst, GetActorLocation(), 1.0f, 0.6f);
+			Sound(EChaosImpactSfx::DriveBurst, GetActorLocation(), 1.0f, 0.6f);
 			MoveSound = ChaosImpactSfx::PlayAttached(EChaosImpactSfx::WindLoop, GetRootComponent(), 1.0f, 0.7f);
 			ChaosImpactSimaeFx::PlaySnowBurst(World, ChaosImpactSimaeFx::FindGround(World, GetActorLocation(), this), 0.7f);
 		}
@@ -1048,7 +1057,7 @@ void AChaosImpactSimaeBoss::TickCharge(const float DeltaSeconds)
 			{
 				AChaosImpactSimaeBlast::Play(World, ChaosImpactSimaeFx::FindGround(World, Victim->GetActorLocation(), Victim), 200.0f,
 					bFullPower ? 1.0f : 0.0f, false, 3);
-				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, Victim->GetActorLocation(), 1.0f, 0.6f);
+				Sound(EChaosImpactSfx::BallHit, Victim->GetActorLocation(), 1.0f, 0.6f);
 			}
 		}
 		// Snow sprayed up behind its feet.
@@ -1074,7 +1083,7 @@ void AChaosImpactSimaeBoss::TickCharge(const float DeltaSeconds)
 			AChaosImpactSimaeBlast::Play(World, Front, bBlocked ? 450.0f : 260.0f, bFullPower ? 1.0f : 0.0f, bBlocked, bBlocked ? 6 : 0);
 			ChaosImpactSimaeFx::PlaySnowBurst(World, Front, bBlocked ? 1.0f : 0.6f);
 			ShakeNearby(Front, 3000.0f, bBlocked ? 0.8f : 0.3f, 0.5f);
-			ChaosImpactSfx::PlayAt(this, bBlocked ? EChaosImpactSfx::NovaBlast : EChaosImpactSfx::SnowBurst, Front, 0.9f, 0.6f);
+			Sound(bBlocked ? EChaosImpactSfx::NovaBlast : EChaosImpactSfx::SnowBurst, Front, 0.9f, 0.6f);
 			PlayClip(IdleClip, true, 1.0f);
 		}
 		return;
@@ -1097,8 +1106,8 @@ void AChaosImpactSimaeBoss::StartPowerUp()
 	MoveRate = 1.0f;
 	bMoveFired = false;
 	PlayClip(PowerUpClip, false, 1.0f);
-	AuraTarget = 0.12f;
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, GetActorLocation(), 1.0f, 0.5f);
+	SetAuraTarget(0.12f);
+	Sound(EChaosImpactSfx::NovaCharge, GetActorLocation(), 1.0f, 0.5f);
 	ShakeNearby(GetActorLocation(), 6000.0f, 0.3f, 0.6f);
 	UE_LOG(LogChaosImpact, Log, TEXT("Simae boss: powering up"));
 }
@@ -1115,7 +1124,7 @@ void AChaosImpactSimaeBoss::TickPowerUp(const float DeltaSeconds)
 	if (MoveTime < RoarAt)
 	{
 		// Power welling up: the aura flickering into life, pulses of red running out over the snow, the snow shivering.
-		AuraTarget = FMath::Lerp(0.12f, 0.55f, Smooth01((MoveTime - 0.55f) / (RoarAt - 0.55f)));
+		SetAuraTarget(FMath::Lerp(0.12f, 0.55f, Smooth01((MoveTime - 0.55f) / (RoarAt - 0.55f))));
 		if (FMath::FloorToInt(Before * 4.0f) != FMath::FloorToInt(MoveTime * 4.0f))
 		{
 			const FVector Ground = ChaosImpactSimaeFx::FindGround(World, GetActorLocation(), this);
@@ -1144,6 +1153,23 @@ void AChaosImpactSimaeBoss::TickPowerUp(const float DeltaSeconds)
 void AChaosImpactSimaeBoss::Transform()
 {
 	bMoveFired = true;
+	{
+		// Online: a guest's screen makes the whole change itself.
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 12;
+		ChaosImpactSimaeFx::SendFx(GetWorld(), Fx);
+	}
+	ChaosImpactSimaeFx::FNetFxMute Mute;
+	PresentFullPower();
+	UE_LOG(LogChaosImpact, Log, TEXT("Simae boss: FULL POWER"));
+}
+
+void AChaosImpactSimaeBoss::PresentFullPower()
+{
+	if (bFullPower && !HasAuthority())
+	{
+		return;
+	}
 	bFullPower = true;
 	UWorld* World = GetWorld();
 	// The full-power body, carrying on from the same moment of the clip.
@@ -1164,7 +1190,8 @@ void AChaosImpactSimaeBoss::Transform()
 	{
 		AChaosImpactCharacter* Near = *It;
 		const float Distance = FVector::Dist2D(Near->GetActorLocation(), Ground);
-		if (IsFoe(Near) && Distance < 1500.0f)
+		// (On a guest's screen only its own player: the others are moved by their own machines.)
+		if (IsFoe(Near) && Distance < 1500.0f && (HasAuthority() || Near->IsLocallyControlled()))
 		{
 			const float Push = FMath::Lerp(520.0f, 220.0f, Distance / 1500.0f);
 			Near->StartWindKnockback((Near->GetActorLocation() - Ground).GetSafeNormal2D() * Push, 0.8f, false);
@@ -1181,12 +1208,23 @@ void AChaosImpactSimaeBoss::Transform()
 	}
 	ChaosImpactSimaeFx::PlaySnowBurst(World, Ground, 1.4f);
 	ShakeNearby(Ground, 8000.0f, 1.0f, 1.2f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBlast, Ground, 1.0f, 0.55f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::FireExplode, Ground, 1.0f, 0.6f);
-	UE_LOG(LogChaosImpact, Log, TEXT("Simae boss: FULL POWER"));
+	Sound(EChaosImpactSfx::NovaBlast, Ground, 1.0f, 0.55f);
+	Sound(EChaosImpactSfx::FireExplode, Ground, 1.0f, 0.6f);
 }
 
 void AChaosImpactSimaeBoss::PlayDefeat()
+{
+	{
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 14;
+		ChaosImpactSimaeFx::SendFx(GetWorld(), Fx);
+	}
+	ChaosImpactSimaeFx::FNetFxMute Mute;
+	PresentDefeat();
+	UE_LOG(LogChaosImpact, Log, TEXT("Simae boss defeated"));
+}
+
+void AChaosImpactSimaeBoss::PresentDefeat()
 {
 	AbortMove();
 	Move = EChaosImpactSimaeMove::None;
@@ -1195,7 +1233,7 @@ void AChaosImpactSimaeBoss::PlayDefeat()
 	AChaosImpactSimaeBlast::Play(World, Ground, 900.0f, bFullPower ? 1.0f : 0.0f, true, 12);
 	ChaosImpactSimaeFx::PlaySnowBurst(World, Ground, 1.6f);
 	ShakeNearby(Ground, 8000.0f, 1.0f, 1.0f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBlast, Ground, 1.0f, 0.5f);
+	Sound(EChaosImpactSfx::NovaBlast, Ground, 1.0f, 0.5f);
 	// The aura goes out with it.
 	AuraTarget = 0.0f;
 	AuraStrength = 0.0f;
@@ -1209,10 +1247,38 @@ void AChaosImpactSimaeBoss::PlayDefeat()
 	}
 	ChaosImpactSfx::Stop(AuraSound.Get(), 0.3f);
 	AuraSound = nullptr;
-	UE_LOG(LogChaosImpact, Log, TEXT("Simae boss defeated"));
 }
 
 // ---------------------------------------------------------------------------------------------------- Presentation
+
+void AChaosImpactSimaeBoss::Sound(const EChaosImpactSfx Which, const FVector& Where, const float Volume, const float Pitch) const
+{
+	ChaosImpactSfx::PlayAt(this, Which, Where, Volume, Pitch);
+	if (HasAuthority())
+	{
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 10; Fx.Count = static_cast<int32>(Which); Fx.A = Where; Fx.F0 = Volume; Fx.F1 = Pitch;
+		ChaosImpactSimaeFx::SendFx(GetWorld(), Fx);
+	}
+}
+
+void AChaosImpactSimaeBoss::SetAuraTarget(const float Target)
+{
+	AuraTarget = Target;
+	if (HasAuthority() && FMath::Abs(Target - SentAuraTarget) > 0.04f)
+	{
+		SentAuraTarget = Target;
+		ChaosImpactSimaeFx::FNetFx Fx;
+		Fx.Kind = 13; Fx.F0 = Target;
+		ChaosImpactSimaeFx::SendFx(GetWorld(), Fx);
+	}
+}
+
+void AChaosImpactSimaeBoss::PlayNetClip(const int32 Clip, const bool bLoop, const float Rate)
+{
+	UAnimSequence* const Clips[] = {IdleClip, WalkClip, ChargeClip, SlamClip, ThrowClip, PowerUpClip};
+	if (Clip >= 0 && Clip < UE_ARRAY_COUNT(Clips)) { PlayClip(Clips[Clip], bLoop, Rate); }
+}
 
 void AChaosImpactSimaeBoss::PlayClip(UAnimSequence* Clip, const bool bLoop, const float Rate)
 {
@@ -1220,6 +1286,20 @@ void AChaosImpactSimaeBoss::PlayClip(UAnimSequence* Clip, const bool bLoop, cons
 	if (!Clip || !Body)
 	{
 		return;
+	}
+	// Online: guests play the same clip (a new one, or a pace changed by more than a little).
+	if (HasAuthority() && (!bLoop || Clip != PlayingClip || bLoop != bPlayingLoop || FMath::Abs(Rate - SentClipRate) > 0.12f))
+	{
+		SentClipRate = Rate;
+		UAnimSequence* const Clips[] = {IdleClip, WalkClip, ChargeClip, SlamClip, ThrowClip, PowerUpClip};
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Clips); ++Index)
+		{
+			if (Clips[Index] != Clip) { continue; }
+			ChaosImpactSimaeFx::FNetFx Fx;
+			Fx.Kind = 11; Fx.Count = Index; Fx.bFlag = bLoop; Fx.F0 = Rate;
+			ChaosImpactSimaeFx::SendFx(GetWorld(), Fx);
+			break;
+		}
 	}
 	// A loop carries on if it is already playing; a one-shot always starts from its beginning.
 	if (!bLoop || Clip != PlayingClip || bLoop != bPlayingLoop)
@@ -1249,7 +1329,7 @@ void AChaosImpactSimaeBoss::SnowFootfalls(const float DeltaSeconds)
 	const FVector Foot = Bone(Phase >= 0.5f ? TEXT("TOE1_L") : TEXT("TOE1_R"));
 	ChaosImpactSimaeFx::PlaySnowDust(GetWorld(), ChaosImpactSimaeFx::FindGround(GetWorld(), Foot, this), 160.0f, 0.06f, 10.0f);
 	ShakeNearby(Foot, 1500.0f, bFullPower ? 0.2f : 0.12f, 0.2f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharLand, Foot, 0.8f, 0.5f);
+	Sound(EChaosImpactSfx::CharLand, Foot, 0.8f, 0.5f);
 }
 
 void AChaosImpactSimaeBoss::BuildPresentation()

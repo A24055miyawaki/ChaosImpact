@@ -4,7 +4,6 @@
 #include "Components/PostProcessComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Components/TextRenderComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -135,10 +134,6 @@ AChaosImpactSplashStage::AChaosImpactSplashStage()
 	PanelMaterial = Panel.Object;
 	CorrugatedMaterial = Corrugated.Object;
 	PaintMaterial = Paint.Object;
-	// The engine's opaque text material: each letter cut out of the font, painted in the text's colour.
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Stencil(
-		TEXT("/Engine/EngineMaterials/DefaultTextMaterialOpaque.DefaultTextMaterialOpaque"));
-	StencilMaterial = Stencil.Object;
 
 	// Cartoon City Free (Fab, ithappy). Anything missing is simply left out.
 	static const TCHAR* const CityPaths[] =
@@ -373,21 +368,6 @@ void AChaosImpactSplashStage::BuildQuarter(const int32 Quarter)
 	Box(TEXT("TerraceSideS"), DarkHere, FVector(3000.0f, -653.0f, TerraceTop * 0.5f), FVector(800.0f, 6.0f, TerraceTop - 6.0f), 0.0f, false);
 	Box(TEXT("TerraceEdge"), GlowHere, FVector(2604.0f, 0.0f, TerraceTop + 1.5f), FVector(8.0f, 1300.0f, 3.0f), 0.0f, false);
 	AddRing(TEXT("TerraceRing") + Q, GlowHere, At(3000.0f, 0.0f, TerraceTop + 1.0f), 200.0f, 4.0f);
-	// The berth's number painted on the terrace, readable from the camera (its top toward +X) in every quarter.
-	UTextRenderComponent* Berth = CreateDefaultSubobject<UTextRenderComponent>(*(TEXT("BerthNumber") + Q));
-	Berth->SetupAttachment(SceneRoot);
-	Berth->SetText(FText::AsNumber(Quarter + 1));
-	Berth->SetWorldSize(340.0f);
-	if (StencilMaterial)
-	{
-		Berth->SetTextMaterial(StencilMaterial);
-	}
-	Berth->SetHorizontalAlignment(EHTA_Center);
-	Berth->SetVerticalAlignment(EVRTA_TextCenter);
-	Berth->SetRelativeLocation(Spread(At(3000.0f, -420.0f, TerraceTop + 0.8f)));
-	Berth->SetRelativeRotation(FRotator(90.0f, 180.0f, 0.0f));
-	Berth->SetTextRenderColor((WallColor * 0.45f).ToFColor(true));
-	Berth->ComponentTags.Add(TEXT("CIBerthText"));
 	// A safety line at the foot of the balcony's drop, and old tyres hung on its face as fenders.
 	Box(TEXT("BalconyStripe"), Stripe, FVector(1880.0f, 0.0f, 0.6f), FVector(20.0f, 1900.0f, 1.2f), 0.0f, false);
 	for (int32 Tyre = 0; Tyre < 3; ++Tyre)
@@ -693,12 +673,15 @@ UStaticMeshComponent* AChaosImpactSplashStage::AddRing(const FString& Name, cons
 void AChaosImpactSplashStage::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	MakeWallsSeeThrough({TEXT("SideWall"), TEXT("BevelWall"), TEXT("WallLamp")}, GlowMaterial);
 	ApplyPalette();
 }
 
 void AChaosImpactSplashStage::BeginPlay()
 {
 	Super::BeginPlay();
+	MakeWallsSeeThrough({TEXT("SideWall"), TEXT("BevelWall"), TEXT("WallLamp")}, GlowMaterial);
+	HideNearCamera({TEXT("WallBillboard"), TEXT("WallGraffiti")});
 	ApplyPalette();
 }
 
@@ -733,16 +716,6 @@ void AChaosImpactSplashStage::ApplyPalette()
 	if (!bApplyDefaultColors)
 	{
 		return;
-	}
-	TArray<UTextRenderComponent*> Texts;
-	GetComponents(Texts);
-	for (UTextRenderComponent* Text : Texts)
-	{
-		if (Text->ComponentHasTag(TEXT("CIBerthText")))
-		{
-			// Stencilled in the walls' dark paint.
-			Text->SetTextRenderColor((WallColor * 0.45f).ToFColor(true));
-		}
 	}
 	TArray<UStaticMeshComponent*> Meshes;
 	GetComponents(Meshes);

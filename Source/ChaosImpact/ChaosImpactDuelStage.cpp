@@ -198,12 +198,14 @@ void AChaosImpactDuelStage::AddMirrored(const FString& Name, const EPaint RedPai
 void AChaosImpactDuelStage::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	MakeWallsSeeThrough({TEXT("Wall")}, GlowMaterial);
 	ApplyStageColors();
 }
 
 void AChaosImpactDuelStage::BeginPlay()
 {
 	Super::BeginPlay();
+	MakeWallsSeeThrough({TEXT("Wall")}, GlowMaterial);
 	ApplyStageColors();
 	if (GetNetMode() == NM_DedicatedServer) { SetActorTickEnabled(false); }
 }

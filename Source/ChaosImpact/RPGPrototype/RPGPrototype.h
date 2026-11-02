@@ -18,6 +18,7 @@ class UStaticMeshComponent;
 class UArrowComponent;
 class ARPGPrototypeLoot;
 class ARPGPrototypeSpawnPoint;
+class ARPGQuestGuide;
 class ARPGPrototypeMerchant;
 class ARPGPrototypeBoss;
 class ARPGAdventureCheckpoint;
@@ -28,13 +29,14 @@ struct FInputKeyEventArgs;
 struct FRPGHeroEntry;
 
 UENUM(BlueprintType)
-enum class ERPGGruntRole : uint8 { Chaser, Thrower };
+/** Field enemies: up close, from afar, and (2026-11) a bomb thrower, a charger and a sniper, each with a warned attack. */
+enum class ERPGGruntRole : uint8 { Chaser, Thrower, Bomber, Charger, Sniper };
 
 UENUM(BlueprintType)
 enum class ERPGPrototypeRarity : uint8 { Normal, Rare, Unique, Legend };
 
 /** Pages of the bag menu (ARPGPrototypeCharacter::BagPage). Values are kept for saves/tests. */
-namespace ERPGBagPage { enum : int32 { Equipment = 0, Upgrade = 1, Tune = 2, Settings = 3, Items = 4 }; }
+namespace ERPGBagPage { enum : int32 { Equipment = 0, Upgrade = 1, Tune = 2, Settings = 3, Items = 4, Shop = 5 }; }
 /** Item categories of the bag list (ARPGPrototypeCharacter::BagFilter). */
 namespace ERPGBagFilter { enum : int32 { Ball = 1, Badge = 2, Gear = 3, Material = 4 }; }
 /** Orders of the bag list (ARPGPrototypeCharacter::BagSort). */
@@ -69,6 +71,8 @@ struct FRPGPrototypeItem
 	int32 SalvageValue() const;
 	int32 UpgradeCost() const;
 	int32 TuneCost() const;
+	/** What a merchant asks for it (RPGTuning::Shop*). */
+	int32 ShopPrice() const;
 	static FRPGPrototypeItem MakeBadge(ERPGItemKind Kind, int32 Level=1, ERPGPrototypeRarity Rarity=ERPGPrototypeRarity::Normal, int32 Archetype=INDEX_NONE);
 	static FRPGPrototypeItem MakeGear(ERPGItemKind Kind, int32 Level=1, ERPGPrototypeRarity Rarity=ERPGPrototypeRarity::Normal, int32 Archetype=INDEX_NONE);
 	static FRPGPrototypeItem Make(EChaosImpactBallType Type, int32 Level = 1,
@@ -121,6 +125,10 @@ struct FRPGKillCredit
 	UPROPERTY() float DropChance = 0.25f;
 	/** Special-ball cooldown given back (the finisher's KillRefund). */
 	UPROPERTY() float KillRefund = 0;
+	/** A boss: which (its bit in the hero's record of bosses beaten), else -1. */
+	UPROPERTY() int32 BossId = -1;
+	/** A named one: a boss's drop and tune shards. */
+	UPROPERTY() bool bNamed = false;
 };
 
 /** Disposable test saves, deliberately separate from all main-game saves. */
@@ -138,6 +146,19 @@ public:
 	UPROPERTY(SaveGame) int32 Level=1;
 	UPROPERTY(SaveGame) int32 XP=0;
 	UPROPERTY(SaveGame) int32 Rubies=0;
+	/** Tune shards (2026-11). */
+	UPROPERTY(SaveGame) int32 TuneShards=0;
+	/** Bosses this hero has beaten (bits: ARPGPrototypeBoss::GetBossId). */
+	UPROPERTY(SaveGame) int32 BossesBeaten=0;
+	/** The dojo's lessons: tackle and dash levels (1-4). */
+	UPROPERTY(SaveGame) int32 TackleLevel=1;
+	UPROPERTY(SaveGame) int32 DashLevel=1;
+	/** Discovery: the map's cells seen (bits), places found. Tutorials seen. The colony's points. Time played. */
+	UPROPERTY(SaveGame) TArray<uint8> Explored;
+	UPROPERTY(SaveGame) TArray<FString> VisitedPlaces;
+	UPROPERTY(SaveGame) TArray<FName> TutorialsDone;
+	UPROPERTY(SaveGame) int32 ColonyPoints=0;
+	UPROPERTY(SaveGame) int32 PlaySeconds=0;
 	UPROPERTY(SaveGame) int32 SelectedAttack=0;
 	UPROPERTY(SaveGame) float HP=100;
 	UPROPERTY(SaveGame) float Stamina=5;
@@ -146,6 +167,10 @@ public:
 	UPROPERTY(SaveGame) TArray<FName> OpenedChestIds;
 	/** Rest beacons this hero has lit (ARPGPrototypeCharacter::TravelKey), for fast travel. */
 	UPROPERTY(SaveGame) TArray<FString> TravelPoints;
+	/** The merchants' shop: rubies paid at merchants (their level), and the line-up of the current rotation. */
+	UPROPERTY(SaveGame) int32 MerchantXP=0;
+	UPROPERTY(SaveGame) int64 ShopRotation=-1;
+	UPROPERTY(SaveGame) TArray<FRPGPrototypeItem> ShopStock;
 };
 
 UCLASS()
@@ -185,6 +210,11 @@ public:
 	UFUNCTION(Server, Reliable) void ServerSyncHero(const FRPGNetHero& Hero);
 	UFUNCTION(Server, Reliable) void ServerSelectAttack(int32 Slot);
 	UFUNCTION(Server, Reliable) void ServerSetReviveHeld(bool bHeld);
+	/** Down: this player stops waiting for help and gets up at the respawn point (the usual knockout, no wait). */
+	UFUNCTION(Server, Reliable) void ServerGiveUpDowned();
+	void GiveUpDowned();
+	/** 0..1 while this downed player holds the button to give up (this machine only). */
+	float GetGiveUpProgress() const { return GiveUpHeldSeconds / RPGTuning::GiveUpHoldSeconds; }
 	/** A beacon lit or a place travelled to: where this player gets up again, and (lit) a full heal. */
 	UFUNCTION(Server, Reliable) void ServerRestAt(FVector_NetQuantize Location, FRotator Rotation, bool bHeal);
 	/** A guest moved itself far at once (a gate, fast travel): the host's copy goes there too. */
@@ -192,10 +222,91 @@ public:
 	/** Moves this player at once; online, also the host's copy. */
 	void TeleportHero(const FVector& Location, const FRotator& Rotation);
 	UFUNCTION(Client, Reliable) void ClientKillCredit(const FRPGKillCredit& Credit);
+	/** A quest event that happened on the host for this player (helping someone up): counted on the player's machine. */
+	UFUNCTION(Client, Reliable) void ClientQuestEvent(uint8 Event, FVector_NetQuantize At, int32 Detail);
+	void CreditQuestEvent(ERPGQuestEvent Event, const FVector& At, int32 Detail = 0);
 	UFUNCTION(Client, Reliable) void ClientShowNotice(const FString& Text, float Seconds);
 	UFUNCTION(Client, Reliable) void ClientApplyKnockback(FVector_NetQuantizeNormal Direction, float Distance);
 	UFUNCTION(Client, Reliable) void ClientApplyStatus(FName Key, float Value, float Seconds);
 	UFUNCTION(Client, Reliable) void ClientDropAllBalls();
+	/** A guest at a beaten boss: try it again (the host runs bosses). */
+	UFUNCTION(Server, Reliable) void ServerRetryBoss(ARPGPrototypeBoss* Boss);
+	/** A guest's record of bosses beaten (the host needs it to wake the legend). */
+	UFUNCTION(Server, Reliable) void ServerSetBossesBeaten(int32 Mask);
+	int32 GetBossesBeaten() const { return BossesBeaten; }
+	// ---- The dojo (RPGAbilityGates.cpp): tackle and dash levels, learned from the master in the colony.
+	static constexpr int32 TrainingPanel = -4;
+	bool IsTrainingOpen() const { return bQuestMenuOpen && QuestGiver == TrainingPanel; }
+	bool OpenTraining();
+	bool HandleTrainingKey(FKey Key);
+	/** 0 tackle, 1 dash: its next lesson (false, with why, when it cannot be learned now). */
+	bool CanLearnSkill(int32 Which, FString* Why = nullptr) const;
+	bool LearnSkill(int32 Which);
+	int32 GetTackleLevel() const { return TackleSkill; }
+	int32 GetDashLevel() const { return DashSkill; }
+	/** Puts the levels to work (tackle reach and pace, dash distance) and tells the host. */
+	void ApplySkills();
+	UFUNCTION(Server, Reliable) void ServerSetSkills(uint8 InTackle, uint8 InDash);
+	virtual void OnTackledSomeone(AChaosImpactCharacter* Victim) override;
+	int32 TrainingSelection = 0;
+	// ---- The adventure menu (P / Esc / Start), the adventure log and tutorials (RPGTutorial.cpp).
+	static constexpr int32 MenuPanel = -5, LogPanel = -6, TutorialPanel = -7;
+	bool IsAdventureMenuOpen() const { return bQuestMenuOpen && (QuestGiver == MenuPanel || QuestGiver == LogPanel || QuestGiver == TutorialPanel); }
+	bool OpenAdventureMenu();
+	bool HandleMenuKey(FKey Key);
+	void ActivateMenuEntry(int32 Entry);
+	int32 MenuSelection = 0, TutorialSelection = 0, LogScroll = 0;
+	/** The controls, learned by doing, step by step (a new hero; again from the menu). */
+	void StartControlsTutorial();
+	void SkipControlsTutorial();
+	int32 GetControlsStep() const { return ControlsStep; }
+	/** A lesson card the first time something comes up (bAgain: from the menu, seen or not). */
+	void ShowLesson(FName Lesson, bool bAgain = false);
+	void DismissLesson();
+	FName GetActiveLesson() const { return ActiveLesson; }
+	/** The step or lesson shown has been done (it closes a moment later). */
+	bool IsTutorialDoneShown() const { return LessonDoneAt > 0; }
+	/** Something a step or a lesson may be waiting for ("Guide", "Upgrade", "Revive", "Learn", "Donate"). */
+	void TutorialEvent(FName What);
+	void UpdateTutorials(float DeltaSeconds);
+	TArray<FName> TutorialsDone;
+	TArray<FName> LessonQueue;
+	int32 ControlsStep = -1;
+	FName ActiveLesson;
+	bool bLessonTried = false;
+	double StepStartedAt = 0, LessonShownAt = 0, LessonDoneAt = -1, SkipHeldSince = -1, NextLessonCheckAt = 0;
+	FVector StepStartLocation = FVector::ZeroVector;
+	float StepWalked = 0;
+	TSet<FName> StepEvents;
+	// Discovery: the map's fog (cells of 10 m seen), places found, the card for a new place.
+	TArray<uint8> Explored;
+	TArray<FString> VisitedPlaces;
+	bool IsExplored(int32 CellX, int32 CellY) const;
+	void UpdateDiscovery();
+	void NoteVisited(const FString& Place);
+	/** Uncovers every cell of the first map's lands (heroes saved before the fog). */
+	void RevealFirstLands();
+	FString PlaceCardName;
+	int32 PlaceCardLevel = 0;
+	double PlaceCardAt = -100, NextDiscoveryAt = 0, PlayCountedAt = 0;
+	int32 PlaySeconds = 0;
+	// The colony: its points from this hero's quests and gifts (online the world shows the host's).
+	int32 ColonyPoints = 0;
+	void AddColonyPoints(int32 Points, bool bShare = true);
+	UFUNCTION(Server, Reliable) void ServerAddColonyPoints(int32 Points);
+	bool DonateToColony();
+	UPROPERTY(Replicated) uint8 TackleSkill = 1;
+	UPROPERTY(Replicated) uint8 DashSkill = 1;
+	bool bDashSeen = false;
+	double NextLeapHintAt = 0;
+	/** A leap in flight (ARPGLeapPoint::Launch): a fixed arc to the far pad, moved along each frame on the hero's own machine. */
+	void StartLeap(const FVector& To);
+	void UpdateLeap();
+	FVector LeapFrom = FVector::ZeroVector, LeapTo = FVector::ZeroVector;
+	double LeapStartedAt = -1;
+	/** Notes a boss beaten (this player's own machine; sent on to the host). */
+	void NoteBossBeaten(int32 BossId);
+	UPROPERTY(Replicated) int32 BossesBeaten = 0;
 	virtual void RequestBallSwap() override;
 	virtual void RequestDropBall() override;
 	virtual bool HandleEasyPointerKey(const FKey& Key, EInputEvent Event) override;
@@ -233,7 +344,37 @@ public:
 	ARPGPrototypeMerchant* FindMerchant() const;
 	bool IsAtMerchant() const;
 	int32 GetRubies() const { return Rubies; }
+	/** Tune shards: spent on tunes (RPGTuning::ShardsPerTune) and their ranks. */
+	int32 GetTuneShards() const { return TuneShards; }
+	void AddTuneShards(int32 Amount, const FString& Why);
+	int32 TuneShards = 0;
 	void AddRubies(int32 Amount);
+	/**
+	 * The merchants' shop (RPGShop.cpp): balls for rubies. The line-up changes every RPGTuning::ShopRotateSeconds of real
+	 * time; the caravan brings its own each visit. Rubies paid at a merchant raise the merchant's level (rarer balls).
+	 */
+	int32 GetMerchantLevel() const { return RPGTuning::MerchantLevelFor(MerchantXP); }
+	int32 GetMerchantXP() const { return MerchantXP; }
+	bool IsAtCaravan() const;
+	/** The line-up of the merchant this player is at. */
+	const TArray<FRPGPrototypeItem>& GetShopStock() const;
+	/** Seconds until the line-up changes (the caravan: until it leaves). */
+	int32 GetShopSecondsLeft() const;
+	void RefreshShopStock();
+	bool BuyShopItem(int32 Index);
+	/** Pays a merchant (the cost is already checked). True when the merchant's level went up with it. */
+	bool SpendAtMerchant(int32 Cost);
+	void AnnounceMerchantLevel();
+	int32 MerchantXP = 0;
+	int32 ShopSelection = 0;
+	TArray<FRPGPrototypeItem> ShopStock, CaravanStock;
+	int64 ShopRotation = -1;
+	int32 ShopStockLevel = 0, CaravanStockEvent = -1;
+	/** Knocked out (back to the respawn point, not a down a teammate can help up from): a share of the rubies is lost. */
+	void LoseRubiesOnDeath();
+	/** What the last knockout cost, for the respawn card. */
+	int32 GetDeathRubyLoss() const { return DeathRubyLoss; }
+	int32 DeathRubyLoss = 0;
 	/** A ruby picked up off the ground: added, with one running "+N" on screen for a quick run of them. */
 	void PickUpRubies(int32 Amount);
 	/** Explicit, opt-in development aid; never supplies guaranteed loot in ordinary play. */
@@ -270,6 +411,7 @@ public:
 	ARPGPrototypeCharacter* FindReviveTarget() const;
 	/** Held this frame (set from this player's input; online, sent to the host). */
 	bool bReviveHeld = false;
+	float GiveUpHeldSeconds = 0.0f;
 	/** Players (not enemies) in the world, knocked out ones included; title screens not counted. */
 	static int32 CountHeroes(const UWorld* World);
 	/** "2P" or the hero's name. */
@@ -297,6 +439,32 @@ public:
 	bool IsMembersOpen() const { return bQuestMenuOpen && QuestGiver == MembersPanel; }
 	bool OpenMembers();
 	bool HandleMembersKey(FKey Key);
+	// ---- The map and the way to the followed quest (RPGNavigation.cpp). M / D-pad right, again and again: the map of
+	// the surroundings over the screen (it moves with the player, who plays on), the whole map (fast travel from there),
+	// closed (the minimap in the corner). N / R3: the light line on the ground along the shortest way to the quest's goal.
+	enum : int32 { MapClosed = 0, MapNearby = 1, MapWhole = 2 };
+	int32 GetMapMode() const { return MapMode; }
+	/** The whole map is open (it covers the screen). */
+	bool IsMapOpen() const { return MapMode == MapWhole; }
+	void SetMapMode(int32 Mode);
+	/** Closed → surroundings → whole map → closed. */
+	void CycleMap();
+	bool HandleMapKey(FKey Key);
+	bool IsGuideOn() const { return bGuideOn; }
+	/** Remembered per local player; turning it on lays the shortest way from where this player stands now. */
+	void SetGuideOn(bool bOn);
+	/** The way to the nearest goal of the followed quest (refreshed a few times a second; empty: nowhere to go). */
+	const TArray<FVector>& GetQuestRoute() const { return QuestRoute; }
+	bool GetQuestTarget(FVector& OutAt, FString* OutLabel = nullptr) const;
+	void UpdateQuestGuide(float DeltaSeconds);
+	int32 MapMode = MapClosed;
+	bool bGuideOn = true;
+	TArray<FVector> QuestRoute;
+	FVector QuestTargetAt = FVector::ZeroVector;
+	FString QuestTargetLabel;
+	bool bHasQuestTarget = false;
+	double NextRouteAt = 0;
+	TWeakObjectPtr<ARPGQuestGuide> QuestGuide;
 	float GetRPGSnowScale() const;
 	void EmitDecoy(float Seconds);
 	void RebuildEquipment();
@@ -371,6 +539,17 @@ public:
 	bool IsGrunt() const { return bGrunt; }
 	TWeakObjectPtr<ARPGPrototypeSpawnPoint> SpawnPoint;
 	UPROPERTY(Replicated) ERPGGruntRole EncounterRole = ERPGGruntRole::Thrower;
+	/** An elite of its group: bigger, much tougher, harder hitting (every screen sees its size). */
+	UPROPERTY(ReplicatedUsing=OnRep_Elite) bool bElite = false;
+	UFUNCTION() void OnRep_Elite();
+	void MakeElite();
+	bool IsElite() const { return bElite; }
+	/** A named one ("疾風のガルム"): an elite, tougher again, its gold name over its head; one at a time in the world. */
+	UPROPERTY(ReplicatedUsing=OnRep_Elite) FString NamedTitle;
+	/** The host, right after it is made. */
+	void MakeNamed();
+	bool IsNamed() const { return !NamedTitle.IsEmpty(); }
+	bool bNamedAnnounced = false;
 	FVector EncounterHome = FVector::ZeroVector;
 	void SetPrototypeAutomatedInput(bool bOn) { bAutomatedInput = bOn; bDevAutoInput = bOn; }
 	int32 BagSelection = 0;
@@ -491,7 +670,12 @@ protected:
 };
 
 UENUM()
-enum class ERPGBossState : uint8 { Idle, VolleyTell, Volley, ChargeTell, Charge, Recovery, ReturnHome, LeapTell, Leap, Wave, Defeated };
+enum class ERPGBossState : uint8 { Idle, VolleyTell, Volley, ChargeTell, Charge, Recovery, ReturnHome, LeapTell, Leap, Wave, Defeated,
+	GeyserTell, Geyser, VortexTell, Vortex };
+
+/** Which boss (2026-11; the look, moves and strength come from a table in RPGPrototypeBoss.cpp). */
+UENUM()
+enum class ERPGBossKind : uint8 { Maguro, MarshLord, SandGiant, LavaWarden, PillarKing, Legend };
 
 /** Removable RPG-only encounter. No dependency on VS CPU rules or persistent saves. */
 UCLASS()
@@ -505,9 +689,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="RPG Prototype|Boss", meta=(ClampMin="10")) int32 StartingLevel = 10;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="RPG Prototype|Boss", meta=(ClampMin="300")) float ActivationRange = 1150;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="RPG Prototype|Boss", meta=(ClampMin="100")) float HPAtLevel10 = 1800;
+	/** Which boss this is. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category="RPG Prototype|Boss") ERPGBossKind Kind = ERPGBossKind::Maguro;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	/** Its name (the strong version's once it has been beaten). */
+	FString GetBossName() const;
+	/** Bit of RPGTuning's boss list (0 Maguro, 1 the Shima-enaga, 2.. the rest), for each hero's record of bosses beaten. */
+	int32 GetBossId() const;
+	bool IsStrongVersion() const { return Tier > 0; }
+	/** The legend sleeps until a hero near it has beaten every other boss: how many that hero still has to go. */
+	bool IsAsleep() const { return bAsleep; }
+	int32 GetBossesLeftToWake() const { return StrongLeft; }
+	const TArray<FVector_NetQuantize>& GetGeyserSpots() const { return GeyserSpots; }
+	static constexpr float GeyserRadius = 190.0f, VortexRadius = 1400.0f, VortexCore = 380.0f;
 	ERPGBossState GetBossState() const { return State; }
 	bool IsBossActive() const { return bEngaged && State!=ERPGBossState::Defeated; }
-	bool IsBossArmoredMove() const { return State==ERPGBossState::Charge || State==ERPGBossState::ReturnHome || State==ERPGBossState::Leap || State==ERPGBossState::Wave; }
+	bool IsBossArmoredMove() const { return State==ERPGBossState::Charge || State==ERPGBossState::ReturnHome || State==ERPGBossState::Leap || State==ERPGBossState::Wave || State==ERPGBossState::Vortex; }
 	bool IsEnraged() const { return Health<=MaxHealth*.5f; }
 	bool CanRetry(const ARPGPrototypeCharacter* Player) const;
 	bool Retry(ARPGPrototypeCharacter* Player);
@@ -520,13 +717,27 @@ public:
 protected:
 	virtual void BeginPlay() override;
 private:
-	ERPGBossState State = ERPGBossState::Idle;
+	// Online: what every screen needs for the warnings (the host runs the rest).
+	UPROPERTY(ReplicatedUsing=OnRep_BossState) ERPGBossState State = ERPGBossState::Idle;
+	UFUNCTION() void OnRep_BossState();
+	UPROPERTY(Replicated) FVector LockedDirection = FVector::ForwardVector;
+	UPROPERTY(Replicated) float WaveRadius = 0;
+	UPROPERTY(Replicated) int32 ChargesLeft = 0;
+	UPROPERTY(Replicated) bool bEngaged = false;
+	/** 1: the strong version (after the first defeat). */
+	UPROPERTY(Replicated) uint8 Tier = 0;
+	UPROPERTY(Replicated) TArray<FVector_NetQuantize> GeyserSpots;
+	UPROPERTY(Replicated) bool bAsleep = false;
+	UPROPERTY(Replicated) int32 StrongLeft = 0;
 	FTransform Home;
-	FVector LockedDirection = FVector::ForwardVector, PreviousPosition = FVector::ZeroVector;
-	double StateUntil=0, NextActionAt=0, NextShotAt=0, FreezeResistanceUntil=0, FreezeAcceptedUntil=0;
-	float WaveRadius=0, LastWaveRadius=0;
-	int32 MoveNumber=0, ShotsLeft=0, ChargesLeft=0;
-	bool bContactHit=false, bWaveHit=false, bRewarded=false, bEngaged=false;
+	FVector PreviousPosition = FVector::ZeroVector;
+	double StateUntil=0, NextActionAt=0, NextShotAt=0, FreezeResistanceUntil=0, FreezeAcceptedUntil=0, NextPullAt=0;
+	float LastWaveRadius=0, BaseMaxHealth=1800;
+	int32 MoveNumber=0, ShotsLeft=0, Defeats=0;
+	bool bContactHit=false, bWaveHit=false, bRewarded=false;
+	TArray<ARPGPrototypeCharacter*> HeroesNear(float Range) const;
+	void BeginGeysers();
+	void EruptGeysers();
 	TSet<TWeakObjectPtr<ARPGPrototypeCharacter>> ChargeVictims,WaveVictims;
 	void Enter(ERPGBossState NewState,float Seconds);
 	void BeginCharge(ARPGPrototypeCharacter* Player);
@@ -701,6 +912,10 @@ private:
 	FVector LastLocation = FVector::ZeroVector;
 	double NextWanderAt = 0;
 	float StrafeSign = 1;
+	/** Standing still for its own warned attack. */
+	double HoldUntil = 0;
+	/** The warned attacks of the bomber, charger and sniper (true: one was started). */
+	bool TrySpecialAttack(ARPGPrototypeCharacter* Grunt, ARPGPrototypeCharacter* Target, float Distance, bool bBlocked, double Now);
 };
 
 UCLASS()

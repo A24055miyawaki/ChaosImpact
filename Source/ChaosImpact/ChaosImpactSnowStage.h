@@ -19,15 +19,17 @@ class UStaticMeshComponent;
 /**
  * VS ステージ5 (氷雪の雪見庭園): a snow-covered Japanese castle garden and frozen pond court for up to 8 players.
  * Built with strict four-fold rotational symmetry:
- *  - Central Frozen Pond Court (-60 cm): a wide octagonal ice rink offering open sightlines for dodging, connected to
- *    the outer wooden veranda by four vermilion Taiko bridges and four wide diagonal snow-stone ramps.
+ *  - Central Frozen Pond Court (-20 cm): a wide ice rink offering open sightlines for dodging, a step down from the
+ *    outer wooden veranda all round (in and out anywhere), crossed by four vermilion Taiko bridges and four wide
+ *    diagonal snow-stone ramps; low white plaster walls round the whole court.
  *  - Center Wind-Dial Island (0 cm): a low octagonal island in the middle of the pond holding the central ball pad
  *    and an overhead compass vane that points the direction of the Blizzard Gust.
  *  - Four Hexagonal Ice Pillars in the pond and four L-shaped Folding Screen walls (屏風壁) on the outer wooden
  *    veranda (0 cm), combining crisp bank-shot angles with sheltered retreat pockets.
- *  - Blizzard Gust (ブリザード・ガスト): every 12-15 seconds, after a 2.5 s directional warning, a gust blows across
- *    the stage for 4.5 s, curving flying balls toward the downwind side via DeflectByWind and sweeping the falling
- *    snow (AChaosImpactDriftingFlakes). Shima-enaga birds (AChaosImpactSimaePerch) perch on the corner lanterns.
+ *  - Blizzard Gust (ブリザード・ガスト): every 12-15 seconds a gust blows across the stage for 4.5 s, curving flying
+ *    balls toward the downwind side via DeflectByWind and sweeping the falling snow (AChaosImpactDriftingFlakes). For
+ *    2.5 s before it, pale blue arrow lanes on the floor fill from the upwind side to show which way it will blow;
+ *    while it blows their arrows race downwind. Shima-enaga birds (AChaosImpactSimaePerch) perch on the corner lanterns.
  */
 UCLASS(Blueprintable, meta=(DisplayName="Chaos Impact Snow Stage"))
 class AChaosImpactSnowStage : public AChaosImpactStageBase
@@ -100,7 +102,7 @@ public:
 
 	/** Frozen pond surface colour. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Snow Stage|Palette")
-	FLinearColor IceColor = FLinearColor(0.52f, 0.82f, 0.98f);
+	FLinearColor IceColor = FLinearColor(0.4f, 0.66f, 0.86f);
 
 	/** Deep ice crystal colour for the hexagonal bank pillars. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Snow Stage|Palette")
@@ -110,9 +112,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Snow Stage|Palette")
 	FLinearColor SnowStoneColor = FLinearColor(0.82f, 0.86f, 0.92f);
 
-	/** Outer sanctuary walls (dark castle timber & plaster). */
+	/** Outer sanctuary walls (white castle plaster; their footing and roofs are dark timber). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Snow Stage|Palette")
-	FLinearColor WallColor = FLinearColor(0.12f, 0.15f, 0.22f);
+	FLinearColor WallColor = FLinearColor(0.84f, 0.85f, 0.88f);
+
+	/** The wind's lanes on the floor while a gust is coming and blowing. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Snow Stage|Palette")
+	FLinearColor WindLaneColor = FLinearColor(0.35f, 0.78f, 1.0f);
 
 	/** Gold fittings and lantern bands. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Snow Stage|Palette")
@@ -197,6 +203,20 @@ private:
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TArray<TObjectPtr<UStaticMeshComponent>> CompassArrows;
 
+	/** Turns the wind's floor lanes to the way it blows (their +X is downwind). */
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TObjectPtr<USceneComponent> WindLaneRoot;
+
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TArray<TObjectPtr<UStaticMeshComponent>> WindLanes;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WindLaneLooks;
+
+	/** Each lane's place in the wind's fill: 0 upwind veranda, 1 pond, 2 downwind veranda; -1 fills all at once. */
+	TArray<int32> WindLaneStages;
+	TArray<float> WindLaneAspects;
+
 	UPROPERTY(VisibleAnywhere, Category="Components")
 	TArray<TObjectPtr<UStaticMeshComponent>> SteamRings;
 
@@ -222,6 +242,8 @@ private:
 	TObjectPtr<UStaticMesh> CylinderMesh;
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> RingMesh;
+	UPROPERTY()
+	TObjectPtr<UStaticMesh> PlaneMesh;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> FlatMaterial;
@@ -243,6 +265,8 @@ private:
 	TObjectPtr<UMaterialInterface> PineMaterial;
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> BarkMaterial;
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> WarnMaterial;
 
 	double NextWindAt = -1.0;
 	bool bWindBlowing = false;

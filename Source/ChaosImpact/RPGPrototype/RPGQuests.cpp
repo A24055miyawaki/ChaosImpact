@@ -22,62 +22,132 @@ const TArray<FRPGQuestDef>& QuestTable()
 	static const TArray<FRPGQuestDef> Table{
 		{TEXT("門の外の安全確認"), ERPGQuestKind::Hunt, ERPGQuestFrom::Board, 0,
 			TEXT("掲示板に門番ロウの依頼が貼られている。コロニーの外をうろつく敵を4体ほど片付けて、安全を確かめてほしいらしい。とどめでもダメージの手伝いでも数に入る。"),
-			TEXT("外の敵を倒す"), 4, nullptr, nullptr, -1, 1, 90, 3, ERPGItemKind::Ball, EChaosImpactBallType::Wind, 1, nullptr},
+			TEXT("外の敵を倒す"), 4, nullptr, nullptr, -1, 1, 50, 3, ERPGItemKind::Ball, EChaosImpactBallType::Wind, 1, nullptr},
 		{TEXT("流された補給箱"), ERPGQuestKind::Gather, ERPGQuestFrom::Board, 0,
 			TEXT("川の増水でコロニーの補給箱が3つ流されたらしい。採石場・川沿い・奥の高台に流れ着いた青い箱を調べてきてほしいようだ。"),
-			TEXT("補給箱を調べる"), 3, nullptr, nullptr, -1, 1, 120, 3, ERPGItemKind::LifeBadge, EChaosImpactBallType::Normal, 1, nullptr},
+			TEXT("補給箱を調べる"), 3, nullptr, nullptr, -1, 1, 60, 3, ERPGItemKind::LifeBadge, EChaosImpactBallType::Normal, 1, nullptr},
 		{TEXT("古い中継塔の灯り"), ERPGQuestKind::Survey, ERPGQuestFrom::Board, 0,
 			TEXT("北の中継塔の灯りが消えたままらしい。塔と、その先にある遺跡の様子を見てきてほしいと書かれている。"),
-			TEXT("塔と遺跡を調べる"), 2, nullptr, nullptr, -1, 1, 150, 4, ERPGItemKind::Ball, EChaosImpactBallType::Simae, 2, nullptr},
+			TEXT("塔と遺跡を調べる"), 2, nullptr, nullptr, -1, 1, 80, 4, ERPGItemKind::Ball, EChaosImpactBallType::Simae, 2, nullptr},
 		{TEXT("採石場の掃除"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 2,
 			TEXT("ガンテは、採石場の底に住みついた敵のせいで石を切り出せずに困っているらしい。採石場で5体ほど追い払ってほしそうだ。"),
-			TEXT("採石場の敵を倒す"), 5, TEXT("採石場"), nullptr, 0, 1, 140, 3, ERPGItemKind::Glove, EChaosImpactBallType::Normal, 1, nullptr},
+			TEXT("採石場の敵を倒す"), 5, TEXT("採石場"), nullptr, 0, 1, 70, 3, ERPGItemKind::Glove, EChaosImpactBallType::Normal, 1, nullptr},
 		{TEXT("宝箱めぐり"), ERPGQuestKind::Treasure, ERPGQuestFrom::Person, 1,
 			TEXT("ロウは、昔の探検家が各地に宝箱を隠したという噂を気にしているらしい。どこの宝箱でもいいので、3つ開けて確かめてきてほしいようだ。"),
-			TEXT("宝箱を開ける"), 3, nullptr, nullptr, -1, 1, 100, 2, ERPGItemKind::Pouch, EChaosImpactBallType::Normal, 1, nullptr},
+			TEXT("宝箱を開ける"), 3, nullptr, nullptr, -1, 1, 50, 2, ERPGItemKind::Pouch, EChaosImpactBallType::Normal, 1, nullptr},
 		{TEXT("水晶洞窟の主"), ERPGQuestKind::Boss, ERPGQuestFrom::Person, 3,
 			TEXT("ミナは、水晶洞窟の奥で暴れる巨大な魚を調べているらしい。遺跡の調査が済んだ今、誰かにあれを鎮めてきてほしいと考えているようだ。"),
-			TEXT("暴走マグロを倒す"), 1, TEXT("水晶洞窟"), nullptr, 2, 1, 400, 6, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
+			TEXT("暴走マグロを倒す"), 1, TEXT("水晶洞窟"), nullptr, 2, 1, 200, 6, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
 		{TEXT("休息の灯りをつなぐ"), ERPGQuestKind::Beacon, ERPGQuestFrom::Beacon, 0,
 			TEXT("灯りの台座に、古い巡礼の書き付けが残っていた。各地の休息の灯りを3つともして、道をつないでほしいという願いが書かれているようだ。"),
-			TEXT("休息の灯りをともす"), 3, nullptr, nullptr, -1, 1, 80, 2, ERPGItemKind::LifeBadge, EChaosImpactBallType::Normal, 1, TEXT("休息の灯りを初めてともす")},
+			TEXT("休息の灯りをともす"), 3, nullptr, nullptr, -1, 1, 40, 2, ERPGItemKind::LifeBadge, EChaosImpactBallType::Normal, 1, TEXT("休息の灯りを初めてともす")},
 		{TEXT("工房の初仕事"), ERPGQuestKind::Workshop, ERPGQuestFrom::Merchant, 0,
 			TEXT("ルビー商人は、新しい客に工房の使い方を覚えてほしいらしい。装備を1回強化して、ボールにチューンを1つ付けてみてほしいようだ。"),
-			TEXT("強化とチューンを試す"), 2, nullptr, nullptr, -1, 1, 120, 2, ERPGItemKind::Material, EChaosImpactBallType::Normal, 0, TEXT("ルビー商人に初めて話しかける")},
+			TEXT("強化とチューンを試す"), 2, nullptr, nullptr, -1, 1, 60, 2, ERPGItemKind::Material, EChaosImpactBallType::Normal, 0, TEXT("ルビー商人に初めて話しかける")},
 		{TEXT("峡谷の向こう側"), ERPGQuestKind::Explore, ERPGQuestFrom::Region, 0,
 			TEXT("峡谷の入口の岩に、先に進んだ旅人の目印が刻まれている。見晴らし台・野営跡・大水門をたどってみてほしいと誘っているようだ。"),
-			TEXT("目印の場所を訪ねる"), 3, TEXT("峡谷の見晴らし台|旅人の野営跡|忘れられた大水門"), TEXT("水脈峡谷"), -1, 1, 160, 4, ERPGItemKind::MobilityBadge, EChaosImpactBallType::Normal, 2, TEXT("水脈峡谷に足を踏み入れる")},
+			TEXT("目印の場所を訪ねる"), 3, TEXT("峡谷の見晴らし台|旅人の野営跡|忘れられた大水門"), TEXT("水脈峡谷"), -1, 1, 80, 4, ERPGItemKind::MobilityBadge, EChaosImpactBallType::Normal, 2, TEXT("水脈峡谷に足を踏み入れる")},
 		{TEXT("はぐれ投手の手配書"), ERPGQuestKind::Bounty, ERPGQuestFrom::BountyDrop, 0,
 			TEXT("倒した敵が手配書を落とした。遠くからボールを投げてくる投手役の敵を3体倒せば、懸賞金がもらえるらしい。"),
-			TEXT("投手役の敵を倒す"), 3, nullptr, nullptr, -1, 2, 130, 3, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 1, TEXT("敵が落とす手配書を拾う（Lv2から、まれ）")},
+			TEXT("投手役の敵を倒す"), 3, nullptr, nullptr, -1, 2, 70, 3, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 1, TEXT("敵が落とす手配書を拾う（Lv2から、まれ）")},
 		{TEXT("特殊球の試し打ち"), ERPGQuestKind::Special, ERPGQuestFrom::FirstSpecial, 0,
 			TEXT("手に入れた特殊球に、前の持ち主のメモが結ばれていた。特殊球で敵を3体倒して、使い心地を確かめてほしいらしい。"),
-			TEXT("特殊球で敵を倒す"), 3, nullptr, nullptr, -1, 1, 70, 2, ERPGItemKind::TechniqueBadge, EChaosImpactBallType::Normal, 1, TEXT("特殊球を初めて手に入れる")},
+			TEXT("特殊球で敵を倒す"), 3, nullptr, nullptr, -1, 1, 40, 2, ERPGItemKind::TechniqueBadge, EChaosImpactBallType::Normal, 1, TEXT("特殊球を初めて手に入れる")},
 		{TEXT("峡谷の見張り"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 4,
 			TEXT("ソラは野営跡を拠点に峡谷を旅しているらしい。道をふさぐ敵が多くて先へ進めないので、峡谷や大水門のあたりで6体ほど減らしてほしいようだ。"),
-			TEXT("峡谷の敵を倒す"), 6, TEXT("峡谷|大水門|水源|野営跡"), nullptr, -1, 1, 220, 4, ERPGItemKind::Supporter, EChaosImpactBallType::Normal, 2, nullptr},
+			TEXT("峡谷の敵を倒す"), 6, TEXT("峡谷|大水門|水源|野営跡"), nullptr, -1, 1, 110, 4, ERPGItemKind::Supporter, EChaosImpactBallType::Normal, 2, nullptr},
 		// 2026-10-20: more hunts across the map, and the snowfield.
 		{TEXT("霧の森の見回り"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Board, 0,
 			TEXT("掲示板に、霧の古森で薪を集める人たちの頼みが貼られている。森にいる敵を6体ほど減らして、作業できるようにしてほしいらしい。"),
-			TEXT("霧の古森の敵を倒す"), 6, TEXT("霧の古森|古森の奥"), nullptr, 0, 1, 130, 3, ERPGItemKind::Shoes, EChaosImpactBallType::Normal, 1, nullptr},
+			TEXT("霧の古森の敵を倒す"), 6, TEXT("霧の古森|古森の奥"), nullptr, 0, 1, 70, 3, ERPGItemKind::Shoes, EChaosImpactBallType::Normal, 1, nullptr},
 		{TEXT("川辺の見張り"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 1,
 			TEXT("ロウは、草原や入り江の方から敵が門に近づいてくるのを心配しているらしい。川辺の敵を6体ほど追い払ってほしいようだ。"),
-			TEXT("草原・入り江の敵を倒す"), 6, TEXT("せせらぎの草原|さざなみの入り江|入り江の小島|花風の丘|風車の丘"), nullptr, -1, 1, 130, 3, ERPGItemKind::Ball, EChaosImpactBallType::Ice, 1, nullptr},
+			TEXT("草原・入り江の敵を倒す"), 6, TEXT("せせらぎの草原|さざなみの入り江|入り江の小島|花風の丘|風車の丘"), nullptr, -1, 1, 70, 3, ERPGItemKind::Ball, EChaosImpactBallType::Ice, 1, nullptr},
 		{TEXT("遺跡を荒らす群れ"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 3,
 			TEXT("ミナは、遺跡や中継塔のまわりをうろつく敵のせいで調査が進まないらしい。8体ほど片付けてほしいようだ。"),
-			TEXT("遺跡・中継塔の敵を倒す"), 8, TEXT("水脈の遺跡|風見の中継塔|分かれ道"), nullptr, -1, 1, 190, 4, ERPGItemKind::TechniqueBadge, EChaosImpactBallType::Normal, 2, nullptr},
+			TEXT("遺跡・中継塔の敵を倒す"), 8, TEXT("水脈の遺跡|風見の中継塔|分かれ道"), nullptr, -1, 1, 100, 4, ERPGItemKind::TechniqueBadge, EChaosImpactBallType::Normal, 2, nullptr},
 		{TEXT("水晶洞窟の掃討"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 3,
 			TEXT("ミナは、水晶洞窟の奥まで安全に調べたいらしい。洞窟にいる敵を10体ほど倒して、道を開いてほしいようだ。"),
-			TEXT("水晶洞窟の敵を倒す"), 10, TEXT("水晶洞窟"), nullptr, 14, 1, 260, 5, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
+			TEXT("水晶洞窟の敵を倒す"), 10, TEXT("水晶洞窟"), nullptr, 14, 1, 130, 5, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
 		{TEXT("大討伐"), ERPGQuestKind::Hunt, ERPGQuestFrom::Board, 0,
 			TEXT("掲示板の真ん中に、コロニー全体からの大きな依頼が貼られている。どこでもいいので敵を30体倒し、外の勢いを弱めてほしいらしい。"),
-			TEXT("敵を倒す（どこでも）"), 30, nullptr, nullptr, -1, 4, 450, 8, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 3, nullptr},
+			TEXT("敵を倒す（どこでも）"), 30, nullptr, nullptr, -1, 4, 230, 8, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 3, nullptr},
 		{TEXT("雪原の狩り"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 5,
 			TEXT("ユキは雪原の野営地を守っているらしい。吹雪にまぎれて近づく敵を8体ほど減らしてほしいようだ。"),
-			TEXT("雪原の敵を倒す"), 8, TEXT("雪原"), nullptr, -1, 1, 240, 5, ERPGItemKind::Ball, EChaosImpactBallType::Snow, 2, nullptr},
+			TEXT("雪原の敵を倒す"), 8, TEXT("雪原"), nullptr, -1, 1, 120, 5, ERPGItemKind::Ball, EChaosImpactBallType::Snow, 2, nullptr},
 		{TEXT("粉雪の主"), ERPGQuestKind::Boss, ERPGQuestFrom::Person, 5,
 			TEXT("ユキによると、雪原の奥の巣に巨大なシマエナガが棲んでいるらしい。追い詰められると炎をまとって暴れ出すので、気をつけて鎮めてほしいようだ。"),
-			TEXT("シマエナガを倒す"), 1, TEXT("雪原"), nullptr, 17, 1, 600, 8, ERPGItemKind::Ball, EChaosImpactBallType::Simae, 3, nullptr},
+			TEXT("シマエナガを倒す"), 1, TEXT("雪原"), nullptr, 17, 1, 300, 8, ERPGItemKind::Ball, EChaosImpactBallType::Simae, 3, nullptr},
+		// 2026-11: the new lands (the coast, the pass, the desert, the volcano, the mesa).
+		{TEXT("漁村の見回り"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 6,
+			TEXT("漁師のハマは、浜辺や岬に出る敵のせいで網を干せずに困っているらしい。浜辺・漁村・岬のあたりで6体ほど追い払ってほしいようだ。"),
+			TEXT("浜辺・漁村・岬の敵を倒す"), 6, TEXT("白砂の浜辺|潮騒の漁村|灯台の岬"), nullptr, -1, 3, 110, 5, ERPGItemKind::Ball, EChaosImpactBallType::Wind, 2, nullptr},
+		{TEXT("岬と沼の見回り"), ERPGQuestKind::Explore, ERPGQuestFrom::Person, 6,
+			TEXT("ハマは、灯台の岬とほたる沼の様子が気になっているらしい。両方を見てきてほしいようだ。"),
+			TEXT("岬と沼を訪ねる"), 2, TEXT("灯台の岬|ほたる沼"), nullptr, -1, 3, 80, 4, ERPGItemKind::MobilityBadge, EChaosImpactBallType::Normal, 2, nullptr},
+		{TEXT("ほたる沼の怪"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 6,
+			TEXT("ハマによると、ほたる沼で光る影が群れているらしい。沼の敵を8体ほど倒して、漁村に近づかないようにしてほしいようだ。"),
+			TEXT("ほたる沼の敵を倒す"), 8, TEXT("ほたる沼"), nullptr, 20, 5, 160, 6, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
+		{TEXT("峠道の護衛"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 7,
+			TEXT("茶屋の女将ツバキは、峠道に出る敵のせいで客足が遠のいているらしい。峠道のあたりで6体ほど倒してほしいようだ。"),
+			TEXT("峠道の敵を倒す"), 6, TEXT("風鳴りの峠道|峠の茶屋|砂丘への下り道|水車小屋の高台"), nullptr, -1, 3, 110, 5, ERPGItemKind::Shoes, EChaosImpactBallType::Normal, 2, nullptr},
+		{TEXT("白霧の向こう"), ERPGQuestKind::Explore, ERPGQuestFrom::Person, 7,
+			TEXT("ツバキは、白霧の峠の先に雪原の野営地があると聞いたらしい。峠を越えて野営地まで行ってみてほしいようだ。"),
+			TEXT("峠と雪原の野営地を訪ねる"), 2, TEXT("白霧の峠|雪原・入口の野営地"), nullptr, -1, 5, 130, 6, ERPGItemKind::Ball, EChaosImpactBallType::Snow, 2, nullptr},
+		{TEXT("砂丘の旅"), ERPGQuestKind::Explore, ERPGQuestFrom::Person, 8,
+			TEXT("案内人のサジは、砂漠を初めて歩く人に道を覚えてほしいらしい。砂丘・オアシス・神殿をめぐってきてほしいようだ。"),
+			TEXT("砂漠の3か所を訪ねる"), 3, TEXT("陽炎の砂丘|砂漠のオアシス|砂に眠る神殿"), nullptr, -1, 4, 120, 5, ERPGItemKind::TechniqueBadge, EChaosImpactBallType::Normal, 2, nullptr},
+		{TEXT("神殿の盗掘団"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 8,
+			TEXT("サジは、砂に眠る神殿を荒らす者がいると心配しているらしい。神殿と巡礼の石段で8体ほど倒してほしいようだ。"),
+			TEXT("神殿の敵を倒す"), 8, TEXT("砂に眠る神殿|巡礼の石段"), nullptr, 24, 6, 190, 7, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
+		{TEXT("砂漠の掃討"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Board, 0,
+			TEXT("掲示板に、砂漠を渡る隊商からの頼みが貼られている。砂丘とオアシスの敵を10体ほど減らしてほしいらしい。"),
+			TEXT("砂丘・オアシスの敵を倒す"), 10, TEXT("陽炎の砂丘|砂漠のオアシス"), nullptr, -1, 5, 180, 7, ERPGItemKind::Glove, EChaosImpactBallType::Normal, 2, nullptr},
+		{TEXT("火口の調査"), ERPGQuestKind::Explore, ERPGQuestFrom::Person, 9,
+			TEXT("火山学者のホムラは、火口の様子を確かめたいらしい。火山のふもとから火口まで登ってきてほしいようだ。"),
+			TEXT("ふもとと火口を訪ねる"), 2, TEXT("火山のふもと|灼熱の火口"), nullptr, -1, 6, 140, 6, ERPGItemKind::LifeBadge, EChaosImpactBallType::Normal, 2, nullptr},
+		{TEXT("火口の番人"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 9,
+			TEXT("ホムラによると、火口には熱に強い敵が集まっているらしい。火口で10体ほど倒して、調べられるようにしてほしいようだ。"),
+			TEXT("火口の敵を倒す"), 10, TEXT("灼熱の火口"), nullptr, 27, 7, 240, 9, ERPGItemKind::Ball, EChaosImpactBallType::Fire, 3, nullptr},
+		{TEXT("赤土の荒くれ"), ERPGQuestKind::AreaHunt, ERPGQuestFrom::Person, 4,
+			TEXT("ソラは、野営跡の東にある赤土の台地と石柱の谷を越えたいらしい。そこで暴れる敵を8体ほど倒してほしいようだ。"),
+			TEXT("台地・石柱の谷の敵を倒す"), 8, TEXT("赤土の台地|石柱の谷"), nullptr, -1, 5, 170, 7, ERPGItemKind::Supporter, EChaosImpactBallType::Normal, 2, nullptr},
+		{TEXT("新しい土地の宝"), ERPGQuestKind::Treasure, ERPGQuestFrom::Board, 0,
+			TEXT("掲示板に、新しく道が通じた土地の噂が貼られている。どこでもいいので宝箱を6つ開けて、何が眠っているか確かめてほしいらしい。"),
+			TEXT("宝箱を開ける"), 6, nullptr, nullptr, 4, 4, 130, 5, ERPGItemKind::Pouch, EChaosImpactBallType::Normal, 2, nullptr},
+		// 2026-11: multiplayer only (the board offers them while two or more play together).
+		{TEXT("仲間を助けて"), ERPGQuestKind::Revive, ERPGQuestFrom::Board, 0,
+			TEXT("掲示板に、救護係からの頼みが貼られている。倒れた仲間を3回起こして、助け合いの大切さを確かめてほしいらしい。"),
+			TEXT("ダウンした仲間を起こす"), 3, nullptr, nullptr, -1, 1, 100, 4, ERPGItemKind::LifeBadge, EChaosImpactBallType::Normal, 2, nullptr, true},
+		{TEXT("力を合わせて"), ERPGQuestKind::TeamHunt, ERPGQuestFrom::Board, 0,
+			TEXT("掲示板に、二人以上で組む冒険者への依頼が貼られている。仲間のそばで敵を15体倒し、連携を見せてほしいらしい。"),
+			TEXT("仲間のそばで敵を倒す"), 15, nullptr, nullptr, -1, 2, 150, 6, ERPGItemKind::Supporter, EChaosImpactBallType::Normal, 2, nullptr, true},
+		{TEXT("みんなで大物狩り"), ERPGQuestKind::TeamBoss, ERPGQuestFrom::Board, 0,
+			TEXT("掲示板の隅に、腕利きの組を探す貼り紙がある。仲間と一緒に暴走マグロかシマエナガを倒してほしいらしい。"),
+			TEXT("仲間と一緒にボスを倒す"), 1, nullptr, nullptr, -1, 8, 350, 12, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 3, nullptr, true},
+		{TEXT("雪原の連携"), ERPGQuestKind::TeamHunt, ERPGQuestFrom::Person, 5,
+			TEXT("ユキは、吹雪の中では一人で戦うのは危ないと考えているらしい。仲間と組んで雪原の敵を10体倒してほしいようだ。"),
+			TEXT("仲間のそばで雪原の敵を倒す"), 10, TEXT("雪原"), nullptr, -1, 8, 210, 8, ERPGItemKind::Ball, EChaosImpactBallType::Ice, 3, nullptr, true},
+		// 2026-11: the bosses of the new lands.
+		{TEXT("ほたる沼の主"), ERPGQuestKind::Boss, ERPGQuestFrom::Person, 6,
+			TEXT("ハマによると、ほたる沼の奥には沼の主と呼ばれる大きな影がいるらしい。漁村に災いが来る前に鎮めてほしいようだ。"),
+			TEXT("ほたる沼の主を倒す"), 1, TEXT("ほたる沼"), nullptr, 21, 6, 260, 9, ERPGItemKind::Ball, EChaosImpactBallType::Smoke, 3, nullptr},
+		{TEXT("砂に眠る巨兵"), ERPGQuestKind::Boss, ERPGQuestFrom::Person, 8,
+			TEXT("サジは、神殿の奥で大統領が造った古い兵器が目を覚ましかけていると聞いたらしい。動き出す前に止めてほしいようだ。"),
+			TEXT("砂に眠る巨兵を倒す"), 1, TEXT("砂に眠る神殿"), nullptr, 25, 8, 320, 10, ERPGItemKind::Glove, EChaosImpactBallType::Normal, 3, nullptr},
+		{TEXT("火口の番人"), ERPGQuestKind::Boss, ERPGQuestFrom::Person, 9,
+			TEXT("ホムラは、火口に居座る怒りっぽい番人のせいで調査が進まないらしい。番人を倒して火口を調べられるようにしてほしいようだ。"),
+			TEXT("火口の番人を倒す"), 1, TEXT("灼熱の火口"), nullptr, 28, 10, 380, 11, ERPGItemKind::Ball, EChaosImpactBallType::Fire, 3, nullptr},
+		{TEXT("石柱の王"), ERPGQuestKind::Boss, ERPGQuestFrom::Person, 4,
+			TEXT("ソラは、石柱の谷で戦うほど強くなる王の噂を聞いたらしい。手がつけられなくなる前に倒してほしいようだ。"),
+			TEXT("石柱の王を倒す"), 1, TEXT("石柱の谷"), nullptr, 29, 9, 350, 10, ERPGItemKind::Ball, EChaosImpactBallType::Thunder, 3, nullptr},
+		{TEXT("伝説の投手"), ERPGQuestKind::Boss, ERPGQuestFrom::Board, 0,
+			TEXT("掲示板の奥に、古びた挑戦状が貼られている。各地のボスをすべて倒した者だけが、覇者の闘技場で伝説の投手に挑めるらしい。"),
+			TEXT("伝説の投手を倒す"), 1, TEXT("覇者の闘技場"), nullptr, -1, 15, 1200, 20, ERPGItemKind::Ball, EChaosImpactBallType::Black, 3, nullptr},
+		// 2026-11: the named ones (now and then with a group of Lv.4 and up).
+		{TEXT("名を持つ強敵"), ERPGQuestKind::Named, ERPGQuestFrom::Person, 1,
+			TEXT("ロウによると、金色の名で呼ばれる手ごわい敵が、ときどき群れに混じって現れるらしい。見かけたら倒してほしいようだ。"),
+			TEXT("ネームドの敵を倒す"), 1, nullptr, nullptr, -1, 5, 240, 9, ERPGItemKind::Ball, EChaosImpactBallType::Nova, 2, nullptr},
 	};
 	return Table;
 }
@@ -111,8 +181,15 @@ const TArray<FRPGQuestGiverDef>& RPGQuests::Givers()
 		{TEXT("石切り職人 ガンテ"), TEXT("採石場の職人"), TEXT("ガンテは黙々と石を磨いている。今は手が足りているらしい。"), FVector2D(8650, -5250), 1},
 		{TEXT("研究者 ミナ"), TEXT("遺跡の調査員"), TEXT("ミナは古い石板の記録に夢中のようだ。"), FVector2D(15800, -1450), 2},
 		{TEXT("旅人 ソラ"), TEXT("峡谷の旅人"), TEXT("ソラは焚き火のそばで地図を広げている。"), FVector2D(22350, 4950), 4},
-		// Stands in the snowfield (placed by ARPGSnowField, not by position here).
-		{TEXT("見張り番 ユキ"), TEXT("雪原の見張り番"), TEXT("ユキは白い息を吐きながら雪原を見渡している。"), FVector2D::ZeroVector, 1},
+		// At the snowfield's camp, up the misty pass (2026-11).
+		{TEXT("見張り番 ユキ"), TEXT("雪原の見張り番"), TEXT("ユキは白い息を吐きながら雪原を見渡している。"), FVector2D(21350, 28250), 1},
+		// 2026-11: the new lands.
+		{TEXT("漁師 ハマ"), TEXT("漁村の漁師"), TEXT("ハマは網を繕いながら海を眺めている。"), FVector2D(1800, 21300), 0},
+		{TEXT("女将 ツバキ"), TEXT("峠の茶屋の女将"), TEXT("ツバキは湯を沸かしながら峠道を見ている。"), FVector2D(12050, 16650), 2},
+		{TEXT("案内人 サジ"), TEXT("砂漠の案内人"), TEXT("サジは砂の上に道の印を描いている。"), FVector2D(5900, 29650), 1},
+		{TEXT("火山学者 ホムラ"), TEXT("火山の研究者"), TEXT("ホムラは火口の方角をじっと見つめている。"), FVector2D(1450, 29250), 2},
+		// The dojo's master: talking opens the lessons (tackle and dash), not quests.
+		{TEXT("師範 ゴウ"), TEXT("道場の師範"), TEXT("ゴウは腕を組んでこちらの動きを見ている。"), FVector2D(-250, -1050), 0},
 	};
 	return List;
 }
@@ -128,7 +205,8 @@ FString RPGQuests::KindName(ERPGQuestKind Kind)
 	case ERPGQuestKind::Boss: return TEXT("ボス");
 	case ERPGQuestKind::Workshop: return TEXT("工房");
 	case ERPGQuestKind::Beacon: return TEXT("巡礼");
-	case ERPGQuestKind::Bounty: return TEXT("手配");
+	case ERPGQuestKind::Bounty: case ERPGQuestKind::Named: return TEXT("手配");
+	case ERPGQuestKind::Revive: case ERPGQuestKind::TeamHunt: case ERPGQuestKind::TeamBoss: return TEXT("協力");
 	default: return TEXT("腕試し");
 	}
 }
@@ -136,10 +214,11 @@ FLinearColor RPGQuests::KindColor(ERPGQuestKind Kind)
 {
 	switch (Kind)
 	{
-	case ERPGQuestKind::Hunt: case ERPGQuestKind::AreaHunt: case ERPGQuestKind::Bounty: return FLinearColor(1.0f, 0.42f, 0.32f, 1.0f);
+	case ERPGQuestKind::Hunt: case ERPGQuestKind::AreaHunt: case ERPGQuestKind::Bounty: case ERPGQuestKind::Named: return FLinearColor(1.0f, 0.42f, 0.32f, 1.0f);
 	case ERPGQuestKind::Boss: return FLinearColor(1.0f, 0.2f, 0.45f, 1.0f);
 	case ERPGQuestKind::Gather: case ERPGQuestKind::Treasure: return FLinearColor(1.0f, 0.76f, 0.2f, 1.0f);
 	case ERPGQuestKind::Survey: case ERPGQuestKind::Explore: case ERPGQuestKind::Beacon: return FLinearColor(0.25f, 0.85f, 1.0f, 1.0f);
+	case ERPGQuestKind::Revive: case ERPGQuestKind::TeamHunt: case ERPGQuestKind::TeamBoss: return FLinearColor(0.4f, 1.0f, 0.6f, 1.0f);
 	default: return FLinearColor(0.72f, 0.5f, 1.0f, 1.0f);
 	}
 }
@@ -164,11 +243,14 @@ ERPGQuestState RPGQuests::State(const ARPGPrototypeCharacter* Player, int32 Inde
 	const auto& D = Get(Index);
 	if (!ReportsToGiver(Index)) { return Q.bDiscovered ? ERPGQuestState::Offered : ERPGQuestState::Hidden; }
 	const bool bAfter = D.AfterQuest < 0 || (Player->Quests.IsValidIndex(D.AfterQuest) && Player->Quests[D.AfterQuest].Stage >= 3);
-	return bAfter && Player->GetRPGLevel() >= D.MinLevel ? ERPGQuestState::Offered : ERPGQuestState::Locked;
+	return bAfter && Player->GetRPGLevel() >= D.MinLevel && (!D.bMulti || IsTogether(Player)) ? ERPGQuestState::Offered : ERPGQuestState::Locked;
 }
+bool RPGQuests::IsTogether(const ARPGPrototypeCharacter* Player)
+{ return Player && ARPGPrototypeCharacter::CountHeroes(Player->GetWorld()) >= 2; }
 FString RPGQuests::UnlockHint(int32 Index)
 {
 	const auto& D = Get(Index);
+	if (D.bMulti) { return TEXT("2人以上で遊んでいるときに受けられる"); }
 	if (D.AfterQuest >= 0) { return FString::Printf(TEXT("「%s」を終えると受けられる"), Get(D.AfterQuest).Name); }
 	if (D.MinLevel > 1) { return FString::Printf(TEXT("Lv.%d になると受けられる"), D.MinLevel); }
 	return TEXT("");
@@ -292,7 +374,8 @@ void ARPGPrototypeCharacter::DiscoverQuest(int32 Index)
 {
 	if (!Quests.IsValidIndex(Index) || Quests[Index].Stage != 0 || Quests[Index].bDiscovered || RPGQuests::ReportsToGiver(Index)) { return; }
 	Quests[Index].bDiscovered = true;
-	ShowQuestBanner(TEXT("新しい依頼の話"), Index);
+	// Found in the field: taken on at once (the journal lists only quests being done, and done ones).
+	if (!AcceptQuest(Index)) { ShowQuestBanner(TEXT("新しい依頼の話"), Index); }
 }
 
 bool ARPGPrototypeCharacter::AcceptQuest(int32 Index)
@@ -315,9 +398,19 @@ bool ARPGPrototypeCharacter::ClaimQuest(int32 Index)
 	{ Notice = TEXT("バッグがいっぱいです。分解してから報酬を受け取ってください"); NoticeUntil = GetWorld()->GetTimeSeconds() + 3; return false; }
 	Quests[Index].Stage = 3;
 	AddRubies(D.Rubies); GainRPGExperience(D.XP);
-	if (TrackedQuest == Index) { TrackedQuest = INDEX_NONE; }
+	// Every quest done helps the colony grow.
+	AddColonyPoints(D.XP * 10);
+	// The bigger quests also pay a tune shard.
+	const bool bShard = D.XP >= 5;
+	if (bShard) { TuneShards = FMath::Min(RPGTuning::ShardCap, TuneShards + 1); }
+	if (TrackedQuest == Index)
+	{
+		// On to the next quest being done, if any.
+		TrackedQuest = INDEX_NONE;
+		for (int32 Other = 0; Other < RPGQuests::Num(); ++Other) { if (RPGQuests::State(this, Other) == ERPGQuestState::Active) { TrackedQuest = Other; break; } }
+	}
 	ShowQuestBanner(TEXT("依頼達成！"), Index);
-	Notice = FString(D.Name) + TEXT(" 達成！ 報酬を受け取りました"); NoticeUntil = GetWorld()->GetTimeSeconds() + 4;
+	Notice = FString(D.Name) + (bShard ? TEXT(" 達成！ 報酬とチューンの欠片を受け取りました") : TEXT(" 達成！ 報酬を受け取りました")); NoticeUntil = GetWorld()->GetTimeSeconds() + 4;
 	return true;
 }
 
@@ -349,6 +442,7 @@ void ARPGPrototypeCharacter::QuestEvent(ERPGQuestEvent Event, const FVector& At,
 			|| (Event == ERPGQuestEvent::Kill && D.From == ERPGQuestFrom::BountyDrop && RPGLevel >= D.MinLevel && FMath::FRand() < .2f);
 		if (bFound) { DiscoverQuest(Index); }
 	}
+	if (Event == ERPGQuestEvent::Revived) { TutorialEvent(TEXT("Revive")); }
 	// 2. Progress of accepted quests.
 	const FString KillPlace = Event == ERPGQuestEvent::Kill ? Adventure->RegionName(At) : FString();
 	for (int32 Index = 0; Index < RPGQuests::Num(); ++Index)
@@ -363,11 +457,16 @@ void ARPGPrototypeCharacter::QuestEvent(ERPGQuestEvent Event, const FVector& At,
 		case ERPGQuestKind::AreaHunt: if (Event == ERPGQuestEvent::Kill && PlaceMatches(KillPlace, D.Places)) { AdvanceQuest(Index, Q.Count + 1); } break;
 		case ERPGQuestKind::Boss: if (Event == ERPGQuestEvent::Kill && (Detail & 1) && (!D.Places || PlaceMatches(KillPlace, D.Places))) { AdvanceQuest(Index, Q.Count + 1); } break;
 		case ERPGQuestKind::Bounty: if (Event == ERPGQuestEvent::Kill && (Detail & 2)) { AdvanceQuest(Index, Q.Count + 1); } break;
+		case ERPGQuestKind::Named: if (Event == ERPGQuestEvent::Kill && (Detail & 16)) { AdvanceQuest(Index, Q.Count + 1); } break;
 		case ERPGQuestKind::Special: if (Event == ERPGQuestEvent::Kill && (Detail & 4)) { AdvanceQuest(Index, Q.Count + 1); } break;
 		case ERPGQuestKind::Treasure: if (Event == ERPGQuestEvent::ChestOpened) { AdvanceQuest(Index, Q.Count + 1); } break;
 		case ERPGQuestKind::Workshop: Bit = Event == ERPGQuestEvent::Upgraded ? 0 : Event == ERPGQuestEvent::Tuned ? 1 : INDEX_NONE; break;
 		case ERPGQuestKind::Beacon: Bit = Event == ERPGQuestEvent::BeaconLit ? FMath::Clamp(Detail, 0, 7) : INDEX_NONE; break;
 		case ERPGQuestKind::Explore: Bit = Event == ERPGQuestEvent::RegionEntered ? PlaceIndex(Place, D.Places) : INDEX_NONE; break;
+		// Together: kills with a teammate close by (Detail 8), helping teammates up.
+		case ERPGQuestKind::Revive: if (Event == ERPGQuestEvent::Revived) { AdvanceQuest(Index, Q.Count + 1); } break;
+		case ERPGQuestKind::TeamHunt: if (Event == ERPGQuestEvent::Kill && (Detail & 8) && (!D.Places || PlaceMatches(KillPlace, D.Places))) { AdvanceQuest(Index, Q.Count + 1); } break;
+		case ERPGQuestKind::TeamBoss: if (Event == ERPGQuestEvent::Kill && (Detail & 1) && (Detail & 8)) { AdvanceQuest(Index, Q.Count + 1); } break;
 		default: break;
 		}
 		if (Bit != INDEX_NONE && !(Q.Flags & (1 << Bit)))
@@ -382,10 +481,19 @@ void ARPGPrototypeCharacter::QuestEvent(ERPGQuestEvent Event, const FVector& At,
 
 void ARPGPrototypeCharacter::AdvanceAdventureKill() { QuestEvent(ERPGQuestEvent::Kill, GetActorLocation()); }
 
+void ARPGPrototypeCharacter::CreditQuestEvent(ERPGQuestEvent Event, const FVector& At, int32 Detail)
+{
+	// Quests live on the player's own machine: the host's copy of a guest sends it there.
+	if (IsRemoteHero()) { ClientQuestEvent(static_cast<uint8>(Event), At, Detail); } else { QuestEvent(Event, At, Detail); }
+}
+
+void ARPGPrototypeCharacter::ClientQuestEvent_Implementation(uint8 Event, FVector_NetQuantize At, int32 Detail)
+{ QuestEvent(static_cast<ERPGQuestEvent>(Event), At, Detail); }
+
 TArray<int32> ARPGPrototypeCharacter::QuestPanelList() const
 {
 	TArray<int32> Out;
-	if (QuestGiver == TravelPanel || QuestGiver == MembersPanel) { return Out; }
+	if (QuestGiver == TravelPanel || QuestGiver == MembersPanel || QuestGiver == TrainingPanel || QuestGiver <= MenuPanel) { return Out; }
 	const auto Order = [this](int32 Index)
 	{
 		switch (RPGQuests::State(this, Index))
@@ -403,11 +511,12 @@ TArray<int32> ARPGPrototypeCharacter::QuestPanelList() const
 		if (S == ERPGQuestState::Hidden) { continue; }
 		if (QuestGiver >= 0)
 		{
-			// Talking to someone: their own quests only.
-			if (RPGQuests::ReportsToGiver(Index) && RPGQuests::Get(Index).Giver == QuestGiver) { Out.Add(Index); }
+			// Talking to someone: their own quests only (none they cannot offer yet).
+			if (RPGQuests::ReportsToGiver(Index) && RPGQuests::Get(Index).Giver == QuestGiver && S != ERPGQuestState::Locked) { Out.Add(Index); }
 			continue;
 		}
-		const int32 Tab = S == ERPGQuestState::Active || S == ERPGQuestState::Ready ? 0 : S == ERPGQuestState::Offered || S == ERPGQuestState::Locked ? 1 : 2;
+		// The journal: quests being done, and done ones. Quests not taken on yet are only shown by whoever offers them.
+		const int32 Tab = S == ERPGQuestState::Active || S == ERPGQuestState::Ready ? 0 : S == ERPGQuestState::Done ? 1 : INDEX_NONE;
 		if (Tab == QuestTab) { Out.Add(Index); }
 	}
 	Out.StableSort([&](int32 A, int32 B) { return Order(A) < Order(B); });
@@ -436,7 +545,7 @@ bool ARPGPrototypeCharacter::OpenQuestJournal()
 	if (QuestPanelList().IsEmpty()) { QuestTab = 1; }
 	return OpenQuestPanel(INDEX_NONE);
 }
-bool ARPGPrototypeCharacter::TalkToGiver(int32 Giver) { return OpenQuestPanel(Giver); }
+bool ARPGPrototypeCharacter::TalkToGiver(int32 Giver) { return Giver == RPGQuests::DojoMaster ? OpenTraining() : OpenQuestPanel(Giver); }
 
 void ARPGPrototypeCharacter::SetQuestMenuOpen(bool Open)
 {
@@ -484,9 +593,13 @@ bool ARPGPrototypeCharacter::HandleQuestKey(FKey Key)
 	if (!bQuestMenuOpen) { return false; }
 	if (QuestGiver == TravelPanel) { return HandleTravelKey(Key); }
 	if (QuestGiver == MembersPanel) { return HandleMembersKey(Key); }
+	if (QuestGiver == TrainingPanel) { return HandleTrainingKey(Key); }
+	if (QuestGiver <= MenuPanel) { return HandleMenuKey(Key); }
 	if (Key == EKeys::W) { Key = EKeys::Up; } else if (Key == EKeys::S) { Key = EKeys::Down; } else if (Key == EKeys::A) { Key = EKeys::Left; } else if (Key == EKeys::D) { Key = EKeys::Right; }
 	const bool bBack = Key == EKeys::Escape || Key == EKeys::Tab || Key == EKeys::Gamepad_FaceButton_Right || Key == EKeys::Gamepad_Special_Left;
 	const bool bOk = Key == EKeys::Enter || Key == EKeys::SpaceBar || Key == EKeys::Gamepad_FaceButton_Bottom;
+	// At the board: a gift for the colony.
+	if (QuestGiver == 0 && !bQuestConfirm && (Key == EKeys::G || Key == EKeys::Gamepad_LeftShoulder)) { DonateToColony(); return true; }
 	if (bQuestConfirm)
 	{
 		if (bBack) { bQuestConfirm = false; }
@@ -506,7 +619,7 @@ bool ARPGPrototypeCharacter::HandleQuestKey(FKey Key)
 		|| Key == EKeys::Q || Key == EKeys::E || Key == EKeys::Gamepad_LeftShoulder || Key == EKeys::Gamepad_RightShoulder))
 	{
 		const bool bLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Q || Key == EKeys::Gamepad_LeftShoulder;
-		SetQuestTab((QuestTab + (bLeft ? 2 : 1)) % 3); return true;
+		SetQuestTab(1 - QuestTab); return true;
 	}
 	if (Key == EKeys::T || Key == EKeys::Gamepad_FaceButton_Top) { ToggleQuestTrack(QuestSelection); return true; }
 	if (bOk) { RequestQuestPrimary(); }
@@ -515,7 +628,7 @@ bool ARPGPrototypeCharacter::HandleQuestKey(FKey Key)
 
 void ARPGPrototypeCharacter::SetQuestTab(int32 Tab)
 {
-	QuestTab = FMath::Clamp(Tab, 0, 2); bQuestConfirm = false;
+	QuestTab = FMath::Clamp(Tab, 0, 1); bQuestConfirm = false;
 	const auto List = QuestPanelList();
 	if (!List.Contains(QuestSelection)) { QuestSelection = List.Num() ? List[0] : 0; }
 }

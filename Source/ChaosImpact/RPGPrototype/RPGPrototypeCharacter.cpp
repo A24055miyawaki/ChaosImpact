@@ -1,4 +1,5 @@
 #include "RPGPrototype.h"
+#include "RPGAbilityGates.h"
 #include "RPGTuning.h"
 #include "RPGPrototypeHUD.h"
 #include "ChaosImpactChargeWidget.h"
@@ -23,6 +24,42 @@ ARPGPrototypeCharacter::ARPGPrototypeCharacter()
 	AIControllerClass = ARPGPrototypeGruntController::StaticClass();
 }
 
+void ARPGPrototypeCharacter::OnRep_Elite()
+{
+	if (bElite || IsNamed()) { SetActorScale3D(FVector(IsNamed() ? RPGTuning::NamedScale : RPGTuning::EliteScale)); }
+	// A named one: the players close by (on this machine) hear of it once.
+	if (!IsNamed() || bNamedAnnounced || !GetWorld()) { return; }
+	bNamedAnnounced = true;
+	for (TActorIterator<ARPGPrototypeCharacter> It(GetWorld()); It; ++It)
+	{
+		if (It->IsGrunt() || !It->IsLocallyControlled() || It->IsInTitle() || FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation()) > FMath::Square(6500.0f)) { continue; }
+		It->Notice = FString::Printf(TEXT("★ ネームド「%s」が近くに現れた！ 倒せば良い品と欠片が手に入る"), *NamedTitle);
+		It->NoticeUntil = GetWorld()->GetTimeSeconds() + 5;
+	}
+}
+
+void ARPGPrototypeCharacter::MakeElite()
+{
+	// The host, right after it is made: tougher and harder hitting; every screen makes it bigger.
+	bElite = true;
+	OnRep_Elite();
+	MaxHealth *= RPGTuning::EliteHP; Health = MaxHealth;
+	for (FRPGPrototypeItem& Attack : Attacks) { Attack.Power *= RPGTuning::ElitePower; }
+}
+
+void ARPGPrototypeCharacter::MakeNamed()
+{
+	// The host: an elite, tougher again, named for what it does.
+	if (!bElite) { MakeElite(); }
+	static const TCHAR* Names[] = {TEXT("ガルム"), TEXT("ベルカ"), TEXT("ゾルト"), TEXT("ミーナ"), TEXT("ドラン"), TEXT("ラグナ"), TEXT("ヴィオ"), TEXT("クルス"), TEXT("ノクス"), TEXT("イグナ")};
+	const TCHAR* Epithet = EncounterRole == ERPGGruntRole::Chaser ? TEXT("疾風の") : EncounterRole == ERPGGruntRole::Bomber ? TEXT("爆炎の")
+		: EncounterRole == ERPGGruntRole::Charger ? TEXT("猛進の") : EncounterRole == ERPGGruntRole::Sniper ? TEXT("千里眼の") : TEXT("百発の");
+	NamedTitle = FString(Epithet) + Names[FMath::RandRange(0, UE_ARRAY_COUNT(Names) - 1)];
+	MaxHealth *= RPGTuning::NamedHP; Health = MaxHealth;
+	for (FRPGPrototypeItem& Attack : Attacks) { Attack.Power *= RPGTuning::NamedPower; }
+	OnRep_Elite();
+}
+
 void ARPGPrototypeCharacter::SetEnemy(bool bEnemy, int32 Level)
 {
 	bGrunt = bEnemy;
@@ -44,8 +81,10 @@ void ARPGPrototypeCharacter::BeginPlay()
 	VSBaseSpeed = WalkSpeed>0 ? WalkSpeed : BaseMaxWalkSpeed;
 	VSStaminaRegen=StaminaRegenPerSecond; VSStaminaHit=StaminaRecoveredPerBallHit;
 	VSDashCD=DashCooldownSeconds; VSChargeTime=MaxChargeSeconds;
+	// A hero's dash and tackle as far as the dojo has taken them (an untrained dash is short and tiring).
+	if(!bGrunt) { ApplySkills(); }
 	BaseMaxWalkSpeed = bGrunt ? (SpawnPoint.IsValid() && SpawnPoint->bEncounterGroup ?
-		(EncounterRole==ERPGGruntRole::Chaser?330.f:270.f) : 245.f) : VSBaseSpeed;
+		(EncounterRole==ERPGGruntRole::Chaser?330.f:EncounterRole==ERPGGruntRole::Charger?310.f:EncounterRole==ERPGGruntRole::Bomber?250.f:EncounterRole==ERPGGruntRole::Sniper?240.f:270.f) : 245.f) : VSBaseSpeed;
 	GetCharacterMovement()->MaxWalkSpeed = BaseMaxWalkSpeed;
 	Attacks.SetNum(3);
 	Attacks[0]=FRPGPrototypeItem::Make(EChaosImpactBallType::Normal, RPGLevel);
@@ -65,6 +104,8 @@ void ARPGPrototypeCharacter::Tick(float DeltaSeconds)
 {
 	EnsureReadyBall();
 	TickEquipment(DeltaSeconds);
+	// The shop's line-up changes while it is open, too.
+	if (bBagOpen && BagPage == ERPGBagPage::Shop) { RefreshShopStock(); }
 	if(auto* Drive=Cast<ARPGPrototypeBall>(DrivenBall.Get()))
 	{ DriveEndsAt=Drive->GetRPGDriveEnd(); DriveEndsAtServerTime=DriveEndsAt; }
 	// The shared cancel action can hide/disable a drive actor. Resolve RPG-only ending traits here as well.
@@ -106,6 +147,23 @@ void ARPGPrototypeCharacter::Tick(float DeltaSeconds)
 		if (bBagOpen && (IsEliminated() || (PC && !PC->IsGameplayActive()))) { SetBagOpen(false); }
 		if (ActiveMerchant.IsValid() && !IsAtMerchant()) { SetBagOpen(false); }
 		UpdatePrototypeInput();
+		UpdateQuestGuide(DeltaSeconds);
+		UpdateTutorials(DeltaSeconds);
+		UpdateDiscovery();
+		// A dash just started: off a leap pad it carries across (dash level 3); at level 4 it leaves an after-image.
+		const bool bDashNow = IsDashing();
+		if (bDashNow && !bDashSeen && !bGrunt)
+		{
+			if (ARPGLeapPoint* Leap = ARPGLeapPoint::Under(this))
+			{
+				// The leap takes over from the dash (its own push would carry past the far pad).
+				if (DashSkill >= 3) { FinishDash(); Leap->Launch(this); }
+				else { ShowNotice(TEXT("谷を跳び越えるには「跳躍ダッシュ」（ダッシュ Lv3：コロニーの道場）が要る"), 3); }
+			}
+			if (DashSkill >= 4) { EmitDecoy(1.2f); }
+		}
+		bDashSeen = bDashNow;
+		UpdateLeap();
 	}
 }
 
@@ -218,7 +276,7 @@ bool ARPGPrototypeCharacter::AddLoot(const FRPGPrototypeItem& Item)
 		return false;
 	}
 	Bag.Add(Item); UnseenItems.Add(Item.Id);
-	if (Item.Kind == ERPGItemKind::Ball && Item.Type != EChaosImpactBallType::Normal) { QuestEvent(ERPGQuestEvent::ItemObtained, GetActorLocation(), 1); }
+	if (Item.Kind == ERPGItemKind::Ball && Item.Type != EChaosImpactBallType::Normal) { QuestEvent(ERPGQuestEvent::ItemObtained, GetActorLocation(), 1); ShowLesson(TEXT("Special")); }
 	Notice = Item.Name() + TEXT("を拾った　バッグで装備できます");
 	NoticeUntil = GetWorld()->GetTimeSeconds() + 3;
 	return true;
@@ -294,7 +352,7 @@ void ARPGPrototypeCharacter::AwardKillXP()
 	LastKillAt=GetWorld()->GetTimeSeconds(); bKillDashReady=true;
 	RestoreHP(MaxHealth*BadgeMod(TEXT("KillHeal"))*.01f);
 	Shield=FMath::Min(MaxHealth*.2f,Shield+MaxHealth*BadgeMod(TEXT("LifeShield"))*.01f);
-	int32 Gain=FMath::RandRange(RPGTuning::KillRubyMin,RPGTuning::KillRubyMax)+RPGLevel;
+	int32 Gain=RPGTuning::KillRubies(RPGLevel);
 	Gain=FMath::RoundToInt(Gain*(1+BadgeMod(TEXT("Ruby"))*.01f));
 	if (FMath::FRand()*100<BadgeMod(TEXT("TechLucky"))) { Gain*=2; }
 	AddRubies(Gain);
@@ -316,7 +374,9 @@ void ARPGPrototypeCharacter::GainRPGExperience(int32 Amount)
 			Attacks[0].Power*=(1+(RPGLevel-1)*RPGTuning::PowerPerItemLevel)/OldScale; Attacks[0].Level=RPGLevel;
 			for(auto& I:Bag) { if(I.Id==Attacks[0].Id) { I=Attacks[0]; } }
 		}
-		Notice = FString::Printf(TEXT("LEVEL UP!　Lv.%d"), RPGLevel);
+		// Every level brings a tune shard.
+		TuneShards = FMath::Min(RPGTuning::ShardCap, TuneShards + 1);
+		Notice = FString::Printf(TEXT("LEVEL UP!　Lv.%d　チューンの欠片 +1"), RPGLevel);
 		NoticeUntil = GetWorld()->GetTimeSeconds() + 3;
 	}
 }
@@ -382,8 +442,15 @@ void ARPGPrototypeCharacter::UpdatePrototypeInput()
 {
 	AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetController());
 	if (!PC || !PC->IsGameplayActive() || bAutomatedInput) { return; }
-	if(bQuestMenuOpen || bDowned) { bReviveHeld = false; return; }
 	const bool bPad = PC->IsUsingGamepad();
+	// Down: holding the same button gives up waiting for help (back at the respawn point at once).
+	if (bDowned && !bQuestMenuOpen && PC->IsInputKeyDown(bPad ? EKeys::Gamepad_FaceButton_Top : EKeys::E))
+	{
+		GiveUpHeldSeconds += GetWorld()->GetDeltaSeconds();
+		if (GiveUpHeldSeconds >= RPGTuning::GiveUpHoldSeconds) { GiveUpHeldSeconds = 0; GiveUpDowned(); }
+	}
+	else { GiveUpHeldSeconds = 0; }
+	if(bQuestMenuOpen || bDowned) { bReviveHeld = false; return; }
 	// Holding the interact button next to a downed teammate helps them up (and does not open anything).
 	const bool bCanHelp = !bBagOpen && FindReviveTarget() != nullptr;
 	bReviveHeld = bCanHelp && PC->IsInputKeyDown(bPad ? EKeys::Gamepad_FaceButton_Top : EKeys::E);
@@ -420,7 +487,8 @@ void ARPGPrototypeCharacter::UpdatePrototypeInput()
 		if (PC->WasInputKeyJustPressed(EKeys::Three)) { SelectAttack(2); }
 		if (PC->WasInputKeyJustPressed(EKeys::F)) { PickupNearbyLoot(); }
 		if (PC->WasInputKeyJustPressed(EKeys::J)) { OpenQuestJournal(); }
-		if (PC->WasInputKeyJustPressed(EKeys::M)) { OpenFastTravel(); }
+		if (PC->WasInputKeyJustPressed(EKeys::M)) { CycleMap(); }
+		if (PC->WasInputKeyJustPressed(EKeys::N)) { SetGuideOn(!bGuideOn); }
 		if (PC->WasInputKeyJustPressed(EKeys::O)) { OpenMembers(); }
 		if (PC->WasInputKeyJustPressed(EKeys::E) && !bCanHelp)
 		{ if(!InteractAdventure() && !OpenMerchant(FindMerchant())) { for(TActorIterator<ARPGPrototypeBoss> It(GetWorld());It;++It) { if(It->Retry(this)) { break; } } } }
@@ -429,7 +497,8 @@ void ARPGPrototypeCharacter::UpdatePrototypeInput()
 	// Standard/simple/mouse-only schemes keep their existing throw, move and dash bindings.
 	if (bPad && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Up)) { PickupNearbyLoot(); }
 	if (bPad && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Down)) { OpenQuestJournal(); }
-	if (bPad && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Right)) { OpenFastTravel(); }
+	if (bPad && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Right)) { CycleMap(); }
+	if (bPad && PC->WasInputKeyJustPressed(EKeys::Gamepad_RightThumbstick)) { SetGuideOn(!bGuideOn); }
 	if (bPad && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)) { OpenMembers(); }
 	if (bPad && !bCanHelp && PC->WasInputKeyJustPressed(EKeys::Gamepad_FaceButton_Top))
 	{ if(!InteractAdventure() && !OpenMerchant(FindMerchant())) { for(TActorIterator<ARPGPrototypeBoss> It(GetWorld());It;++It) { if(It->Retry(this)) { break; } } } }
@@ -457,7 +526,7 @@ bool ARPGPrototypeCharacter::HandleEasyPointerKey(const FKey& Key, EInputEvent E
 			if (Hit == 10) { SetBagOpen(true); }
 			if (Hit == 11) { PickupNearbyLoot(); }
 			if (Hit == 12) { StartDash(); }
-			if (Hit == 13) { if(UsesMiniMenu()) { SetBagOpen(true); BagPage=3; } else if (auto* PC = Cast<AChaosImpactPlayerController>(GetController())) { PC->TogglePauseMenu(); } }
+			if (Hit == 13) { OpenAdventureMenu(); }
 			if (Hit == 14) { OpenMerchant(FindMerchant()); }
 			if (Hit == 15) { for(TActorIterator<ARPGPrototypeBoss> It(GetWorld());It;++It) { if(It->Retry(this)) { break; } } }
 			if (Hit == 16) { InteractAdventure(); }

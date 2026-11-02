@@ -57,6 +57,8 @@ public:
 	/** Per-view combat readout, also usable by UI automation without accessing gameplay internals. */
 	bool GetCombatHealthPresentation(const AChaosImpactCharacter* Character, ChaosImpactCombatHealth::FPresentation& Out) const;
 	bool IsLastHealthWarningActive() const;
+	/** Shared full-window room HUD; personal HUDs keep their own combat panels. */
+	void PaintOnlineOverlay(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 BaseLayer) const;
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
@@ -126,6 +128,9 @@ private:
 	int32 LastOwnPoints = 0;
 	/** VS: the place shown in the rank badge, and when it last changed (tracked while painting). */
 	mutable int32 ShownOwnRank = 0;
+	/** バトルロイヤル: when this player was first seen knocked out (its place card plays from then), and in which match. */
+	mutable double RoyaleOwnOutSeenAt = 0.0;
+	mutable double RoyaleOwnOutMatch = -1.0;
 	mutable int32 OwnRankDelta = 0;
 	mutable double OwnRankChangedAt = -100.0;
 	int32 PointsGained = 0;
@@ -226,8 +231,6 @@ private:
 	void PaintRoomToasts(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
 		float Top) const;
 
-	void PaintOnlineOverlay(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
-		int32 BaseLayer) const;
 	/** Names above every character in view, and edge arrows toward nearby characters outside it. */
 	void PaintPlayerMarkers(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
 		int32 BaseLayer) const;

@@ -15,6 +15,37 @@
  */
 namespace RPGTuning
 {
+    /** Down (two or more players): holding the interact button this long gives up waiting and respawns at once. */
+    inline constexpr float GiveUpHoldSeconds = 1.0f;
+    /**
+     * Tune shards (チューンの欠片): putting a tune on a ball takes one, raising its rank takes as many as its rank now.
+     * One for every level gained; bosses, gold (and sometimes silver) chests, harder quests and now and then an enemy give more.
+     */
+    inline constexpr int32 ShardsPerTune = 1;
+    inline constexpr int32 ShardsPerBoss = 2;
+    inline constexpr float ShardDropChance = 0.03f;
+    inline constexpr float SilverChestShardChance = 0.35f;
+    inline constexpr int32 ShardCap = 9999;
+    /**
+     * The dojo (2026-11): tackle and dash levels 2-4. Each step costs rubies and tune shards and needs a hero level;
+     * level 3 also needs a boss beaten (its bit in the record of bosses beaten; -1 none).
+     */
+    struct FSkillStep { int32 Rubies; int32 Shards; int32 MinLevel; int32 Boss; const TCHAR* Name; const TCHAR* Effect; };
+    inline const FSkillStep TackleSteps[3] = {
+        {300, 0, 3, -1, TEXT("強打タックル"), TEXT("タックルが敵にダメージを与える")},
+        {900, 2, 6, 0, TEXT("岩砕きタックル"), TEXT("ひびの入った大岩を砕き、当てた敵を少し気絶させる")},
+        {2400, 4, 14, -1, TEXT("疾風タックル"), TEXT("タックルを続けて出せるようになり、ダメージも上がる")}};
+    inline const FSkillStep DashSteps[3] = {
+        {300, 0, 3, -1, TEXT("ロングダッシュ"), TEXT("ダッシュの距離が大きく伸び、ゲージの消費も減る")},
+        {1000, 2, 8, 1, TEXT("跳躍ダッシュ"), TEXT("跳躍台からダッシュすると谷を跳び越えられる")},
+        {2600, 4, 16, -1, TEXT("残像ダッシュ"), TEXT("ダッシュの後に残像を残し、敵の狙いをそらす")}};
+    /** A tackle's hit at level 2 and up: this plus this per hero level (more at level 4). */
+    inline constexpr float TackleDamageBase = 14.0f;
+    inline constexpr float TackleDamagePerLevel = 3.0f;
+    /** A boss's health for each player more near it when the fight starts (two players: x1.6, three: x2.2 ...). */
+    inline constexpr float BossHPPerExtraPlayer = 0.6f;
+    /** Multiplayer quests: a teammate this close to the enemy at its defeat counts as fighting together. */
+    inline constexpr float TeamQuestRadius = 3200.0f;
 	// ---------------------------------------------------------------- プレイヤー成長
 
 	/** バッグに入る持ち物の最大数（装備中の物も含む）。セーブの検証にも使う。 */
@@ -31,19 +62,48 @@ namespace RPGTuning
 	inline int32 RequiredXP(const int32 Level) { return XPBase + (FMath::Max(1, Level) - 1) * XPPerLevel; }
 	/** 敵1体で得る経験値。 */
 	inline constexpr int32 KillXP = 1;
-	/** 敵1体で得るルビー = 乱数(KillRubyMin～KillRubyMax) + プレイヤーLv。その後バッジ補正。 */
-	inline constexpr int32 KillRubyMin = 3;
-	inline constexpr int32 KillRubyMax = 6;
+	/**
+	 * 敵1体で得るルビー = 乱数(KillRubyMin～KillRubyMax) + プレイヤーLv × KillRubyPerLevel（切り捨て）。その後バッジ補正。
+	 * 2026-11 に減らした（以前は 3～6 + Lv。倒す数もLvで増えるので、Lvが上がるほど強化が安くなりすぎていた）。
+	 */
+	inline constexpr int32 KillRubyMin = 2;
+	inline constexpr int32 KillRubyMax = 4;
+	inline constexpr float KillRubyPerLevel = 0.25f;
+	inline int32 KillRubies(const int32 Level) { return FMath::RandRange(KillRubyMin, KillRubyMax) + FMath::FloorToInt(FMath::Max(1, Level) * KillRubyPerLevel); }
 	/** ボス撃破時のルビー = ボスLv × これ。 */
 	inline constexpr int32 BossRubyPerLevel = 8;
+	/** 宝箱のルビー = 宝箱ごとの範囲（RubyMin～RubyMax）× これ。 */
+	inline constexpr float ChestRubyScale = 0.4f;
+	inline int32 ChestRubies(const int32 Raw) { return FMath::RoundToInt(FMath::Max(0, Raw) * ChestRubyScale); }
+	/** 倒れて復活地点に戻ると、持っているルビーのこの割合を失う（ダウン中に起こしてもらえば失わない）。 */
+	inline constexpr float DeathRubyLoss = 0.2f;
 
 	// ---------------------------------------------------------------- 敵
 
 	/** 敵の最大HP = 基準HP(EnemyHP) × (1 + (Lv-1) × これ)。 */
-	inline constexpr float EnemyHPPerLevel = 0.15f;
+	inline constexpr float EnemyHPPerLevel = 0.17f;
 	/** 敵の投球の威力 = EnemyPowerBase + (Lv-1) × EnemyPowerPerLevel。 */
 	inline constexpr float EnemyPowerBase = 8.0f;
-	inline constexpr float EnemyPowerPerLevel = 2.0f;
+	inline constexpr float EnemyPowerPerLevel = 2.4f;
+	/** An elite: this much more health and power, and this much bigger. */
+	inline constexpr float EliteHP = 2.6f;
+	inline constexpr float ElitePower = 1.4f;
+	inline constexpr float EliteScale = 1.3f;
+	/** From this level a group may have an elite (this often). */
+	inline constexpr int32 EliteFromLevel = 4;
+	inline constexpr float EliteChance = 0.3f;
+	/** A named one (an elite with a name, one at a time in the world): this much more again, and how often a group has one. */
+	inline constexpr float NamedHP = 1.8f;
+	inline constexpr float NamedPower = 1.2f;
+	inline constexpr float NamedScale = 1.45f;
+	inline constexpr int32 NamedFromLevel = 4;
+	inline constexpr float NamedChance = 0.06f;
+	/** Tune shards for beating a named one (its drop is a boss's). */
+	inline constexpr int32 ShardsPerNamed = 2;
+	/** Field events: a storm's enemies hit this much harder and drop this much more often; the caravan's price cut. */
+	inline constexpr float StormEnemyPower = 1.25f;
+	inline constexpr float StormDropFactor = 1.5f;
+	inline constexpr float CaravanDiscount = 0.3f;
 	inline constexpr float EnemyThrowCooldown = 2.8f;
 
 	// ---------------------------------------------------------------- ボールの基準値
@@ -130,19 +190,45 @@ namespace RPGTuning
 
 	// ---------------------------------------------------------------- ルビーの費用・分解
 
-	/** 分解で得るルビー = (3 + Lv×2 + 強化×2) × レア度倍率。 */
-	inline constexpr int64 SalvageBase = 3;
-	inline constexpr int64 SalvagePerLevel = 2;
-	inline constexpr int64 SalvagePerEnhance = 2;
-	inline constexpr int64 SalvageRarityMultiplier[] = {1, 3, 7, 16};
-	/** 強化費用 = 18 + Lv×3 + 現在の強化値×12。 */
-	inline constexpr int64 UpgradeBase = 18;
-	inline constexpr int64 UpgradePerLevel = 3;
-	inline constexpr int64 UpgradePerEnhance = 12;
-	/** チューンを付ける費用 = 12 + Lv×2 + レア度段階×6。ランクUPは この費用 × 現在のランク。 */
-	inline constexpr int64 TuneBase = 12;
-	inline constexpr int64 TunePerLevel = 2;
-	inline constexpr int64 TunePerRarity = 6;
+	/** 分解で得るルビー = (2 + Lv + 強化×3) × レア度倍率。 */
+	inline constexpr int64 SalvageBase = 2;
+	inline constexpr int64 SalvagePerLevel = 1;
+	inline constexpr int64 SalvagePerEnhance = 3;
+	inline constexpr int64 SalvageRarityMultiplier[] = {1, 2, 4, 8};
+	/**
+	 * 強化費用 = (30 + Lv×6) × (1 + 現在の強化値×0.5)。+1 は安く、+10 に近づくほど高い
+	 * （Lv10 の装備で +0→+1 が90、+9→+10 が495、+10 まで合計 2925。どのLvでも敵およそ270体分）。
+	 */
+	inline constexpr int64 UpgradeBase = 30;
+	inline constexpr int64 UpgradePerLevel = 6;
+	inline constexpr float UpgradeGrowth = 0.5f;
+	/** チューンを付ける費用 = 20 + Lv×3 + レア度段階×10。ランクUPは この費用 × 現在のランク。 */
+	inline constexpr int64 TuneBase = 20;
+	inline constexpr int64 TunePerLevel = 3;
+	inline constexpr int64 TunePerRarity = 10;
+	// ---------------------------------------------------------------- 商人のショップ（RPGShop.cpp）
+
+	/** 商人のレベル（1～5）：商人に払ったルビー（強化・チューン・買い物）の合計がこの値に届くと上がる。 */
+	inline constexpr int32 MerchantMaxLevel = 5;
+	inline constexpr int32 MerchantLevelXP[MerchantMaxLevel] = {0, 600, 2500, 7000, 16000};
+	inline int32 MerchantLevelFor(const int32 Spent)
+	{
+		int32 Level = 1;
+		for (int32 Index = 1; Index < MerchantMaxLevel; ++Index) { if (Spent >= MerchantLevelXP[Index]) { Level = Index + 1; } }
+		return Level;
+	}
+	/** 商人Lvごとの品のレア度（上から順に判定する累積確率：レジェンド・ユニーク・レア、残りはノーマル）。 */
+	struct FShopOdds { float Legend; float Unique; float Rare; };
+	inline constexpr FShopOdds ShopOdds[MerchantMaxLevel] = {{0, 0, .25f}, {0, .08f, .4f}, {.02f, .18f, .45f}, {.05f, .3f, .45f}, {.12f, .4f, .4f}};
+	/** 品数と入れかわる間隔（実時間の秒）。行商の隊商は来るたびに別の品ぞろえで、商人Lv+1 の品が並ぶ。 */
+	inline constexpr int32 ShopStockCount = 4;
+	inline constexpr int32 CaravanStockCount = 5;
+	inline constexpr int32 ShopRotateSeconds = 600;
+	/** ボールの値段 = (40 + Lv×10) × レア度倍率 × (1 - 割引)。 */
+	inline constexpr int64 ShopBase = 40;
+	inline constexpr int64 ShopPerLevel = 10;
+	inline constexpr float ShopRarityMultiplier[] = {1, 2.5f, 6, 14};
+
 	/** 費用・所持ルビーの上限（オーバーフロー防止）。 */
 	inline constexpr int64 CostCap = 100000000;
 	inline constexpr int64 RubyCap = 1000000000;

@@ -8,6 +8,7 @@
 #include "ChaosImpactGameMode.generated.h"
 
 class AChaosImpactBallSpawner;
+class AChaosImpactGameState;
 class AChaosImpactPlayerState;
 class AChaosImpactStageBase;
 class AChaosImpactSpectatorPawn;
@@ -67,6 +68,8 @@ public:
 	void RecordDodge(APawn* Dasher);
 	/** Online: this member left the results for the lobby. */
 	void ReturnFromResults(APlayerState* Member);
+	/** A matched 1v1's results: this player asks for 同じ相手と再戦; once both have, the next game begins. */
+	void RequestRematch(APlayerState* Member);
 	/**
 	 * Online lobby, host: the next match's rules. Recruitment closes; every member then presses 準備OK, and the
 	 * match starts when all of them have (or when the wait runs out), after a short "starting" countdown.
@@ -92,7 +95,7 @@ public:
 	/** A matched room (ランダムマッチ / ランクマッチ): how long it waits for everyone matched before it starts anyway. */
 	static constexpr float MatchmadeWaitSeconds = 25.0f;
 	/** A matched room closes this long after its results began, whoever is still looking at them. */
-	static constexpr float MatchmadeResultsSeconds = 45.0f;
+	static constexpr float MatchmadeResultsSeconds = ChaosImpactMatch::ResultsViewLimitSeconds + 2.0f;
 
 	/**
 	 * Pairs input devices with this machine's local players using the world URL
@@ -106,6 +109,8 @@ protected:
 		FString& ErrorMessage) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
+	/** An online room moving to its next level: each guest is sent only the level and why (it keeps its own options). */
+	virtual APlayerController* ProcessClientTravel(FString& URL, bool bSeamless, bool bAbsolute) override;
 	virtual FString InitNewPlayer(APlayerController* NewPlayerController, const FUniqueNetIdRepl& UniqueId,
 		const FString& Options, const FString& Portal) override;
 	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
@@ -157,6 +162,12 @@ private:
 	/** Players whose machine reported the current opening finished. */
 	TSet<FObjectKey> IntroFinishedMembers;
 	void EndMatch();
+	void InitializeRoyale();
+	void UpdateRoyale();
+	void HandleRoyaleTimeExpired();
+	void FinishRoyale(const TArray<int32>& Winners);
+	void WatchAfterRoyaleElimination(APlayerController* Player);
+	FTimerHandle RoyaleTimer;
 	void SetupCrashMatch();
 	void ClearCrashMatch();
 	void UpdateCrashMatch();
@@ -181,6 +192,28 @@ private:
 
 	// Online lobby: rules decided -> everyone ready (or the wait ran out) -> Starting countdown -> match.
 	void UpdateLobbyReady();
+
+	// ---- An online room plays each match in its own level (the stage's, or the duel arena): the host opens it with
+	// the whole room following (everyone loads it and comes back in), and the lobby again after the results.
+	/**
+	 * Opens Level for the whole room, with the options the room was opened with and Purpose (CIRoomMatch=1 /
+	 * CIRoomReturn=1); first remembers who everyone was (UChaosImpactSessionSubsystem::RoomCarry).
+	 */
+	void TravelRoom(const FString& Level, const TCHAR* Purpose);
+	void TravelRoomToMatch();
+	/** In the match level: the match is waited for until everyone the lobby sent has come back in. */
+	void BeginRoomMatchLevel(AChaosImpactGameState* RoomState);
+	void UpdateRoomArrivals();
+	/** Who a member is from one of the room's levels to the next: their machine and which of its players. */
+	FString GetCarryKey(const AChaosImpactPlayerState* Member, bool bSecondOfMachine) const;
+	bool IsCarriedMachine(const FString& MachineToken) const;
+	/** An online room's match level (CIRoomMatch=1). */
+	bool bRoomMatchLevel = false;
+	double RoomArrivalDeadline = 0.0;
+	FTimerHandle RoomArrivalTimer;
+	FTimerHandle RoomReturnTimer;
+	/** How long the match level waits for everyone to arrive before it starts with whoever came. */
+	static constexpr float RoomArrivalWaitSeconds = 25.0f;
 	void BeginStartingCountdown();
 	void StartDecidedMatch();
 	void ClearReady();

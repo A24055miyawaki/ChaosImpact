@@ -66,7 +66,7 @@ public:
             int32 Thrown=0,Gems=0;
             for(TActorIterator<ARPGRubyGem> It(W);It;++It) { if(It->IsFor(A)) { Thrown+=It->GetValue(); ++Gems; } }
             Test->TestTrue(TEXT("The chest's rubies fly out as a handful of gems"),Gems>=2 && Gems<=16);
-            Test->TestTrue(TEXT("Thrown rubies are in the chest's range"),Thrown>=First->RubyMin && Thrown<=First->RubyMax);
+            Test->TestTrue(TEXT("Thrown rubies are in the chest's range"),Thrown>=RPGTuning::ChestRubies(First->RubyMin) && Thrown<=RPGTuning::ChestRubies(First->RubyMax));
             int32 Items=0; for(TActorIterator<ARPGPrototypeLoot> It(W);It;++It) { Items+=It->bChestLoot && It->IsVisibleTo(A); }
             Test->TestEqual(TEXT("The chest's item flies out to be picked up"),Items,1);
             Test->TestFalse(TEXT("Same player cannot reopen"),First->Open(A));

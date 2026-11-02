@@ -48,7 +48,13 @@ enum class EChaosImpactScreen : uint8
 	/** Rank match (online, 1 v 1): the rank, the record and the search button. */
 	RankTop,
 	/** Online entry gate: verify relay connectivity before showing online setup. */
-	OnlineConnecting
+	OnlineConnecting,
+	/** 合言葉マッチ: make a room or find one with the password. */
+	OnlinePrivate,
+	/** 戦績: this player's 1v1 and 8-player records (kept by the relay). */
+	OnlineRecord,
+	/** ランダムマッチ 1v1: the opponent found, their connection, and both players' answers. */
+	DuelFound
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

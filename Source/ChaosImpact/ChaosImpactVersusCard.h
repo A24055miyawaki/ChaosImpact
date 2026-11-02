@@ -17,6 +17,8 @@ struct FChaosImpactVersusEntrant
 	FString Detail;
 	FLinearColor Color = FLinearColor::White;
 	bool bCPU = false;
+	/** The fighter's team when the card knows the teams (Teams on the card info); -1 otherwise. */
+	int32 Team = -1;
 	/** The fighter's model, filmed (a character preview's picture); none: a "?" (CPUs pick theirs in the level). */
 	UTexture* Picture = nullptr;
 };
@@ -27,12 +29,18 @@ struct FChaosImpactVersusCardInfo
 	TArray<FChaosImpactVersusEntrant> Entrants;
 	/** The rules in one line (ステージ1 ・ 個人戦 ・ 3分...). */
 	FString Footer;
+	/**
+	 * How many teams the fighters are in, when the card knows (each entrant's Team): two face each other from the two
+	 * sides. 0: each for themselves, or the teams are not drawn yet (a local match draws them in its level).
+	 */
+	int32 Teams = 0;
 	/** FPlatformTime::Seconds() when the card first appeared: every copy of the card plays from it. */
 	double StartedAt = 0.0;
 };
 
 /**
- * The VS card: the match's fighters slide in from both sides and "VS" slams down between them. Shown over the menu
+ * The VS card: the match's fighters slide in and "VS" slams down among them. A 1-on-1 or two teams face each other
+ * from the two sides; anything else (each for themselves) stands in a ring round the VS, nobody on a side. Shown over the menu
  * as the VS level is about to load, then as that load's loading screen (painted on the loading thread). Both copies
  * share StartedAt, so the second simply carries on from the first. Fighters' models are pictures filmed beforehand.
  */

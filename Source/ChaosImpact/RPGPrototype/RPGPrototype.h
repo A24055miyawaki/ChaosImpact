@@ -17,6 +17,7 @@ class URPGPrototypeHUD;
 class UStaticMeshComponent;
 class UArrowComponent;
 class ARPGPrototypeLoot;
+class ARPGPrototypeBall;
 class ARPGPrototypeSpawnPoint;
 class ARPGQuestGuide;
 class ARPGPrototypeMerchant;
@@ -199,6 +200,17 @@ public:
 	// machine keeps that hero's bag, equipment, level, rubies and quests, and tells the host what it fights with.
 	/** The host's copy of a player on another machine. */
 	bool IsRemoteHero() const;
+	/** A guest's screen saw an enemy ball reach this hero (ARPGPrototypeBall::ApplyReportedHeroHit). */
+	UFUNCTION(Server, Reliable)
+	void ServerReportRPGBallHit(ARPGPrototypeBall* Ball, FVector_NetQuantize At);
+	/** How far back a guest's throws are judged (ARPGPrototypeBall): about as late as their screen shows enemies. */
+	static float GetGuestViewDelay(const ARPGPrototypeCharacter* Guest);
+	/**
+	 * Host: an enemy's attack lands here now. On a guest's screen it lands a one-way trip later, and where they stood
+	 * then (dodged or not) reaches here a round trip from now: their hit is checked then (Check, with the attack's
+	 * shape kept by value). This machine's own players at once.
+	 */
+	void ResolveOnOwnScreen(TFunction<void(ARPGPrototypeCharacter& Hero)> Check);
 	/** This machine's own player, online as a guest. */
 	bool IsNetClientHero() const;
 	/** A notice on this player's own screen (sent there when this is the host's copy of a guest). */
@@ -761,11 +773,17 @@ public:
 	FRPGPrototypeItem ShotItem;
 	bool bSecondary = false;
 	bool bProcDamage = false;
+	double NextProbeAt = 0;
 	float ShotCharge = 0;
 	float DamageMultiplier = 1;
 	float DealRPGDamage(ARPGPrototypeCharacter* Target, float Multiplier=1, bool bProc=false);
 	void Burst(const FVector& At, ARPGPrototypeCharacter* Direct=nullptr);
 	void FinishRPGDrive();
+	/**
+	 * Host: a guest's own screen saw this enemy ball reach their hero (at At). Counted if it could have: the host
+	 * leaves a guest's hero to their screen (they dodge there, a round trip ahead of the host's copy of them).
+	 */
+	void ApplyReportedHeroHit(ARPGPrototypeCharacter* Hero, const FVector& At);
 	float GetRPGDriveEnd() const { return LaunchedAt+FMath::Min(5.0f,2+ShotItem.Mod(TEXT("DriveTime"))); }
 protected:
 	virtual void BeginPlay() override;
@@ -780,6 +798,11 @@ private:
 	int32 Pierces = 0, Bounces = 0;
 	TSet<TWeakObjectPtr<AActor>> Struck;
 	void SpawnSecondary(EChaosImpactBallType Type, FVector At, FVector Direction, float PowerScale, float Delay=0);
+	/** A guest's screen: an enemy ball drawn from From to here met this screen's own hero (reported to the host). */
+	void CheckLocalHeroHit(const FVector& From);
+	bool bRPGHitReported = false;
+	/** Host: when it burst (a guest's report of it reaching them may still be on its way). */
+	double BurstAt = -1;
 };
 
 /** RPG-only persistent fields, delayed hits, and distributed bird swarms. */

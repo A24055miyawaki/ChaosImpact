@@ -26,6 +26,13 @@ namespace ChaosImpactRelay
 	FString GetWebSocketServer();
 	bool UseWebSocket();
 	FString GetRoomWebSocketUrl(int32 Port);
+	/**
+	 * The relay's one-port UDP entry ([ChaosImpact.Online] RelayMuxPort, or -CIRelayMux=; 0: none): the directory and
+	 * every room on one well-known port, for a line that lets only such ports out. UseMux: this session goes through
+	 * it (it answered there while the relay's own ports did not, or -CIRelayTransport=mux).
+	 */
+	int32 GetMuxPort();
+	bool UseMux();
 	/** Only rooms made by the same build are listed (players of different versions cannot play together). */
 	FString GetNetVersion();
 
@@ -109,6 +116,8 @@ private:
 	int32 RoomPort = 0;
 	FString RoomKey;
 	int32 LocalGamePort = 7777;
+	/** Through the relay's one-port entry (ChaosImpactRelay::UseMux): each packet to it says which room it is for. */
+	bool bMux = false;
 	FSocket* RelaySocket = nullptr;
 	TSharedPtr<FInternetAddr> RelayAddr;
 	TSharedPtr<FInternetAddr> LocalGameAddr;
@@ -143,6 +152,8 @@ private:
 	uint32 RunUdp();
 
 	int32 RoomPort = 0, LocalPort = 0;
+	/** Through the relay's one-port entry (ChaosImpactRelay::UseMux). */
+	bool bMux = false;
 	FSocket* Socket = nullptr;
 	/** UDP: to the relay and to the host. */
 	FSocket* Outside = nullptr;

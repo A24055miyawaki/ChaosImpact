@@ -12,6 +12,19 @@ namespace
 {
 	constexpr int32 MaxGameMessage = 2056;
 	constexpr int32 MaxQueuedPackets = 512;
+	/**
+	 * Not connected after this long: a fresh connection is tried. On a line that loses packets the first one can sit
+	 * for many seconds while the system waits longer and longer to repeat its lost opening (1 + 2 + 4 + 8 s...); a
+	 * new connection sends its opening at once.
+	 */
+	constexpr double ConnectRetrySeconds = 2.5;
+	/**
+	 * Given up after this long without a connection. Some lines hold every new TCP connection for 20 s or more now and
+	 * then (measured on a school/shop-style Wi-Fi); still inside the engine's own 60 s wait for the host.
+	 */
+	constexpr double ConnectGiveUpSeconds = 40.0;
+	/** A request sent and not answered in this long has failed. */
+	constexpr double AnswerSeconds = 10.0;
 	class FRelayDirectoryWebSocket : public TSharedFromThis<FRelayDirectoryWebSocket>
 	{
 	public:
@@ -24,18 +37,37 @@ namespace
 			{
 				Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(AsShared(), &FRelayDirectoryWebSocket::Tick));
 			}
-			if (Socket) { return; }
+			// Connected, or connecting since only just now: the request waits for it. Else (none yet, or one that
+			// failed or gave up): a connection is made.
+			const double Now = FPlatformTime::Seconds();
+			if (Socket && (Socket->IsConnected() || (!bConnectFailed && Now - ConnectAt < ConnectRetrySeconds))) { return; }
+			FirstConnectAt = Now;
+			Open();
+		}
+		void Open()
+		{
+			CloseSocket();
 			FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
 			Socket = FWebSocketsModule::Get().CreateWebSocket(ChaosImpactRelay::GetWebSocketServer() + TEXT("/directory"));
 			Socket->SetTextMessageMemoryLimit(65536);
+			ConnectAt = FPlatformTime::Seconds();
+			bConnectFailed = false;
 			TWeakPtr<FRelayDirectoryWebSocket> Weak = AsShared();
 			Socket->OnConnected().AddLambda([Weak]()
 			{
-				if (auto Self = Weak.Pin()) { UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS directory connected")); }
+				if (auto Self = Weak.Pin())
+				{
+					UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS directory connected (%.0f ms)"), (FPlatformTime::Seconds() - Self->FirstConnectAt) * 1000.0);
+				}
 			});
+			// Before it ever connected: tried again (Tick). Once connected: the requests waiting fail.
 			Socket->OnConnectionError().AddLambda([Weak](const FString& Error)
 			{
-				if (auto Self = Weak.Pin()) { Self->bBroken = true; UE_LOG(LogChaosImpact, Warning, TEXT("Relay WSS directory: %s"), *Error); }
+				if (auto Self = Weak.Pin())
+				{
+					(Self->Socket && Self->Socket->IsConnected() ? Self->bBroken : Self->bConnectFailed) = true;
+					UE_LOG(LogChaosImpact, Warning, TEXT("Relay WSS directory: %s"), *Error);
+				}
 			});
 			Socket->OnClosed().AddLambda([Weak](int32 Code, const FString&, bool)
 			{
@@ -94,10 +126,20 @@ namespace
 				return true;
 			}
 			const double Now = FPlatformTime::Seconds();
+			if (Socket && !Socket->IsConnected() && !Pending.IsEmpty() && Now - FirstConnectAt < ConnectGiveUpSeconds
+				&& (bConnectFailed || Now - ConnectAt > ConnectRetrySeconds))
+			{
+				UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS directory: not connected after %.1f s, connecting again"), Now - ConnectAt);
+				Open();
+			}
 			TArray<int32> Expired;
 			for (auto& Pair : Pending)
 			{
-				if (Now - Pair.Value.CreatedAt > 10.) { Expired.Add(Pair.Key); }
+				// Waiting for the connection does not count against the answer's time.
+				if (Pair.Value.SentAt > 0. ? Now - Pair.Value.SentAt > AnswerSeconds : Now - Pair.Value.CreatedAt > ConnectGiveUpSeconds)
+				{
+					Expired.Add(Pair.Key);
+				}
 				else if (Pair.Value.SentAt == 0. && Socket && Socket->IsConnected())
 				{
 					Pair.Value.SentAt = Now; Socket->Send(Pair.Value.Body);
@@ -113,6 +155,8 @@ namespace
 		TMap<int32, FPending> Pending;
 		FTSTicker::FDelegateHandle Ticker;
 		bool bBroken = false;
+		bool bConnectFailed = false;
+		double FirstConnectAt = 0., ConnectAt = 0.;
 	};
 	TSharedPtr<FRelayDirectoryWebSocket> Directory;
 }
@@ -134,18 +178,47 @@ bool FChaosImpactRelayWebSocket::Start(const FString& Url)
 {
 	check(IsInGameThread());
 	if (Url.IsEmpty()) { return false; }
-	FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
-	Socket = FWebSocketsModule::Get().CreateWebSocket(Url);
+	ChannelUrl = Url;
 	StartedAt = FPlatformTime::Seconds();
+	Open();
+	Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(AsShared(), &FChaosImpactRelayWebSocket::Tick));
+	return true;
+}
+
+void FChaosImpactRelayWebSocket::Open()
+{
+	FScopeLock Guard(&SendMutex);
+	if (Socket)
+	{
+		Socket->OnConnected().Clear(); Socket->OnConnectionError().Clear(); Socket->OnClosed().Clear();
+		Socket->OnBinaryMessage().Clear(); Socket->Close(); Socket.Reset();
+	}
+	Fragment.Reset();
+	FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
+	Socket = FWebSocketsModule::Get().CreateWebSocket(ChannelUrl);
+	ConnectAt = FPlatformTime::Seconds();
+	bConnectFailed = false;
 	TWeakPtr<FChaosImpactRelayWebSocket> Weak = AsShared();
-	Socket->OnConnected().AddLambda([Weak]() { if (auto Self = Weak.Pin()) { Self->bConnected = true; } });
+	Socket->OnConnected().AddLambda([Weak]()
+	{
+		if (auto Self = Weak.Pin())
+		{
+			Self->bConnected = true;
+			UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS game channel connected (%.0f ms)"), (FPlatformTime::Seconds() - Self->StartedAt) * 1000.0);
+		}
+	});
 	Socket->OnClosed().AddLambda([Weak](int32 Code, const FString&, bool)
 	{
 		if (auto Self = Weak.Pin()) { Self->bConnected = false; Self->bFailed = true; UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS game channel closed (%d)"), Code); }
 	});
+	// Before it ever connected: tried again (Tick). Once connected: the channel has failed.
 	Socket->OnConnectionError().AddLambda([Weak](const FString& Error)
 	{
-		if (auto Self = Weak.Pin()) { Self->bFailed = true; UE_LOG(LogChaosImpact, Warning, TEXT("Relay WSS game channel: %s"), *Error); }
+		if (auto Self = Weak.Pin())
+		{
+			(Self->bConnected ? Self->bFailed : Self->bConnectFailed) = true;
+			UE_LOG(LogChaosImpact, Warning, TEXT("Relay WSS game channel: %s"), *Error);
+		}
 	});
 	Socket->OnBinaryMessage().AddLambda([Weak](const void* Data, SIZE_T Size, bool bLast)
 	{
@@ -160,8 +233,6 @@ bool FChaosImpactRelayWebSocket::Start(const FString& Url)
 		}
 	});
 	Socket->Connect();
-	Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(AsShared(), &FChaosImpactRelayWebSocket::Tick));
-	return true;
 }
 
 void FChaosImpactRelayWebSocket::Shutdown()
@@ -203,7 +274,16 @@ bool FChaosImpactRelayWebSocket::Receive(TArray<uint8>& Data)
 
 bool FChaosImpactRelayWebSocket::Tick(float)
 {
-	if (!bConnected && FPlatformTime::Seconds() - StartedAt > 10.) { bFailed = true; }
+	const double Now = FPlatformTime::Seconds();
+	if (!bConnected && !bFailed)
+	{
+		if (Now - StartedAt > ConnectGiveUpSeconds) { bFailed = true; }
+		else if (bConnectFailed || Now - ConnectAt > ConnectRetrySeconds)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Relay WSS game channel: not connected after %.1f s, connecting again"), Now - ConnectAt);
+			Open();
+		}
+	}
 	if (bFailed)
 	{
 		bBackgroundSendReady = false;

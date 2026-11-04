@@ -12,6 +12,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/PendingNetGame.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
@@ -139,6 +140,14 @@ void UChaosImpactSessionSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 {
 	Super::Initialize(Collection);
 	GeneratedName = FString::Printf(TEXT("プレイヤー%04d"), FMath::RandRange(0, 9999));
+	// Connections look up the address they go to on the engine's shared worker threads, which a level loading (effects
+	// and shaders being prepared) can keep busy for a minute: a guest following the room to its next level then never
+	// even sent its first packet. The addresses here are numbers (the relay tunnel's own port, a LAN host), worked out
+	// at once without that.
+	if (IConsoleVariable* Resolution = IConsoleManager::Get().FindConsoleVariable(TEXT("net.IpConnectionDisableResolution")))
+	{
+		Resolution->Set(1, ECVF_SetByCode);
+	}
 	if (GEngine)
 	{
 		NetworkFailureHandle = GEngine->OnNetworkFailure().AddUObject(
@@ -751,9 +760,46 @@ void UChaosImpactSessionSubsystem::TravelToRoom(const FString& ConnectString)
 	{
 		Loading->BeginTravel(EChaosImpactLoadingKind::RoomJoin);
 	}
-	Controller->ClientTravel(FString::Printf(TEXT("%s?CIOnline=1?CIPlayers=%d?CIMachine=%s?%s%s"),
-		*ConnectString, bJoinAsSpectator ? 1 : LocalPlayerCount, *GetMachineToken(), *LocalSetupOptions,
+	// The name goes as CIName: the engine puts its own online nickname (the PC's name here) in Name= when logging in.
+	Controller->ClientTravel(FString::Printf(TEXT("%s%s?CIOnline=1?CIPlayers=%d?CIMachine=%s?%s%s"),
+		*ConnectString, *GetNameOption(), bJoinAsSpectator ? 1 : LocalPlayerCount, *GetMachineToken(), *LocalSetupOptions,
 		bJoinAsSpectator ? TEXT("?CISpectator=1") : TEXT("")), TRAVEL_Absolute);
+}
+
+void UChaosImpactSessionSubsystem::RememberMember(const FString& Token, const FString& Name, const int32 Character, const int32 Colour)
+{
+	if (Token.IsEmpty())
+	{
+		return;
+	}
+	FRememberedMember& Member = RememberedMembers.FindOrAdd(Token);
+	if (!Name.IsEmpty())
+	{
+		Member.Name = Name;
+	}
+	if (Character >= 0)
+	{
+		Member.Character = Character;
+		Member.Colour = Colour;
+	}
+}
+
+const UChaosImpactSessionSubsystem::FRememberedMember* UChaosImpactSessionSubsystem::FindRememberedMember(const FString& Token) const
+{
+	return Token.IsEmpty() ? nullptr : RememberedMembers.Find(Token);
+}
+
+FString UChaosImpactSessionSubsystem::GetNameOption() const
+{
+	FString Name;
+	for (const TCHAR Char : GetPlayerName())
+	{
+		if (Char != TEXT('?') && Char != TEXT('=') && Char != TEXT('#') && Char != TEXT(' ') && Char != TEXT('/') && Char != TEXT('\\'))
+		{
+			Name.AppendChar(Char);
+		}
+	}
+	return Name.IsEmpty() ? FString() : TEXT("?CIName=") + Name.Left(MaxNameLength);
 }
 
 void UChaosImpactSessionSubsystem::LeaveRoom()

@@ -1780,6 +1780,19 @@ EChaosImpactLoadingGame UChaosImpactLoadingSubsystem::ChooseGame()
 
 void UChaosImpactLoadingSubsystem::Show(const EChaosImpactLoadingKind Kind)
 {
+	if (Overlay.IsValid() && State.IsValid() && State->FadeStartedAt < 0.0 && !State->bArcade && OverlayViewport.Get() == (GEngine ? GEngine->GameViewport : nullptr))
+	{
+		// Still up from the last move (a matched room's lobby, only passed through): the same screen and game carry on,
+		// saying what happens now, instead of a new one popping in.
+		State->Kind = Kind;
+		State->Status = LoadingStatus(Kind);
+		ProgressSource = nullptr;
+		CancelAction = nullptr;
+		bCancelRequested = false;
+		bReady = false;
+		UE_LOG(LogChaosImpact, Log, TEXT("Loading screen carries on: %s"), *State->Status);
+		return;
+	}
 	Remove();
 	State = MakeShared<FChaosImpactLoadingState>(Kind, ChooseGame(), static_cast<int32>(FPlatformTime::Cycles()));
 	UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport : nullptr;
@@ -2017,7 +2030,7 @@ bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
 		State->FadeStartedAt = Now;
 	}
 	// Never stuck up: a level that never came, or never said it was ready.
-	if (State->FadeStartedAt < 0.0 && ((bTravelling && !bWorldLoaded && Now - ShownAt > 30.0)
+	if (State->FadeStartedAt < 0.0 && Now >= KeepUpUntil && ((bTravelling && !bWorldLoaded && Now - ShownAt > 30.0)
 		|| (bTravelling && bWorldLoaded && Now - WorldLoadedAt > 6.0)))
 	{
 		FScopeLock Guard(&State->Lock);

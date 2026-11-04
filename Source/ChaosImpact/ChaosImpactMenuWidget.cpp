@@ -1996,15 +1996,30 @@ void UChaosImpactMenuWidget::BuildEntries()
 				const bool bHere = Controller->IsRematchOpponentHere(bAsked);
 				const bool bMine = Controller->HasRequestedRematch();
 				FMenuEntry Rematch{FSlateRect(230, 776, 630, 846), !bHere ? TEXT("相手は抜けました")
-					: bMine ? TEXT("相手を待っています") : bAsked ? TEXT("再戦する（相手はOK）") : TEXT("同じ相手と再戦"),
+					: bMine ? TEXT("相手の入力を待っています") : bAsked ? TEXT("再戦する（相手はOK）") : TEXT("同じ相手と再戦"),
 					TEXT("rematch_vote"), TEXT(""), Gold};
 				Rematch.bDisabled = !bHere || bMine;
 				Entries.Add(Rematch);
 			}
-			Entries.Add({bDuel ? FSlateRect(670, 776, 1070, 846) : FSlateRect(390, 776, 790, 846), TEXT("もう一度さがす"),
-				TEXT("search_again"), TEXT(""), bDuel ? Ice : Gold});
-			Entries.Add({bDuel ? FSlateRect(1110, 776, 1510, 846) : FSlateRect(830, 776, 1230, 846), TEXT("メニューへ"),
-				TEXT("online_menu"), TEXT(""), Muted});
+			// Asked for the rematch (and the other player still here): nothing else until they answer (leaving now left
+			// them waiting for someone gone).
+			bool bAskedHere = false;
+			const bool bWaitingForRematch = bDuel && Controller->HasRequestedRematch() && Controller->IsRematchOpponentHere(bAskedHere);
+			if (bWaitingForRematch)
+			{
+				for (FMenuEntry& Earlier : Entries)
+				{
+					if (Earlier.Detail == TEXT("awards") || Earlier.Detail == TEXT("stats")) { Earlier.bDisabled = true; }
+				}
+			}
+			FMenuEntry SearchAgain{bDuel ? FSlateRect(670, 776, 1070, 846) : FSlateRect(390, 776, 790, 846), TEXT("もう一度さがす"),
+				TEXT("search_again"), TEXT(""), bDuel ? Ice : Gold};
+			SearchAgain.bDisabled = bWaitingForRematch;
+			Entries.Add(SearchAgain);
+			FMenuEntry ToMenu{bDuel ? FSlateRect(1110, 776, 1510, 846) : FSlateRect(830, 776, 1230, 846), TEXT("メニューへ"),
+				TEXT("online_menu"), TEXT(""), Muted};
+			ToMenu.bDisabled = bWaitingForRematch;
+			Entries.Add(ToMenu);
 		}
 		else if (Controller && Controller->IsOnlineRoom())
 		{
@@ -3363,7 +3378,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else if (Choice == TEXT("awards") || Choice == TEXT("stats"))
 		{
-			SwitchResultsTab(Choice == TEXT("awards") ? 1 : 0);
+			if (!Entries[SelectedIndex].bDisabled)
+			{
+				SwitchResultsTab(Choice == TEXT("awards") ? 1 : 0);
+			}
 		}
 		else if (Choice == TEXT("lobby"))
 		{
@@ -3378,7 +3396,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		else if (Choice == TEXT("search_again") || Choice == TEXT("online_menu"))
 		{
-			Controller->LeaveMatchmadeResults(Choice == TEXT("search_again"));
+			if (!Entries[SelectedIndex].bDisabled)
+			{
+				Controller->LeaveMatchmadeResults(Choice == TEXT("search_again"));
+			}
 		}
 		else if (Choice == TEXT("rematch"))
 		{

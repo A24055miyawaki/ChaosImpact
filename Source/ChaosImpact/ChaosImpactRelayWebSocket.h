@@ -26,7 +26,10 @@ public:
 	bool HasFailed() const { return bFailed.Load(); }
 private:
 	bool Tick(float Delta);
+	/** A (new) connection to the channel; its packets wait queued until one is made. */
+	void Open();
 	TSharedPtr<IWebSocket> Socket;
+	FString ChannelUrl;
 	FTSTicker::FDelegateHandle Ticker;
 	TQueue<TArray<uint8>, EQueueMode::Mpsc> Outgoing, Incoming;
 	TArray<uint8> Fragment;
@@ -35,4 +38,6 @@ private:
 	TAtomic<bool> bBackgroundSendReady{false};
 	FCriticalSection SendMutex;
 	double StartedAt = 0.;
+	double ConnectAt = 0.;
+	TAtomic<bool> bConnectFailed{false};
 };

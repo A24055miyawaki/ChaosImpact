@@ -123,6 +123,23 @@ public:
 	 */
 	FString GetMachineToken() const;
 
+	/**
+	 * Host: the latest name and character each member machine chose (by its machine token), kept across the room's
+	 * level changes. A member entering the next level gets them at once instead of the defaults (the PC's own name, the
+	 * first character) until its own messages arrive, which showed in the match's opening.
+	 */
+	struct FRememberedMember
+	{
+		FString Name;
+		int32 Character = INDEX_NONE;
+		int32 Colour = 0;
+	};
+	/** Name empty or Character below zero: that part unchanged. */
+	void RememberMember(const FString& Token, const FString& Name, int32 Character = INDEX_NONE, int32 Colour = 0);
+	const FRememberedMember* FindRememberedMember(const FString& Token) const;
+	/** This machine's name as the CIName login option (characters a travel URL cannot carry left out). */
+	FString GetNameOption() const;
+
 	EChaosImpactRoomState GetState() const { return State; }
 	const FString& GetPassword() const { return Password; }
 	/** Non-empty when the last CreateRoom attempt failed. */
@@ -226,6 +243,7 @@ public:
 	FString GetPlayerToken() const;
 
 private:
+	TMap<FString, FRememberedMember> RememberedMembers;
 	double RoomTravelAt = -100.0;
 	bool WatchRoomTravel();
 	FTSTicker::FDelegateHandle RoomTravelWatch;

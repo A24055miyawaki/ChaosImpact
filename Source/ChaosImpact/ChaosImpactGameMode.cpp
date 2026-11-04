@@ -693,6 +693,27 @@ FString AChaosImpactGameMode::InitNewPlayer(APlayerController* NewPlayerControll
 		Member->MachinePlayersJoined = 1;
 		Member->MachineLoginAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 		Member->MachineToken = UGameplayStatics::ParseOption(Options, TEXT("CIMachine"));
+		// What this machine chose before the level changed, from the first moment in this one.
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		if (const UChaosImpactSessionSubsystem::FRememberedMember* Known = Sessions ? Sessions->FindRememberedMember(Member->MachineToken) : nullptr)
+		{
+			if (!Known->Name.IsEmpty())
+			{
+				Member->SetPlayerName(Known->Name);
+			}
+			if (Known->Character >= 0)
+			{
+				Member->CharacterIndex = ChaosImpactRoster::ClampIndex(Known->Character);
+				Member->ColourChoice = FMath::Clamp(Known->Colour, 0, ChaosImpactRoster::ColourCount - 1);
+			}
+		}
+		// The name the machine sent (Name= holds the engine's own nickname for it, the PC's name).
+		const FString SentName = UGameplayStatics::ParseOption(Options, TEXT("CIName")).TrimStartAndEnd()
+			.Left(UChaosImpactSessionSubsystem::MaxNameLength);
+		if (!SentName.IsEmpty())
+		{
+			Member->SetPlayerName(SentName);
+		}
 	}
 	return Error;
 }

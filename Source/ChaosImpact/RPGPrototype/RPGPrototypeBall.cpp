@@ -22,6 +22,8 @@ bool VisibleTarget(AActor* From,ARPGPrototypeCharacter* To,const FVector& At)
 ARPGPrototypeBall::ARPGPrototypeBall()
 {
     InitialLifeSpan=15; ProjectileMovement->bTickBeforeOwner=false;
+    // The RPG steers its own drive balls on the host.
+    bOwnDriveFlight=false;
 }
 void ARPGPrototypeBall::BeginPlay()
 {
@@ -201,19 +203,55 @@ void ARPGPrototypeBall::Tick(float Dt)
 {
     // Intentionally do not call AChaosImpactBall::Tick: VS field generation stays completely isolated.
     AActor::Tick(Dt); UpdateBallTypePresentation(Dt); UpdateSoundPresentation(Dt);
+    // Online, the host's ball on a guest's screen: drawn where it flies by now from the host's updates (predicted on
+    // between them, as in VS; it stood where it was thrown before). An enemy's ball meeting this screen's own hero is
+    // judged here, where they dodged or not.
+    if(!HasAuthority() && !bCosmeticPrediction)
+    {
+        const FVector Before=GetActorLocation();
+        TickClientPresentation(Dt);
+        CheckLocalHeroHit(Before);
+#if !UE_BUILD_SHIPPING
+        // -CILagProbe: where someone else's ball is drawn on a guest's screen (measuring online play).
+        static const bool bProbe=FParse::Param(FCommandLine::Get(),TEXT("CILagProbe"));
+        if(bProbe && GetWorld() && GetWorld()->GetTimeSeconds()>=NextProbeAt)
+        {
+            NextProbeAt=GetWorld()->GetTimeSeconds()+.1;
+            UE_LOG(LogTemp,Display,TEXT("RPGBALLPROBE %s x=%.0f y=%.0f z=%.0f mode=%d"),*GetName(),GetActorLocation().X,GetActorLocation().Y,GetActorLocation().Z,(int32)NetState.Mode);
+        }
+#endif
+        return;
+    }
     if(!bLaunched || bFinished) { return; }
     if(bCosmeticPrediction || !HasAuthority()) { return; }
     auto* Source=Cast<ARPGPrototypeCharacter>(GetInstigator()); if(!Source) { Destroy(); return; }
+    UpdateNetState();
     const float Now=GetWorld()->GetTimeSeconds(), Age=Now-LaunchedAt;
     const FVector At=GetActorLocation(); DistanceFlown+=FVector::Dist(LastPosition,At);
     const float Radius=GetHitRadius()*(1+(ShotItem.Mod(TEXT("BeamWidth"))+ShotItem.Mod(TEXT("NormalWide")))*.01f)*(ShotItem.Has(TEXT("BeamFocus"))?.8f:1);
     ARPGPrototypeCharacter* Nearest=nullptr; float Best=600*600;
+    // A guest's throw: their screen shows the enemies a moment late; where they saw one counts as well as where it is.
+    const float ViewDelay=ARPGPrototypeCharacter::GetGuestViewDelay(Source);
     for(TActorIterator<ARPGPrototypeCharacter> It(GetWorld());It;++It)
     {
         auto* Target=*It;
         if(Target==Source || Target->IsGrunt()==Source->IsGrunt() || Target->IsEliminated() || Target->IsDashing()) { continue; }
-        const FVector Body=Target->GetActorLocation(); const FVector Close=FMath::ClosestPointOnSegment(Body,LastPosition,At);
-        if(!Struck.Contains(Target) && FMath::Abs(Close.Z-Body.Z)<100+Radius && FVector::DistSquared2D(Close,Body)<FMath::Square(Radius+FMath::Max(40.0f,Target->GetCapsuleComponent()->GetScaledCapsuleRadius())) && VisibleTarget(this,Target,Close))
+        const float Reach=Radius+FMath::Max(40.0f,Target->GetCapsuleComponent()->GetScaledCapsuleRadius());
+        auto Touches=[&](const FVector& Where,FVector& OutClose)
+        {
+            OutClose=FMath::ClosestPointOnSegment(Where,LastPosition,At);
+            return FMath::Abs(OutClose.Z-Where.Z)<100+Radius && FVector::DistSquared2D(OutClose,Where)<FMath::Square(Reach);
+        };
+        const FVector Body=Target->GetActorLocation(); FVector Close;
+        bool bTouch=Touches(Body,Close);
+        if(!bTouch && ViewDelay>0 && Target->IsGrunt()!=Source->IsGrunt() && !Target->IsPlayerControlled())
+        {
+            FVector Seen;
+            if(Touches(Target->GetPastLocation(ViewDelay),Seen) || Touches(Target->GetPastLocation(ViewDelay*.5f),Seen)) { bTouch=true; Close=Seen; }
+        }
+        // An enemy ball and a guest's hero: their own screen judges it (CheckLocalHeroHit there, ApplyReportedHeroHit here).
+        const bool bTheirScreen=Source->IsGrunt() && Target->IsRemoteHero();
+        if(!Struck.Contains(Target) && bTouch && !bTheirScreen && VisibleTarget(this,Target,Close))
         {
             const bool Hit=DealRPGDamage(Target,FMath::Pow(ShotItem.Type==EChaosImpactBallType::Beam?.8f+.2f*ShotItem.Mod(TEXT("BeamFalloff"))*.01f:1,Struck.Num()))>0;
             if(Hit)
@@ -383,5 +421,47 @@ void ARPGPrototypeBall::Burst(const FVector& At,ARPGPrototypeCharacter* Direct)
         Field(TEXT("Blast"),ShotItem.Has(TEXT("DriveEnd"))?180:110,.15f,FMath::Max(.2f,ShotItem.Mod(TEXT("DriveEnd"))*.01f));
         if(ShotItem.Has(TEXT("DriveOrbit")) || ShotItem.Has(TEXT("DOrbit"))) { Field(TEXT("Orbit"),160,FMath::Max(ShotItem.Mod(TEXT("DriveOrbit")),ShotItem.Mod(TEXT("DOrbit"))),.16f); }
     }
-    SetActorHiddenInGame(true); SetLifeSpan(.1f);
+    SetActorHiddenInGame(true); BurstAt=GetWorld()->GetTimeSeconds();
+    // Online, a moment longer (hidden): a guest's report that it reached them may still be on its way.
+    SetLifeSpan(GetNetMode()==NM_Standalone ? .1f : 1.2f);
+}
+
+void ARPGPrototypeBall::CheckLocalHeroHit(const FVector& From)
+{
+    auto* Source=Cast<ARPGPrototypeCharacter>(GetInstigator());
+    if(bRPGHitReported || IsHidden() || !Source || !Source->IsGrunt() || !GetWorld()) { return; }
+    const FVector To=GetActorLocation();
+    // A jump to a new update is not a flight through whoever stands between.
+    if(FVector::DistSquared(From,To)>FMath::Square(1500.0f)) { return; }
+    for(FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It)
+    {
+        auto* Hero=Cast<ARPGPrototypeCharacter>(It->Get() ? It->Get()->GetPawn() : nullptr);
+        if(!Hero || !Hero->IsLocallyControlled() || Hero->IsGrunt() || Hero->IsEliminated() || Hero->IsDowned() || Hero->IsDashing()) { continue; }
+        const FVector Body=Hero->GetActorLocation(); const FVector Close=FMath::ClosestPointOnSegment(Body,From,To);
+        const float Reach=GetHitRadius()+FMath::Max(40.0f,Hero->GetCapsuleComponent()->GetScaledCapsuleRadius());
+        if(FMath::Abs(Close.Z-Body.Z)<100+GetHitRadius() && FVector::DistSquared2D(Close,Body)<FMath::Square(Reach))
+        {
+            // Shown at once here; the host's answer (the hit, or the ball bursting) follows.
+            bRPGHitReported=true; SetActorHiddenInGame(true);
+            ARPGPrototypeVFX::PlayImpact(GetWorld(),BallType,Close,.6f,false);
+            Hero->ServerReportRPGBallHit(this,Close);
+            return;
+        }
+    }
+}
+
+void ARPGPrototypeBall::ApplyReportedHeroHit(ARPGPrototypeCharacter* Hero,const FVector& At)
+{
+    auto* Source=Cast<ARPGPrototypeCharacter>(GetInstigator());
+    if(!HasAuthority() || !bLaunched || !Hero || !Source || !Source->IsGrunt() || Struck.Contains(Hero) || Hero->IsEliminated() || Hero->IsDowned()) { return; }
+    // Burst here since (it flew on past them, into something): still theirs if only just.
+    if(bFinished && (BurstAt<0 || GetWorld()->GetTimeSeconds()-BurstAt>FMath::Min(1.0f,Hero->GetNetworkRoundTripSeconds()+.3f))) { return; }
+    // Where it was on their screen trails where it is here by about their round trip of flight.
+    const float Slack=ProjectileMovement->Velocity.Size()*(Hero->GetNetworkRoundTripSeconds()+.35f)+250;
+    if(FVector::Dist(At,GetActorLocation())>Slack) { return; }
+    if(DealRPGDamage(Hero)>0)
+    {
+        Struck.Add(Hero);
+        if(!bFinished && Struck.Num()>Pierces) { Burst(At,Hero); }
+    }
 }

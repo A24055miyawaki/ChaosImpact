@@ -73,6 +73,7 @@ CLIENT_TIMEOUT = 60.0     # a client silent this long is dropped
 MAX_ROOMS_PER_PASSWORD = 8
 MAX_CLIENTS_PER_ROOM = 16
 MAX_PACKET = 2048
+MUX_FORGET = 120.0        # a player's one-port (mux) address unheard this long is forgotten
 
 TICKET_TIMEOUT = 15.0     # a queued player who stops polling this long leaves the queue (a level load can take a while)
 MATCH_KEEP = 20 * 60.0    # a match is remembered this long (for late polls and the rank reports)
@@ -137,6 +138,8 @@ class Room:
         peer = self.relay.ws_peers.get(addr)
         if peer is not None:
             peer.send(data)
+        elif addr in self.relay.mux_addrs and self.relay.mux_transport:
+            self.relay.mux_transport.sendto(data, addr)
         elif addr[0] != "wss" and self.transport:
             self.transport.sendto(data, addr)
 
@@ -281,6 +284,40 @@ class DirectoryProtocol(asyncio.DatagramProtocol):
         reply["rid"] = request.get("rid", 0)
         if self.transport:
             self.transport.sendto(json.dumps(reply, ensure_ascii=False).encode("utf-8"), addr)
+
+
+class MuxProtocol(DirectoryProtocol):
+    """Everything on one UDP port, for a network that lets only well-known ports out (UDP 443 redirected here): a JSON
+    request is the directory's, b"CIMX" + a room's port (2 bytes) + a datagram is that room's. Every answer goes back
+    from this port, so the player's one way out is enough. The rooms and their packets are the same as on their own
+    ports."""
+
+    def connection_made(self, transport):
+        ignore_unreachable(transport)
+        self.transport = transport
+        self.relay.mux_transport = transport
+
+    def error_received(self, exc):
+        log.info("mux: socket error %s (ignored)", exc)
+
+    def datagram_received(self, data, addr):
+        if data[:1] == b"{":
+            super().datagram_received(data, addr)
+            return
+        if data[:4] != b"CIMX" or len(data) < 7:
+            return
+        (port,) = struct.unpack(">H", data[4:6])
+        room = next((room for room in self.relay.rooms.values() if room.port == port), None)
+        if room is None:
+            return
+        payload = data[6:]
+        limit = MAX_PACKET + 8 if addr == room.host_addr and payload[:4] == b"CIHD" else MAX_PACKET
+        if len(payload) > limit:
+            return
+        if addr not in self.relay.mux_addrs:
+            log.info("room %s: %s:%d on the one-port entry", room.id, addr[0], addr[1])
+        self.relay.mux_addrs[addr] = time.monotonic()
+        room.datagram(payload, addr)
 
 
 # ------------------------------------------------------------------------------------------------ Rank (preseason)
@@ -460,11 +497,13 @@ class Relay:
         self.ranks = RankBook(data_path)
         self.matchmaking = False
         self.ws_peers = {}
+        self.mux_transport = None
+        self.mux_addrs = {}               # (ip, port) heard on the one-port entry -> when last heard
 
     async def handle(self, request, addr):
         op = request.get("op")
         if op == "ping":
-            return {"ok": True, "protocol": 1, "transports": ["udp", "wss"]}
+            return {"ok": True, "protocol": 1, "transports": ["udp", "wss"] + (["mux"] if self.mux_transport else [])}
         if op == "create":
             return await self.create(request, addr)
         if op == "search":
@@ -853,6 +892,9 @@ class Relay:
             if now - last_rooms < 2.0:
                 continue
             last_rooms = now
+            for addr, heard in list(self.mux_addrs.items()):
+                if now - heard > MUX_FORGET:
+                    del self.mux_addrs[addr]
             for room in list(self.rooms.values()):
                 if now - room.updated > ROOM_TIMEOUT:
                     self.remove(room, "host went quiet")
@@ -865,6 +907,8 @@ async def main():
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7700)
     parser.add_argument("--room-ports", default="7701-7760")
+    parser.add_argument("--mux-port", type=int, default=0,
+                        help="optional one-port UDP entry (directory and every room), e.g. UDP 443 redirected here (0: off)")
     parser.add_argument("--ws-bind", default="127.0.0.1")
     parser.add_argument("--ws-port", type=int, default=0,
                         help="optional WebSocket listener behind a TLS reverse proxy (0: UDP only)")
@@ -876,6 +920,9 @@ async def main():
     loop = asyncio.get_running_loop()
     await loop.create_datagram_endpoint(lambda: DirectoryProtocol(relay), local_addr=(args.bind, args.port))
     log.info("listening on %s:%d, room ports %d-%d, ranks in %s", args.bind, args.port, first, last, args.data)
+    if args.mux_port:
+        await loop.create_datagram_endpoint(lambda: MuxProtocol(relay), local_addr=(args.bind, args.mux_port))
+        log.info("one-port entry on %s:%d", args.bind, args.mux_port)
     ws_server = None
     if args.ws_port:
         from ci_relay_ws import start_server

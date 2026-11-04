@@ -733,6 +733,25 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 			Face.Box(TagX, 46.0f, 54.0f, 22.0f, Ice);
 			Face.Text(TEXT("YOU"), TagX + 27.0f, 47.0f, 15.0f, Ink, ETextAlign::Center, TEXT("Black"));
 		}
+		// Online: their connection, small, under the plate's outer foot (four bars and the round trip; the host has none).
+		if (const AChaosImpactPlayerState* Line = Cast<AChaosImpactPlayerState>(Member); Line && Match.bOnlineRoom && !Line->IsABot())
+		{
+			const float PingMs = Line->GetPingInMilliseconds();
+			const int32 Bars = Line->bHostMachine ? 4 : PingMs <= 0.0f ? 0 : PingMs <= 80.0f ? 4 : PingMs <= 160.0f ? 3 : PingMs <= 300.0f ? 2 : 1;
+			const FLinearColor LineColor = Bars >= 4 ? FLinearColor(0.2f, 0.95f, 0.45f) : Bars == 3 ? FLinearColor(0.65f, 0.95f, 0.3f)
+				: Bars == 2 ? Gold : Fire;
+			const float BarsX = PlateIndex == 0 ? -Outer + 6.0f : Outer - 50.0f;
+			const FPainter Meter{TopCenter, OutDrawElements, BaseLayer + 4};
+			for (int32 Bar = 0; Bar < 4; ++Bar)
+			{
+				const float BarHeight = 4.0f + Bar * 3.0f;
+				Meter.Box(BarsX + Bar * 6.0f, 102.0f - BarHeight, 4.0f, BarHeight, Bar < Bars ? WithAlpha(LineColor, 0.9f) : WithAlpha(Paper, 0.18f));
+			}
+			const FString LineText = Line->bHostMachine ? FString(TEXT("HOST")) : PingMs > 0.0f ? FString::Printf(TEXT("%dms"), FMath::RoundToInt(PingMs))
+				: FString(TEXT("--ms"));
+			Meter.Text(LineText, PlateIndex == 0 ? BarsX + 28.0f : BarsX - 4.0f, 89.0f, 12.0f, WithAlpha(LineColor, 0.9f),
+				PlateIndex == 0 ? ETextAlign::Left : ETextAlign::Right, TEXT("Bold"), 1.5f, Navy);
+		}
 		// Health: three cells (the last one throbs red).
 		const AChaosImpactCharacter* Character = Member ? Cast<AChaosImpactCharacter>(Member->GetPawn()) : nullptr;
 		const int32 Cells = Character ? FMath::Clamp(FMath::RoundToInt(Character->GetMaxHealth()), 1, 6) : 3;

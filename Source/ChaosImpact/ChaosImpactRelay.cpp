@@ -36,6 +36,12 @@ namespace
 	/** b"CI2P...." + client id + token. */
 	constexpr int32 DirectHeaderSize = 20;
 	bool bAutoWebSocket = false;
+	/**
+	 * The relay has answered over UDP at least once this session. Then UDP works on this line, and a request that goes
+	 * unanswered is only a packet lost on a poor (mobile) line: it must not move every packet onto TCP for the rest of
+	 * the session, where one lost packet holds back all that follow it and the delay grows to a second or more.
+	 */
+	TAtomic<bool> bUdpAnswered{false};
 
 	FString RelaySetting(const TCHAR* Key, const TCHAR* Argument)
 	{
@@ -47,6 +53,21 @@ namespace
 		}
 		if (GConfig) { GConfig->GetString(RelayConfigSection, Key, Value, GGameIni); }
 		return Value.TrimStartAndEnd();
+	}
+
+	/**
+	 * The relay answered on its one-port entry while its own ports never did: this line lets only well-known ports out
+	 * (a school's, a shop's or an office's network). Its packets then go there, still over UDP: the WebSocket's TCP
+	 * holds every packet up behind each one lost, the delay climbing to a second on such a line.
+	 */
+	TAtomic<bool> bMuxAnswered{false};
+	/** b"CIMX" + the room's port (big-endian): a room's datagram on the one-port entry. */
+	constexpr int32 MuxHeaderSize = 6;
+	void WriteMuxHeader(uint8* Out, const int32 RoomPort)
+	{
+		FMemory::Memcpy(Out, "CIMX", 4);
+		Out[4] = static_cast<uint8>((RoomPort >> 8) & 0xFF);
+		Out[5] = static_cast<uint8>(RoomPort & 0xFF);
 	}
 
 	ISocketSubsystem* Sockets()
@@ -224,6 +245,24 @@ bool ChaosImpactRelay::UseWebSocket()
 		|| (!Mode.Equals(TEXT("udp"), ESearchCase::IgnoreCase) && bAutoWebSocket));
 }
 
+int32 ChaosImpactRelay::GetMuxPort()
+{
+	const int32 Port = FCString::Atoi(*RelaySetting(TEXT("RelayMuxPort"), TEXT("CIRelayMux=")));
+	return Port > 0 && Port < 65536 ? Port : 0;
+}
+
+bool ChaosImpactRelay::UseMux()
+{
+	if (GetMuxPort() <= 0 || GetServer().IsEmpty())
+	{
+		return false;
+	}
+	const FString Mode = RelaySetting(TEXT("RelayTransport"), TEXT("CIRelayTransport="));
+	return Mode.Equals(TEXT("mux"), ESearchCase::IgnoreCase)
+		|| (!Mode.Equals(TEXT("udp"), ESearchCase::IgnoreCase) && !Mode.Equals(TEXT("wss"), ESearchCase::IgnoreCase)
+			&& bMuxAnswered && !bUdpAnswered);
+}
+
 FString ChaosImpactRelay::GetRoomWebSocketUrl(int32 Port)
 {
 	return GetWebSocketServer() + FString::Printf(TEXT("/room/%d"), Port);
@@ -258,15 +297,24 @@ void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(T
 		RequestWebSocket(Body, RequestId, MoveTemp(OnReply));
 		return;
 	}
+	// Through the one-port entry only once it is known to be the way out; to both while neither has answered yet.
+	const int32 MuxPort = GetMuxPort();
+	const bool bOnlyMux = UseMux();
+	const bool bAlsoMux = !bOnlyMux && MuxPort > 0 && !bUdpAnswered
+		&& !RelaySetting(TEXT("RelayTransport"), TEXT("CIRelayTransport=")).Equals(TEXT("udp"), ESearchCase::IgnoreCase);
 	// A thread of its own: the shared pool can be busy for seconds (loading, shaders), and the queue's polls must not wait.
-	Async(EAsyncExecution::Thread, [Server, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
+	Async(EAsyncExecution::Thread, [Server, Body, RequestId, MuxPort, bOnlyMux, bAlsoMux, OnReply = MoveTemp(OnReply)]() mutable
 	{
-		TSharedPtr<FJsonObject> Reply;
+		TSharedPtr<FJsonObject> Reply, MuxReply;
 		int32 RoundTripMs = 0;
+		bool bViaMux = false;
+		double MuxAnsweredAt = 0.0;
 		FString Host;
 		int32 Port = 0;
-		const TSharedPtr<FInternetAddr> Address = SplitServer(Server, Host, Port) ? Resolve(Host, Port) : nullptr;
-		FSocket* Socket = Address ? MakeUdpSocket(TEXT("ChaosImpact relay directory")) : nullptr;
+		const bool bSplit = SplitServer(Server, Host, Port);
+		const TSharedPtr<FInternetAddr> Address = bSplit && !bOnlyMux ? Resolve(Host, Port) : nullptr;
+		const TSharedPtr<FInternetAddr> MuxAddress = bSplit && (bOnlyMux || bAlsoMux) ? Resolve(Host, MuxPort) : nullptr;
+		FSocket* Socket = Address || MuxAddress ? MakeUdpSocket(TEXT("ChaosImpact relay directory")) : nullptr;
 		if (Socket)
 		{
 			const FTCHARToUTF8 Utf8(*Body);
@@ -275,10 +323,18 @@ void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(T
 			{
 				const double SentAt = FPlatformTime::Seconds();
 				int32 Sent = 0;
-				Socket->SendTo(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent, *Address);
+				if (Address) { Socket->SendTo(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent, *Address); }
+				if (MuxAddress) { Socket->SendTo(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent, *MuxAddress); }
 				while (!Reply.IsValid() && FPlatformTime::Seconds() - SentAt < 1.0)
 				{
-					if (!Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(100)))
+					// An answer on the one-port entry waits a moment for the relay's own port (preferred when both work).
+					if (MuxReply.IsValid() && (!Address || FPlatformTime::Seconds() - MuxAnsweredAt > 0.25))
+					{
+						Reply = MuxReply;
+						bViaMux = true;
+						break;
+					}
+					if (!Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(MuxReply.IsValid() ? 20 : 100)))
 					{
 						continue;
 					}
@@ -294,19 +350,45 @@ void ChaosImpactRelay::Request(TSharedRef<FJsonObject> Message, TFunction<void(T
 						if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid()
 							&& static_cast<int32>(Parsed->GetNumberField(TEXT("rid"))) == RequestId)
 						{
+							if (MuxAddress && *From == *MuxAddress)
+							{
+								if (!MuxReply.IsValid())
+								{
+									MuxReply = Parsed;
+									MuxAnsweredAt = FPlatformTime::Seconds();
+									RoundTripMs = FMath::RoundToInt((MuxAnsweredAt - SentAt) * 1000.0);
+								}
+								break;
+							}
 							Reply = Parsed;
+							bViaMux = false;
 							RoundTripMs = FMath::RoundToInt((FPlatformTime::Seconds() - SentAt) * 1000.0);
 							break;
 						}
 					}
 				}
 			}
+			if (!Reply.IsValid() && MuxReply.IsValid())
+			{
+				Reply = MuxReply;
+				bViaMux = true;
+			}
 			Sockets()->DestroySocket(Socket);
 		}
-		AsyncTask(ENamedThreads::GameThread, [Reply, RoundTripMs, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
+		AsyncTask(ENamedThreads::GameThread, [Reply, RoundTripMs, bViaMux, MuxPort, Body, RequestId, OnReply = MoveTemp(OnReply)]() mutable
 		{
 			const FString Mode = RelaySetting(TEXT("RelayTransport"), TEXT("CIRelayTransport="));
-			if (!Reply && !Mode.Equals(TEXT("udp"), ESearchCase::IgnoreCase) && !GetWebSocketServer().IsEmpty())
+			if (Reply && !bViaMux)
+			{
+				bUdpAnswered = true;
+			}
+			else if (Reply && !bUdpAnswered && !bMuxAnswered)
+			{
+				bMuxAnswered = true;
+				UE_LOG(LogChaosImpact, Log, TEXT("Relay: its own ports unanswered, the one-port entry %d answered: UDP through it"), MuxPort);
+			}
+			if (!Reply && !bUdpAnswered && !bMuxAnswered && !Mode.Equals(TEXT("udp"), ESearchCase::IgnoreCase)
+				&& !Mode.Equals(TEXT("mux"), ESearchCase::IgnoreCase) && !GetWebSocketServer().IsEmpty())
 			{
 				bAutoWebSocket = true;
 				UE_LOG(LogChaosImpact, Log, TEXT("Relay UDP unanswered: switching this session to WSS %s"), *GetWebSocketServer());
@@ -483,7 +565,8 @@ FChaosImpactRelayTunnel::~FChaosImpactRelayTunnel()
 bool FChaosImpactRelayTunnel::Start()
 {
 	const bool bWss = ChaosImpactRelay::UseWebSocket();
-	if (!bWss) { RelayAddr = Resolve(RelayHost, RoomPort); }
+	bMux = !bWss && ChaosImpactRelay::UseMux();
+	if (!bWss) { RelayAddr = Resolve(RelayHost, bMux ? ChaosImpactRelay::GetMuxPort() : RoomPort); }
 	LocalGameAddr = Sockets() ? TSharedPtr<FInternetAddr>(Sockets()->CreateInternetAddr()) : nullptr;
 	if ((!bWss && !RelayAddr.IsValid()) || !LocalGameAddr.IsValid())
 	{
@@ -552,6 +635,15 @@ void FChaosImpactRelayTunnel::SendToRelay(const uint8* Data, const int32 Size)
 {
 	if (WebSocket) { WebSocket->Send(Data, Size); return; }
 	int32 Sent = 0;
+	if (bMux)
+	{
+		uint8 Packet[RelayMaxDatagram + 8 + MuxHeaderSize];
+		const int32 Length = FMath::Min(Size, static_cast<int32>(sizeof(Packet)) - MuxHeaderSize);
+		WriteMuxHeader(Packet, RoomPort);
+		FMemory::Memcpy(Packet + MuxHeaderSize, Data, Length);
+		RelaySocket->SendTo(Packet, Length + MuxHeaderSize, Sent, *RelayAddr);
+		return;
+	}
 	RelaySocket->SendTo(Data, Size, Sent, *RelayAddr);
 }
 
@@ -809,7 +901,9 @@ bool FChaosImpactRelayGuestTunnel::Start()
 	{
 		FString RelayHost;
 		int32 DirectoryPort = 0;
-		RelayAddr = SplitServer(ChaosImpactRelay::GetServer(), RelayHost, DirectoryPort) ? Resolve(RelayHost, RoomPort) : nullptr;
+		bMux = ChaosImpactRelay::UseMux();
+		RelayAddr = SplitServer(ChaosImpactRelay::GetServer(), RelayHost, DirectoryPort)
+			? Resolve(RelayHost, bMux ? ChaosImpactRelay::GetMuxPort() : RoomPort) : nullptr;
 		Outside = RelayAddr ? MakeUdpSocket(TEXT("ChaosImpact relay guest")) : nullptr;
 		if (!Outside || !BindAnyPort(*Outside)) { Shutdown(); return false; }
 		Target = RelayAddr->ToString(true);
@@ -850,6 +944,21 @@ uint32 FChaosImpactRelayGuestTunnel::RunUdp()
 	FParse::Value(FCommandLine::Get(), TEXT("CIDevDropTravel="), DevDropSeconds);
 	int32 GameAddresses = 0;
 	double DevDropUntil = 0.0;
+	// To the relay (through its one-port entry: each packet says which room).
+	uint8 MuxPacket[RelayMaxDatagram + MuxHeaderSize];
+	WriteMuxHeader(MuxPacket, RoomPort);
+	const auto SendToRelay = [this, &MuxPacket](const uint8* Data, const int32 Size)
+	{
+		int32 Sent = 0;
+		if (!bMux)
+		{
+			Outside->SendTo(Data, Size, Sent, *RelayAddr);
+			return;
+		}
+		const int32 Length = FMath::Min(Size, RelayMaxDatagram);
+		FMemory::Memcpy(MuxPacket + MuxHeaderSize, Data, Length);
+		Outside->SendTo(MuxPacket, Length + MuxHeaderSize, Sent, *RelayAddr);
+	};
 	while (!bStopping)
 	{
 		const double Now = FPlatformTime::Seconds();
@@ -866,7 +975,7 @@ uint32 FChaosImpactRelayGuestTunnel::RunUdp()
 		if (Now - LastIntroducedAt >= GuestIntroduceSeconds)
 		{
 			LastIntroducedAt = Now;
-			Outside->SendTo(Private.GetData(), Private.Num(), Sent, *RelayAddr);
+			SendToRelay(Private.GetData(), Private.Num());
 		}
 		while (Socket->RecvFrom(Buffer, sizeof(Buffer), Read, *From) && Read > 0)
 		{
@@ -881,7 +990,8 @@ uint32 FChaosImpactRelayGuestTunnel::RunUdp()
 				continue;
 			}
 			const FInternetAddr* Direct = Host.GetDirect(Now);
-			Outside->SendTo(Buffer, Read, Sent, Direct ? *Direct : *RelayAddr);
+			if (Direct) { Outside->SendTo(Buffer, Read, Sent, *Direct); }
+			else { SendToRelay(Buffer, Read); }
 			++FromGame;
 			++(Direct ? ToHostDirect : ToRelay);
 		}

@@ -65,6 +65,15 @@ public:
 	virtual void Launch(const FVector& Direction, float Speed,
 		EChaosImpactBallFlightMode FlightMode = EChaosImpactBallFlightMode::Arc,
 		float ArcUpwardSpeed = 650.0f);
+	/** Online catch-up: as if launched Seconds ago (its own movement in small steps, so it still meets what is in the way). */
+	void AdvanceFlight(float Seconds);
+	/**
+	 * Online, a drive ball being steered flies on its driver's own machine (so steering answers at once, not a round
+	 * trip later) and that machine tells the host where it is; the host moves its ball there, a one-way trip on (never
+	 * more than the limit), if the ball could have got there.
+	 */
+	void ApplyOwnerDriveState(const FVector& Location, const FVector& Heading, float OneWaySeconds);
+	FVector GetDriveHeading() const { return DriveHeading; }
 
 	/** Holds the real projectile on a hand socket until the animation release cue. */
 	void PrepareForAnimatedThrow(USceneComponent* HandParent, FName HandSocket,
@@ -96,6 +105,13 @@ public:
 	float GetHitRadius() const;
 	/** Server, in flight: a dash is untouchable, so it flies on through anyone dashing instead of stopping on them. */
 	void UpdateDashPassThrough();
+	/**
+	 * Host, online: a remote player's ball also meets a CPU where their screen showed it a moment ago
+	 * (AChaosImpactCharacter::GetPastLocation), not only where it is now: their throw lands as they saw it.
+	 */
+	void CheckRewoundCpuHits();
+	FVector RewindFrom = FVector::ZeroVector;
+	bool bHasRewindFrom = false;
 	FVector GetBallVelocity() const;
 	/** Server: a remote player's client saw this ball hit them. Returns true if it was plausible and applied. */
 	bool AcceptReportedHit(AChaosImpactCharacter* Victim, const FVector& HitLocation);
@@ -431,7 +447,9 @@ protected:
 	 */
 	float ClientTimeLead = 0.0f;
 	/** Enough for a ~600 ms round trip: the thrower's own ball never visibly slows down when the server's copy arrives. */
-	static constexpr float MaxOwnThrowTimeLeadSeconds = 0.7f;
+	static constexpr float MaxOwnThrowTimeLeadSeconds = 0.9f;
+	/** How far on a driver's report may be moved (their one-way trip, up to this). */
+	static constexpr float MaxDriveCatchUpSeconds = 0.3f;
 	/** Server: when this ball last stopped flying, so hits reported a moment later still count. */
 	double FlightEndedAt = 0.0;
 
@@ -456,6 +474,8 @@ protected:
 
 	UPROPERTY(ReplicatedUsing=OnRep_Detonated)
 	bool bDetonated = false;
+	/** A drive ball may be flown on its driver's own screen (TickOwnDriveFlight); not one with its own steering. */
+	bool bOwnDriveFlight = true;
 
 	/** Server: the burst is kept briefly so a hit reported from a remote screen just before still counts. */
 	double DetonatedAt = 0.0;
@@ -498,6 +518,10 @@ protected:
 	 * against (another ball) turns or slows it. 0 speed: not yet taken from its flight.
 	 */
 	FVector DriveHeading = FVector::ZeroVector;
+	/** The driver's own screen: flies this copy itself (see ApplyOwnerDriveState). True when it did this frame. */
+	bool TickOwnDriveFlight(float DeltaSeconds);
+	/** Where a drive ball heading Current at Speed turns in DeltaSeconds, steered toward DriveSteer. */
+	FVector TurnDriveHeading(const FVector& Current, float Speed, float DeltaSeconds) const;
 	float DriveSpeed = 0.0f;
 	void UpdateDriveFlight(float DeltaSeconds);
 	/** Nova: falls this much slower than other balls thrown in an arc. */

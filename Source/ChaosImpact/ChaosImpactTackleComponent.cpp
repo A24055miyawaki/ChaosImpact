@@ -1,4 +1,5 @@
 #include "ChaosImpactTackleComponent.h"
+#include "ChaosImpact.h"
 #include "ChaosImpactTackleVFX.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallFormComponent.h"
@@ -69,7 +70,15 @@ bool UChaosImpactTackleComponent::Request()
     P->bWaitForThrowRelease=true; P->bClickMoveActive=false; P->ClickMovePath.Reset(); P->bPointerMoveHeld=false;
     RequestAgainAt=Now()+.2;
     if(P->HasAuthority()) { ServerRequest_Implementation(Direction); }
-    else if(P->IsLocallyControlled()) { ServerRequest(Direction); }
+    else if(P->IsLocallyControlled())
+    {
+        // Online: the rush starts here at once (a guest moves itself), not a round trip later from the host.
+        const FVector Flat=Direction.GetSafeNormal2D();
+        State.Started=Now(); State.ReadyAt=Now()+FMath::Max(CooldownSeconds,ActiveSeconds+RecoverySeconds); State.Direction=Flat;
+        P->SetActorRotation(Flat.Rotation());
+        P->ApplyBlastKnockback(Flat*RushSpeed+FVector(0,0,100));
+        ServerRequest(Direction);
+    }
     else { return false; }
     return true;
 }
@@ -84,21 +93,15 @@ void UChaosImpactTackleComponent::ServerRequest_Implementation(FVector_NetQuanti
     if(P->IsRemotePlayerOnServer()) { P->ClientAddStamina(-FMath::Max(0.f,StaminaCost)); }
     ClientInterrupt(State.StunnedUntil);
     P->SetActorRotation(Flat.Rotation());
-    Kick(P,Flat*RushSpeed+FVector(0,0,100));
+    // A remote player has already rushed on its own screen.
+    if(!P->IsRemotePlayerOnServer()) { Kick(P,Flat*RushSpeed+FVector(0,0,100)); }
     MulticastRush(P->GetActorLocation(),Flat);
     P->ForceNetUpdate();
 }
 void UChaosImpactTackleComponent::Kick(AChaosImpactCharacter* Who,const FVector& Velocity)
 {
-    if(Who->IsRemotePlayerOnServer())
-    {
-        // A 0.2-second contact window cannot wait for the owner's movement to make a round trip.
-        // Simulate this short impulse on the server as well, with normal CMC correction temporarily enabled.
-        Who->ServerAuthoritativeUntil=GetWorld()->GetTimeSeconds()+FMath::Max(.6f,Who->GetNetworkRoundTripSeconds()*2+.3f);
-        Who->UpdateMovementAuthority();
-        FVector Impulse=Velocity; Impulse.Z*=Who->GetVerticalImpulseTempo();
-        Who->LaunchCharacter(Impulse,true,true);
-    }
+    // Each player is moved on their own machine (a remote one is sent the push): the host never takes their movement
+    // over, which held a guest still and pulled them back for up to two round trips at every tackle.
     Who->ApplyBlastKnockback(Velocity);
 }
 void UChaosImpactTackleComponent::ClientInterrupt_Implementation(double StunnedUntil)
@@ -154,8 +157,9 @@ void UChaosImpactTackleComponent::CheckContact()
     for(const auto& Hit:Hits)
     {
         auto* Victim=Cast<AChaosImpactCharacter>(Hit.GetActor());
+        // A remote player judges this on their own screen (CheckShownContact there).
         if(!Victim || Victim==P || Victim->GetBallForm()->IsCaptured() || Victim->IsEliminated() || Victim->IsDashing() || Victim->IsTrainingMenuFrozen()
-            || AChaosImpactGameState::AreTeammates(GetWorld(),P,Victim)) { continue; }
+            || Victim->IsRemotePlayerOnServer() || AChaosImpactGameState::AreTeammates(GetWorld(),P,Victim)) { continue; }
         FHitResult Wall;
         // A trace *channel* named WorldStatic can still hit pawn capsules; restrict object types for walls.
         if(GetWorld()->LineTraceSingleByObjectType(Wall,Here,Victim->GetActorLocation(),FCollisionObjectQueryParams(ECC_WorldStatic),Q)) { continue; }
@@ -172,6 +176,51 @@ void UChaosImpactTackleComponent::MulticastImpact_Implementation(FVector_NetQuan
     { if(auto* FX=UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(),Effect,At,FVector(Direction).Rotation(),FVector(.85f)))
         { SetEffectColor(FX,TEXT("Color"),FLinearColor(1,.65f,.15f)*3); } }
     ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::BallHit,At,.8f,.8f);
+}
+void UChaosImpactTackleComponent::CheckShownContact()
+{
+    // Someone else's tackle on this screen: active for its length from when its start got here, swept along where this
+    // screen draws them. This screen's own players report a contact; the host checks and applies it.
+    auto* P=Player(); UWorld* World=GetWorld(); if(!P || !World) { return; }
+    const double Here=World->GetTimeSeconds();
+    if(State.Started!=ShownStarted)
+    {
+        ShownStarted=State.Started; ShownFrom=P->GetActorLocation();
+        ShownUntil=State.Started>=0 && Now()<State.Started+ActiveSeconds+2.0 ? Here+ActiveSeconds+.05 : -100;
+    }
+    if(Here>ShownUntil || ReportedStarted==ShownStarted) { return; }
+    const FVector To=P->GetActorLocation()+FVector(State.Direction)*60;
+    for(FConstPlayerControllerIterator It=World->GetPlayerControllerIterator();It;++It)
+    {
+        auto* Own=It->Get() && It->Get()->IsLocalController()?Cast<AChaosImpactCharacter>(It->Get()->GetPawn()):nullptr;
+        if(!Own || Own==P || Own->IsEliminated() || Own->IsDashing() || Own->GetBallForm()->IsCaptured() || Own->IsTrainingMenuFrozen()
+            || AChaosImpactGameState::AreTeammates(World,P,Own)) { continue; }
+        const FVector Closest=FMath::ClosestPointOnSegment(Own->GetActorLocation(),ShownFrom,To);
+        if(FVector::Dist2D(Closest,Own->GetActorLocation())>60+Own->GetCapsuleComponent()->GetScaledCapsuleRadius()
+            || FMath::Abs(Closest.Z-Own->GetActorLocation().Z)>150) { continue; }
+        FHitResult Wall; FCollisionQueryParams Q(SCENE_QUERY_STAT(TackleShown),false,P);
+        if(World->LineTraceSingleByObjectType(Wall,P->GetActorLocation(),Own->GetActorLocation(),FCollisionObjectQueryParams(ECC_WorldStatic),Q)) { continue; }
+        ReportedStarted=ShownStarted;
+        Own->ServerReportTackleHit(P,ShownStarted);
+        UE_LOG(LogChaosImpact,Log,TEXT("Tackle by %s reached this screen's %s"),*GetNameSafe(P),*GetNameSafe(Own));
+        break;
+    }
+    ShownFrom=P->GetActorLocation();
+}
+bool UChaosImpactTackleComponent::TryApplyReportedContact(AChaosImpactCharacter* Victim,const double Started)
+{
+    auto* P=Player();
+    if(!P || !P->HasAuthority() || !IsValid(Victim) || bHit || Started!=State.Started || State.Started<0 || Victim->IsEliminated()
+        || AChaosImpactGameState::AreTeammates(GetWorld(),P,Victim)) { return false; }
+    // Reaches here a round trip after the tackle reached that screen; the host's copy of the victim trails them too.
+    const float RoundTrip=Victim->GetNetworkRoundTripSeconds();
+    const float Slack=FMath::Min(150.f+650.f*RoundTrip,750.f);
+    const bool bPlausible=Now()<=State.Started+ActiveSeconds+RoundTrip+.5
+        && FVector::Dist2D(P->GetActorLocation(),Victim->GetActorLocation())<=RushSpeed*ActiveSeconds+150.f+Slack;
+    UE_LOG(LogChaosImpact,Log,TEXT("Reported tackle hit %s: %s on %s"),bPlausible?TEXT("accepted"):TEXT("rejected"),*GetNameSafe(P),*GetNameSafe(Victim));
+    if(!bPlausible) { return false; }
+    ApplyContact(Victim);
+    return true;
 }
 void UChaosImpactTackleComponent::MulticastRush_Implementation(FVector_NetQuantize At,FVector_NetQuantizeNormal Direction)
 {
@@ -279,6 +328,7 @@ void UChaosImpactTackleComponent::TickComponent(float Delta,ELevelTick Type,FAct
     if(P->HasAuthority() && State.Started>=0 && !bStoppedRush)
     { if(P->IsEliminated() || P->IsTrainingMenuFrozen() || P->GetHealth()<StartHealth) { State.Started=-100; }
       else { CheckContact(); } }
+    if(!P->HasAuthority() && !P->IsLocallyControlled()) { CheckShownContact(); }
     if(!bStoppedRush && State.Started>=0 && Now()>=State.Started+ActiveSeconds)
     {
         bStoppedRush=true;

@@ -1005,6 +1005,21 @@ void AChaosImpactHazardZone::BeginPlay()
 		SetLifeSpan(GetActiveSeconds() + FadeSeconds + EffectTailSeconds);
 		ApplyDetonationEffects();
 	}
+	else if (ReportsOwnBlast())
+	{
+		// This screen's own players, where they are here (and dashing or not here), as the burst appears.
+		const float BlastHeight = 260.0f + BurstHeight;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			AChaosImpactCharacter* Own = It->Get() && It->Get()->IsLocalController() ? Cast<AChaosImpactCharacter>(It->Get()->GetPawn()) : nullptr;
+			if (Own && Own != SourcePawn && !Own->IsEliminated() && !Own->IsDashing()
+				&& !AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, Own)
+				&& IsInside(Own, Own->GetCapsuleComponent()->GetScaledCapsuleRadius(), BlastHeight))
+			{
+				Own->ServerReportBlastHit(this);
+			}
+		}
+	}
 	if (!bFireTrail)
 	{
 		UE_LOG(LogChaosImpact, Log, TEXT("%s zone at %s (affected %d)"),
@@ -1096,6 +1111,7 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 	{
 		AChaosImpactCharacter* Character = *It;
 		if (Character == SourcePawn || Character->IsEliminated() || Affected.Contains(Character)
+			|| (ReportsOwnBlast() && Character->IsRemotePlayerOnServer())
 			|| !IsInside(Character, Character->GetCapsuleComponent()->GetScaledCapsuleRadius(), BlastHeight))
 		{
 			continue;
@@ -1124,6 +1140,33 @@ void AChaosImpactHazardZone::ApplyDetonationEffects()
 			}
 		}
 	}
+}
+
+bool AChaosImpactHazardZone::ReportsOwnBlast() const
+{
+	// The bursts whose hit TryApplyLateHit can apply later (a black hole, trail fire and the rest stay the host's).
+	return GetNetMode() != NM_Standalone && !bVisualOnly && !bFireTrail
+		&& (ZoneType == EChaosImpactBallType::Fire || ZoneType == EChaosImpactBallType::Thunder
+			|| ZoneType == EChaosImpactBallType::Smoke || ZoneType == EChaosImpactBallType::Ice);
+}
+
+bool AChaosImpactHazardZone::TryApplyReportedBlast(AChaosImpactCharacter* Victim)
+{
+	if (!HasAuthority() || !IsValid(Victim) || !GetWorld() || !ReportsOwnBlast())
+	{
+		return false;
+	}
+	// The report comes a one-way trip after the burst reached that screen, and the host's copy of the reporter trails
+	// them by as much: allow for both (a little more on a slow line, never unbounded).
+	const float RoundTrip = Victim->GetNetworkRoundTripSeconds();
+	const double Age = GetWorld()->GetTimeSeconds() - SpawnedAt;
+	const float Slack = FMath::Min(150.0f + 650.0f * RoundTrip, 750.0f);
+	const bool bPlausible = Age <= RoundTrip + 0.6
+		&& IsInside(Victim, Victim->GetCapsuleComponent()->GetScaledCapsuleRadius() + Slack, 260.0f + BurstHeight + 120.0f);
+	const bool bApplied = bPlausible && TryApplyLateHit(Victim);
+	UE_LOG(LogChaosImpact, Log, TEXT("Reported %s burst hit %s: victim=%s age=%.2f"), ChaosImpactBallTypes::GetInternalName(ZoneType),
+		bApplied ? TEXT("accepted") : TEXT("rejected"), *GetNameSafe(Victim), Age);
+	return bApplied;
 }
 
 bool AChaosImpactHazardZone::TryApplyLateHit(AChaosImpactCharacter* Victim)

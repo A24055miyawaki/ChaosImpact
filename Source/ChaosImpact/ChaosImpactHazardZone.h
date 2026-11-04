@@ -67,6 +67,13 @@ public:
 	/** Server: a remote player's screen saw the ball hit them just before it detonated elsewhere here. */
 	bool TryApplyLateHit(AChaosImpactCharacter* Victim);
 	/**
+	 * Online, a burst catches each player by their own screen (as balls and tornadoes do): the host leaves its remote
+	 * players out of the burst, and each remote player's machine reports being caught (ServerReportBlastHit). The host
+	 * only checks the report could be true, so neither side is judged at where the other's copy of them happened to be.
+	 */
+	bool ReportsOwnBlast() const;
+	bool TryApplyReportedBlast(AChaosImpactCharacter* Victim);
+	/**
 	 * Any machine, look only (the RPG mode's own balls): the same burst and field as a VS zone of Type, drawn Radius
 	 * across and lasting Seconds (<= 0: the type's own time). It hurts, freezes, pulls, slides and blinds nobody,
 	 * and is not replicated. Scale is the snowball's size, as in Detonate.

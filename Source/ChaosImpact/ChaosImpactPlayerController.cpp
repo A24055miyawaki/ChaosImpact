@@ -93,6 +93,8 @@ void AChaosImpactPlayerController::BeginPlay()
 	ChaosImpactSettings::ApplyStartupSettings();
 	// Development (-CINetStats): online lag measurements in the log.
 	ChaosImpactNetStats::StartIfAsked();
+	// Online: keeps a slow line from clogging (less sent while its round trip climbs).
+	ChaosImpactNetStats::StartLatencyGuard();
 	bTrainingMode = ChaosImpact::IsTrainingWorld(GetWorld());
 
 	// ソロモードオプション (?CISolo=1) の読み込み処理を追加
@@ -432,6 +434,45 @@ void AChaosImpactPlayerController::BeginPlay()
 	}
 }
 
+void AChaosImpactPlayerController::ReleaseLoadingWhenRoomReady()
+{
+	UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this);
+	UWorld* World = GetWorld();
+	if (!Loading || !World)
+	{
+		return;
+	}
+	constexpr float MaxHoldSeconds = 25.0f;
+	bool bHold = false;
+	if (IsOnlineRoom() && World->GetTimeSeconds() < MaxHoldSeconds)
+	{
+		const AChaosImpactGameState* Room = World->GetGameState<AChaosImpactGameState>();
+		const bool bMatchLevel = World->URL.HasOption(TEXT("CIRoomMatch"));
+		// Not known yet (the room's state on its way): wait for it. A matched room's lobby: only passed through, the
+		// match level follows by itself. A match level: until everyone is back in and it starts.
+		bHold = !Room
+			|| (!bMatchLevel && Room->IsMatchmade()
+				&& (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting))
+			|| (bMatchLevel && Room->Phase == EChaosImpactOnlinePhase::Starting);
+	}
+	if (bHold)
+	{
+		// (Its own never-stuck safety waits while this does.)
+		Loading->KeepUpFor(1.0f);
+		GetWorldTimerManager().SetTimer(LoadingReleaseTimer, this, &AChaosImpactPlayerController::ReleaseLoadingWhenRoomReady, 0.2f, false);
+		return;
+	}
+	GetWorldTimerManager().ClearTimer(LoadingReleaseTimer);
+	if (IsOnlineRoom())
+	{
+		const AChaosImpactGameState* Room = World->GetGameState<AChaosImpactGameState>();
+		UE_LOG(LogChaosImpact, Log, TEXT("Loading screen released: phase %d matchmade %d match level %d at %.1f s"),
+			Room ? static_cast<int32>(Room->Phase) : -1, Room && Room->IsMatchmade(), World->URL.HasOption(TEXT("CIRoomMatch")),
+			World->GetTimeSeconds());
+	}
+	Loading->NotifyWorldReady();
+}
+
 void AChaosImpactPlayerController::WarmUpWhenLoaded()
 {
 	if (const UChaosImpactFxPreloadSubsystem* Preload = UChaosImpactFxPreloadSubsystem::Get(this); Preload && !Preload->IsComplete())
@@ -452,10 +493,7 @@ void AChaosImpactPlayerController::WarmUpWhenLoaded()
 	FTimerHandle ReadyTimer;
 	GetWorldTimerManager().SetTimer(ReadyTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
 	{
-		if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
-		{
-			Loading->NotifyWorldReady();
-		}
+		ReleaseLoadingWhenRoomReady();
 		if (bAwaitingStartupLoad)
 		{
 			// The title from its start: the logo lands, then the demo match comes on behind it.
@@ -2420,6 +2458,11 @@ void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FStr
 	if (PlayerState && !Trimmed.IsEmpty())
 	{
 		PlayerState->SetPlayerName(Trimmed);
+		const AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(PlayerState);
+		if (UChaosImpactSessionSubsystem* Sessions = Member ? UChaosImpactSessionSubsystem::Get(this) : nullptr)
+		{
+			Sessions->RememberMember(Member->MachineToken, Trimmed);
+		}
 		// This machine's second player may have joined before the name arrived.
 		if (const UNetConnection* Connection = GetNetConnection())
 		{
@@ -3402,6 +3445,10 @@ void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 I
 		State->CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
 		State->ColourChoice = FMath::Clamp(InColour, 0, ChaosImpactRoster::ColourCount - 1);
 		State->ForceNetUpdate();
+		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+		{
+			Sessions->RememberMember(State->MachineToken, FString(), State->CharacterIndex, State->ColourChoice);
+		}
 		UE_LOG(LogChaosImpact, Log, TEXT("Loadout set for %s: character %d, colour %d"), *State->GetPlayerName(),
 			State->CharacterIndex, State->ColourChoice);
 	}

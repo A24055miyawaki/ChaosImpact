@@ -319,6 +319,9 @@ public:
 	void ShowWaiting(EChaosImpactLoadingKind Kind, TFunction<float()> Progress, TFunction<void()> OnCancel = nullptr);
 	/** The level (or the start) is ready: it fades away. */
 	void NotifyWorldReady();
+	/** Online: the room is not under way yet (still gathering); its own wait has a limit, the safety below waits too. */
+	void KeepUpFor(float Seconds) { KeepUpUntil = FPlatformTime::Seconds() + Seconds; }
+	double KeepUpUntil = 0.0;
 	bool IsShowing() const { return Overlay.IsValid(); }
 	/** For the input processor: a button while it is up. True when it took the press. */
 	bool HandleKey(const FKey& Key, int32 InputDeviceId);

@@ -130,25 +130,35 @@ void ARPGGroundStrike::Fire()
 		From->LaunchCharacter(Direction * 2600, true, false);
 		ARPGPrototypeVFX::PlayImpact(World, EChaosImpactBallType::Wind, From->GetActorLocation(), 0.8f, false);
 	}
-	for (TActorIterator<ARPGPrototypeCharacter> It(World); It; ++It)
+	// Each hero where their own screen had them when it landed there (a guest's a round trip from now).
+	const TWeakObjectPtr<ARPGPrototypeCharacter> Thrower(From);
+	const TWeakObjectPtr<AActor> Strike(this);
+	const uint8 StrikeKind = Kind;
+	const FVector Origin = Start, Lane = Direction;
+	const float Reach = Radius, Power = Damage;
+	auto Check = [Thrower, Strike, StrikeKind, Origin, End, Lane, Reach, Power](ARPGPrototypeCharacter& Hero)
 	{
-		ARPGPrototypeCharacter* Hero = *It;
-		if (Hero->IsGrunt() || Hero->IsEliminated() || Hero->IsDowned() || Hero->IsDashing()) { continue; }
-		const FVector At = Hero->GetActorLocation();
-		if (FMath::Abs(At.Z - Start.Z) > 260) { continue; }
+		if (Hero.IsEliminated() || Hero.IsDowned() || Hero.IsDashing()) { return; }
+		const FVector At = Hero.GetActorLocation();
+		if (FMath::Abs(At.Z - Origin.Z) > 260) { return; }
 		FVector Away;
-		if (Kind == Bomb)
+		if (StrikeKind == Bomb)
 		{
-			if (FVector::Dist2D(At, Start) > Radius + 35) { continue; }
-			Away = (At - Start).GetSafeNormal2D();
+			if (FVector::Dist2D(At, Origin) > Reach + 35) { return; }
+			Away = (At - Origin).GetSafeNormal2D();
 		}
 		else
 		{
-			const FVector Closest = FMath::ClosestPointOnSegment(At, Start, End);
-			if (FVector::Dist2D(At, Closest) > Radius + 40) { continue; }
-			Away = FVector::CrossProduct(FVector::UpVector, Direction) * (FVector::DotProduct(At - Closest, FVector::CrossProduct(FVector::UpVector, Direction)) >= 0 ? 1 : -1);
+			const FVector Closest = FMath::ClosestPointOnSegment(At, Origin, End);
+			if (FVector::Dist2D(At, Closest) > Reach + 40) { return; }
+			Away = FVector::CrossProduct(FVector::UpVector, Lane) * (FVector::DotProduct(At - Closest, FVector::CrossProduct(FVector::UpVector, Lane)) >= 0 ? 1 : -1);
 		}
-		UGameplayStatics::ApplyDamage(Hero, Damage, From ? From->GetController() : nullptr, From ? static_cast<AActor*>(From) : static_cast<AActor*>(this), nullptr);
-		if (!Away.IsNearlyZero()) { Hero->ApplyRPGKnockback(Away, Kind == Snipe ? 120 : 260); }
+		ARPGPrototypeCharacter* By = Thrower.Get();
+		UGameplayStatics::ApplyDamage(&Hero, Power, By ? By->GetController() : nullptr, By ? static_cast<AActor*>(By) : Strike.Get(), nullptr);
+		if (!Away.IsNearlyZero()) { Hero.ApplyRPGKnockback(Away, StrikeKind == Snipe ? 120 : 260); }
+	};
+	for (TActorIterator<ARPGPrototypeCharacter> It(World); It; ++It)
+	{
+		if (!It->IsGrunt()) { It->ResolveOnOwnScreen(Check); }
 	}
 }

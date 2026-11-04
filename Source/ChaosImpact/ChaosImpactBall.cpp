@@ -466,6 +466,10 @@ void AChaosImpactBall::TickClientPresentation(const float DeltaSeconds)
 	{
 		return;
 	}
+	if (TickOwnDriveFlight(DeltaSeconds))
+	{
+		return;
+	}
 	double PresentationTime = GetPresentationServerTime() + ClientTimeLead;
 	bool bBurstReached = false;
 	FVector Desired = PredictNetLocation(PresentationTime, &bBurstReached);
@@ -800,19 +804,49 @@ void AChaosImpactBall::TryAdoptPredictedThrow(const FVector& Desired)
 		// flight by the network delay. Blending that away made the thrower's own ball visibly slow down for a
 		// moment. Keep it as a small time lead instead: this screen shows its own ball slightly further along
 		// its (server) path, at full speed. Only the sideways part is blended away.
-		const FVector FlightVelocity = NetState.Velocity;
-		const double FlightSpeed = FlightVelocity.Size();
-		if (bStillFlying && FlightSpeed > 100.0)
+		if (bStillFlying && FVector(NetState.Velocity).Size() > 100.0)
 		{
-			const FVector FlightDirection = FlightVelocity / FlightSpeed;
-			const double Along = FVector::DotProduct(ClientErrorOffset, FlightDirection);
 			// Ahead (the usual case) or behind (the server let go of it sooner): either way a steady time offset, so
-			// the ball carries on at full speed from where this screen shows it instead of lurching to catch up.
-			const double MaxLead = BallType == EChaosImpactBallType::Thunder ? ThunderMaxAheadSeconds : MaxOwnThrowTimeLeadSeconds;
-			ClientTimeLead = static_cast<float>(FMath::Clamp(Along / FlightSpeed, -0.35, MaxLead));
-			ClientErrorOffset -= FlightDirection * (ClientTimeLead * FlightSpeed);
+			// the ball carries on at full speed from where this screen shows it instead of lurching to catch up. The
+			// offset is found along the ball's own path: an arc curves down, and reading it off the straight line it
+			// starts on left metres to blend away sideways (the ball seen veering) on a slow line.
+			const float MaxLead = BallType == EChaosImpactBallType::Thunder ? ThunderMaxAheadSeconds : MaxOwnThrowTimeLeadSeconds;
+			const double Base = GetPresentationServerTime();
+			const FVector Shown = Predicted->GetActorLocation();
+			const auto GapAt = [this, Base, &Shown](const float Lead)
+			{
+				// (The path is followed as far as the lead allows: the same limit it is then drawn with.)
+				ClientTimeLead = Lead;
+				return FVector::DistSquared(Shown, PredictNetLocation(Base + Lead));
+			};
+			constexpr float MinLead = -0.35f;
+			float BestLead = 0.0f;
+			double BestGap = GapAt(0.0f);
+			for (float Lead = MinLead; Lead <= MaxLead; Lead += 0.025f)
+			{
+				if (const double Gap = GapAt(Lead); Gap < BestGap) { BestGap = Gap; BestLead = Lead; }
+			}
+			const float Coarse = BestLead;
+			for (float Lead = Coarse - 0.02f; Lead <= Coarse + 0.02f; Lead += 0.005f)
+			{
+				const float Clamped = FMath::Clamp(Lead, MinLead, MaxLead);
+				if (const double Gap = GapAt(Clamped); Gap < BestGap) { BestGap = Gap; BestLead = Clamped; }
+			}
+			ClientTimeLead = BestLead;
+			ClientErrorOffset = Shown - PredictNetLocation(Base + BestLead);
+			if (ClientErrorOffset.SizeSquared() > FMath::Square(FMath::Max(ClientSnapDistance, static_cast<float>(FVector(NetState.Velocity).Size()) * ClientSnapSeconds)))
+			{
+				ClientErrorOffset = FVector::ZeroVector;
+			}
 		}
 		InheritContactPresentation(*Predicted);
+		if (BallType == EChaosImpactBallType::Drive && Predicted->DriveSpeed > 0.0f)
+		{
+			// Its driver flies it on from where the preview was (TickOwnDriveFlight).
+			DriveSpeed = Predicted->DriveSpeed;
+			DriveHeading = Predicted->DriveHeading;
+			SetActorLocation(Predicted->GetActorLocation());
+		}
 		// A drive ball being steered: the thrower steers (and the camera follows) this one from now on.
 		Thrower->OnDriveBallAdopted(Predicted, this);
 		Predicted->Destroy();
@@ -1191,6 +1225,11 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 		if (ProjectileMovement->IsActive() && !GetAttachParentActor())
 		{
 			UpdateDashPassThrough();
+			CheckRewoundCpuHits();
+			if (bIsPickup || bDetonated || IsHidden())
+			{
+				return;
+			}
 			if (BallType == EChaosImpactBallType::Normal && !IsA<AChaosImpactBuddyBall>())
 			{
 				// The thrower's preview bends the same way, from what its own screen shows.
@@ -1390,6 +1429,22 @@ TSharedPtr<FChaosImpactDuelThrowDamage> AChaosImpactBall::GetDuelThrowDamage()
 		DuelThrowDamage = FChaosImpactDuelThrowDamage::Create(GetWorld());
 	}
 	return DuelThrowDamage;
+}
+
+void AChaosImpactBall::AdvanceFlight(const float Seconds)
+{
+	if (!ProjectileMovement || !ProjectileMovement->IsActive() || bDetonated || IsHidden() || Seconds <= 0.0f
+		|| BallType == EChaosImpactBallType::Drive || BallType == EChaosImpactBallType::Nova)
+	{
+		return;
+	}
+	constexpr float Step = 1.0f / 60.0f;
+	for (float Done = 0.0f; Done + 0.001f < Seconds && ProjectileMovement->IsActive() && !bDetonated && !IsHidden(); Done += Step)
+	{
+		const float Delta = FMath::Min(Step, Seconds - Done);
+		ProjectileMovement->TickComponent(Delta, LEVELTICK_All, nullptr);
+		FlightSeconds += Delta;
+	}
 }
 
 void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
@@ -1812,6 +1867,47 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 	if ((bHitPawn || bHitTrainingTarget) && OtherActor->CanBeDamaged())
 	{
 		ResolveDamagingHit(OtherActor, Hit.ImpactPoint, Hit.ImpactNormal);
+	}
+}
+
+void AChaosImpactBall::CheckRewoundCpuHits()
+{
+	const FVector To = GetActorLocation();
+	const FVector From = bHasRewindFrom ? RewindFrom : To;
+	RewindFrom = To;
+	bHasRewindFrom = true;
+	const AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ThrowingPawn.Get());
+	const float ViewDelay = AChaosImpactCharacter::GetRemoteViewDelay(Thrower);
+	if (ViewDelay <= 0.0f || bCosmeticPrediction || BallType == EChaosImpactBallType::Beam
+		|| BallType == EChaosImpactBallType::Nova || IsA<AChaosImpactBuddyBall>() || !GetWorld())
+	{
+		return;
+	}
+	const float BallRadius = CollisionSphere->GetScaledSphereRadius();
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		AChaosImpactCharacter* Cpu = *It;
+		// The same as a hit on the CPU itself (HandleImpact): not the thrower, a teammate or a dash.
+		if (Cpu == Thrower || Cpu->IsPlayerControlled() || Cpu->IsEliminated() || Cpu->IsDashing() || !Cpu->CanBeDamaged()
+			|| AChaosImpactGameState::AreTeammates(GetWorld(), ThrowingPawn.Get(), Cpu))
+		{
+			continue;
+		}
+		const UCapsuleComponent* Capsule = Cpu->GetCapsuleComponent();
+		const float Reach = BallRadius + Capsule->GetScaledCapsuleRadius();
+		const float Height = BallRadius + Capsule->GetScaledCapsuleHalfHeight();
+		for (const float Ago : {ViewDelay, ViewDelay * 0.5f})
+		{
+			const FVector Seen = Cpu->GetPastLocation(Ago);
+			const FVector Close = FMath::ClosestPointOnSegment(Seen, From, To);
+			if (FMath::Abs(Close.Z - Seen.Z) <= Height && FVector::DistSquared2D(Close, Seen) <= FMath::Square(Reach))
+			{
+				UE_LOG(LogChaosImpact, Log, TEXT("Rewound CPU hit: %s where it was %.2f s ago (%.0f cm from where it is)"),
+					*Cpu->GetName(), Ago, FVector::Dist2D(Seen, Cpu->GetActorLocation()));
+				ResolveDamagingHit(Cpu, Close, (Seen - Close).GetSafeNormal2D());
+				return;
+			}
+		}
 	}
 }
 
@@ -2911,22 +3007,87 @@ void AChaosImpactBall::UpdateDriveFlight(const float DeltaSeconds)
 		ProjectileMovement->Velocity = Velocity;
 		return;
 	}
+	const FVector Turned = TurnDriveHeading(FVector(Velocity.X, Velocity.Y, 0.0f) / Speed, Speed, DeltaSeconds);
+	ProjectileMovement->Velocity = Turned * Speed + FVector(0.0f, 0.0f, Velocity.Z);
+	if (bOwnFlight)
+	{
+		DriveHeading = Turned;
+	}
+}
+
+FVector AChaosImpactBall::TurnDriveHeading(const FVector& Current, const float Speed, const float DeltaSeconds) const
+{
+	if (DriveSteer.IsNearlyZero())
+	{
+		return Current;
+	}
 	// Turns toward where it is steered, at a rate that a fast ball (a charged throw) cannot match.
 	using namespace ChaosImpactBallTypes;
-	const FVector Current = FVector(Velocity.X, Velocity.Y, 0.0f) / Speed;
 	const float Cross = static_cast<float>(Current.X * DriveSteer.Y - Current.Y * DriveSteer.X);
 	const float Dot = static_cast<float>(FVector::DotProduct(Current, DriveSteer));
 	const float Wanted = FMath::RadiansToDegrees(FMath::Atan2(Cross, Dot));
 	const float Alpha = FMath::Clamp((Speed - DriveMinSpeed) / (DriveMaxSpeed - DriveMinSpeed), 0.0f, 1.0f);
 	const float MaxTurn = FMath::Lerp(DriveTurnSlowBallDegrees, DriveTurnFastBallDegrees, Alpha) * DeltaSeconds;
 	// Sent back the way it came (or anywhere far round), it snaps round at once; otherwise it curves.
-	const FVector Turned = FMath::Abs(Wanted) > DriveSnapDegrees ? DriveSteer
+	return FMath::Abs(Wanted) > DriveSnapDegrees ? DriveSteer
 		: Current.RotateAngleAxis(FMath::Clamp(Wanted, -MaxTurn, MaxTurn), FVector::UpVector);
-	ProjectileMovement->Velocity = Turned * Speed + FVector(0.0f, 0.0f, Velocity.Z);
-	if (bOwnFlight)
+}
+
+bool AChaosImpactBall::TickOwnDriveFlight(const float DeltaSeconds)
+{
+	AChaosImpactCharacter* Driver = Cast<AChaosImpactCharacter>(ReplicatedThrower.Get());
+	if (BallType != EChaosImpactBallType::Drive || !bOwnDriveFlight || bCosmeticPrediction || HasAuthority() || bDetonated || !GetWorld()
+		|| !Driver || !Driver->IsLocallyControlled() || !Driver->IsDriving() || Driver->GetDrivenBall() != this)
 	{
-		DriveHeading = Turned;
+		return false;
 	}
+	if (DriveSpeed <= 0.0f)
+	{
+		DriveSpeed = static_cast<float>(FVector(NetState.Velocity).Size2D());
+		DriveHeading = FVector(NetState.Velocity).GetSafeNormal2D();
+	}
+	if (DriveSpeed <= 1.0f || DriveHeading.IsNearlyZero())
+	{
+		return false;
+	}
+	DriveHeading = TurnDriveHeading(DriveHeading, DriveSpeed, DeltaSeconds);
+	// Level flight; stopped by a wall (the host's ball bursts there and the news follows).
+	const FVector From = GetActorLocation();
+	FVector To = From + DriveHeading * DriveSpeed * DeltaSeconds;
+	FHitResult Wall;
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(OwnDriveFlight), false, this);
+	if (GetWorld()->SweepSingleByObjectType(Wall, From, To, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+		FCollisionShape::MakeSphere(GetHitRadius()), Query))
+	{
+		To = Wall.Location;
+	}
+	SetActorLocation(To);
+	// Back on the host's state the moment this ends (re-matched from where it is now).
+	bClientHasPresentation = false;
+	Driver->SendOwnDriveState(this);
+	return true;
+}
+
+void AChaosImpactBall::ApplyOwnerDriveState(const FVector& Location, const FVector& Heading, const float OneWaySeconds)
+{
+	const FVector Flat = Heading.GetSafeNormal2D();
+	if (!HasAuthority() || BallType != EChaosImpactBallType::Drive || bDetonated || DriveDeadline <= 0.0 || DriveSpeed <= 0.0f
+		|| Flat.IsNearlyZero() || !ProjectileMovement)
+	{
+		return;
+	}
+	// Where it is on its driver's screen by now (their report is a one-way trip old, counted up to the limit).
+	const FVector Ahead = Location + Flat * DriveSpeed * FMath::Clamp(OneWaySeconds, 0.0f, MaxDriveCatchUpSeconds);
+	const FVector Here = GetActorLocation();
+	if (FVector::Dist2D(Ahead, Here) > DriveSpeed * 0.5f + 300.0f)
+	{
+		// Further than it could have gone: the host keeps its own flight.
+		return;
+	}
+	DriveHeading = Flat;
+	ProjectileMovement->Velocity = Flat * DriveSpeed + FVector(0.0f, 0.0f, ProjectileMovement->Velocity.Z);
+	// Swept, so whatever is on the way there is still met.
+	SetActorLocation(FVector(Ahead.X, Ahead.Y, Here.Z), true);
 }
 
 void AChaosImpactBall::MulticastDriveBurst_Implementation(const FVector_NetQuantize Location, const bool bHit)

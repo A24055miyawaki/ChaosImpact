@@ -262,11 +262,16 @@ void ARPGPrototypeBoss::EruptGeysers()
     for(const FVector& Spot:GeyserSpots)
     {
         ARPGPrototypeVFX::PlayImpact(GetWorld(),D.Splash,Spot+FVector(0,0,40),1.6f,true);
+        // Each hero where their own screen had them when it erupted there (ResolveOnOwnScreen).
+        const TWeakObjectPtr<ARPGPrototypeBoss> Boss(this); const float Reach=GeyserRadius, Power=GetAttack(0).Power*1.15f;
         for(ARPGPrototypeCharacter* Hero:HeroesNear(4000))
         {
-            if(FVector::DistSquared2D(Hero->GetActorLocation(),Spot)>FMath::Square(GeyserRadius)) { continue; }
-            UGameplayStatics::ApplyDamage(Hero,GetAttack(0).Power*1.15f,GetController(),this,nullptr);
-            Hero->ApplyRPGKnockback((Hero->GetActorLocation()-Spot).GetSafeNormal2D(),260);
+            Hero->ResolveOnOwnScreen([Boss,Spot,Reach,Power](ARPGPrototypeCharacter& Victim)
+            {
+                if(!Boss.IsValid() || Victim.IsEliminated() || FVector::DistSquared2D(Victim.GetActorLocation(),Spot)>FMath::Square(Reach)) { return; }
+                UGameplayStatics::ApplyDamage(&Victim,Power,Boss->GetController(),Boss.Get(),nullptr);
+                Victim.ApplyRPGKnockback((Victim.GetActorLocation()-Spot).GetSafeNormal2D(),260);
+            });
         }
     }
 }
@@ -343,10 +348,15 @@ void ARPGPrototypeBoss::Tick(float Dt)
         for(FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It)
         {
             auto* Victim=Cast<ARPGPrototypeCharacter>(It->Get()->GetPawn()); if(!Victim || Victim->IsEliminated() || ChargeVictims.Contains(Victim)) { continue; }
-            const FVector Closest=FMath::ClosestPointOnSegment(Victim->GetActorLocation(),PreviousPosition,GetActorLocation());
-            if(FMath::Abs(Victim->GetActorLocation().Z-GetActorLocation().Z)<150
-                && FVector::DistSquared2D(Closest,Victim->GetActorLocation())<FMath::Square(115.0f) && BossSight(this,Victim))
-            { ChargeVictims.Add(Victim); UGameplayStatics::ApplyDamage(Victim,GetAttack(0).Power*1.25f,GetController(),this,nullptr); }
+            // This stretch of the charge, checked where the hero's own screen had them as it passed there.
+            const TWeakObjectPtr<ARPGPrototypeBoss> Boss(this); const FVector From=PreviousPosition, To=GetActorLocation(); const float Power=GetAttack(0).Power*1.25f;
+            Victim->ResolveOnOwnScreen([Boss,From,To,Power](ARPGPrototypeCharacter& Hero)
+            {
+                ARPGPrototypeBoss* B=Boss.Get(); if(!B || Hero.IsEliminated() || B->ChargeVictims.Contains(&Hero)) { return; }
+                const FVector Closest=FMath::ClosestPointOnSegment(Hero.GetActorLocation(),From,To);
+                if(FMath::Abs(Hero.GetActorLocation().Z-To.Z)<150 && FVector::DistSquared2D(Closest,Hero.GetActorLocation())<FMath::Square(115.0f) && BossSight(B,&Hero))
+                { B->ChargeVictims.Add(&Hero); UGameplayStatics::ApplyDamage(&Hero,Power,B->GetController(),B,nullptr); }
+            });
         }
         PreviousPosition=GetActorLocation();
         // Walls simply block movement. No crash damage, rebound, or wall-dependent down state.
@@ -382,10 +392,16 @@ void ARPGPrototypeBoss::Tick(float Dt)
         for(FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It)
         {
             auto* Victim=Cast<ARPGPrototypeCharacter>(It->Get()->GetPawn()); if(!Victim || Victim->IsEliminated() || WaveVictims.Contains(Victim)) { continue; }
-            const float Range=FVector::Dist2D(Victim->GetActorLocation(),GetActorLocation());
-            const float Feet=Victim->GetActorLocation().Z-Victim->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-            if(Range>=LastWaveRadius-65 && Range<=WaveRadius+65 && Feet<FloorZ+65 && BossSight(this,Victim))
-            { WaveVictims.Add(Victim); UGameplayStatics::ApplyDamage(Victim,GetAttack(0).Power,GetController(),this,nullptr); }
+            // This ring of the wave, checked where the hero's own screen had them as it went by.
+            const TWeakObjectPtr<ARPGPrototypeBoss> Boss(this); const FVector Center=GetActorLocation(); const float Inner=LastWaveRadius, Outer=WaveRadius, Floor=FloorZ, Power=GetAttack(0).Power;
+            Victim->ResolveOnOwnScreen([Boss,Center,Inner,Outer,Floor,Power](ARPGPrototypeCharacter& Hero)
+            {
+                ARPGPrototypeBoss* B=Boss.Get(); if(!B || Hero.IsEliminated() || B->WaveVictims.Contains(&Hero)) { return; }
+                const float Range=FVector::Dist2D(Hero.GetActorLocation(),Center);
+                const float Feet=Hero.GetActorLocation().Z-Hero.GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+                if(Range>=Inner-65 && Range<=Outer+65 && Feet<Floor+65 && BossSight(B,&Hero))
+                { B->WaveVictims.Add(&Hero); UGameplayStatics::ApplyDamage(&Hero,Power,B->GetController(),B,nullptr); }
+            });
         }
         if(Now>=StateUntil) { WaveRadius=0; Enter(ERPGBossState::Idle,0); NextActionAt=Now+.65*Rest; }
     }
@@ -411,10 +427,16 @@ void ARPGPrototypeBoss::Tick(float Dt)
         if(Now>=StateUntil)
         {
             ARPGPrototypeVFX::PlayImpact(GetWorld(),KindDef(Kind).Splash,GetActorLocation(),2.6f,true);
-            for(ARPGPrototypeCharacter* Hero:HeroesNear(VortexCore))
+            // Checked where each hero's own screen had them when it burst (asked of everyone a little further out).
+            const TWeakObjectPtr<ARPGPrototypeBoss> Boss(this); const FVector Center=GetActorLocation(); const float Reach=VortexCore, Power=GetAttack(0).Power*1.5f;
+            for(ARPGPrototypeCharacter* Hero:HeroesNear(VortexCore*1.5f))
             {
-                UGameplayStatics::ApplyDamage(Hero,GetAttack(0).Power*1.5f,GetController(),this,nullptr);
-                Hero->ApplyRPGKnockback((Hero->GetActorLocation()-GetActorLocation()).GetSafeNormal2D(),420);
+                Hero->ResolveOnOwnScreen([Boss,Center,Reach,Power](ARPGPrototypeCharacter& Victim)
+                {
+                    if(!Boss.IsValid() || Victim.IsEliminated() || FVector::DistSquared2D(Victim.GetActorLocation(),Center)>FMath::Square(Reach)) { return; }
+                    UGameplayStatics::ApplyDamage(&Victim,Power,Boss->GetController(),Boss.Get(),nullptr);
+                    Victim.ApplyRPGKnockback((Victim.GetActorLocation()-Center).GetSafeNormal2D(),420);
+                });
             }
             Enter(ERPGBossState::Idle,0); NextActionAt=Now+.7*Rest;
         }

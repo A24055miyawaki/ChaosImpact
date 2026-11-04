@@ -376,6 +376,13 @@ protected:
 	/** Effects shown once out of sight (when they are in), then any loading screen told this world is ready. */
 	FTimerHandle WarmUpTimer;
 	void WarmUpWhenLoaded();
+	/**
+	 * The loading screen goes once this world is ready, but online not before its match is under way: a matched room's
+	 * own lobby (passed through on the way to the match) and a match level still waiting for everyone to come back in
+	 * keep it up (at most a while, should the match never start).
+	 */
+	void ReleaseLoadingWhenRoomReady();
+	FTimerHandle LoadingReleaseTimer;
 	/** The title waits behind the start-up loading screen for the game's effects to load. */
 	bool bAwaitingStartupLoad = false;
 

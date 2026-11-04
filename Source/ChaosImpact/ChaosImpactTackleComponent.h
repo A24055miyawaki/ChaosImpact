@@ -42,6 +42,11 @@ public:
     void ResetAction();
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction) override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+    /**
+     * Server: a remote victim's own screen saw this tackle (Started, the tackle's start) reach them. Online a tackle
+     * catches each player by their own screen, as balls do; this only checks the report could be true.
+     */
+    bool TryApplyReportedContact(AChaosImpactCharacter* Victim, double Started);
 private:
     AChaosImpactCharacter* Player() const;
     double Now() const;
@@ -73,4 +78,10 @@ private:
     float StartHealth = 0;
     FTransform SavedPose;
     FVector PreviousLocation = FVector::ZeroVector;
+    /** Another player's tackle as this screen shows it: from when its start arrived here, by this screen's clock. */
+    void CheckShownContact();
+    double ShownStarted = -100;
+    double ShownUntil = -100;
+    double ReportedStarted = -100;
+    FVector ShownFrom = FVector::ZeroVector;
 };

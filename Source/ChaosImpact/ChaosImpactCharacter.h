@@ -31,6 +31,7 @@ class UChaosImpactBallFormComponent;
 class UChaosImpactTackleComponent;
 enum class EChaosImpactNovaPart : uint8;
 class AChaosImpactTornado;
+class AChaosImpactHazardZone;
 class UChaosImpactPuppetComponent;
 enum class EChaosImpactBallFlightMode : uint8;
 struct FInputActionValue;
@@ -154,6 +155,11 @@ public:
 	/** Steering a thrown drive ball: rooted to the spot, the camera on the ball, movement turning it. */
 	bool IsDriving() const;
 	AChaosImpactBall* GetDrivenBall() const { return DrivenBall.Get(); }
+	/** The driver's own screen: tells the host where its drive ball is (a few dozen times a second). */
+	void SendOwnDriveState(AChaosImpactBall* Ball);
+	UFUNCTION(Server, Unreliable)
+	void ServerDriveState(AChaosImpactBall* Ball, FVector_NetQuantize Location, FVector_NetQuantizeNormal Heading);
+	double NextDriveStateAt = 0.0;
 	/** CPUs: which way to steer the drive ball (flat). */
 	void SetAIDriveSteer(const FVector& Direction);
 	/** Ends the drive ball where it is, as a wall would (the throw button again while steering). */
@@ -280,6 +286,12 @@ public:
 	/** Client: this player's own screen saw a wind ball's tornado catch it; the server checks and applies the hit. */
 	UFUNCTION(Server, Reliable)
 	void ServerReportTornadoHit(AChaosImpactTornado* Tornado);
+	/** Client: this player's own screen saw Attacker's tackle (started at Started) reach it; the server checks it. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportTackleHit(AChaosImpactCharacter* Attacker, double Started);
+	/** Client: this player's own screen saw a burst catch it (not dashing there); the server checks and applies it. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportBlastHit(AChaosImpactHazardZone* Zone);
 	/**
 	 * Blown away by a tornado: moved along Velocity (horizontal), easing out over Seconds. Takes effect where this
 	 * character is moved (its owner, the host, a CPU), like a black hole's pull. bLift: blown off the ground a little too
@@ -307,6 +319,16 @@ public:
 	bool IsEliminationPredicted() const;
 	/** This player's round trip to the host in seconds; 0 for the host's own player and CPUs. */
 	float GetNetworkRoundTripSeconds() const;
+	/**
+	 * Host, online: where this CPU was SecondsAgo (now when nothing that old is kept). A guest's screen shows the
+	 * host's CPUs that much later, so their throws are also judged against where they saw them.
+	 */
+	FVector GetPastLocation(float SecondsAgo) const;
+	/**
+	 * How far back a remote player's throws are judged against CPUs: about as late as their screen shows them (the
+	 * trip here plus the smoothing, less the lead they are drawn with); 0 for anyone else.
+	 */
+	static float GetRemoteViewDelay(const AChaosImpactCharacter* Thrower);
 	/** VS team select, opening (until GO) and results: no moving, throwing, dashing or jumping. */
 	virtual bool IsMatchInputLocked() const;
 	/** Server: moves this character instantly (warp pads), on its own screen too when online, with the camera snapping along. */
@@ -565,6 +587,9 @@ protected:
 	/** Moment at which the real ball leaves the animated hand. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw", meta=(ClampMin="0.0", ClampMax="1.0"))
 	float ThrowReleaseDelaySeconds = 0.18f;
+	/** Online: how far along its flight a remote player's late ball may leave on the host (see SpawnBall). */
+	static constexpr float MaxThrowCatchUpSeconds = 0.3f;
+	float PendingThrowCatchUp = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Throw", meta=(ClampMin="0.1", ClampMax="4.0"))
 	float ThrowAnimationPlayRate = 1.35f;
@@ -1107,6 +1132,12 @@ protected:
 	bool bDevAutoInput = false;
 	/** Development (-CIAutoInputHost): the host's own player plays by itself too (for online tests). */
 	bool bDevAutoInputHost = false;
+	/**
+	 * Development (-CILagProbe): online positions and throws in the log, by the server's clock, so each player's own
+	 * screen can be compared with the host's copy of them ("LAGPROBE ...").
+	 */
+	void LogLagProbe(const TCHAR* Event = nullptr);
+	double NextLagProbeAt = 0.0;
 	double DevNextThrowAt = 0.0;
 	double DevReleaseAt = 0.0;
 	double DevNextDashAt = 0.0;
@@ -1123,6 +1154,8 @@ protected:
 	static constexpr float MaxPresentationLeadSeconds = 0.4f;
 	/** How much of a remote player's round trip their drawn body is led ahead by. */
 	static constexpr float PresentationLeadShareOfPing = 0.3f;
+	/** Host, online: a CPU's own recent path (GetPastLocation). */
+	TArray<TPair<double, FVector>> PastLocations;
 	static constexpr float MaxPresentationLeadDistance = 260.0f;
 	static constexpr float PresentationLeadBlendSpeed = 9.0f;
 	/** The fastest the lead may swing round (cm per second). */

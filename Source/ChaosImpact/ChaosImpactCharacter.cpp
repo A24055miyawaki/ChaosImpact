@@ -127,6 +127,10 @@ AChaosImpactCharacter::AChaosImpactCharacter()
 	BallForm = CreateDefaultSubobject<UChaosImpactBallFormComponent>(TEXT("BallForm"));
 	Tackle = CreateDefaultSubobject<UChaosImpactTackleComponent>(TEXT("Tackle"));
 	PrimaryActorTick.bCanEverTick = true;
+	// Online: each character to each guest with every packet (60 a second at most, 30 while a line is held back: the
+	// line guard), so others are never shown later than the line makes them; never slower than 20.
+	SetNetUpdateFrequency(60.0f);
+	SetMinNetUpdateFrequency(20.0f);
 	// Placed in a level, a character plays as the VS mode's CPU by itself (AutoPossessAI stays PlacedInWorld: characters
 	// the game spawns, players and VS/training CPUs, are not taken over).
 	AIControllerClass = AChaosImpactCPUController::StaticClass();
@@ -393,6 +397,16 @@ FRotator AChaosImpactCharacter::GetTopDownCameraRotation() const
 void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	LogLagProbe();
+	if (HasAuthority() && !IsPlayerControlled() && GetNetMode() != NM_Standalone && GetWorld())
+	{
+		// Online: a CPU's recent path, for the guests' throws (GetPastLocation).
+		const double Now = GetWorld()->GetTimeSeconds();
+		PastLocations.Add({Now, GetActorLocation()});
+		int32 Old = 0;
+		while (Old < PastLocations.Num() && Now - PastLocations[Old].Key > 1.0) { ++Old; }
+		if (Old > 0) { PastLocations.RemoveAt(0, Old, EAllowShrinking::No); }
+	}
 	if (HasAuthority())
 	{
 		UpdateMovementAuthority();
@@ -1311,6 +1325,7 @@ void AChaosImpactCharacter::ReleaseThrowNow(const float ChargeAlpha)
 	const bool bThrowingTargetedNova = CarriedBallCount > 0
 		&& GetCarriedBallType(0) == EChaosImpactBallType::Nova && bNovaTargetValid;
 	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation(), NovaTargetLocation, bThrowingTargetedNova);
+	LogLagProbe(TEXT("press"));
 	PendingBallActions.Add(-1);
 	if (BallForm->GetHeldBall(0) || BallForm->GetHeldBall(1))
 	{
@@ -1884,14 +1899,19 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 		{
 			MulticastPlayThrowAnimation();
 		}
-		// A remote thrower started the motion one round trip ago on their own screen.
+		// A remote thrower started the motion a one-way trip ago on their own screen (their press took that long here).
 		float ReleaseDelay = ThrowReleaseDelaySeconds;
+		PendingThrowCatchUp = 0.0f;
 		if (IsRemotePlayerOnServer())
 		{
 			if (const APlayerState* ThrowerState = GetPlayerState())
 			{
-				ReleaseDelay = FMath::Max(0.0f,
-					ReleaseDelay - ThrowerState->GetPingInMilliseconds() / 1000.0f);
+				const float OneWay = ThrowerState->GetPingInMilliseconds() / 2000.0f;
+				ReleaseDelay = FMath::Max(0.0f, ReleaseDelay - OneWay);
+				// Later than the whole motion: the ball leaves already that far along its flight (as it is on the
+				// thrower's screen), up to a limit, rather than a slow line making every throw of theirs late. Not
+				// further: that would take the time to see it coming from whoever it flies at here.
+				PendingThrowCatchUp = FMath::Clamp(OneWay - ThrowReleaseDelaySeconds, 0.0f, MaxThrowCatchUpSeconds);
 			}
 		}
 		if (ReleaseDelay <= UE_SMALL_NUMBER)
@@ -1908,8 +1928,38 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 	return false;
 }
 
+void AChaosImpactCharacter::LogLagProbe(const TCHAR* Event)
+{
+#if !UE_BUILD_SHIPPING
+	static const bool bProbe = FParse::Param(FCommandLine::Get(), TEXT("CILagProbe"));
+	const AGameStateBase* State = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+	if (!bProbe || !State || GetNetMode() == NM_Standalone || !IsPlayerControlled())
+	{
+		return;
+	}
+	const double ServerNow = State->GetServerWorldTimeSeconds();
+	if (!Event && ServerNow < NextLagProbeAt)
+	{
+		return;
+	}
+	if (!Event)
+	{
+		NextLagProbeAt = ServerNow + 0.1;
+	}
+	// "own": this machine's own player; "host": the host's copy of a guest; "view": a guest's copy of someone else.
+	const TCHAR* Copy = IsLocallyControlled() ? TEXT("own") : HasAuthority() ? TEXT("host") : TEXT("view");
+	const APlayerState* PlayerInfo = GetPlayerState();
+	// Also where it is drawn (its body: smoothing and the lead ahead included).
+	const FVector Drawn = GetMesh() ? GetActorTransform().TransformPosition(GetMesh()->GetRelativeLocation() - CachedBaseTranslationOffset)
+		: GetActorLocation();
+	UE_LOG(LogChaosImpact, Log, TEXT("LAGPROBE %s %s %s t=%.3f x=%.1f y=%.1f dx=%.1f dy=%.1f"), Event ? Event : TEXT("pos"), Copy,
+		PlayerInfo ? *PlayerInfo->GetPlayerName() : TEXT("?"), ServerNow, GetActorLocation().X, GetActorLocation().Y, Drawn.X, Drawn.Y);
+#endif
+}
+
 void AChaosImpactCharacter::CompleteAnimatedThrow()
 {
+	if (HasAuthority()) { LogLagProbe(TEXT("launch")); }
 	AChaosImpactBall* Ball = PendingThrowBall.Get();
 	bThrowReleasePending = false;
 	PendingThrowBall.Reset();
@@ -1941,7 +1991,12 @@ void AChaosImpactCharacter::CompleteAnimatedThrow()
 		{
 			Ball->Launch(PendingThrowDirection, PendingThrowSpeed,
 				PendingThrowFlightMode, PendingThrowArcUpwardSpeed);
+			if (HasAuthority() && PendingThrowCatchUp > 0.0f)
+			{
+				Ball->AdvanceFlight(PendingThrowCatchUp);
+			}
 		}
+		PendingThrowCatchUp = 0.0f;
 		if (HasAuthority())
 		{
 			if (AChaosImpactGameMode* Mode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
@@ -2877,6 +2932,27 @@ void AChaosImpactCharacter::ServerReportBallHit_Implementation(AChaosImpactBall*
 	Ball->AcceptReportedHit(this, HitLocation);
 }
 
+void AChaosImpactCharacter::ServerReportTackleHit_Implementation(AChaosImpactCharacter* Attacker, const double Started)
+{
+	if (!IsValid(Attacker) || Attacker == this || bEliminated || !Attacker->GetTackle())
+	{
+		return;
+	}
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Attacker->GetTackle()->TryApplyReportedContact(this, Started);
+}
+
+void AChaosImpactCharacter::ServerReportBlastHit_Implementation(AChaosImpactHazardZone* Zone)
+{
+	if (!IsValid(Zone) || bEliminated)
+	{
+		return;
+	}
+	// Judged by the reporter's screen, where they were not dashing.
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Zone->TryApplyReportedBlast(this);
+}
+
 void AChaosImpactCharacter::ServerReportTornadoHit_Implementation(AChaosImpactTornado* Tornado)
 {
 	if (!IsValid(Tornado) || bEliminated)
@@ -3034,10 +3110,11 @@ void AChaosImpactCharacter::NotifyServerTeleport()
 	{
 		return;
 	}
-	// Moves already in flight still carry the old position; ignore them briefly so the teleport sticks (at a high
-	// ping, for as long as the teleport takes to arrive and the first moves from there to come back).
+	// Moves already in flight still carry the old position; ignore them briefly so the teleport sticks: one round
+	// trip (the teleport going out, the last moves sent before it arrived there coming back) and a little more.
+	// Two round trips held a guest on a slow line still, their own moves pushed back, for over two seconds.
 	ServerAuthoritativeUntil = GetWorld()->GetTimeSeconds()
-		+ FMath::Max(ServerTeleportAuthoritySeconds, GetNetworkRoundTripSeconds() * 2.0f + 0.3f);
+		+ FMath::Max(ServerTeleportAuthoritySeconds, GetNetworkRoundTripSeconds() + 0.25f);
 	UpdateMovementAuthority();
 	ClientTeleportTo(GetActorLocation(), GetActorRotation());
 }
@@ -3355,6 +3432,38 @@ void AChaosImpactCharacter::TickDevAutoInput()
 		StartDash();
 		DevNextDashAt = Now + 2.5;
 	}
+}
+
+FVector AChaosImpactCharacter::GetPastLocation(const float SecondsAgo) const
+{
+	if (SecondsAgo <= 0.0f || PastLocations.IsEmpty() || !GetWorld())
+	{
+		return GetActorLocation();
+	}
+	const double When = GetWorld()->GetTimeSeconds() - SecondsAgo;
+	for (int32 Index = PastLocations.Num() - 1; Index > 0; --Index)
+	{
+		const TPair<double, FVector>& Later = PastLocations[Index];
+		const TPair<double, FVector>& Earlier = PastLocations[Index - 1];
+		if (Earlier.Key <= When)
+		{
+			const double Span = Later.Key - Earlier.Key;
+			return Span > 0.0 ? FMath::Lerp(Earlier.Value, Later.Value, static_cast<float>((When - Earlier.Key) / Span)) : Later.Value;
+		}
+	}
+	return PastLocations[0].Value;
+}
+
+float AChaosImpactCharacter::GetRemoteViewDelay(const AChaosImpactCharacter* Thrower)
+{
+	// Late by the trip here plus the smoothing, less the lead (UpdatePresentationLead, about 0.3 of the round trip):
+	// about a fifth of the round trip and a tenth of a second. Never more than this, so a throw at a CPU long gone
+	// from there is not counted.
+	if (!Thrower || !Thrower->IsRemotePlayerOnServer())
+	{
+		return 0.0f;
+	}
+	return FMath::Clamp(Thrower->GetNetworkRoundTripSeconds() * 0.2f + 0.1f, 0.0f, 0.45f);
 }
 
 float AChaosImpactCharacter::GetNetworkRoundTripSeconds() const
@@ -6247,6 +6356,30 @@ void AChaosImpactCharacter::EndDriving(const bool bLetGo)
 	{
 		DriveEndsAtServerTime = -1.0f;
 		ForceNetUpdate();
+	}
+}
+
+void AChaosImpactCharacter::SendOwnDriveState(AChaosImpactBall* Ball)
+{
+	if (!Ball || HasAuthority() || !IsLocallyControlled() || !GetWorld())
+	{
+		return;
+	}
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (Now < NextDriveStateAt)
+	{
+		return;
+	}
+	NextDriveStateAt = Now + 1.0 / 30.0;
+	ServerDriveState(Ball, Ball->GetActorLocation(), Ball->GetDriveHeading());
+}
+
+void AChaosImpactCharacter::ServerDriveState_Implementation(AChaosImpactBall* Ball, const FVector_NetQuantize Location,
+	const FVector_NetQuantizeNormal Heading)
+{
+	if (IsValid(Ball) && Ball == DrivenBall.Get() && Ball->WasThrownBy(this))
+	{
+		Ball->ApplyOwnerDriveState(FVector(Location), FVector(Heading), GetNetworkRoundTripSeconds() * 0.5f);
 	}
 }
 

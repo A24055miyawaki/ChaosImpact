@@ -837,6 +837,34 @@ void ARPGPrototypeCharacter::ShowNotice(const FString& Text, float Seconds)
 void ARPGPrototypeCharacter::ClientShowNotice_Implementation(const FString& Text, float Seconds)
 { Notice = Text; NoticeUntil = GetWorld()->GetTimeSeconds() + Seconds; }
 
+float ARPGPrototypeCharacter::GetGuestViewDelay(const ARPGPrototypeCharacter* Guest)
+{
+	// As for VS CPUs (AChaosImpactCharacter::GetRemoteViewDelay), for the host's copy of a guest's hero.
+	return Guest && Guest->IsRemoteHero() ? FMath::Clamp(Guest->GetNetworkRoundTripSeconds() * 0.2f + 0.1f, 0.0f, 0.45f) : 0.0f;
+}
+
+void ARPGPrototypeCharacter::ServerReportRPGBallHit_Implementation(ARPGPrototypeBall* Ball, const FVector_NetQuantize At)
+{
+	if (IsValid(Ball) && IsRemoteHero()) { Ball->ApplyReportedHeroHit(this, FVector(At)); }
+}
+
+void ARPGPrototypeCharacter::ResolveOnOwnScreen(TFunction<void(ARPGPrototypeCharacter& Hero)> Check)
+{
+	// Up to a limit: a line slower than that loses the rest of the dodge, as before.
+	const float Delay = IsRemoteHero() ? FMath::Clamp(GetNetworkRoundTripSeconds(), 0.0f, 0.8f) : 0.0f;
+	if (Delay < 0.02f || !GetWorld())
+	{
+		Check(*this);
+		return;
+	}
+	const TWeakObjectPtr<ARPGPrototypeCharacter> Hero(this);
+	FTimerHandle Timer;
+	GetWorldTimerManager().SetTimer(Timer, FTimerDelegate::CreateLambda([Hero, Check]()
+	{
+		if (ARPGPrototypeCharacter* Still = Hero.Get()) { Check(*Still); }
+	}), Delay, false);
+}
+
 void ARPGPrototypeCharacter::TickNetSync()
 {
 	if (IsInTitle() || !GetWorld()) { return; }

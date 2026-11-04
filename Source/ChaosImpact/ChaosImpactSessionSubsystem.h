@@ -133,9 +133,12 @@ public:
 		FString Name;
 		int32 Character = INDEX_NONE;
 		int32 Colour = 0;
+		/** Its カスタムカラー parts (empty: none). */
+		TArray<uint8> CustomColours;
 	};
 	/** Name empty or Character below zero: that part unchanged. */
-	void RememberMember(const FString& Token, const FString& Name, int32 Character = INDEX_NONE, int32 Colour = 0);
+	void RememberMember(const FString& Token, const FString& Name, int32 Character = INDEX_NONE, int32 Colour = 0,
+		const TArray<uint8>& CustomColours = TArray<uint8>());
 	const FRememberedMember* FindRememberedMember(const FString& Token) const;
 	/** This machine's name as the CIName login option (characters a travel URL cannot carry left out). */
 	FString GetNameOption() const;

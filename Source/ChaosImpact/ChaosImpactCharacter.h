@@ -207,6 +207,8 @@ public:
 	/** The character and colour this player is shown as (the results podium shows the same). */
 	int32 GetShownCharacter() const;
 	int32 GetShownColour() const;
+	/** The カスタムカラー parts the model wears now (empty: its usual colours). */
+	const TArray<uint8>& GetShownCustomColours() const { return ShownCustomColours; }
 	/** 1-based number shown above a CPU character; 0 for human players. */
 	int32 GetCPUNumber() const { return CPUNumber; }
 	void SetCPUNumber(const int32 Number) { CPUNumber = static_cast<uint8>(FMath::Clamp(Number, 0, 255)); }
@@ -1156,6 +1158,8 @@ protected:
 	static constexpr float PresentationLeadShareOfPing = 0.3f;
 	/** Host, online: a CPU's own recent path (GetPastLocation). */
 	TArray<TPair<double, FVector>> PastLocations;
+	/** カスタムカラー now on the model (the player state's, unless a CPU or a team battle). */
+	TArray<uint8> ShownCustomColours;
 	static constexpr float MaxPresentationLeadDistance = 260.0f;
 	static constexpr float PresentationLeadBlendSpeed = 9.0f;
 	/** The fastest the lead may swing round (cm per second). */

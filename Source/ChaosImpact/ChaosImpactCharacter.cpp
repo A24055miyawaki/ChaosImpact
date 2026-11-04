@@ -29,6 +29,7 @@
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactPuppetComponent.h"
+#include "ChaosImpactCustomColour.h"
 #include "ChaosImpactTornado.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactWarpPad.h"
@@ -4840,6 +4841,15 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 		Colour = FMath::Max(GetGameInstance()->GetLocalPlayers().IndexOfByKey(OwningController->GetLocalPlayer()), 0) % 4;
 	}
 	ToonCharacter->SetColourIndex(Colour);
+	{
+		// カスタムカラー in every match, team battles too (the side shows on the name over the head).
+		const TArray<uint8> Wanted = State && !State->IsABot() ? State->CustomColours : TArray<uint8>();
+		if (Wanted != ShownCustomColours)
+		{
+			ShownCustomColours = Wanted;
+			ToonCharacter->SetCustomColours(ChaosImpactCustomColour::ToPartColours(ToonCharacter->GetCharacterIndex(), Wanted));
+		}
+	}
 	// From the throw until just after release the thrown ball is in the mannequin's hand, so the model's hand is
 	// put exactly there; the rest of the time the arm keeps its own proportions.
 	const float SinceThrow = static_cast<float>(GetWorld()->GetTimeSeconds() - ThrowAnimationStartedAt);

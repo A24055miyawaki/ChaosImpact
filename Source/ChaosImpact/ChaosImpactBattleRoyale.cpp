@@ -31,6 +31,7 @@ void AChaosImpactGameMode::InitializeRoyale()
 		Entry.Name = Character ? Character->GetOverheadDisplayName() : Member->GetPlayerName();
 		Entry.Character = Character ? Character->GetShownCharacter() : Member->CharacterIndex;
 		Entry.Colour = Character ? Character->GetShownColour() : FMath::Max(0, Member->ColourChoice);
+		Entry.CustomColours = Character ? Character->GetShownCustomColours() : Member->IsABot() ? TArray<uint8>() : Member->CustomColours;
 		Entry.Team = Member->TeamIndex;
 		Entry.Health = Character ? Character->GetHealth() : 3.f;
 		Match->Royale.Entries.Add(Entry);

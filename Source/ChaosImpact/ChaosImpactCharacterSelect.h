@@ -70,6 +70,9 @@ public:
 	/** On the icons this moves the cursor; on the colour row, left and right change the colour. */
 	void MoveCursor(int32 Player, int32 Columns, int32 Rows);
 	void ChangeColour(int32 Player, int32 Direction);
+	/** カスタムカラー: the next or previous of this machine's presets for the character (or none). */
+	void ChangePreset(int32 Player, int32 Direction);
+	int32 GetPreset(int32 Player) const { return Slots.IsValidIndex(Player) ? Slots[Player].Preset : INDEX_NONE; }
 	void PressConfirm(int32 Player);
 	void PressBack(int32 Player);
 
@@ -94,6 +97,8 @@ private:
 		/** The character shown in this player's window: the pick, or the last character the cursor was on. */
 		int32 Character = 0;
 		int32 Colour = 0;
+		/** カスタムカラー preset for Character (INDEX_NONE: none). */
+		int32 Preset = INDEX_NONE;
 		bool bKeyboard = false;
 		double MovedAt = -100.0;
 		double ChangedAt = -100.0;
@@ -118,6 +123,10 @@ private:
 	double NextPickerStickAt = 0.0;
 	FChaosImpactNameEntry NameEntry;
 
+	/** How many カスタムカラー presets this machine has for the character. */
+	int32 PresetCount(int32 Character) const;
+	/** The colour step opens for a character with colours to choose, or presets. */
+	bool HasColourStep(int32 Character) const;
 	bool IsColourTaken(int32 Player, int32 Character, int32 Colour) const;
 	/** The nearest colour from Start in Direction that no other player has on the same character. */
 	int32 FindFreeColour(int32 Player, int32 Character, int32 Start, int32 Direction) const;

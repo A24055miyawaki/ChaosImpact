@@ -54,7 +54,9 @@ enum class EChaosImpactScreen : uint8
 	/** 戦績: this player's 1v1 and 8-player records (kept by the relay). */
 	OnlineRecord,
 	/** ランダムマッチ 1v1: the opponent found, their connection, and both players' answers. */
-	DuelFound
+	DuelFound,
+	/** ColourEdit: each character's custom colour presets (UChaosImpactColourEdit). */
+	ColourEdit
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

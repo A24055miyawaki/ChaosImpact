@@ -11,6 +11,7 @@
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCharacterSelect.h"
+#include "ChaosImpactColourEdit.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSettingsScreen.h"
@@ -934,6 +935,7 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 	}
 
 	CharacterSelect = NewObject<UChaosImpactCharacterSelect>(this);
+	ColourEdit = NewObject<UChaosImpactColourEdit>(this);
 	SettingsScreen = NewObject<UChaosImpactSettingsScreen>(this);
 
 	if (FSlateApplication::IsInitialized() && !JoinInputProcessor.IsValid())
@@ -979,6 +981,10 @@ void UChaosImpactMenuWidget::NativeDestruct()
 	{
 		CharacterSelect->Close();
 	}
+	if (ColourEdit)
+	{
+		ColourEdit->Close();
+	}
 	if (SettingsScreen)
 	{
 		SettingsScreen->Close();
@@ -1008,6 +1014,11 @@ bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
 		return CharacterSelect->HandleKeyDown(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return ColourEdit->HandleKeyDown(InKeyEvent);
 	}
 	if (IsSettingsActive())
 	{
@@ -1049,6 +1060,11 @@ bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnal
 	{
 		return CharacterSelect->HandleAnalog(InAnalogEvent);
 	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return ColourEdit->HandleAnalog(InAnalogEvent);
+	}
 	if (IsSettingsActive())
 	{
 		return SettingsScreen->HandleAnalog(InAnalogEvent);
@@ -1081,6 +1097,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		CharacterSelect->Close();
 	}
+	if (ColourEdit && NewScreen != EChaosImpactScreen::ColourEdit)
+	{
+		ColourEdit->Close();
+	}
 	// Leaving the select screen: the level is drawn again at once (this widget may stop ticking when hidden).
 	if (UGameViewportClient* Viewport = bLevelHiddenByMenu && NewScreen != EChaosImpactScreen::CharacterSelect && GetWorld()
 		? GetWorld()->GetGameViewport() : nullptr)
@@ -1107,6 +1127,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 		&& (PreviousScreen != EChaosImpactScreen::CharacterSelect || !CharacterSelect->IsOpen()))
 	{
 		CharacterSelect->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
+	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && !ColourEdit->IsOpen())
+	{
+		ColourEdit->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
 	}
 	SelectedIndex = 0;
 	PressedIndex = INDEX_NONE;
@@ -1546,9 +1570,10 @@ void UChaosImpactMenuWidget::BuildEntries()
 	case EChaosImpactScreen::ModeSelect:
 		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
 		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("VSモード"), TEXT(""), TEXT("VS"), Fire});
-		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
-		Entries.Add({FSlateRect(520, 720, 940, 792), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
+		Entries.Add({FSlateRect(1170, 714, 1450, 798), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(150, 724, 410, 788), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(450, 720, 770, 792), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
+		Entries.Add({FSlateRect(810, 720, 1130, 792), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT(""), Fire});
 		break;
 	case EChaosImpactScreen::TrainingSetup:
 	{
@@ -2055,6 +2080,10 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	{
 		CharacterSelect->Tick(InDeltaTime);
 	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
+	{
+		ColourEdit->Tick(InDeltaTime);
+	}
 	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
 	{
 		SettingsScreen->Tick(InDeltaTime);
@@ -2066,7 +2095,8 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	{
 		// (Not once the VS card is up: its pictures are filmed with the level's drawing.)
 		const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		const bool bHideLevel = Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
+		const bool bHideLevel = ((Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
+			|| (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen()))
 			&& Owner && !Owner->IsTravelPending();
 		if (Viewport->bDisableWorldRendering != bHideLevel && (bHideLevel || bLevelHiddenByMenu))
 		{
@@ -2237,6 +2267,12 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const int32 SelectLayer = CharacterSelect->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
 		PaintEnterWipe(DesignGeometry, OutDrawElements, SelectLayer + 1, T);
 		return SelectLayer + 2;
+	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
+	{
+		const int32 EditLayer = ColourEdit->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
+		PaintEnterWipe(DesignGeometry, OutDrawElements, EditLayer + 1, T);
+		return EditLayer + 2;
 	}
 	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
 	{
@@ -3191,6 +3227,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::VSSelect); }
 		else if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
 		else if (SelectedIndex == 4) { Controller->OpenSettings(); }
+		else if (SelectedIndex == 5) { Controller->ShowMenuScreen(EChaosImpactScreen::ColourEdit); }
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::Title); }
 		break;
 
@@ -3857,6 +3894,10 @@ FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, cons
 	{
 		return FReply::Handled();
 	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen() && ColourEdit->HandleCharacter(InCharEvent.GetCharacter()))
+	{
+		return FReply::Handled();
+	}
 	return Super::NativeOnKeyChar(InGeometry, InCharEvent);
 }
 
@@ -3880,6 +3921,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
 	{
 		CharacterSelect->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen())
+	{
+		ColourEdit->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),
+			InMouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton));
 	}
 	if (!IsMenuMouseAllowed(this))
 	{
@@ -3908,6 +3954,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	if (Screen == EChaosImpactScreen::MatchEnd && Entries.IsEmpty())
 	{
 		GoOnFromPodium();
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
+	{
+		ColourEdit->HandleClick(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
 		return FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)

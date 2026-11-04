@@ -31,6 +31,8 @@ public:
 
 	/** Shows this character and colour; Accent tints the stage lights (the player's slot colour). */
 	void ShowLoadout(int32 CharacterIndex, int32 Colour, const FLinearColor& Accent);
+	/** カスタムカラー on the model shown (one value per part, ChaosImpactCustomColour; empty: none). */
+	void ShowCustomColours(const TArray<uint8>& Parts);
 	/** A short burst of motion when the player locks in. */
 	void PlayReady();
 	UTextureRenderTarget2D* GetPicture() const { return Picture; }

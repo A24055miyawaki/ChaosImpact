@@ -4,6 +4,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPuppetComponent.h"
+#include "ChaosImpactCustomColour.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -295,6 +296,14 @@ void AChaosImpactCharacterPreview::KeepTexturesSharp()
 		{
 			Mesh->PrestreamTextures(5.0f, true);
 		}
+	}
+}
+
+void AChaosImpactCharacterPreview::ShowCustomColours(const TArray<uint8>& Parts)
+{
+	if (Model)
+	{
+		Model->SetCustomColours(ChaosImpactCustomColour::ToPartColours(ModelCharacter, Parts));
 	}
 }
 

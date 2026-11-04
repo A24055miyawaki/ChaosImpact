@@ -299,7 +299,7 @@ public:
 
 	/** The character and colour this player picked on their own machine. */
 	UFUNCTION(Server, Reliable)
-	void ServerSetLoadout(int32 InCharacterIndex, int32 InColour);
+	void ServerSetLoadout(int32 InCharacterIndex, int32 InColour, const TArray<uint8>& InCustomColours);
 	
 	/** ソロモード中かどうか */
 	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")

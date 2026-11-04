@@ -4,6 +4,7 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
+#include "ChaosImpactCustomColour.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
@@ -193,6 +194,7 @@ void UChaosImpactCharacterSelect::Open(AChaosImpactPlayerController* InControlle
 		// Keep the last colour unless an earlier player already wears it on the same character.
 		Slot.Colour = FindFreeColour(Player, Slot.Character,
 			Saved.Colour >= 0 ? Saved.Colour : Player % ChaosImpactRoster::ColourCount, 1);
+		Slot.Preset = Saved.ColourPreset >= 0 && Saved.ColourPreset < PresetCount(Slot.Character) ? Saved.ColourPreset : INDEX_NONE;
 		Slot.bKeyboard = InController->IsKeyboardMouseAssignedToPlayer(Player);
 		Slot.Profile = FMath::Max(ChaosImpactSettings::FindProfile(Saved.Nickname), 0);
 		AChaosImpactCharacterPreview* Stage = SpawnStage(FVector(Player * 1600.0f, -90000.0f, 40000.0f));
@@ -284,11 +286,25 @@ int32 UChaosImpactCharacterSelect::FindFreeColour(const int32 Player, const int3
 	return (Start % Count + Count) % Count;
 }
 
+int32 UChaosImpactCharacterSelect::PresetCount(const int32 Character) const
+{
+	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+	return Colours ? Colours->GetPresets(Character).Num() : 0;
+}
+
+bool UChaosImpactCharacterSelect::HasColourStep(const int32 Character) const
+{
+	return ChaosImpactRoster::Get(Character).bColourVariants || PresetCount(Character) > 0;
+}
+
 void UChaosImpactCharacterSelect::RefreshPreview(const int32 Player)
 {
 	if (Slots.IsValidIndex(Player) && Previews.IsValidIndex(Player) && IsValid(Previews[Player]))
 	{
-		Previews[Player]->ShowLoadout(Slots[Player].Character, Slots[Player].Colour, SlotAccent(Player));
+		const FSlot& Slot = Slots[Player];
+		Previews[Player]->ShowLoadout(Slot.Character, Slot.Colour, SlotAccent(Player));
+		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+		Previews[Player]->ShowCustomColours(Colours ? Colours->GetPresetParts(Slot.Character, Slot.Preset) : TArray<uint8>());
 	}
 }
 
@@ -301,7 +317,11 @@ void UChaosImpactCharacterSelect::Commit(const int32 Player)
 	const FSlot& Slot = Slots[Player];
 	if (UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(Controller.Get()))
 	{
-		Loadouts->SetLoadout(Player, {Slot.Character, Slot.Colour});
+		FChaosImpactLoadout Loadout;
+		Loadout.Character = Slot.Character;
+		Loadout.Colour = Slot.Colour;
+		Loadout.ColourPreset = Slot.Preset;
+		Loadouts->SetLoadout(Player, Loadout);
 	}
 }
 
@@ -322,10 +342,14 @@ void UChaosImpactCharacterSelect::MoveCursor(const int32 Player, const int32 Col
 	FSlot& Slot = Slots[Player];
 	if (Slot.Step == EStep::Colour)
 	{
-		// The colour row is worked with left and right.
+		// The colour row is worked with left and right; up and down go through the カスタムカラー presets.
 		if (Columns != 0)
 		{
 			ChangeColour(Player, Columns);
+		}
+		else if (Rows != 0)
+		{
+			ChangePreset(Player, Rows);
 		}
 		return;
 	}
@@ -347,6 +371,7 @@ void UChaosImpactCharacterSelect::MoveCursor(const int32 Player, const int32 Col
 	if (IsTileUnlocked(Tile) && Tile != Slot.Character)
 	{
 		Slot.Character = Tile;
+		Slot.Preset = INDEX_NONE;
 		RefreshPreview(Player);
 	}
 }
@@ -366,6 +391,27 @@ void UChaosImpactCharacterSelect::ChangeColour(const int32 Player, const int32 D
 	}
 	Slot.Colour = Next;
 	Slot.LastDirection = Step;
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
+	Slot.ChangedAt = FPlatformTime::Seconds();
+	RefreshPreview(Player);
+	Commit(Player);
+}
+
+void UChaosImpactCharacterSelect::ChangePreset(const int32 Player, const int32 Direction)
+{
+	if (!bOpen || bStarting || !Slots.IsValidIndex(Player) || Slots[Player].Step != EStep::Colour)
+	{
+		return;
+	}
+	FSlot& Slot = Slots[Player];
+	const int32 Count = PresetCount(Slot.Character);
+	if (Count <= 0)
+	{
+		return;
+	}
+	// None, then each preset, round again.
+	const int32 Choices = Count + 1;
+	Slot.Preset = ((Slot.Preset + 1 + (Direction < 0 ? -1 : 1)) % Choices + Choices) % Choices - 1;
 	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 	Slot.ChangedAt = FPlatformTime::Seconds();
 	RefreshPreview(Player);
@@ -403,8 +449,12 @@ void UChaosImpactCharacterSelect::PressConfirm(const int32 Player)
 			return;
 		}
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiSelect);
+		if (Slot.Character != Slot.Cursor)
+		{
+			Slot.Preset = INDEX_NONE;
+		}
 		Slot.Character = Slot.Cursor;
-		const bool bVariants = ChaosImpactRoster::Get(Slot.Character).bColourVariants;
+		const bool bVariants = HasColourStep(Slot.Character);
 		SetStep(Player, bVariants ? EStep::Colour : EStep::Done);
 		// The row opens on a colour nobody else has on this character.
 		Slot.Colour = FindFreeColour(Player, Slot.Character, Slot.Colour, 1);
@@ -438,7 +488,7 @@ void UChaosImpactCharacterSelect::PressBack(const int32 Player)
 	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
 	if (Slot.Step == EStep::Done)
 	{
-		SetStep(Player, ChaosImpactRoster::Get(Slot.Character).bColourVariants ? EStep::Colour : EStep::Character);
+		SetStep(Player, HasColourStep(Slot.Character) ? EStep::Colour : EStep::Character);
 		return;
 	}
 	if (Slot.Step == EStep::Colour)
@@ -1179,6 +1229,35 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 			{
 				Row.Line(Centre + FVector2D(-9.0f, -9.0f), Centre + FVector2D(9.0f, 9.0f), WithAlpha(Paper, 0.7f), 3.0f);
 			}
+		}
+	}
+
+	// カスタムカラー: the preset worn (up and down choose), over the colour row.
+	if (Slot.Step != EStep::Character && PresetCount(Slot.Character) > 0)
+	{
+		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+		const TArray<FChaosImpactColourPreset>& Presets = Colours->GetPresets(Slot.Character);
+		const bool bWorn = Presets.IsValidIndex(Slot.Preset);
+		const float PillW = 300.0f;
+		const float PillX = bWide ? NameX - 8.0f : (W - PillW) * 0.5f;
+		const float RowTop = bWide ? H - 102.0f : bBigWindow ? H - 102.0f : H - 96.0f;
+		const float PillY = Info.bColourVariants ? RowTop - 46.0f : RowTop + 30.0f;
+		const FPainter Pill{Space, Elements, Layer + 3, In * (bDone ? 1.0f : EaseOut(StepAge / 0.2f))};
+		RoundBox(Pill, PillX, PillY, PillW, 40.0f, 14.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.85f));
+		RoundFrame(Pill, PillX, PillY, PillW, 40.0f, 14.0f, WithAlpha(bWorn ? Gold : Paper, bWorn ? 0.8f : 0.35f), 2.0f);
+		const int32 Stripes = bWorn ? FMath::Min(ChaosImpactCustomColour::GetPartCount(Slot.Character), 4) : 0;
+		for (int32 Stripe = 0; Stripe < Stripes; ++Stripe)
+		{
+			FColor Colour;
+			const bool bOn = ChaosImpactCustomColour::GetPart(Presets[Slot.Preset].Parts, Stripe, Colour);
+			Pill.Box(PillX + 14.0f + Stripe * 9.0f, PillY + 9.0f, 8.0f, 22.0f, bOn ? FLinearColor(Colour) : FLinearColor(0.25f, 0.27f, 0.33f, 1.0f));
+		}
+		const FString Label = bWorn ? FString::Printf(TEXT("カスタム：%s"), *Presets[Slot.Preset].Name) : FString(TEXT("カスタムカラー：なし"));
+		Pill.Text(Label, PillX + PillW * 0.5f + (Stripes > 0 ? 14.0f : 0.0f), PillY + 8.0f, 17.0f, bWorn ? Gold : Paper,
+			ETextAlign::Center, TEXT("Bold"));
+		if (!bDone)
+		{
+			Pill.Text(TEXT("↑↓"), PillX + PillW - 22.0f, PillY + 8.0f, 17.0f, WithAlpha(Paper, 0.7f), ETextAlign::Center, TEXT("Black"));
 		}
 	}
 

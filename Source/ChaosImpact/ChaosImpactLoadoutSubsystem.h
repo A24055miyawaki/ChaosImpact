@@ -10,6 +10,8 @@ struct FChaosImpactLoadout
 	int32 Character = 0;
 	/** INDEX_NONE until the player has picked one. */
 	int32 Colour = INDEX_NONE;
+	/** カスタムカラー: this machine's preset for the character (ChaosImpactCustomColour), INDEX_NONE for none. */
+	int32 ColourPreset = INDEX_NONE;
 	/** The nickname whose controls this player uses (empty: the guest's). Changed only through SetNickname. */
 	FString Nickname;
 };

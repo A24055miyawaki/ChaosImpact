@@ -23,6 +23,7 @@
 #include "ChaosImpactLoadingScreen.h"
 #include "Misc/App.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactCustomColour.h"
 #include "ChaosImpactStageBase.h"
 #include "ChaosImpactNetStats.h"
 #include "ChaosImpactSessionSubsystem.h"
@@ -3125,6 +3126,12 @@ void AChaosImpactPlayerController::PlayVersusCardThenOpen()
 		{
 			const FChaosImpactLoadout Loadout = Loadouts ? Loadouts->GetLoadout(Human) : FChaosImpactLoadout();
 			Preview->ShowLoadout(Loadout.Character, FMath::Max(Loadout.Colour, 0), Entrant.Color);
+			// カスタムカラー as the match will show it.
+			const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(this);
+			if (Colours)
+			{
+				Preview->ShowCustomColours(Colours->GetPresetParts(Loadout.Character, Loadout.ColourPreset));
+			}
 			Entrant.Picture = Preview->GetPicture();
 			VersusCardPreviews.Add(Preview);
 		}
@@ -3258,6 +3265,11 @@ void AChaosImpactPlayerController::UpdateOnlineVersusCard(const float DeltaSecon
 				AChaosImpactCharacterPreview::StaticClass(), FVector(Index * 1600.0f, -84000.0f, 40000.0f), FRotator::ZeroRotator, Parameters))
 			{
 				Preview->ShowLoadout(Member->CharacterIndex, FMath::Max(Member->ColourChoice, 0), Entrant.Color);
+				// Each fighter's カスタムカラー, as everyone receives it.
+				if (!Member->IsABot())
+				{
+					Preview->ShowCustomColours(Member->CustomColours);
+				}
 				Entrant.Picture = Preview->GetPicture();
 				VersusCardPreviews.Add(Preview);
 			}
@@ -3428,26 +3440,31 @@ void AChaosImpactPlayerController::SendLoadout()
 	const int32 LocalIndex = FMath::Max(0, GameInstance->GetLocalPlayers().IndexOfByKey(GetLocalPlayer()));
 	const FChaosImpactLoadout Loadout = Loadouts->GetLoadout(LocalIndex);
 	bLoadoutSent = true;
+	// The preset's colours themselves (everyone else's machine has no such preset).
+	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(this);
+	const TArray<uint8> Custom = Colours ? Colours->GetPresetParts(Loadout.Character, Loadout.ColourPreset) : TArray<uint8>();
 	if (HasAuthority())
 	{
-		ServerSetLoadout_Implementation(Loadout.Character, Loadout.Colour);
+		ServerSetLoadout_Implementation(Loadout.Character, Loadout.Colour, Custom);
 	}
 	else
 	{
-		ServerSetLoadout(Loadout.Character, Loadout.Colour);
+		ServerSetLoadout(Loadout.Character, Loadout.Colour, Custom);
 	}
 }
 
-void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 InCharacterIndex, const int32 InColour)
+void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 InCharacterIndex, const int32 InColour,
+	const TArray<uint8>& InCustomColours)
 {
 	if (AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>())
 	{
 		State->CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
 		State->ColourChoice = FMath::Clamp(InColour, 0, ChaosImpactRoster::ColourCount - 1);
+		State->CustomColours = ChaosImpactCustomColour::Clean(State->CharacterIndex, InCustomColours);
 		State->ForceNetUpdate();
 		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
 		{
-			Sessions->RememberMember(State->MachineToken, FString(), State->CharacterIndex, State->ColourChoice);
+			Sessions->RememberMember(State->MachineToken, FString(), State->CharacterIndex, State->ColourChoice, State->CustomColours);
 		}
 		UE_LOG(LogChaosImpact, Log, TEXT("Loadout set for %s: character %d, colour %d"), *State->GetPlayerName(),
 			State->CharacterIndex, State->ColourChoice);

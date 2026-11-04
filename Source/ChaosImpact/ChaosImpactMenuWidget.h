@@ -8,6 +8,7 @@
 class UTexture2D;
 class UEditableText;
 class UChaosImpactCharacterSelect;
+class UChaosImpactColourEdit;
 class UChaosImpactSettingsScreen;
 
 /** Native, resolution-independent front end. All hit regions and D-pad focus share one layout. */
@@ -134,6 +135,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactCharacterSelect> CharacterSelect;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactColourEdit> ColourEdit;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactSettingsScreen> SettingsScreen;

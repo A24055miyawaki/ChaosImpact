@@ -29,6 +29,7 @@ void UChaosImpactLoadoutSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 		{
 			GConfig->GetInt(LoadoutSection, *FString::Printf(TEXT("Character%d"), Index), Loadouts[Index].Character, GGameUserSettingsIni);
 			GConfig->GetInt(LoadoutSection, *FString::Printf(TEXT("Colour%d"), Index), Loadouts[Index].Colour, GGameUserSettingsIni);
+			GConfig->GetInt(LoadoutSection, *FString::Printf(TEXT("ColourPreset%d"), Index), Loadouts[Index].ColourPreset, GGameUserSettingsIni);
 			GConfig->GetString(LoadoutSection, *FString::Printf(TEXT("Nickname%d"), Index), Loadouts[Index].Nickname, GGameUserSettingsIni);
 		}
 		Loadouts[Index].Character = ChaosImpactRoster::ClampIndex(Loadouts[Index].Character);
@@ -50,8 +51,10 @@ void UChaosImpactLoadoutSubsystem::SetLoadout(const int32 LocalPlayerIndex, cons
 	FChaosImpactLoadout& Stored = Loadouts[LocalPlayerIndex];
 	Stored.Character = ChaosImpactRoster::ClampIndex(Loadout.Character);
 	Stored.Colour = FMath::Clamp(Loadout.Colour, 0, ChaosImpactRoster::ColourCount - 1);
+	Stored.ColourPreset = Loadout.ColourPreset;
 	if (GConfig)
 	{
+		GConfig->SetInt(LoadoutSection, *FString::Printf(TEXT("ColourPreset%d"), LocalPlayerIndex), Stored.ColourPreset, GGameUserSettingsIni);
 		GConfig->SetInt(LoadoutSection, *FString::Printf(TEXT("Character%d"), LocalPlayerIndex), Stored.Character, GGameUserSettingsIni);
 		GConfig->SetInt(LoadoutSection, *FString::Printf(TEXT("Colour%d"), LocalPlayerIndex), Stored.Colour, GGameUserSettingsIni);
 		GConfig->Flush(false, GGameUserSettingsIni);

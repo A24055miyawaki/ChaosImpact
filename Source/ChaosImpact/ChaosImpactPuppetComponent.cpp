@@ -169,6 +169,16 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	bReady = false;
 	Source = InSource;
 	CharacterIndex = ChaosImpactRoster::ClampIndex(InCharacterIndex);
+	AuthoredMaterials.Reset();
+	bCustomColoursDirty = true;
+#if !UE_BUILD_SHIPPING
+	// Development (-CIColourTest): every part of every model in its own strong colour, to see the parts.
+	if (FParse::Param(FCommandLine::Get(), TEXT("CIColourTest")))
+	{
+		CustomColours = {FLinearColor(1.0f, 0.02f, 0.02f, 1.0f), FLinearColor(0.02f, 0.25f, 1.0f, 1.0f), FLinearColor(1.0f, 0.85f, 0.0f, 1.0f),
+			FLinearColor(0.0f, 0.9f, 0.1f, 1.0f), FLinearColor(0.7f, 0.0f, 1.0f, 1.0f), FLinearColor(1.0f, 0.4f, 0.0f, 1.0f)};
+	}
+#endif
 	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, *AssetPath(CharacterIndex, TEXT("M"), TEXT("")));
 	const EChaosImpactModelKind Kind = ChaosImpactRoster::Get(CharacterIndex).Kind;
 	bFloating = Kind == EChaosImpactModelKind::Floating;
@@ -407,6 +417,10 @@ void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 		return;
 	}
 	ColourIndex = Clamped;
+	if (HasCustomColours())
+	{
+		return;
+	}
 	Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[Clamped]);
 	UE_LOG(LogChaosImpact, Verbose, TEXT("Character model colour %d (%s) on %s"), Clamped,
 		*GetNameSafe(ColourTextures[Clamped]), *GetNameSafe(GetOwner()));
@@ -553,7 +567,82 @@ void UChaosImpactPuppetComponent::TickComponent(const float DeltaTime, const ELe
 	FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	if (bCustomColoursDirty && bReady)
+	{
+		ApplyCustomColours();
+	}
 	UpdatePose(false, DeltaTime);
+}
+
+void UChaosImpactPuppetComponent::SetCustomColours(const TArray<FLinearColor>& PartColours)
+{
+	CustomColours = PartColours;
+	bCustomColoursDirty = true;
+	if (bReady)
+	{
+		ApplyCustomColours();
+	}
+}
+
+bool UChaosImpactPuppetComponent::HasCustomColours() const
+{
+	return CustomColours.ContainsByPredicate([](const FLinearColor& Colour) { return Colour.A > 0.0f; });
+}
+
+void UChaosImpactPuppetComponent::ApplyCustomColours()
+{
+	bCustomColoursDirty = false;
+	TArray<UMaterialInstanceDynamic*> Looks;
+	if (Material)
+	{
+		Looks.Add(Material);
+	}
+	for (UMaterialInstanceDynamic* SlotMaterial : SlotMaterials)
+	{
+		if (SlotMaterial)
+		{
+			Looks.Add(SlotMaterial);
+		}
+	}
+	if (AuthoredMesh)
+	{
+		// An authored model draws with its asset's own materials: adjustable copies of them, once.
+		if (AuthoredMaterials.IsEmpty())
+		{
+			for (int32 Slot = 0; Slot < AuthoredMesh->GetNumMaterials(); ++Slot)
+			{
+				if (UMaterialInterface* Own = AuthoredMesh->GetMaterial(Slot))
+				{
+					AuthoredMaterials.Add(AuthoredMesh->CreateDynamicMaterialInstance(Slot, Own));
+				}
+			}
+		}
+		for (UMaterialInstanceDynamic* Look : AuthoredMaterials)
+		{
+			if (Look)
+			{
+				Looks.Add(Look);
+			}
+		}
+	}
+	for (UMaterialInstanceDynamic* Look : Looks)
+	{
+		for (int32 Part = 0; Part < 6; ++Part)
+		{
+			static const FName Names[6] = {TEXT("PartColour0"), TEXT("PartColour1"), TEXT("PartColour2"), TEXT("PartColour3"),
+				TEXT("PartColour4"), TEXT("PartColour5")};
+			Look->SetVectorParameterValue(Names[Part], CustomColours.IsValidIndex(Part) ? CustomColours[Part] : FLinearColor(1.0f, 1.0f, 1.0f, 0.0f));
+		}
+	}
+	// A model coloured by texture (スマイリー) is recoloured from its first texture, the one its parts were measured on.
+	if (HasCustomColours() && !bRigid && !bSkinned && Material && ColourTextures.IsValidIndex(0) && ColourTextures[0])
+	{
+		Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[0]);
+	}
+	else if (!HasCustomColours() && Material && ColourTextures.IsValidIndex(ColourIndex) && ColourTextures[ColourIndex])
+	{
+		Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[ColourIndex]);
+	}
 }
 
 void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow, const float AnimationDeltaSeconds)

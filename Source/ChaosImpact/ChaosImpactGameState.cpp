@@ -11,6 +11,7 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, JoinOrder);
 	DOREPLIFETIME(AChaosImpactPlayerState, CharacterIndex);
 	DOREPLIFETIME(AChaosImpactPlayerState, ColourChoice);
+	DOREPLIFETIME(AChaosImpactPlayerState, CustomColours);
 	DOREPLIFETIME(AChaosImpactPlayerState, bRoomHost);
 	DOREPLIFETIME(AChaosImpactPlayerState, bSpectating);
 	DOREPLIFETIME(AChaosImpactPlayerState, Knockouts);

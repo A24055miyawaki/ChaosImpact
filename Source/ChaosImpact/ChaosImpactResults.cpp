@@ -69,13 +69,6 @@ namespace
 		}
 	}
 
-	FVector HexCorner(const FVector& Base, const float Radius, const int32 Corner, const float Z)
-	{
-		// A flat side toward the camera (+Y).
-		const float Angle = FMath::DegreesToRadians(60.0f * Corner);
-		return Base + FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, Z);
-	}
-
 	void AddQuad(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& A, const FVector& B, const FVector& C, const FVector& D,
 		const bool bBothSides)
 	{
@@ -91,44 +84,96 @@ namespace
 		}
 	}
 
-	/** A six-sided block standing on Base. */
-	void AppendHexPrism(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& Base, const float Radius, const float Height)
+	/** A quad seen from both sides, lit as facing Normal (a wall panel lit from the room's side). */
+	void AddQuadFacing(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& A, const FVector& B, const FVector& C, const FVector& D,
+		const FVector& Normal)
 	{
-		for (int32 Corner = 0; Corner < 6; ++Corner)
+		const int32 Base = Mesh.Vertices.Num();
+		Mesh.Vertices.Append({A, B, C, D});
+		Mesh.Normals.Append({Normal, Normal, Normal, Normal});
+		Mesh.UVs.Append({FVector2D(0, 0), FVector2D(1, 0), FVector2D(1, 1), FVector2D(0, 1)});
+		Mesh.Triangles.Append({Base, Base + 1, Base + 2, Base, Base + 2, Base + 3, Base, Base + 2, Base + 1, Base, Base + 3, Base + 2});
+	}
+
+	FVector RoundPoint(const FVector& Center, const float Radius, const float Angle, const float Z)
+	{
+		return Center + FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, Z);
+	}
+
+	/** The side of a round block (smooth, facing out) from Z0 to Z1. */
+	void AppendRoundSide(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& Center, const float Radius, const float Z0,
+		const float Z1, const int32 Segments = 64)
+	{
+		const int32 First = Mesh.Vertices.Num();
+		for (int32 Step = 0; Step <= Segments; ++Step)
 		{
-			AddQuad(Mesh, HexCorner(Base, Radius, Corner, 0.0f), HexCorner(Base, Radius, Corner + 1, 0.0f),
-				HexCorner(Base, Radius, Corner + 1, Height), HexCorner(Base, Radius, Corner, Height), true);
+			const float Angle = 2.0f * PI * Step / Segments;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			Mesh.Vertices.Append({RoundPoint(Center, Radius, Angle, Z0), RoundPoint(Center, Radius, Angle, Z1)});
+			Mesh.Normals.Append({Out, Out});
+			Mesh.UVs.Append({FVector2D(Step / static_cast<float>(Segments), 0.0f), FVector2D(Step / static_cast<float>(Segments), 1.0f)});
 		}
-		const FVector Top = Base + FVector(0.0f, 0.0f, Height);
-		for (int32 Corner = 0; Corner < 6; ++Corner)
+		for (int32 Step = 0; Step < Segments; ++Step)
 		{
-			AddQuad(Mesh, Top, Top, HexCorner(Base, Radius, Corner + 1, Height), HexCorner(Base, Radius, Corner, Height), true);
+			const int32 A = First + Step * 2;
+			Mesh.Triangles.Append({A, A + 1, A + 3, A, A + 3, A + 2});
 		}
 	}
 
-	/** Glowing edges round a six-sided block: its top and bottom rims and its corners. */
-	void AppendHexNeon(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& Base, const float Radius, const float Height,
-		const float Width)
+	/** A flat round top (or floor) at height Z, facing up. */
+	void AppendRoundTop(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& Center, const float Radius, const float Z,
+		const int32 Segments = 64)
 	{
-		const float Out = Radius + 1.5f;
-		for (const float Z : {Height + 0.5f, 2.0f})
+		const int32 Middle = Mesh.Vertices.Num();
+		Mesh.Vertices.Add(Center + FVector(0.0f, 0.0f, Z));
+		Mesh.Normals.Add(FVector::UpVector);
+		Mesh.UVs.Add(FVector2D(0.5f, 0.5f));
+		for (int32 Step = 0; Step <= Segments; ++Step)
 		{
-			for (int32 Corner = 0; Corner < 6; ++Corner)
-			{
-				// A band on the side, just below (or above) the rim.
-				const float Low = Z > 3.0f ? Z - Width : Z;
-				AddQuad(Mesh, HexCorner(Base, Out, Corner, Low), HexCorner(Base, Out, Corner + 1, Low),
-					HexCorner(Base, Out, Corner + 1, Low + Width), HexCorner(Base, Out, Corner, Low + Width), true);
-			}
+			const float Angle = 2.0f * PI * Step / Segments;
+			Mesh.Vertices.Add(RoundPoint(Center, Radius, Angle, Z));
+			Mesh.Normals.Add(FVector::UpVector);
+			Mesh.UVs.Add(FVector2D(0.5f + 0.5f * FMath::Cos(Angle), 0.5f + 0.5f * FMath::Sin(Angle)));
 		}
-		for (int32 Corner = 0; Corner < 6; ++Corner)
+		for (int32 Step = 0; Step < Segments; ++Step)
 		{
-			const FVector Edge = HexCorner(Base, Out, Corner, 0.0f);
-			const FVector Across = FVector::CrossProduct(FVector::UpVector, (Edge - Base).GetSafeNormal2D()) * Width * 0.35f;
-			AddQuad(Mesh, Edge - Across, Edge + Across, Edge + Across + FVector(0.0f, 0.0f, Height),
-				Edge - Across + FVector(0.0f, 0.0f, Height), true);
+			Mesh.Triangles.Append({Middle, Middle + Step + 2, Middle + Step + 1});
 		}
 	}
+
+	/** A rounded edge: a quarter turn from the side at Radius (height Z - Bevel) onto the top (radius Radius - Bevel). */
+	void AppendRoundBevel(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& Center, const float Radius, const float Z,
+		const float Bevel, const int32 Segments = 64)
+	{
+		constexpr int32 Steps = 4;
+		const int32 First = Mesh.Vertices.Num();
+		for (int32 Step = 0; Step <= Segments; ++Step)
+		{
+			const float Angle = 2.0f * PI * Step / Segments;
+			const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f);
+			for (int32 Bend = 0; Bend <= Steps; ++Bend)
+			{
+				const float Turn = 0.5f * PI * Bend / Steps;
+				const FVector Normal = (Out * FMath::Cos(Turn) + FVector::UpVector * FMath::Sin(Turn)).GetSafeNormal();
+				const float R = Radius - Bevel + Bevel * FMath::Cos(Turn);
+				Mesh.Vertices.Add(RoundPoint(Center, R, Angle, Z - Bevel + Bevel * FMath::Sin(Turn)));
+				Mesh.Normals.Add(Normal);
+				Mesh.UVs.Add(FVector2D(Step / static_cast<float>(Segments), Bend / static_cast<float>(Steps)));
+			}
+		}
+		for (int32 Step = 0; Step < Segments; ++Step)
+		{
+			for (int32 Bend = 0; Bend < Steps; ++Bend)
+			{
+				const int32 A = First + Step * (Steps + 1) + Bend;
+				const int32 B = A + Steps + 1;
+				Mesh.Triangles.Append({A, A + 1, B + 1, A, B + 1, B});
+			}
+		}
+	}
+
+	/** Medal colours for the pedestals' rims. */
+	const FLinearColor PlaceColors[] = {FLinearColor(1.0f, 0.7f, 0.24f), FLinearColor(0.7f, 0.78f, 0.92f), FLinearColor(0.92f, 0.47f, 0.22f)};
 
 	const FLinearColor ResultsPalette[] = {
 		FLinearColor(1.0f, 0.74f, 0.1f), FLinearColor(0.1f, 0.62f, 1.0f), FLinearColor(1.0f, 0.18f, 0.24f),
@@ -172,6 +217,8 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 		Entry.Name = Character ? Character->GetOverheadDisplayName() : Member->GetPlayerName();
 		Entry.Character = Character ? Character->GetShownCharacter() : Member->CharacterIndex;
 		Entry.Colour = Character ? Character->GetShownColour() : FMath::Max(Member->ColourChoice, 0);
+		Entry.CustomColours = Character ? Character->GetShownCustomColours()
+			: Member->IsABot() ? TArray<uint8>() : Member->CustomColours;
 		Entry.Team = Member->TeamIndex;
 		Entry.bBot = Member->IsABot();
 		Entry.LocalIndex = LocalStates.IndexOfByKey(Member);
@@ -203,6 +250,7 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 			{
 				Entry.Rank = FMath::Max(1, Royale->Place);
 				Entry.Character = Royale->Character; Entry.Colour = Royale->Colour; Entry.Name = Royale->Name;
+				Entry.CustomColours = Royale->CustomColours;
 			}
 		}
 		if (Data.bTeams && Entry.Team >= 0)
@@ -228,6 +276,7 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 			{
 				FChaosImpactResultEntry Entry;
 				Entry.Name = Royale.Name; Entry.Character = Royale.Character; Entry.Colour = Royale.Colour;
+				Entry.CustomColours = Royale.CustomColours;
 				Entry.Team = Royale.Team; Entry.Rank = FMath::Max(1, Royale.Place);
 				Entry.Color = Data.bTeams ? ChaosImpactMatch::GetTeamColor(Entry.Team) : ResultsPalette[Data.Entries.Num() % UE_ARRAY_COUNT(ResultsPalette)];
 				Data.Entries.Add(Entry);
@@ -422,52 +471,62 @@ void AChaosImpactPodiumStage::Destroyed()
 void AChaosImpactPodiumStage::AddPedestal(const FVector& Base, const float Radius, const float Height, const FLinearColor& Neon,
 	const int32 Place)
 {
+	// A round pedestal: a satin body on a recessed foot, a rounded top edge, and thin rims of light in its medal colour.
 	ChaosImpactIceMeshes::FMeshBuffers Body;
-	AppendHexPrism(Body, Base, Radius, Height);
-	ChaosImpactIceMeshes::CreateComponent(this, Root, Body, ResultsLitMaterial(this, FLinearColor(0.02f, 0.022f, 0.03f), 0.25f));
-	ChaosImpactIceMeshes::FMeshBuffers Edges;
-	AppendHexNeon(Edges, Base, Radius, Height, Place == 0 ? 7.0f : 5.0f);
-	UMaterialInstanceDynamic* NeonMaterial = ChaosImpactBallTypes::MakeEmissive(this, Neon, 0.0f);
-	ChaosImpactIceMeshes::CreateComponent(this, Root, Edges, NeonMaterial);
+	AppendRoundSide(Body, Base, Radius - 5.0f, 0.0f, 5.0f);
+	AppendRoundSide(Body, Base, Radius, 5.0f, Height - 4.0f);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Body, ResultsLitMaterial(this, FLinearColor(0.055f, 0.058f, 0.068f), 0.34f));
+	ChaosImpactIceMeshes::FMeshBuffers Top;
+	AppendRoundBevel(Top, Base, Radius, Height, 4.0f);
+	AppendRoundTop(Top, Base, Radius - 4.0f, Height);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Top, ResultsLitMaterial(this, FLinearColor(0.1f, 0.102f, 0.11f), 0.3f));
+	ChaosImpactIceMeshes::FMeshBuffers Rim;
+	AppendRoundSide(Rim, Base, Radius + 0.4f, Height - 11.0f, Height - 8.0f);
+	AppendRoundSide(Rim, Base, Radius + 0.4f, 9.0f, 10.5f);
+	UMaterialInstanceDynamic* RimMaterial = ChaosImpactBallTypes::MakeEmissive(this, Neon, 0.0f);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Rim, RimMaterial);
 	NeonMaterials.SetNum(FMath::Max(NeonMaterials.Num(), Place + 1));
-	NeonMaterials[Place] = NeonMaterial;
+	NeonMaterials[Place] = RimMaterial;
+	PedestalBases.SetNum(FMath::Max(PedestalBases.Num(), Place + 1));
+	PedestalRadii.SetNum(FMath::Max(PedestalRadii.Num(), Place + 1));
+	PedestalHeights.SetNum(FMath::Max(PedestalHeights.Num(), Place + 1));
+	PedestalBases[Place] = Base;
+	PedestalRadii[Place] = Radius;
+	PedestalHeights[Place] = Height;
 
-	// The floor ring round its foot, and the pillar of light it appears in.
-	ChaosImpactIceMeshes::FMeshBuffers Ring;
-	ChaosImpactLightning::AppendRing(Ring, Base + FVector(0.0f, 0.0f, 1.0f), Radius + 34.0f, 4.0f, 6);
-	ChaosImpactLightning::AppendRing(Ring, Base + FVector(0.0f, 0.0f, 1.0f), Radius + 70.0f, 2.0f, 48);
-	UProceduralMeshComponent* RingMesh = ChaosImpactLightning::CreateComponent(this, Root, ChaosImpactBallTypes::MakeAdditive(this, Neon, 1.2f));
-	ChaosImpactLightning::SetMesh(RingMesh, Ring);
-
-	if (UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")))
+	// Its spotlight from high above (the winner's is WinnerSpot), off until the place appears.
+	USpotLightComponent* Spot = WinnerSpot;
+	if (Place > 0)
 	{
-		UStaticMeshComponent* Pillar = NewObject<UStaticMeshComponent>(this);
-		Pillar->SetStaticMesh(Cylinder);
-		Pillar->SetupAttachment(Root);
-		Pillar->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Pillar->SetCastShadow(false);
-		Pillar->SetRelativeLocation(Base + FVector(0.0f, 0.0f, 600.0f));
-		Pillar->SetRelativeScale3D(FVector(Radius / 50.0f, Radius / 50.0f, 12.0f));
-		UMaterialInstanceDynamic* PillarMaterial = ChaosImpactBallTypes::MakeAdditive(this, Neon, 0.0f, 0.6f);
-		Pillar->SetMaterial(0, PillarMaterial);
-		Pillar->RegisterComponent();
-		Pillars.SetNum(FMath::Max(Pillars.Num(), Place + 1));
-		PillarMaterials.SetNum(FMath::Max(PillarMaterials.Num(), Place + 1));
-		Pillars[Place] = Pillar;
-		PillarMaterials[Place] = PillarMaterial;
+		Spot = NewObject<USpotLightComponent>(this);
+		Spot->SetupAttachment(Root);
+		Spot->SetInnerConeAngle(10.0f);
+		Spot->SetOuterConeAngle(19.0f);
+		Spot->SetAttenuationRadius(1600.0f);
+		// (Only the winner's casts a shadow: the cut to the podium stays light.)
+		Spot->SetCastShadows(false);
+		Spot->SetLightColor(FLinearColor(1.0f, 0.95f, 0.88f));
+		Spot->SetIntensity(0.0f);
+		Spot->RegisterComponent();
 	}
+	// From above and a little in front, so the faces are lit and the shadow falls behind.
+	const FVector SpotAt = Base + FVector(0.0f, 260.0f, 820.0f);
+	Spot->SetRelativeLocation(SpotAt);
+	Spot->SetRelativeRotation((Base + FVector(0.0f, 0.0f, Height + 60.0f) - SpotAt).Rotation());
+	PlaceSpots.SetNum(FMath::Max(PlaceSpots.Num(), Place + 1));
+	PlaceSpots[Place] = Spot;
 
-	// A rim light behind it in its colour.
-	UPointLightComponent* Rim = NewObject<UPointLightComponent>(this);
-	Rim->SetupAttachment(Root);
-	Rim->SetRelativeLocation(Base + FVector(0.0f, -160.0f, Height + 260.0f));
-	Rim->SetLightColor(Neon);
-	Rim->SetIntensity(0.0f);
-	Rim->SetAttenuationRadius(700.0f);
-	Rim->SetCastShadows(false);
-	Rim->RegisterComponent();
+	// A soft rim light behind it, so the figure stands off the wall.
+	UPointLightComponent* Back = NewObject<UPointLightComponent>(this);
+	Back->SetupAttachment(Root);
+	Back->SetRelativeLocation(Base + FVector(0.0f, -170.0f, Height + 230.0f));
+	Back->SetLightColor(FMath::Lerp(Neon, FLinearColor::White, 0.5f));
+	Back->SetIntensity(0.0f);
+	Back->SetAttenuationRadius(600.0f);
+	Back->SetCastShadows(false);
+	Back->RegisterComponent();
 	RimLights.SetNum(FMath::Max(RimLights.Num(), Place + 1));
-	RimLights[Place] = Rim;
+	RimLights[Place] = Back;
 }
 
 void AChaosImpactPodiumStage::Build(const FChaosImpactResultsData& Data)
@@ -538,7 +597,7 @@ void AChaosImpactPodiumStage::BuildArena()
 	Picture->UpdateResourceImmediate(true);
 	Camera->TextureTarget = Picture;
 	Camera->ShowOnlyActors.Add(this);
-	BackGlowLight->SetLightColor(WinnerColor);
+	BackGlowLight->SetLightColor(FMath::Lerp(WinnerColor, FLinearColor::White, 0.4f));
 
 	IdleAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
 	KneelAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Death/MM_Death_Front_01.MM_Death_Front_01"));
@@ -546,49 +605,96 @@ void AChaosImpactPodiumStage::BuildArena()
 	LandAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Land.MM_Land"));
 	CheerAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_ChargedAttack.MM_ChargedAttack"));
 
-	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	const auto AddMesh = [this](UStaticMesh* Mesh, const FVector& Location, const FRotator& Rotation, const FVector& Scale,
-		UMaterialInterface* Material)
-	{
-		UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(this);
-		Component->SetStaticMesh(Mesh);
-		Component->SetupAttachment(Root);
-		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Component->SetCastShadow(false);
-		Component->SetRelativeLocationAndRotation(Location, Rotation);
-		Component->SetRelativeScale3D(Scale);
-		Component->SetMaterial(0, Material);
-		Component->RegisterComponent();
-		return Component;
-	};
+	// The floor: dark and glossy, with the round stage on it (a soft line of light along its edge).
+	ChaosImpactIceMeshes::FMeshBuffers Floor;
+	AppendRoundTop(Floor, FVector(0.0f, -250.0f, 0.0f), 3200.0f, -1.0f, 96);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Floor, ResultsLitMaterial(this, FLinearColor(0.006f, 0.007f, 0.01f), 0.12f));
+	const FVector StageCenter(0.0f, -230.0f, 0.0f);
+	ChaosImpactIceMeshes::FMeshBuffers Stage;
+	AppendRoundSide(Stage, StageCenter, 600.0f, -1.0f, 6.0f, 128);
+	AppendRoundBevel(Stage, StageCenter, 600.0f, 8.0f, 2.0f, 128);
+	AppendRoundTop(Stage, StageCenter, 598.0f, 8.0f, 128);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Stage, ResultsLitMaterial(this, FLinearColor(0.02f, 0.021f, 0.026f), 0.22f));
+	ChaosImpactIceMeshes::FMeshBuffers Edge;
+	AppendRoundSide(Edge, StageCenter, 600.6f, 2.0f, 4.0f, 128);
+	StageEdgeMaterial = ChaosImpactBallTypes::MakeEmissive(this, FLinearColor(1.0f, 0.9f, 0.75f), 0.0f);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Edge, StageEdgeMaterial);
 
-	// The arena: a dark floor, a dark wall, a glow of the winner's colour behind them, slashes of it across the wall.
-	AddMesh(Cylinder, FVector(0.0f, -200.0f, -2.0f), FRotator::ZeroRotator, FVector(40.0f, 40.0f, 0.02f),
-		ResultsLitMaterial(this, FLinearColor(0.012f, 0.014f, 0.022f), 0.18f));
-	AddMesh(Cube, FVector(0.0f, -1400.0f, 600.0f), FRotator::ZeroRotator, FVector(70.0f, 0.2f, 24.0f),
-		ChaosImpactBallTypes::MakeEmissive(this, WinnerColor * 0.012f + FLinearColor(0.004f, 0.005f, 0.01f), 1.0f));
-	AddMesh(Sphere, FVector(0.0f, -1250.0f, 220.0f), FRotator::ZeroRotator, FVector(11.0f, 0.5f, 6.5f),
-		ChaosImpactBallTypes::MakeAdditive(this, WinnerColor, 0.16f, 0.0f));
-	FRandomStream Stream(1234);
-	for (int32 Index = 0; Index < 11; ++Index)
+	// The back wall: a curve of tall panels with narrow seams, slim LED bars in some seams, washed upward from its foot.
+	const FVector WallCenter(0.0f, -260.0f, 0.0f);
+	constexpr float WallRadius = 1180.0f;
+	constexpr float WallHeight = 760.0f;
+	constexpr int32 Panels = 30;
+	constexpr float WallSpan = 150.0f;
+	const auto WallAngle = [](const float Along) { return FMath::DegreesToRadians(-90.0f - WallSpan * 0.5f + WallSpan * Along); };
+	ChaosImpactIceMeshes::FMeshBuffers Wall;
+	const FLinearColor LedColor = FMath::Lerp(WinnerColor, FLinearColor::White, 0.25f);
+	for (int32 Panel = 0; Panel < Panels; ++Panel)
 	{
-		const float Angle = Stream.FRandRange(22.0f, 36.0f);
-		const float Thick = Index % 3 == 0 ? 0.22f : Stream.FRandRange(0.04f, 0.1f);
-		const FLinearColor Color = Index % 4 == 0 ? FLinearColor(1.0f, 0.95f, 0.85f) : WinnerColor;
-		Slashes.Add(AddMesh(Cube, FVector(Stream.FRandRange(-900.0f, 900.0f), -1180.0f - Index * 6.0f, Stream.FRandRange(-100.0f, 1100.0f)),
-			FRotator(Angle, 0.0f, 0.0f), FVector(28.0f, 0.03f, Thick),
-			ChaosImpactBallTypes::MakeEmissive(this, Color, Index % 4 == 0 ? 3.0f : Stream.FRandRange(4.0f, 9.0f))));
-		SlashPhases.Add(Stream.FRand());
+		const float A0 = WallAngle(Panel / static_cast<float>(Panels)) + 0.0045f;
+		const float A1 = WallAngle((Panel + 1) / static_cast<float>(Panels)) - 0.0045f;
+		const float Mid = (A0 + A1) * 0.5f;
+		AddQuadFacing(Wall, RoundPoint(WallCenter, WallRadius, A1, 0.0f), RoundPoint(WallCenter, WallRadius, A0, 0.0f),
+			RoundPoint(WallCenter, WallRadius, A0, WallHeight), RoundPoint(WallCenter, WallRadius, A1, WallHeight),
+			-FVector(FMath::Cos(Mid), FMath::Sin(Mid), 0.0f));
+		if (Panel % 3 == 0 && Panel > 0)
+		{
+			// An LED bar in the seam, standing a little proud of it.
+			const float Seam = WallAngle(Panel / static_cast<float>(Panels));
+			const FVector Foot = RoundPoint(WallCenter, WallRadius - 3.0f, Seam, 0.0f);
+			const FVector Across = FVector(-FMath::Sin(Seam), FMath::Cos(Seam), 0.0f) * 3.0f;
+			ChaosImpactIceMeshes::FMeshBuffers Bar;
+			AddQuad(Bar, Foot + Across + FVector(0.0f, 0.0f, 40.0f), Foot - Across + FVector(0.0f, 0.0f, 40.0f),
+				Foot - Across + FVector(0.0f, 0.0f, WallHeight - 70.0f), Foot + Across + FVector(0.0f, 0.0f, WallHeight - 70.0f), true);
+			UMaterialInstanceDynamic* LedMaterial = ChaosImpactBallTypes::MakeEmissive(this, LedColor, 0.0f);
+			ChaosImpactIceMeshes::CreateComponent(this, Root, Bar, LedMaterial);
+			LedMaterials.Add(LedMaterial);
+			LedPhases.Add(Panel / static_cast<float>(Panels));
+		}
 	}
-	// Haze along the floor.
-	for (int32 Index = 0; Index < 12; ++Index)
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Wall, ResultsLitMaterial(this, FLinearColor(0.11f, 0.115f, 0.13f), 0.6f));
 	{
-		const float Size = Stream.FRandRange(3.5f, 6.5f);
-		Haze.Add(AddMesh(Sphere, FVector(Stream.FRandRange(-900.0f, 900.0f), Stream.FRandRange(-1000.0f, -60.0f), Stream.FRandRange(10.0f, 50.0f)),
-			FRotator::ZeroRotator, FVector(Size, Size * 0.8f, Stream.FRandRange(0.5f, 1.1f)),
-			ChaosImpactBallTypes::MakeAdditive(this, FLinearColor(0.55f, 0.6f, 0.75f) * 0.5f + WinnerColor * 0.15f, 0.05f, 0.6f)));
+		// A thin band of light along the wall's top.
+		ChaosImpactIceMeshes::FMeshBuffers Band;
+		constexpr int32 Steps = 60;
+		for (int32 Step = 0; Step < Steps; ++Step)
+		{
+			const float A0 = WallAngle(Step / static_cast<float>(Steps));
+			const float A1 = WallAngle((Step + 1) / static_cast<float>(Steps));
+			AddQuad(Band, RoundPoint(WallCenter, WallRadius - 4.0f, A1, WallHeight - 40.0f), RoundPoint(WallCenter, WallRadius - 4.0f, A0, WallHeight - 40.0f),
+				RoundPoint(WallCenter, WallRadius - 4.0f, A0, WallHeight - 36.0f), RoundPoint(WallCenter, WallRadius - 4.0f, A1, WallHeight - 36.0f), true);
+		}
+		UMaterialInstanceDynamic* BandMaterial = ChaosImpactBallTypes::MakeEmissive(this, LedColor, 0.0f);
+		ChaosImpactIceMeshes::CreateComponent(this, Root, Band, BandMaterial);
+		LedMaterials.Add(BandMaterial);
+		LedPhases.Add(-1.0f);
+	}
+	// Lights at the wall's foot, aimed up it: pools of the winner's colour, with cooler white between.
+	for (int32 Light = 0; Light < 7; ++Light)
+	{
+		const float Angle = FMath::DegreesToRadians(-90.0f + (Light - 3) * 19.0f);
+		const FVector Foot = RoundPoint(WallCenter, WallRadius - 110.0f, Angle, 6.0f);
+		const FVector Aim = RoundPoint(WallCenter, WallRadius, Angle, 560.0f);
+		USpotLightComponent* Up = NewObject<USpotLightComponent>(this);
+		Up->SetupAttachment(Root);
+		Up->SetRelativeLocation(Foot);
+		Up->SetRelativeRotation((Aim - Foot).Rotation());
+		Up->SetInnerConeAngle(6.0f);
+		Up->SetOuterConeAngle(30.0f);
+		Up->SetAttenuationRadius(1100.0f);
+		Up->SetCastShadows(false);
+		Up->SetLightColor(Light % 2 == 0 ? WinnerColor : FLinearColor(0.72f, 0.8f, 1.0f));
+		Up->SetIntensity(0.0f);
+		Up->RegisterComponent();
+		WallLights.Add(Up);
+	}
+
+	// Paper confetti, one mesh per colour (filled in as it falls).
+	const FLinearColor Papers[] = {FLinearColor(1.0f, 0.78f, 0.25f), FLinearColor(0.95f, 0.95f, 0.97f), WinnerColor,
+		FLinearColor(0.35f, 0.7f, 1.0f), FLinearColor(1.0f, 0.35f, 0.45f)};
+	for (const FLinearColor& Paper : Papers)
+	{
+		Confetti.Add(ChaosImpactLightning::CreateComponent(this, Root, ResultsLitMaterial(this, Paper, 0.55f)));
 	}
 
 	// Who stands where: the winner (or winning team) in front, the next two behind on either side.
@@ -635,9 +741,8 @@ void AChaosImpactPodiumStage::BuildNextFigure()
 	const int32 Place = BuildPlace;
 	const int32 Count = FMath::Max(Places[Place].Num(), 1);
 	const float Spacing = Place == 0 ? 96.0f : 82.0f;
-	const FLinearColor Neon = Place == 0 ? WinnerColor : Data.bTeams && !Places[Place].IsEmpty()
-		? ChaosImpactMatch::GetTeamColor(Data.Entries[Places[Place][0]].Team)
-		: Place == 1 ? FLinearColor(0.75f, 0.85f, 1.0f) : FLinearColor(1.0f, 0.55f, 0.25f);
+	// Gold, silver and bronze rims (a team's colour shows on its name plate).
+	const FLinearColor Neon = PlaceColors[FMath::Clamp(Place, 0, 2)];
 	if (BuildMember == 0)
 	{
 		const float Radius = (Place == 0 ? 92.0f : 74.0f) + Spacing * 0.5f * (Count - 1);
@@ -663,6 +768,7 @@ void AChaosImpactPodiumStage::BuildNextFigure()
 			AChaosImpactCharacterPreview::StaticClass(), GetActorLocation() + Figure.Spot, FRotator::ZeroRotator, Parameters))
 		{
 			Actor->ShowLoadout(Entry.Character, Entry.Colour, Neon);
+			Actor->ShowCustomColours(Entry.CustomColours);
 			Actor->UseAsFigure();
 			// The winner faces the camera square; the others are turned a little in toward the winner.
 			Actor->SetFacing(Place == 0 ? 0.0f : Place == 1 ? 18.0f : -18.0f, Place == 0 ? 7.0f : 0.0f);
@@ -742,51 +848,44 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 	}
 	SetCamera(Location, Look, Fov);
 
-	// ---- Lights and neon ----
+	// ---- Lights: each place's spotlight snaps on as it appears; the wall glows up when the winner lands ----
 	for (int32 Place = 0; Place < NeonMaterials.Num(); ++Place)
 	{
 		const float At = Place == 0 ? LandAt : Place == 1 ? SecondAt : ThirdAt;
 		const float Since = S - At;
-		const float Neon = Since < 0.0f ? 0.0f : 3.5f + 10.0f * FMath::Exp(-6.0f * Since) + 0.6f * FMath::Sin(S * 3.0f + Place);
-		ResultsSetIntensity(NeonMaterials[Place], Neon);
+		const float Rim = Since < 0.0f ? 0.0f : 2.2f + 9.0f * FMath::Exp(-7.0f * Since);
+		ResultsSetIntensity(NeonMaterials[Place], Rim);
 		if (RimLights.IsValidIndex(Place) && RimLights[Place])
 		{
-			RimLights[Place]->SetIntensity(Since < 0.0f ? 0.0f : Place == 0 ? 42000.0f : 26000.0f);
+			RimLights[Place]->SetIntensity(Since < 0.0f ? 0.0f : Place == 0 ? 16000.0f : 9000.0f);
 		}
-		if (PillarMaterials.IsValidIndex(Place) && PillarMaterials[Place])
+		if (Place > 0 && PlaceSpots.IsValidIndex(Place) && PlaceSpots[Place])
 		{
-			const float Pillar = bWarming ? 1.0f : Since < 0.0f || Since > 0.7f ? 0.0f : 2.5f * (1.0f - Since / 0.7f);
-			ResultsSetIntensity(PillarMaterials[Place], Pillar);
-			Pillars[Place]->SetVisibility(Pillar > 0.0f);
-			const float Wide2 = 1.0f + 1.5f * FMath::Clamp(Since / 0.7f, 0.0f, 1.0f);
-			const FVector Scale = Pillars[Place]->GetRelativeScale3D();
-			const float Base = Place == 0 ? 1.84f : 1.48f;
-			Pillars[Place]->SetRelativeScale3D(FVector(Base * Wide2 * 0.5f, Base * Wide2 * 0.5f, Scale.Z));
+			PlaceSpots[Place]->SetIntensity(Since < 0.0f ? 0.0f : (SinceLand < 0.0f && S >= BlackoutAt ? 9000.0f : 30000.0f)
+				+ 40000.0f * FMath::Exp(-9.0f * Since));
 		}
 	}
 	// Dark until the winner lands, then the spotlight crashes on.
-	WinnerSpot->SetIntensity(SinceLand < 0.0f ? 0.0f : 52000.0f + 90000.0f * FMath::Exp(-5.0f * SinceLand));
-	KeyLight->SetIntensity(S < BlackoutAt ? 22000.0f : SinceLand < 0.0f ? 4000.0f : 24000.0f);
-	BackGlowLight->SetIntensity(SinceLand < 0.0f ? (S < BlackoutAt ? 18000.0f : 6000.0f) : 34000.0f);
-
-	// ---- The back wall's slashes slide, the haze drifts ----
-	for (int32 Index = 0; Index < Slashes.Num(); ++Index)
+	WinnerSpot->SetIntensity(SinceLand < 0.0f ? 0.0f : 42000.0f + 80000.0f * FMath::Exp(-5.0f * SinceLand));
+	KeyLight->SetIntensity(S < BlackoutAt ? 16000.0f : SinceLand < 0.0f ? 4000.0f : 20000.0f);
+	BackGlowLight->SetIntensity(SinceLand < 0.0f ? (S < BlackoutAt ? 5000.0f : 1500.0f) : 9000.0f);
+	const float WallUp = S < BlackoutAt ? 0.45f : SinceLand < 0.0f ? 0.12f : 1.0f + 1.2f * FMath::Exp(-3.0f * SinceLand);
+	for (int32 Index = 0; Index < WallLights.Num(); ++Index)
 	{
-		UStaticMeshComponent* Slash = Slashes[Index];
-		const float Speed = 260.0f + 180.0f * SlashPhases[Index];
-		const float Travel = FMath::Fmod(S * Speed + SlashPhases[Index] * 4000.0f, 4000.0f) - 2000.0f;
-		const FVector Location2 = Slash->GetRelativeLocation();
-		const FRotator Rotation = Slash->GetRelativeRotation();
-		const FVector Along = Rotation.RotateVector(FVector::ForwardVector);
-		const float BaseZ = -100.0f + 1200.0f * FMath::Frac(SlashPhases[Index] * 7.31f);
-		Slash->SetRelativeLocation(FVector(Along.X * Travel, Location2.Y, BaseZ + Along.Z * Travel));
+		WallLights[Index]->SetIntensity(WallUp * (Index % 2 == 0 ? 130000.0f : 60000.0f));
 	}
-	for (int32 Index = 0; Index < Haze.Num(); ++Index)
+	ResultsSetIntensity(StageEdgeMaterial, S < BlackoutAt ? 1.4f : SinceLand < 0.0f ? 0.4f : 2.2f);
+	// The LED bars: steady, with a slow, soft wave across the wall once the winner is in.
+	for (int32 Index = 0; Index < LedMaterials.Num(); ++Index)
 	{
-		UStaticMeshComponent* Puff = Haze[Index];
-		FVector Where = Puff->GetRelativeLocation();
-		Where.X = FMath::Fmod(Where.X + DeltaSeconds * (25.0f + 10.0f * (Index % 3)) + 1000.0f, 2000.0f) - 1000.0f;
-		Puff->SetRelativeLocation(Where);
+		const float Phase = LedPhases.IsValidIndex(Index) ? LedPhases[Index] : 0.0f;
+		const float Wave = Phase < 0.0f ? 1.0f : 0.75f + 0.25f * FMath::Sin(S * 1.6f - Phase * 9.0f);
+		const float Level = S < BlackoutAt ? 1.2f : SinceLand < 0.0f ? 0.3f : 2.6f + 6.0f * FMath::Exp(-4.0f * SinceLand);
+		ResultsSetIntensity(LedMaterials[Index], Level * Wave);
+	}
+	if (!Confetti.IsEmpty())
+	{
+		UpdateConfetti(bWarming ? 3.0f : SinceLand);
 	}
 
 	// ---- The shockwave ----
@@ -799,7 +898,7 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 			const float Radius = 60.0f + 700.0f * ResultsPaint::EaseOut(T);
 			ChaosImpactLightning::AppendRing(Ring, FVector(0.0f, 0.0f, 2.0f), Radius, 26.0f * (1.0f - T) + 3.0f, 64);
 			ChaosImpactLightning::AppendRing(Ring, FVector(0.0f, 0.0f, WinnerTopZ + 2.0f), Radius * 0.45f, 10.0f * (1.0f - T) + 2.0f, 48);
-			ResultsSetIntensity(ShockwaveMaterial, 6.0f * (1.0f - T));
+			ResultsSetIntensity(ShockwaveMaterial, 3.0f * (1.0f - T));
 		}
 		ChaosImpactLightning::SetMesh(Shockwave, Ring);
 	}
@@ -868,6 +967,63 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 		Actor->SetActorLocation(GetActorLocation() + Spot);
 		Actor->Animate(DeltaSeconds);
 	}
+}
+
+void AChaosImpactPodiumStage::UpdateConfetti(const float Seconds)
+{
+	// Pieces of paper thrown up over the podium as the winner lands: each falls at its own pace, fluttering and
+	// turning, and lies flat where it lands. (No confetti for a draw.)
+	constexpr int32 Pieces = 260;
+	TArray<ChaosImpactIceMeshes::FMeshBuffers> Meshes;
+	Meshes.SetNum(Confetti.Num());
+	if (Seconds > 0.0f && !BuildData.bTie)
+	{
+		for (int32 Piece = 0; Piece < Pieces; ++Piece)
+		{
+			const float Delay = ResultsHash(Piece, 9.0f) * 1.2f;
+			const float T = Seconds - Delay;
+			if (T <= 0.0f)
+			{
+				continue;
+			}
+			const FVector Start(ResultsHash(Piece, 1.0f) * 1300.0f - 650.0f, ResultsHash(Piece, 2.0f) * 900.0f - 650.0f,
+				700.0f + ResultsHash(Piece, 3.0f) * 300.0f);
+			const float Fall = 90.0f + 70.0f * ResultsHash(Piece, 4.0f);
+			const float Height = Start.Z - Fall * T;
+			const bool bDown = Height <= 1.0f;
+			const float Flight = bDown ? Start.Z / Fall : T;
+			const float Sway = 18.0f + 22.0f * ResultsHash(Piece, 5.0f);
+			const float Rate = 2.0f + 2.5f * ResultsHash(Piece, 6.0f);
+			const FVector Where = Start + FVector(FMath::Sin(Flight * Rate + Piece) * Sway, FMath::Cos(Flight * Rate * 0.8f + Piece) * Sway * 0.6f,
+				0.0f);
+			const FVector At(Where.X, Where.Y, bDown ? 0.6f + 0.3f * ResultsHash(Piece, 7.0f) : Height);
+			// Turning as it flutters; flat once down.
+			const FQuat Turn = bDown ? FQuat(FVector::UpVector, ResultsHash(Piece, 8.0f) * 6.28f)
+				: FQuat(FVector(ResultsHash(Piece, 10.0f) - 0.5f, ResultsHash(Piece, 11.0f) - 0.5f, 0.6f).GetSafeNormal(),
+					Flight * (5.0f + 6.0f * ResultsHash(Piece, 12.0f)) + Piece);
+			const FVector Across = Turn.RotateVector(FVector(3.2f, 0.0f, 0.0f));
+			const FVector Along = Turn.RotateVector(FVector(0.0f, 5.5f, 0.0f));
+			AddQuad(Meshes[Piece % Meshes.Num()], At - Across - Along, At + Across - Along, At + Across + Along, At - Across + Along, true);
+		}
+	}
+	for (int32 Index = 0; Index < Confetti.Num(); ++Index)
+	{
+		ChaosImpactLightning::SetMesh(Confetti[Index], Meshes[Index]);
+	}
+}
+
+bool AChaosImpactPodiumStage::GetPlaceAnchor(const int32 Place, FVector& OutWorld, float* OutAppearAt) const
+{
+	if (!PedestalBases.IsValidIndex(Place) || !PedestalRadii.IsValidIndex(Place))
+	{
+		return false;
+	}
+	OutWorld = GetActorLocation() + PedestalBases[Place] + FVector(0.0f, PedestalRadii[Place], 0.0f);
+	if (OutAppearAt)
+	{
+		*OutAppearAt = Place == 0 ? DropAt : Place == 1 ? SecondAt : ThirdAt;
+	}
+	return true;
 }
 
 bool AChaosImpactPodiumStage::Project(const FVector& WorldPoint, FVector2D& OutPicture) const
@@ -1135,69 +1291,56 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 	}
 
 	const ResultsPaint::FPainter P{Design, Elements, Layer + 1};
-	// Second and third (and their teams): a tag over each head as they appear.
+	// Second and third (and their teams): a name plate at the foot of each pedestal as it appears.
 	if (Podium && Page == 0)
 	{
-		TArray<int32> TaggedTeams;
-		TArray<FVector2D> TagPositions;
-		for (int32 Entry = 0; Entry < Data.Entries.Num(); ++Entry)
+		const float Cover = FMath::Max(Size.X / AChaosImpactPodiumStage::PictureWidth, Size.Y / AChaosImpactPodiumStage::PictureHeight);
+		const float Fit = FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f);
+		for (int32 Place = 1; Place < Podium->GetPlaceCount(); ++Place)
 		{
-			FVector Head;
+			const TArray<int32>& Members = Podium->GetPlaceEntries(Place);
+			FVector Anchor;
 			FVector2D Spot;
 			float AppearAt = 0.0f;
-			const FChaosImpactResultEntry& Item = Data.Entries[Entry];
-			const bool bWinnerSide = Data.bBattleRoyale || Data.bDuel ? Item.Rank == 1 : Data.bTeams ? (!Data.TeamTotals.IsEmpty() && Item.Team == Data.TeamTotals[0].Key) : Entry == 0;
-			if (bWinnerSide || !Podium->GetFigureHead(Entry, Head, &AppearAt) || !Podium->Project(Head, Spot))
+			if (Members.IsEmpty() || !Data.Entries.IsValidIndex(Members[0]) || !Podium->GetPlaceAnchor(Place, Anchor, &AppearAt)
+				|| !Podium->Project(Anchor, Spot))
 			{
 				continue;
 			}
-			const bool bTeamTag = Data.bBattleRoyale && Data.bTeams;
-			int32 TeamMembers = 1;
-			if (bTeamTag)
-			{
-				if (TaggedTeams.Contains(Item.Team)) { continue; }
-				TaggedTeams.Add(Item.Team);
-				FVector Sum = Head;
-				for (int32 Other = Entry + 1; Other < Data.Entries.Num(); ++Other)
-				{
-					FVector OtherHead;
-					if (Data.Entries[Other].Team == Item.Team && Podium->GetFigureHead(Other, OtherHead)) { Sum += OtherHead; ++TeamMembers; }
-				}
-				if (!Podium->Project(Sum / TeamMembers, Spot)) { continue; }
-			}
-			const float TagAt = Data.bBattleRoyale || Data.bDuel ? FMath::Max(AppearAt + .25f, Stage::SettledAt) : AppearAt + .25f;
-			const float TagIn = ResultsPaint::EaseOut((S - TagAt) / 0.3f);
+			const FChaosImpactResultEntry& Item = Data.Entries[Members[0]];
+			const float TagAt = Data.bBattleRoyale || Data.bDuel ? FMath::Max(AppearAt + 0.3f, Stage::SettledAt) : AppearAt + 0.3f;
+			// Away while the camera is down on the winner's landing (the plates would jump with it), back once it settles.
+			const float Away = S < Stage::BlackoutAt ? 1.0f : FMath::Max(1.0f - (S - Stage::BlackoutAt) / 0.15f,
+				ResultsPaint::EaseOut((S - Stage::SettledAt + 0.4f) / 0.35f));
+			const float TagIn = ResultsPaint::EaseOut((S - TagAt) / 0.35f) * FMath::Clamp(Away, 0.0f, 1.0f);
 			if (TagIn <= 0.0f)
 			{
 				continue;
 			}
 			// Picture position to design space: the picture covers the screen, design space is fitted inside it.
-			const float Cover = FMath::Max(Size.X / AChaosImpactPodiumStage::PictureWidth, Size.Y / AChaosImpactPodiumStage::PictureHeight);
-			const float Fit = FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f);
 			const FVector2D Pixel(Size.X * 0.5f + (Spot.X - 0.5f) * AChaosImpactPodiumStage::PictureWidth * Cover,
 				Size.Y * 0.5f + (Spot.Y - 0.5f) * AChaosImpactPodiumStage::PictureHeight * Cover);
-			FVector2D Point((Pixel.X - Size.X * 0.5f) / Fit + 800.0f, (Pixel.Y - Size.Y * 0.5f) / Fit + 450.0f);
-			if (Data.bBattleRoyale || Data.bDuel)
-			{
-				Point.X = FMath::Clamp(Point.X, 130., 1470.);
-				Point.Y = FMath::Clamp(Point.Y, 100., 790.);
-				for (const FVector2D& Previous : TagPositions)
-				{
-					if (FMath::Abs(Point.X - Previous.X) < 235. && FMath::Abs(Point.Y - Previous.Y) < 64.) { Point.Y = Previous.Y - 64.; }
-				}
-				TagPositions.Add(Point);
-			}
-			const FGeometry TagSpace = ResultsPaint::MakeSkewed(Design, static_cast<float>(Point.X) - 110.0f, static_cast<float>(Point.Y) - 40.0f,
-				220.0f, 56.0f, -0.2f);
-			const ResultsPaint::FPainter Tag{TagSpace, Elements, Layer + 2, TagIn};
-			ResultsPaint::RoundedBox(Tag, 0.0f, 0.0f, 220.0f, 56.0f, 8.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.86f));
-			Tag.Box(0.0f, 0.0f, 6.0f, 56.0f, Item.Color);
-			const FString Place = Item.Rank == 1 ? TEXT("1ST") : Item.Rank == 2 ? TEXT("2ND") : Item.Rank == 3 ? TEXT("3RD") : FString::Printf(TEXT("%dTH"), Item.Rank);
-			Tag.Text(Place, 18.0f, 4.0f, 18.0f, Item.Rank == 2 ? FLinearColor(0.8f, 0.88f, 1.0f) : FLinearColor(1.0f, 0.62f, 0.3f),
-				ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
-			Tag.Text(bTeamTag ? FString::Printf(TEXT("%d人"), TeamMembers) : Data.ScoreText(Item), 206.0f, 6.0f, 16.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
-			Tag.Text(bTeamTag ? FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Item.Team)) : Item.Name,
-				18.0f, 26.0f, 20.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
+			const float X = FMath::Clamp(static_cast<float>((Pixel.X - Size.X * 0.5f) / Fit + 800.0f), 150.0f, 1450.0f);
+			const float Y = FMath::Clamp(static_cast<float>((Pixel.Y - Size.Y * 0.5f) / Fit + 450.0f) + 14.0f, 120.0f, 780.0f);
+			const bool bGroup = Members.Num() > 1;
+			const FString Name = bGroup && Data.bTeams ? FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Item.Team))
+				: bGroup ? FString::Printf(TEXT("%s ほか%d人"), *Item.Name, Members.Num() - 1) : Item.Name;
+			const FString Score = Data.bTeams && !Data.bBattleRoyale && Data.TeamTotals.IsValidIndex(Place)
+				? FString::Printf(TEXT("%d pt"), Data.TeamTotals[Place].Value) : Data.ScoreText(Item);
+			const FLinearColor Medal = Place == 1 ? FLinearColor(0.78f, 0.84f, 0.95f) : FLinearColor(0.95f, 0.6f, 0.35f);
+			const FLinearColor Side = Data.bTeams ? ChaosImpactMatch::GetTeamColor(Item.Team) : Item.Color;
+			// A plain plate: a round medal with the place, the name, the score; a thin line in the player's colour.
+			const float W = 250.0f, H = 60.0f;
+			const float Left = X - W * 0.5f, Top = Y + (1.0f - TagIn) * 16.0f;
+			const ResultsPaint::FPainter Tag{Design, Elements, Layer + 2, TagIn};
+			ResultsPaint::RoundedBox(Tag, Left, Top, W, H, 12.0f, ResultsPaint::WithAlpha(FLinearColor(0.012f, 0.014f, 0.022f), 0.9f));
+			Tag.Box(Left + 14.0f, Top + H - 3.0f, W - 28.0f, 2.0f, ResultsPaint::WithAlpha(Side, 0.9f));
+			Tag.Disc(FVector2D(Left + 32.0f, Top + H * 0.5f), 19.0f, Medal);
+			Tag.Text(FString::FromInt(Item.Rank > 0 ? Item.Rank : Place + 1), Left + 32.0f, Top + H * 0.5f - 15.0f, 22.0f,
+				FLinearColor(0.02f, 0.02f, 0.03f), ResultsPaint::ETextAlign::Center, TEXT("Black"));
+			Tag.Text(Name, Left + 62.0f, Top + 8.0f, Name.Len() > 9 ? 17.0f : 21.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
+			Tag.Text(Score, Left + 62.0f, Top + 34.0f, 15.0f, ResultsPaint::WithAlpha(ResultsPaint::Paper, 0.7f), ResultsPaint::ETextAlign::Left,
+				TEXT("Bold"));
 		}
 	}
 
@@ -1239,10 +1382,9 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		const float Dim = Page == 1 ? 0.0f : 1.0f;
 		const FGeometry Band = ResultsPaint::MakeSkewed(Design, -60.0f, 590.0f, 1700.0f, 120.0f, -0.32f);
 		const ResultsPaint::FPainter B{Band, Elements, Layer + 3, Dim};
-		B.Box(-200.0f, 8.0f, 1260.0f * BandIn, 92.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.9f));
-		B.Box(-200.0f, 104.0f, 940.0f * BandIn, 10.0f, ResultsPaint::Ice);
-		B.Box(740.0f * BandIn - 200.0f, 104.0f, 320.0f * BandIn, 10.0f, ResultsPaint::Fire);
-		B.Box(1080.0f * BandIn - 200.0f, 8.0f, 28.0f * BandIn, 92.0f, ResultsPaint::WithAlpha(ResultsPaint::Paper, 0.85f));
+		B.Box(-200.0f, 8.0f, 1200.0f * BandIn, 92.0f, ResultsPaint::WithAlpha(FLinearColor(0.012f, 0.014f, 0.022f), 0.82f));
+		B.Box(-200.0f, 8.0f, 1200.0f * BandIn, 4.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.95f));
+		B.Box(-200.0f, 102.0f, 1000.0f * BandIn, 3.0f, ResultsPaint::WithAlpha(ResultsPaint::Gold, 0.85f));
 		const float NameIn = ResultsPaint::EaseOut((T - 0.15f) / 0.3f);
 		const ResultsPaint::FPainter N{Band, Elements, Layer + 4, NameIn * Dim};
 		FString Names = Data.WinnerName;
@@ -1298,24 +1440,6 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 				TEXT("BlackItalic"));
 		}
 
-		// Confetti for a while.
-		if (!Data.bTie && T < 5.0f && Page == 0)
-		{
-			const FLinearColor Colors[] = {ResultsPaint::Gold, ResultsPaint::Paper, ResultsPaint::Ice, ResultsPaint::Fire, Data.WinnerColor};
-			const ResultsPaint::FPainter Confetti{Design, Elements, Layer + 6, FMath::Clamp((5.0f - T) / 0.8f, 0.0f, 1.0f)};
-			for (int32 Piece = 0; Piece < 90; ++Piece)
-			{
-				const float Speed = 200.0f + 300.0f * ResultsHash(Piece, 1.0f);
-				const float Y = -60.0f + T * Speed - ResultsHash(Piece, 2.0f) * 500.0f;
-				if (Y < -40.0f || Y > 920.0f)
-				{
-					continue;
-				}
-				const float X = ResultsHash(Piece, 3.0f) * 1700.0f - 50.0f + FMath::Sin(T * (2.0f + ResultsHash(Piece, 4.0f) * 3.0f) + Piece) * 20.0f;
-				const float Turn = FMath::Abs(FMath::Sin(T * (4.0f + ResultsHash(Piece, 5.0f) * 6.0f) + Piece));
-				Confetti.Box(X, Y, 3.0f + 7.0f * Turn, 11.0f, Colors[Piece % UE_ARRAY_COUNT(Colors)]);
-			}
-		}
 	}
 	return Layer + 7;
 }

@@ -705,6 +705,7 @@ FString AChaosImpactGameMode::InitNewPlayer(APlayerController* NewPlayerControll
 			{
 				Member->CharacterIndex = ChaosImpactRoster::ClampIndex(Known->Character);
 				Member->ColourChoice = FMath::Clamp(Known->Colour, 0, ChaosImpactRoster::ColourCount - 1);
+				Member->CustomColours = Known->CustomColours;
 			}
 		}
 		// The name the machine sent (Name= holds the engine's own nickname for it, the PC's name).

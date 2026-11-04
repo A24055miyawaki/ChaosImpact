@@ -27,6 +27,8 @@ struct FChaosImpactResultEntry
 	FString Name;
 	int32 Character = 0;
 	int32 Colour = 0;
+	/** カスタムカラー parts as the model wore them (empty: its usual colours). */
+	TArray<uint8> CustomColours;
 	int32 Team = INDEX_NONE;
 	bool bBot = false;
 	/** Which player on this machine (P1-P4), or INDEX_NONE. */
@@ -83,10 +85,12 @@ struct FChaosImpactResultsData
 };
 
 /**
- * The podium the results are filmed on, far outside the level: a dark arena, the winner on a tall neon pedestal in
- * front, second and third kneeling on lower ones behind, slashes of the winner's colour across the back wall, a glow,
- * drifting haze and floor rings; spotlights, a shockwave when the winner lands. Its camera moves through the show
- * (low on the winner, then pulling back to the whole podium) into a texture the results draw full screen.
+ * The podium the results are filmed on, far outside the level, built like an awards stage: a round stage on a glossy
+ * floor, three round pedestals with gold, silver and bronze rims (the winner's tall one in front, second and third
+ * kneeling on lower ones behind), a curved wall of panels behind washed from below by lights in the winner's colour
+ * with slim LED bars between them. Each place's spotlight snaps on as it appears; the winner lands with a shockwave and
+ * paper confetti falls and settles on the floor. Its camera moves through the show (low on the winner, then pulling
+ * back to the whole podium) into a texture the results draw full screen.
  */
 UCLASS(NotPlaceable, Transient)
 class AChaosImpactPodiumStage : public AActor
@@ -119,6 +123,11 @@ public:
 	bool Project(const FVector& WorldPoint, FVector2D& OutPicture) const;
 	/** Above the head of the figure for results entry EntryIndex (false when they have none, or not yet); when it appeared. */
 	bool GetFigureHead(int32 EntryIndex, FVector& OutWorld, float* OutAppearAt = nullptr) const;
+	/** Places on the podium (0 the winner or winning team) and the results entries standing on each. */
+	int32 GetPlaceCount() const { return Places.Num(); }
+	const TArray<int32>& GetPlaceEntries(int32 Place) const { static const TArray<int32> None; return Places.IsValidIndex(Place) ? Places[Place] : None; }
+	/** The foot of a place's pedestal, toward the camera (its name plate goes there); when it appears. */
+	bool GetPlaceAnchor(int32 Place, FVector& OutWorld, float* OutAppearAt = nullptr) const;
 	virtual void Destroyed() override;
 
 private:
@@ -137,6 +146,8 @@ private:
 
 	void AddPedestal(const FVector& Base, float Radius, float Height, const FLinearColor& Neon, int32 Place);
 	void BuildArena();
+	/** Paper confetti: where each piece is at Seconds since it began (falling, fluttering, then lying on the floor). */
+	void UpdateConfetti(float Seconds);
 	void BuildNextFigure();
 	FChaosImpactResultsData BuildData;
 	/** Entries per place (0 the winner or winning team, 1 and 2 behind). */
@@ -171,20 +182,26 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactCharacterPreview>> FigureActors;
 
-	/** Back-wall slashes, haze puffs and appearance pillars, animated through the show. */
+	/** Each place's spotlight from above (0 is the winner's, WinnerSpot), on as the place appears. */
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UStaticMeshComponent>> Slashes;
+	TArray<TObjectPtr<USpotLightComponent>> PlaceSpots;
+
+	/** Lights at the foot of the back wall, washing it upward. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USpotLightComponent>> WallLights;
+
+	/** The LED bars between the wall's panels (a slow wave runs across them). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> LedMaterials;
 
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UStaticMeshComponent>> Haze;
+	TObjectPtr<UMaterialInstanceDynamic> StageEdgeMaterial;
 
+	/** Confetti, one mesh per paper colour. */
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UStaticMeshComponent>> Pillars;
+	TArray<TObjectPtr<UProceduralMeshComponent>> Confetti;
 
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInstanceDynamic>> PillarMaterials;
-
-	/** Pedestal neon per place (0-2), lit as each one appears. */
+	/** Pedestal rims per place (0-2), lit as each one appears. */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NeonMaterials;
 
@@ -210,7 +227,11 @@ private:
 	TObjectPtr<UAnimSequenceBase> CheerAnimation;
 
 	TArray<FFigure> Figures;
-	TArray<float> SlashPhases;
+	TArray<float> LedPhases;
+	/** Each place's pedestal: where it stands, how wide and how tall. */
+	TArray<FVector> PedestalBases;
+	TArray<float> PedestalRadii;
+	TArray<float> PedestalHeights;
 	FLinearColor WinnerColor = FLinearColor::White;
 	float ShowSeconds = 0.0f;
 	float WinnerTopZ = 0.0f;

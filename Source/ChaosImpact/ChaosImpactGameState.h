@@ -141,6 +141,10 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Character")
 	int32 ColourChoice = INDEX_NONE;
 
+	/** カスタムカラー: one value per part of the character (ChaosImpactCustomColour; empty: its ordinary colours). */
+	UPROPERTY(Replicated)
+	TArray<uint8> CustomColours;
+
 	/** 0 for the host, then 1, 2, ... in the order members entered the room. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	int32 JoinOrder = 0;
@@ -230,6 +234,8 @@ struct FChaosImpactRoyaleEntry
 	UPROPERTY() FString Name;
 	UPROPERTY() int32 Character = 0;
 	UPROPERTY() int32 Colour = 0;
+	/** カスタムカラー parts as they wore them (kept for the results even if they leave). */
+	UPROPERTY() TArray<uint8> CustomColours;
 	UPROPERTY() int32 Team = INDEX_NONE;
 	UPROPERTY() float Health = 3.f;
 	UPROPERTY() bool bOut = false;

@@ -766,7 +766,8 @@ void UChaosImpactSessionSubsystem::TravelToRoom(const FString& ConnectString)
 		bJoinAsSpectator ? TEXT("?CISpectator=1") : TEXT("")), TRAVEL_Absolute);
 }
 
-void UChaosImpactSessionSubsystem::RememberMember(const FString& Token, const FString& Name, const int32 Character, const int32 Colour)
+void UChaosImpactSessionSubsystem::RememberMember(const FString& Token, const FString& Name, const int32 Character, const int32 Colour,
+	const TArray<uint8>& CustomColours)
 {
 	if (Token.IsEmpty())
 	{
@@ -781,6 +782,7 @@ void UChaosImpactSessionSubsystem::RememberMember(const FString& Token, const FS
 	{
 		Member.Character = Character;
 		Member.Colour = Colour;
+		Member.CustomColours = CustomColours;
 	}
 }
 

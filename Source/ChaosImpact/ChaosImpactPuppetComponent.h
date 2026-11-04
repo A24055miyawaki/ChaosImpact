@@ -60,6 +60,12 @@ public:
 
 	/** 0 red, 1 blue, 2 yellow, 3 green: the team colours used everywhere else. */
 	void SetColourIndex(int32 Index);
+	/**
+	 * カスタムカラー: one colour per part of this character (ChaosImpactCustomColour), alpha 0 = that part as it is.
+	 * The light and shade of the model stay; the parts' materials do the recolouring (PartColour0-5).
+	 */
+	void SetCustomColours(const TArray<FLinearColor>& PartColours);
+	bool HasCustomColours() const;
 	int32 GetColourIndex() const { return ColourIndex; }
 	/** How strictly the right hand goes to the source skeleton's own hand (1 while a thrown ball is still held). */
 	void SetRightHandExactWeight(float Weight) { RightHandExactWeight = FMath::Clamp(Weight, 0.0f, 1.0f); }
@@ -180,6 +186,14 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTexture>> ColourTextures;
+
+	/** カスタムカラー (SetCustomColours): put into every material of the model once it is built. */
+	TArray<FLinearColor> CustomColours;
+	bool bCustomColoursDirty = false;
+	/** An authored model's own slot materials, made adjustable for the custom colours. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> AuthoredMaterials;
+	void ApplyCustomColours();
 
 	FLimbChain ChainArmL;
 	FLimbChain ChainArmR;

@@ -427,7 +427,7 @@ int32 FChaosImpactNameEntry::Paint(const FGeometry& Design, FSlateWindowElementL
 	const double Now = FPlatformTime::Seconds();
 	const float In = ChaosImpactPaint::EaseOut(static_cast<float>(Now - OpenedAt) / 0.22f);
 	const ChaosImpactPaint::FPainter Shade{Design, Elements, Layer, In};
-	Shade.Box(-400.0f, -200.0f, 2400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f));
+	Shade.Box(-1400.0f, -200.0f, 4400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f));
 	const ChaosImpactPaint::FPainter P{Design, Elements, Layer + 1, In};
 	const float Lift = (1.0f - In) * 30.0f;
 	ChaosImpactPaint::RoundedBox(P, 230.0f, 112.0f + Lift, 1140.0f, 690.0f, 28.0f, FLinearColor(0.016f, 0.024f, 0.05f, 0.98f));

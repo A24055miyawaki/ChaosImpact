@@ -15,7 +15,8 @@
 #include "Input/Events.h"
 #include "InputCoreTypes.h"
 
-namespace
+// (Named, and used only inside the functions below: a using at file scope would reach the other files of a unity build.)
+namespace ChaosImpactLtDetail
 {
 	using namespace ChaosImpactPaint;
 
@@ -123,6 +124,8 @@ namespace
 
 UChaosImpactLocalTourneySubsystem* UChaosImpactLocalTourneySubsystem::Get(const UObject* WorldContext)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
 	const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
 	return GameInstance ? GameInstance->GetSubsystem<UChaosImpactLocalTourneySubsystem>() : nullptr;
@@ -130,11 +133,15 @@ UChaosImpactLocalTourneySubsystem* UChaosImpactLocalTourneySubsystem::Get(const 
 
 int32 UChaosImpactLocalTourneySubsystem::GetMaxPeople() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	return FMath::Max(0, FMath::Min(IsAllAtOnce() ? MaxPeopleAllAtOnce : MaxPeopleOneAtATime, ChaosImpactTournament::MaxEntrants - CPUs));
 }
 
 FString UChaosImpactLocalTourneySubsystem::GetStartBlocker() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (People.IsEmpty())
 	{
 		return TEXT("参加者を1人以上登録してください");
@@ -156,6 +163,8 @@ FString UChaosImpactLocalTourneySubsystem::GetStartBlocker() const
 
 int32 UChaosImpactLocalTourneySubsystem::AddPerson()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (People.Num() >= GetMaxPeople())
 	{
 		return INDEX_NONE;
@@ -179,12 +188,16 @@ int32 UChaosImpactLocalTourneySubsystem::AddPerson()
 
 TArray<uint8> UChaosImpactLocalTourneySubsystem::GetCustomColours(const FChaosImpactLocalTourneyPerson& Person) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(this);
 	return Colours && Person.Preset >= 0 ? Colours->GetPresetParts(Person.Character, Person.Preset) : TArray<uint8>();
 }
 
 TArray<FChaosImpactTournamentEntrant> UChaosImpactLocalTourneySubsystem::MakeEntrants() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	TArray<FChaosImpactTournamentEntrant> Entrants;
 	for (const FChaosImpactLocalTourneyPerson& Person : People)
 	{
@@ -200,6 +213,8 @@ TArray<FChaosImpactTournamentEntrant> UChaosImpactLocalTourneySubsystem::MakeEnt
 
 FChaosImpactTournamentSettings UChaosImpactLocalTourneySubsystem::MakeSettings() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	FChaosImpactTournamentSettings Settings;
 	Settings.Mode = Mode;
 	const int32 Count = FMath::Clamp(CPUs, 0, ChaosImpactTournament::MaxEntrants - People.Num());
@@ -215,6 +230,8 @@ FChaosImpactTournamentSettings UChaosImpactLocalTourneySubsystem::MakeSettings()
 
 FString UChaosImpactLocalTourneySubsystem::DescribeCPULevel(const int32 Level)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	return Level < 0 ? FString(TEXT("おまかせ")) : FString(ChaosImpactMatch::GetCPULevelName(Level));
 }
 
@@ -222,17 +239,23 @@ FString UChaosImpactLocalTourneySubsystem::DescribeCPULevel(const int32 Level)
 
 UChaosImpactLocalTourneySubsystem* UChaosImpactTourneyEntry::GetData() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	return UChaosImpactLocalTourneySubsystem::Get(Controller.Get());
 }
 
 FChaosImpactLocalTourneyPerson* UChaosImpactTourneyEntry::GetCurrent() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	UChaosImpactLocalTourneySubsystem* Data = GetData();
 	return Data && Data->People.IsValidIndex(Current) ? &Data->People[Current] : nullptr;
 }
 
 void UChaosImpactTourneyEntry::Open(AChaosImpactPlayerController* InController)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	Close();
 	Controller = InController;
 	UWorld* World = InController ? InController->GetWorld() : nullptr;
@@ -267,6 +290,8 @@ void UChaosImpactTourneyEntry::Open(AChaosImpactPlayerController* InController)
 
 void UChaosImpactTourneyEntry::Close()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (IsValid(Preview))
 	{
 		Preview->Destroy();
@@ -288,6 +313,8 @@ void UChaosImpactTourneyEntry::Close()
 
 void UChaosImpactTourneyEntry::RefreshPreview()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FChaosImpactLocalTourneyPerson* Person = GetCurrent();
 	const UChaosImpactLocalTourneySubsystem* Data = GetData();
 	if (!Person || !Data || !IsValid(Preview))
@@ -307,6 +334,8 @@ void UChaosImpactTourneyEntry::RefreshPreview()
 
 void UChaosImpactTourneyEntry::Tick(const float DeltaSeconds)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (!bOpen)
 	{
 		return;
@@ -353,30 +382,40 @@ void UChaosImpactTourneyEntry::Tick(const float DeltaSeconds)
 
 FBox2D UChaosImpactTourneyEntry::CharacterRect(const int32 Index) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FVector2D At(LtGridLeft + (Index % LtColumns) * (LtTile + LtTileGap), LtGridTop + (Index / LtColumns) * (LtTile + LtTileGap));
 	return FBox2D(At, At + FVector2D(LtTile));
 }
 
 FBox2D UChaosImpactTourneyEntry::ColourRect(const int32 Choice) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FVector2D At(LtPreviewLeft - 2.0f + (Choice % LtColourColumns) * (LtChip + LtChipGap), LtChipTop + (Choice / LtColourColumns) * (LtChip + LtChipGap));
 	return FBox2D(At, At + FVector2D(LtChip));
 }
 
 FBox2D UChaosImpactTourneyEntry::SettingRect(const int32 Row) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FVector2D At(LtRightLeft, LtSettingTop + Row * (LtSettingHeight + LtSettingGap));
 	return FBox2D(At, At + FVector2D(LtRightWidth, LtSettingHeight));
 }
 
 FBox2D UChaosImpactTourneyEntry::PersonRect(const int32 Index) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FVector2D At(LtRightLeft + (Index % LtPeopleColumns) * (LtCardWidth + LtCardGap), LtPeopleTop + (Index / LtPeopleColumns) * (LtCardHeight + LtCardGap));
 	return FBox2D(At, At + FVector2D(LtCardWidth, LtCardHeight));
 }
 
 FBox2D UChaosImpactTourneyEntry::ButtonRect(const int32 Button) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	static const float Lefts[LtButtons] = {60.0f, 480.0f, 664.0f, 1238.0f};
 	static const float Widths[LtButtons] = {240.0f, 172.0f, 172.0f, 300.0f};
 	return FBox2D(FVector2D(Lefts[Button], LtButtonTop), FVector2D(Lefts[Button] + Widths[Button], LtButtonTop + 54.0f));
@@ -384,6 +423,8 @@ FBox2D UChaosImpactTourneyEntry::ButtonRect(const int32 Button) const
 
 int32 UChaosImpactTourneyEntry::GetPeopleCards() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	// Everyone, then a card to add one more while there is room.
 	const UChaosImpactLocalTourneySubsystem* Data = GetData();
 	return Data ? Data->People.Num() + (Data->People.Num() < Data->GetMaxPeople() ? 1 : 0) : 0;
@@ -391,6 +432,8 @@ int32 UChaosImpactTourneyEntry::GetPeopleCards() const
 
 int32 UChaosImpactTourneyEntry::GetColourChoiceCount() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FChaosImpactLocalTourneyPerson* Person = GetCurrent();
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 	return ChaosImpactRoster::ColourCount + (Person && Colours ? Colours->GetPresets(Person->Character).Num() : 0);
@@ -398,6 +441,8 @@ int32 UChaosImpactTourneyEntry::GetColourChoiceCount() const
 
 int32 UChaosImpactTourneyEntry::GetCurrentColourChoice() const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FChaosImpactLocalTourneyPerson* Person = GetCurrent();
 	return !Person ? 0 : Person->Preset >= 0 ? ChaosImpactRoster::ColourCount + Person->Preset : Person->Colour;
 }
@@ -406,12 +451,16 @@ int32 UChaosImpactTourneyEntry::GetCurrentColourChoice() const
 
 void UChaosImpactTourneyEntry::Notify(const FString& InMessage)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	Message = InMessage;
 	MessageAt = FPlatformTime::Seconds();
 }
 
 void UChaosImpactTourneyEntry::SelectPerson(const int32 Index)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const UChaosImpactLocalTourneySubsystem* Data = GetData();
 	if (!Data || !Data->People.IsValidIndex(Index))
 	{
@@ -425,6 +474,8 @@ void UChaosImpactTourneyEntry::SelectPerson(const int32 Index)
 
 void UChaosImpactTourneyEntry::RemoveCurrent()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	UChaosImpactLocalTourneySubsystem* Data = GetData();
 	if (!Data || !Data->People.IsValidIndex(Current))
 	{
@@ -443,6 +494,8 @@ void UChaosImpactTourneyEntry::RemoveCurrent()
 
 void UChaosImpactTourneyEntry::ChangeSetting(const int32 Row, const int32 Direction)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	UChaosImpactLocalTourneySubsystem* Data = GetData();
 	if (!Data)
 	{
@@ -472,6 +525,8 @@ void UChaosImpactTourneyEntry::ChangeSetting(const int32 Row, const int32 Direct
 
 void UChaosImpactTourneyEntry::OpenNaming()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (const FChaosImpactLocalTourneyPerson* Person = GetCurrent())
 	{
 		Naming.Open(Person->Name, TEXT("参加者の名前"));
@@ -481,6 +536,8 @@ void UChaosImpactTourneyEntry::OpenNaming()
 
 void UChaosImpactTourneyEntry::FinishNaming()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	FString Name;
 	if (Naming.ConsumeResult(Name) != FChaosImpactNameEntry::EResult::Done)
 	{
@@ -495,6 +552,8 @@ void UChaosImpactTourneyEntry::FinishNaming()
 
 void UChaosImpactTourneyEntry::Move(const int32 Columns, const int32 Rows)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const UChaosImpactLocalTourneySubsystem* Data = GetData();
 	if (!Data)
 	{
@@ -605,6 +664,8 @@ void UChaosImpactTourneyEntry::Move(const int32 Columns, const int32 Rows)
 
 void UChaosImpactTourneyEntry::Confirm()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	UChaosImpactLocalTourneySubsystem* Data = GetData();
 	FChaosImpactLocalTourneyPerson* Person = GetCurrent();
 	if (!Data)
@@ -696,6 +757,8 @@ void UChaosImpactTourneyEntry::Confirm()
 
 void UChaosImpactTourneyEntry::Back()
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (Area != EArea::Characters)
 	{
 		Area = EArea::Characters;
@@ -711,6 +774,8 @@ void UChaosImpactTourneyEntry::Back()
 
 bool UChaosImpactTourneyEntry::HandleKeyDown(const FKeyEvent& Event)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const FKey Key = Event.GetKey();
 	if (!bOpen || Key.IsMouseButton())
 	{
@@ -779,6 +844,8 @@ bool UChaosImpactTourneyEntry::HandleKeyDown(const FKeyEvent& Event)
 
 bool UChaosImpactTourneyEntry::HandleAnalog(const FAnalogInputEvent& Event)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (!bOpen)
 	{
 		return false;
@@ -811,6 +878,8 @@ bool UChaosImpactTourneyEntry::HandleAnalog(const FAnalogInputEvent& Event)
 
 void UChaosImpactTourneyEntry::HandleMouseMove(const FVector2D& Point)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (!bOpen)
 	{
 		return;
@@ -844,6 +913,8 @@ void UChaosImpactTourneyEntry::HandleMouseMove(const FVector2D& Point)
 
 bool UChaosImpactTourneyEntry::HandleClick(const FVector2D& Point)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	if (!bOpen)
 	{
 		return false;
@@ -873,6 +944,8 @@ bool UChaosImpactTourneyEntry::HandleClick(const FVector2D& Point)
 
 bool UChaosImpactTourneyEntry::HandleCharacter(const TCHAR Character)
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	return bOpen && Naming.IsOpen() && Naming.HandleCharacter(Character) && (FinishNaming(), true);
 }
 
@@ -880,6 +953,8 @@ bool UChaosImpactTourneyEntry::HandleCharacter(const TCHAR Character)
 
 int32 UChaosImpactTourneyEntry::Paint(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
 {
+	using namespace ChaosImpactPaint;
+	using namespace ChaosImpactLtDetail;
 	const UChaosImpactLocalTourneySubsystem* Data = GetData();
 	if (!bOpen || !Data)
 	{
@@ -895,11 +970,11 @@ int32 UChaosImpactTourneyEntry::Paint(const FGeometry& Design, FSlateWindowEleme
 	const FChaosImpactLocalTourneyPerson* Person = GetCurrent();
 
 	// Ground: deep night, the middle lit behind the model, a gold band under the title.
-	Back.Box(-400.0f, 0.0f, 2400.0f, 900.0f, FLinearColor(0.008f, 0.012f, 0.03f, 1.0f));
+	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, FLinearColor(0.008f, 0.012f, 0.03f, 1.0f));
 	HudPoly(Back, {FVector2D(LtPreviewLeft - 36.0f, 136.0f), FVector2D(LtPreviewLeft + LtPreviewWidth + 36.0f, 136.0f),
 		FVector2D(LtPreviewLeft + LtPreviewWidth + 20.0f, 790.0f), FVector2D(LtPreviewLeft - 52.0f, 790.0f)},
 		MakeFill(FLinearColor(0.03f, 0.06f, 0.15f, 1.0f), FLinearColor(0.01f, 0.015f, 0.04f, 1.0f)));
-	Back.Box(-400.0f, 0.0f, 2400.0f, 4.0f, Gold);
+	Back.Box(-1400.0f, 0.0f, 4400.0f, 4.0f, Gold);
 	P.Text(TEXT("TOURNAMENT"), 62.0f, 16.0f, 16.0f, Gold, ETextAlign::Left, TEXT("BlackItalic"));
 	HudText3D(P, TEXT("参加者とキャラをえらぶ"), 60.0f, 36.0f, 40.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"), 3.0f);
 	P.Text(TEXT("キャラ・カラー・名前はトーナメントが終わるまでそのまま"), 62.0f, 104.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));

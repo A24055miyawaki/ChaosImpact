@@ -136,6 +136,7 @@ public:
 		RowShoulderSensitivityX,
 		RowShoulderSensitivityY,
 		RowResetShoulderSensitivity,
+		RowCameraDistance,
 		RowVolume = 300,
 		RowRumble,
 		RowShake,
@@ -161,6 +162,8 @@ private:
 	FBox2D TabRect(int32 Index) const;
 	/** The key and controller names the hint line uses (from the last device pressed). */
 	FString HintText() const;
+	/** What a row does, in a line (under the rows). */
+	FString GetRowHelp(int32 Id) const;
 	void MoveControlPreview(int32 Direction);
 	void ApplyControlPreview();
 	void UpdateControlVideo();

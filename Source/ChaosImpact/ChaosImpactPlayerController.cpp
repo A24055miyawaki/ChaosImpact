@@ -1177,7 +1177,8 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	// A pause screen is only reachable from an active play session (or back from a screen opened from it).
 	if (NewScreen == EChaosImpactScreen::Pause && !IsGameplayActive()
 		&& CurrentScreen != EChaosImpactScreen::TrainingSettings
-		&& !(CurrentScreen == EChaosImpactScreen::Settings && SettingsReturnScreen == EChaosImpactScreen::Pause))
+		&& !(CurrentScreen == EChaosImpactScreen::Settings && SettingsReturnScreen == EChaosImpactScreen::Pause)
+		&& !(CurrentScreen == EChaosImpactScreen::ColourEdit && ColourEditReturnScreen == EChaosImpactScreen::Pause))
 	{
 		return;
 	}
@@ -3042,10 +3043,23 @@ void AChaosImpactPlayerController::CloseColourEdit()
 	{
 		return;
 	}
-	const EChaosImpactScreen ReturnTo = ColourEditReturnScreen;
-	ColourEditReturnScreen = EChaosImpactScreen::ModeSelect;
-	// (A room's pause menu, if the room is still there; else the menu it was opened from.)
-	ShowMenuScreen(ReturnTo == EChaosImpactScreen::Pause && !IsOnlineRoom() ? EChaosImpactScreen::ModeSelect : ReturnTo);
+	// Back to the menu it was opened from: a room's pause menu (never the mode select or the title from a room), the
+	// online menu, or the mode select. The way back is kept until it has been taken.
+	EChaosImpactScreen ReturnTo = ColourEditReturnScreen;
+	if (IsOnlineRoom())
+	{
+		ReturnTo = EChaosImpactScreen::Pause;
+	}
+	else if (ReturnTo == EChaosImpactScreen::Pause && !IsGameplayActive() && !bTrainingMode && !bSoloMode)
+	{
+		ReturnTo = EChaosImpactScreen::ModeSelect;
+	}
+	ColourEditReturnScreen = ReturnTo;
+	ShowMenuScreen(ReturnTo);
+	if (CurrentScreen != EChaosImpactScreen::ColourEdit)
+	{
+		ColourEditReturnScreen = EChaosImpactScreen::ModeSelect;
+	}
 }
 
 void AChaosImpactPlayerController::ClientLeaveMatchmade_Implementation(const bool bOpponentLeft)

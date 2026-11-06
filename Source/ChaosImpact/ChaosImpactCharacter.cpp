@@ -475,8 +475,11 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		}
 		const float NovaOverviewArm = FMath::Max(NovaStageHalfExtent.X, NovaStageHalfExtent.Y)
 			* NovaOverviewHeightScale + NovaOverviewPadding;
+		// (The top-down view at this player's own カメラの距離.)
+		const float TopDownArm = SavedCameraArmLength * (IsLocallyControlled()
+			? ChaosImpactSettings::GetCameraDistanceScale(Cast<APlayerController>(GetController())) : 1.0f);
 		const float DesiredArmLength = bTrainingMenuCameraActive
-			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : bShoulder ? ShoulderCamera->ArmLength : SavedCameraArmLength + NovaCameraExtra;
+			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : bShoulder ? ShoulderCamera->ArmLength : TopDownArm + NovaCameraExtra;
 		const FVector DesiredSocketOffset = bTrainingMenuCameraActive
 			? TrainingMenuCameraSocketOffset : bShoulder ? ShoulderCamera->SocketOffset : SavedCameraSocketOffset;
 		const FRotator DesiredBoomRotation = bNovaOverview
@@ -2604,7 +2607,8 @@ void AChaosImpactCharacter::EndEliminationSpectate()
 	NovaCameraHoldUntil = 0.0;
 	if (CameraBoom)
 	{
-		CameraBoom->TargetArmLength = SavedCameraArmLength;
+		CameraBoom->TargetArmLength = SavedCameraArmLength * (IsLocallyControlled()
+			? ChaosImpactSettings::GetCameraDistanceScale(Cast<APlayerController>(GetController())) : 1.0f);
 		CameraBoom->TargetOffset = FVector::ZeroVector;
 		CameraArmVelocity = 0.0f;
 		CameraTargetVelocity = FVector::ZeroVector;

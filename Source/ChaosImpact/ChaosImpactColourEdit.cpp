@@ -1212,7 +1212,7 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	const FPainter P{Design, Elements, Layer + 1};
 	const FPainter Over{Design, Elements, Layer + 2};
 	const FPainter Top{Design, Elements, Layer + 3};
-	Back.Box(0.0f, 0.0f, 1600.0f, 900.0f, FLinearColor(0.008f, 0.012f, 0.03f, 1.0f));
+	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, FLinearColor(0.008f, 0.012f, 0.03f, 1.0f));
 	Back.Box(PreviewLeft - 18.0f, 96.0f, PreviewWidth + 36.0f, 740.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
 	P.Text(TEXT("カラーエディット"), 70.0f, 24.0f, 42.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"));
 	P.Text(TEXT("キャラクターを選んで、部位ごとに色をえらぼう"), 74.0f, 96.0f, 18.0f, Muted, ETextAlign::Left, TEXT("Bold"));

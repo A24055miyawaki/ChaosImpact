@@ -93,6 +93,7 @@ namespace
 		GConfig->SetInt(*Section, TEXT("Pad"), static_cast<int32>(Profile.Pad), GGameUserSettingsIni);
 		GConfig->SetBool(*Section, TEXT("SwapSticks"), Profile.bSwapSticks, GGameUserSettingsIni);
 		GConfig->SetBool(*Section, TEXT("AimAssist"), Profile.bAimAssist, GGameUserSettingsIni);
+		GConfig->SetInt(*Section, TEXT("CameraDistance"), Profile.CameraDistance, GGameUserSettingsIni);
 		GConfig->SetBool(*Section, TEXT("MouseDoubleClickDash"), Profile.bMouseDoubleClickDash, GGameUserSettingsIni);
 		for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
 		{
@@ -173,7 +174,7 @@ namespace
 			GConfig->GetInt(SettingsSection, TEXT("ProfileCount"), Count, GGameUserSettingsIni);
 		}
 		S.Volume = FMath::Clamp(S.Volume, 0, 100);
-		S.Shake = FMath::Clamp(S.Shake, 0, 2);
+		S.Shake = FMath::Clamp(S.Shake, 0, 3);
 		S.Brightness = FMath::Clamp(S.Brightness, 1, 10);
 		S.LastFullscreenMode = 1;
 		Count = FMath::Clamp(Count, 0, ChaosImpactSettings::MaxProfiles);
@@ -188,6 +189,8 @@ namespace
 			Profile.Pad = static_cast<EChaosImpactPadChoice>(FMath::Clamp(Pad, 0, static_cast<int32>(EChaosImpactPadChoice::Count) - 1));
 			GConfig->GetBool(*Section, TEXT("SwapSticks"), Profile.bSwapSticks, GGameUserSettingsIni);
 			GConfig->GetBool(*Section, TEXT("AimAssist"), Profile.bAimAssist, GGameUserSettingsIni);
+			GConfig->GetInt(*Section, TEXT("CameraDistance"), Profile.CameraDistance, GGameUserSettingsIni);
+			Profile.CameraDistance = FMath::Clamp(Profile.CameraDistance, 0, 2);
 			GConfig->GetBool(*Section, TEXT("MouseDoubleClickDash"), Profile.bMouseDoubleClickDash, GGameUserSettingsIni);
 			for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
 			{
@@ -1022,6 +1025,30 @@ FVector2D ChaosImpactSettings::GetAimStick(const APlayerController* Player)
 		Player->GetInputAnalogKeyState(bSwap ? EKeys::Gamepad_LeftY : EKeys::Gamepad_RightY));
 }
 
+void ChaosImpactSettings::SetCameraDistance(const int32 Profile, const int32 Level)
+{
+	FSettingsStore& S = Store();
+	if (S.Profiles.IsValidIndex(Profile))
+	{
+		S.Profiles[Profile].CameraDistance = FMath::Clamp(Level, 0, 2);
+		SaveProfile(Profile);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+}
+
+FString ChaosImpactSettings::GetCameraDistanceName(const int32 Level)
+{
+	static const TCHAR* const Names[] = {TEXT("近い"), TEXT("普通"), TEXT("遠い")};
+	return Names[FMath::Clamp(Level, 0, 2)];
+}
+
+float ChaosImpactSettings::GetCameraDistanceScale(const APlayerController* Player)
+{
+	// 近い: closer in (bigger, more striking); 遠い: further out (more of the field seen).
+	static const float Scales[] = {0.78f, 1.0f, 1.28f};
+	return Player ? Scales[FMath::Clamp(GetProfile(GetPlayerProfile(Player)).CameraDistance, 0, 2)] : 1.0f;
+}
+
 bool ChaosImpactSettings::IsAimAssistOn(const APlayerController* Player)
 {
 	return GetProfile(GetPlayerProfile(Player)).bAimAssist;
@@ -1079,14 +1106,15 @@ int32 ChaosImpactSettings::GetCameraShakeLevel()
 
 void ChaosImpactSettings::SetCameraShakeLevel(const int32 Level)
 {
-	Store().Shake = FMath::Clamp(Level, 0, 2);
+	Store().Shake = FMath::Clamp(Level, 0, 3);
 	SaveOptions();
 }
 
 float ChaosImpactSettings::GetCameraShakeScale()
 {
-	static const float Scales[] = {0.0f, 0.45f, 1.0f};
-	return Scales[FMath::Clamp(Store().Shake, 0, 2)];
+	// なし / 弱い / ふつう / 強い.
+	static const float Scales[] = {0.0f, 0.45f, 1.0f, 1.7f};
+	return Scales[FMath::Clamp(Store().Shake, 0, 3)];
 }
 
 bool ChaosImpactSettings::IsSwitchConfirmRight()
@@ -1168,6 +1196,11 @@ void ChaosImpactSettings::SetWindowMode(const int32 Mode)
 	if (Clamped < 2)
 	{
 		S.LastFullscreenMode = Clamped;
+		if (Settings->GetFullscreenMode() == EWindowMode::Windowed && Settings->GetScreenResolution().X > 0)
+		{
+			// The window's last size, dragged or chosen, is where it comes back.
+			S.WindowedResolution = Settings->GetScreenResolution();
+		}
 	}
 	else
 	{
@@ -1224,6 +1257,45 @@ FIntPoint ChaosImpactSettings::GetMonitorResolution()
 	return Result;
 }
 
+namespace
+{
+	TArray<FIntPoint> GetFullscreenChoices(const FIntPoint Monitor)
+	{
+		TArray<FIntPoint> Supported;
+		UKismetSystemLibrary::GetSupportedFullscreenResolutions(Supported);
+		const float Shape = Monitor.Y > 0 ? static_cast<float>(Monitor.X) / Monitor.Y : 16.0f / 9.0f;
+		TArray<FIntPoint> Choices;
+		for (const FIntPoint& Mode : Supported)
+		{
+			const float ModeShape = Mode.Y > 0 ? static_cast<float>(Mode.X) / Mode.Y : 0.0f;
+			if (Mode.Y >= 720 && Mode.X <= Monitor.X && Mode.Y <= Monitor.Y && FMath::Abs(ModeShape - Shape) <= Shape * 0.03f)
+			{
+				Choices.AddUnique(Mode);
+			}
+		}
+		if (Monitor.X > 0)
+		{
+			Choices.AddUnique(Monitor);
+		}
+		// One per height; the monitor's own wins its height.
+		TArray<FIntPoint> Unique;
+		for (const FIntPoint& Choice : Choices)
+		{
+			const int32 Same = Unique.IndexOfByPredicate([&Choice](const FIntPoint& Other) { return Other.Y == Choice.Y; });
+			if (Same == INDEX_NONE)
+			{
+				Unique.Add(Choice);
+			}
+			else if (Choice == Monitor)
+			{
+				Unique[Same] = Choice;
+			}
+		}
+		Unique.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.Y != B.Y ? A.Y < B.Y : A.X < B.X; });
+		return Unique;
+	}
+}
+
 TArray<FIntPoint> ChaosImpactSettings::GetResolutionChoices()
 {
 	// 16:9, from 720p to 4K.
@@ -1232,51 +1304,41 @@ TArray<FIntPoint> ChaosImpactSettings::GetResolutionChoices()
 	TArray<FIntPoint> Choices;
 	if (GetWindowMode() == 2)
 	{
-		// A window: the sizes that fit on this monitor with their frame.
-		for (const FIntPoint& Preset : Presets)
+		// A window: the sizes that fit on this monitor with their frame, 16:9 and wide (21:9, 32:9) alike, each
+		// height's in a row (1920 x 1080, 2560 x 1080, 3840 x 1080...). A wide window sees more to the sides.
+		static const FIntPoint Wide[] = {{1720, 720}, {2560, 720}, {2100, 900}, {3200, 900}, {2560, 1080}, {3840, 1080},
+			{3440, 1440}, {5120, 1440}, {5120, 2160}};
+		TArray<FIntPoint> Sizes(Presets, UE_ARRAY_COUNT(Presets));
+		Sizes.Append(Wide, UE_ARRAY_COUNT(Wide));
+		for (const FIntPoint& Size : Sizes)
 		{
-			if (Preset.X < Monitor.X && Preset.Y < Monitor.Y)
+			if (Size.X < Monitor.X && Size.Y < Monitor.Y)
 			{
-				Choices.Add(Preset);
+				Choices.Add(Size);
 			}
 		}
-	}
-	else
-	{
-		// Fullscreen: how finely it is drawn, up to 4K on any monitor (above the monitor's own, drawn finer and
-		// shrunk), and the monitor's own.
-		Choices.Append(Presets, UE_ARRAY_COUNT(Presets));
-		Choices.Add(Monitor);
-	}
-	const FIntPoint Current = GetResolution();
-	if (Current.X > 0)
-	{
-		Choices.AddUnique(Current);
-	}
-	// One per height; the monitor's own wins its height.
-	TArray<FIntPoint> Unique;
-	for (const FIntPoint& Choice : Choices)
-	{
-		const int32 Same = Unique.IndexOfByPredicate([&Choice](const FIntPoint& Other) { return Other.Y == Choice.Y; });
-		if (Same == INDEX_NONE)
+		const FIntPoint Current = GetResolution();
+		if (Current.X > 0)
 		{
-			Unique.Add(Choice);
+			// (A window dragged to its own size keeps it in the list.)
+			Choices.AddUnique(Current);
 		}
-		else if (Choice == Monitor)
-		{
-			Unique[Same] = Choice;
-		}
+		Choices.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.Y != B.Y ? A.Y < B.Y : A.X < B.X; });
+		return Choices;
 	}
-	Unique.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.Y != B.Y ? A.Y < B.Y : A.X < B.X; });
-	return Unique;
+	// Fullscreen: how finely it is drawn, only at sizes this monitor itself can show and of its own shape (so a 16:9
+	// monitor never lists a wide size, nor one finer than its own), and the monitor's own.
+	return GetFullscreenChoices(Monitor);
 }
 
 FIntPoint ChaosImpactSettings::GetResolution()
 {
 	if (GetWindowMode() != 2)
 	{
+		// (A choice this monitor can't show, from before or another monitor, is the monitor's own.)
 		const FIntPoint Chosen = Store().FullscreenResolution;
-		return Chosen.Y > 0 ? Chosen : GetMonitorResolution();
+		const FIntPoint Monitor = GetMonitorResolution();
+		return Chosen.Y > 0 && GetFullscreenChoices(Monitor).Contains(Chosen) ? Chosen : Monitor;
 	}
 	const UGameUserSettings* Settings = UserSettings();
 	return Settings ? Settings->GetScreenResolution() : FIntPoint::ZeroValue;
@@ -1305,14 +1367,24 @@ void ChaosImpactSettings::SetResolution(const FIntPoint Resolution)
 	ApplyRenderScale();
 }
 
+FString ChaosImpactSettings::GetResolutionShape(const FIntPoint Resolution)
+{
+	if (Resolution.Y <= 0)
+	{
+		return FString();
+	}
+	const float Aspect = static_cast<float>(Resolution.X) / Resolution.Y;
+	return Aspect > 3.0f ? TEXT("32:9") : Aspect > 2.1f ? TEXT("21:9") : FString();
+}
+
 void ChaosImpactSettings::ApplyRenderScale()
 {
 	// In a window the game is drawn at the window's size; in fullscreen at the chosen resolution, the monitor's
 	// pixels being the screen percentage's 100%.
 	float Percent = 100.0f;
-	const FIntPoint Chosen = Store().FullscreenResolution;
 	const FIntPoint Monitor = GetMonitorResolution();
-	if (GetWindowMode() != 2 && Chosen.Y > 0 && Monitor.Y > 0)
+	const FIntPoint Chosen = GetWindowMode() != 2 ? GetResolution() : FIntPoint::ZeroValue;
+	if (Chosen.Y > 0 && Monitor.Y > 0)
 	{
 		Percent = FMath::Clamp(100.0f * Chosen.Y / Monitor.Y, 25.0f, 200.0f);
 	}

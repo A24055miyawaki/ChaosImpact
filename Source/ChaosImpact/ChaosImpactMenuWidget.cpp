@@ -13,6 +13,7 @@
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCharacterSelect.h"
+#include "ChaosImpact.h"
 #include "ChaosImpactColourEdit.h"
 #include "ChaosImpactLocalTourney.h"
 #include "ChaosImpactLoadoutSubsystem.h"
@@ -328,7 +329,7 @@ namespace
 		for (int32 Band = 0; Band < 18; ++Band)
 		{
 			const float T = Band / 17.0f;
-			Flat.Box(-400.0f, Band * 50.0f, 2400.0f, 51.0f, FMath::Lerp(
+			Flat.Box(-1400.0f, Band * 50.0f, 4400.0f, 51.0f, FMath::Lerp(
 				FLinearColor(0.022f, 0.03f, 0.06f, 1.0f), FLinearColor(0.003f, 0.004f, 0.01f, 1.0f), T));
 		}
 		if (Demo && DemoAlpha > 0.0f)
@@ -345,20 +346,20 @@ namespace
 
 		const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.36f);
 		const FMenuPainter S{Slant, Elements, Layer};
-		S.Box(-620.0f, -40.0f, 900.0f, 980.0f, FLinearColor(0.0f, 0.10f, 0.40f, 0.62f));
+		S.Box(-2000.0f, -40.0f, 2280.0f, 980.0f, FLinearColor(0.0f, 0.10f, 0.40f, 0.62f));
 		S.Box(280.0f, -40.0f, 11.0f, 980.0f, WithAlpha(Ice, 0.9f));
 		S.Box(305.0f, -40.0f, 3.0f, 980.0f, WithAlpha(Ice, 0.35f));
-		S.Box(1340.0f, -40.0f, 900.0f, 980.0f, FLinearColor(0.40f, 0.0f, 0.03f, 0.62f));
+		S.Box(1340.0f, -40.0f, 2000.0f, 980.0f, FLinearColor(0.40f, 0.0f, 0.03f, 0.62f));
 		S.Box(1329.0f, -40.0f, 11.0f, 980.0f, WithAlpha(Fire, 0.9f));
 		S.Box(1312.0f, -40.0f, 3.0f, 980.0f, WithAlpha(Fire, 0.35f));
-		for (int32 Stripe = 0; Stripe < 14; ++Stripe)
+		for (int32 Stripe = 0; Stripe < 24; ++Stripe)
 		{
-			const float X = FMath::Fmod(Stripe * 173.0f + Time * (70.0f + Stripe * 11.0f), 2100.0f) - 250.0f;
+			const float X = FMath::Fmod(Stripe * 283.0f + Time * (70.0f + Stripe * 11.0f), 3800.0f) - 1100.0f;
 			S.Box(X, -40.0f, 1.5f + Stripe % 3, 980.0f,
 				FLinearColor(1.0f, 1.0f, 1.0f, 0.016f + (Stripe % 4) * 0.007f));
 		}
-		Flat.Box(-400.0f, 0.0f, 2400.0f, 54.0f, WithAlpha(Ink, 0.55f));
-		Flat.Box(-400.0f, 846.0f, 2400.0f, 54.0f, WithAlpha(Ink, 0.65f));
+		Flat.Box(-1400.0f, 0.0f, 4400.0f, 54.0f, WithAlpha(Ink, 0.55f));
+		Flat.Box(-1400.0f, 846.0f, 4400.0f, 54.0f, WithAlpha(Ink, 0.65f));
 	}
 
 	/** Red/blue bars that cross the screen once when a menu page opens. */
@@ -3317,6 +3318,33 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 		{
 			bDevPickerDone = true;
 			OpenModePicker(true);
+		}
+	}
+	// Development: -CIDevColourEditBack=<from screen index>: opens カラーエディット from the online menu (or the pause menu) and
+	// presses Escape in it, to check where it goes back to.
+	{
+		static int32 DevColourStep = 0;
+		int32 DevColourFrom = -1;
+		if (DevColourStep < 3 && FParse::Value(FCommandLine::Get(), TEXT("CIDevColourEditBack="), DevColourFrom) && AnimationSeconds > 1.5f)
+		{
+			AChaosImpactPlayerController* DevOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			if (DevColourStep == 0 && DevOwner && (Screen == EChaosImpactScreen::MultiReady || Screen == EChaosImpactScreen::Pause))
+			{
+				DevColourStep = 1;
+				DevOwner->OpenColourEdit(Screen);
+			}
+			else if (DevColourStep == 1 && Screen == EChaosImpactScreen::ColourEdit)
+			{
+				DevColourStep = 2;
+				const FKeyEvent Escape(EKeys::Escape, FModifierKeysState(), 0, false, 0, 0);
+				HandleAnyUserKeyDown(Escape);
+				UE_LOG(LogChaosImpact, Log, TEXT("Development: Escape pressed in the colour edit"));
+			}
+			else if (DevColourStep == 2)
+			{
+				DevColourStep = 3;
+				UE_LOG(LogChaosImpact, Log, TEXT("Development: after the colour edit, the screen is %d"), static_cast<int32>(Screen));
+			}
 		}
 	}
 	// Development: -CIDevPauseConfirm=<choice> asks the pause menu's question for that choice (a screenshot of it).

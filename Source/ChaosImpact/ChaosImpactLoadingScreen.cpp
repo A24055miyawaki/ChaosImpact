@@ -1318,9 +1318,9 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	LoadingSideColors(S, Left, Right);
 	const FGeometry Slant = LoadingPaint::MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.36f);
 	const LoadingPaint::FPainter Sides{Slant, OutDrawElements, LayerId + 1, Fade};
-	Sides.Box(-900.0f, -100.0f, 1180.0f, 1100.0f, LoadingPaint::WithAlpha(Left, 0.22f));
+	Sides.Box(-2400.0f, -100.0f, 2680.0f, 1100.0f, LoadingPaint::WithAlpha(Left, 0.22f));
 	Sides.Box(274.0f, -100.0f, 6.0f, 1100.0f, LoadingPaint::WithAlpha(Left, 0.8f));
-	Sides.Box(1320.0f, -100.0f, 1200.0f, 1100.0f, LoadingPaint::WithAlpha(Right, 0.22f));
+	Sides.Box(1320.0f, -100.0f, 2400.0f, 1100.0f, LoadingPaint::WithAlpha(Right, 0.22f));
 	Sides.Box(1320.0f, -100.0f, 6.0f, 1100.0f, LoadingPaint::WithAlpha(Right, 0.8f));
 
 	const LoadingPaint::FPainter Back{Design, OutDrawElements, LayerId + 2, Fade};

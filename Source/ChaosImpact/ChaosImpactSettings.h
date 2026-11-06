@@ -67,6 +67,8 @@ struct FChaosImpactProfile
 	bool bAimAssist = true;
 	EChaosImpactControlScheme Schemes[DeviceCount] = {};
 	bool bMouseDoubleClickDash = true;
+	/** The top-down camera: 0 近い, 1 普通, 2 遠い (each person's own, so every pane of a split screen has its own). */
+	int32 CameraDistance = 1;
 	/** Shoulder-camera multipliers: per device, [horizontal, vertical]. Old saves keep 100%. */
 	int32 ShoulderSensitivity[DeviceCount][2] = {{100,100}, {100,100}, {100,100}, {100,100}};
 };
@@ -99,6 +101,10 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API void SetPadChoice(int32 Profile, EChaosImpactPadChoice Choice);
 	CHAOSIMPACT_API void SetSwapSticks(int32 Profile, bool bSwap);
 	CHAOSIMPACT_API void SetAimAssist(int32 Profile, bool bOn);
+	/** The top-down camera's distance (0 近い, 1 普通, 2 遠い), its name, and how far it is from 普通 for a player. */
+	CHAOSIMPACT_API void SetCameraDistance(int32 Profile, int32 Level);
+	CHAOSIMPACT_API FString GetCameraDistanceName(int32 Level);
+	CHAOSIMPACT_API float GetCameraDistanceScale(const APlayerController* Player);
 	CHAOSIMPACT_API void SetControlScheme(int32 Profile, EChaosImpactDevice Device, EChaosImpactControlScheme Scheme);
 	CHAOSIMPACT_API EChaosImpactControlScheme GetControlScheme(int32 Profile, EChaosImpactDevice Device);
 	CHAOSIMPACT_API EChaosImpactControlScheme GetPlayerControlScheme(const APlayerController* Player);
@@ -164,7 +170,7 @@ namespace ChaosImpactSettings
 	// --- Sound, rumble and the rest ---
 	CHAOSIMPACT_API int32 GetMasterVolume();
 	CHAOSIMPACT_API void SetMasterVolume(int32 Percent);
-	/** 0 off, 1 weak, 2 normal. */
+	/** 0 off, 1 weak, 2 normal, 3 strong. */
 	CHAOSIMPACT_API int32 GetCameraShakeLevel();
 	CHAOSIMPACT_API void SetCameraShakeLevel(int32 Level);
 	CHAOSIMPACT_API float GetCameraShakeScale();
@@ -183,13 +189,15 @@ namespace ChaosImpactSettings
 	/** F11 / Alt+Enter: between a window and borderless fullscreen, kept the same as the settings screen. */
 	CHAOSIMPACT_API void ToggleFullscreen();
 	/**
-	 * In a window: the window's size (16:9 sizes that fit on the monitor). In fullscreen: how finely the game is drawn
-	 * (720p up to 4K, or the monitor's own); the screen itself always stays at the monitor's pixels, so nothing is
-	 * stretched.
+	 * In a window: the window's size (16:9 and wide 21:9 / 32:9 sizes that fit on the monitor). In fullscreen: how
+	 * finely the game is drawn (only the monitor's supported modes of its own shape, up to its own); the screen itself
+	 * always stays at the monitor's pixels, so nothing is stretched.
 	 */
 	CHAOSIMPACT_API TArray<FIntPoint> GetResolutionChoices();
 	CHAOSIMPACT_API FIntPoint GetResolution();
 	CHAOSIMPACT_API void SetResolution(FIntPoint Resolution);
+	/** "21:9" / "32:9" for a wide size (an empty string at 16:9 or near it), for its label. */
+	CHAOSIMPACT_API FString GetResolutionShape(FIntPoint Resolution);
 	/** The current pixels of the monitor the game's window is on. */
 	CHAOSIMPACT_API FIntPoint GetMonitorResolution();
 	/** Sets the screen percentage for the chosen fullscreen resolution (100% in a window). */

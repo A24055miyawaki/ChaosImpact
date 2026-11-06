@@ -1403,7 +1403,7 @@ void UChaosImpactCharacterSelect::PaintNamePicker(const FGeometry& Design, FSlat
 	}
 	const float In = EaseOut(static_cast<float>(Now - NamePickerAt) / 0.2f);
 	const FPainter Shade{Design, Elements, Layer, In};
-	Shade.Box(-400.0f, -200.0f, 2400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+	Shade.Box(-1400.0f, -200.0f, 4400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 	const int32 Lines = NamePickerLines();
 	const FBox2D First = PickerLineRect(0);
 	const float Top = static_cast<float>(First.Min.Y) - 80.0f;

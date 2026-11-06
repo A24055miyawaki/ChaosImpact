@@ -27,8 +27,8 @@ namespace
 	constexpr int32 GridColumns = 4;
 	constexpr float Tile = 104.0f;
 	constexpr float TileGap = 8.0f;
-	constexpr float GridLeft = 70.0f;
-	constexpr float GridTop = 150.0f;
+	constexpr float CeGridLeft = 70.0f;
+	constexpr float CeGridTop = 150.0f;
 	constexpr float PreviewLeft = 560.0f;
 	constexpr float PreviewTop = 118.0f;
 	constexpr float PreviewWidth = 420.0f;
@@ -60,13 +60,13 @@ namespace
 	constexpr float RecentTop = 800.0f;
 	constexpr float RecentSize = 28.0f;
 	constexpr float RecentGap = 4.0f;
-	constexpr float BarTop = 842.0f;
+	constexpr float CeBarTop = 842.0f;
 	const TCHAR* const ButtonNames[] = {TEXT("保存"), TEXT("別に保存"), TEXT("名前"), TEXT("けす"), TEXT("もどる")};
 	constexpr int32 Buttons = UE_ARRAY_COUNT(ButtonNames);
 	/** A drag on the model turns it. */
 	constexpr int32 DragModel = 100;
 
-	bool IsAny(const FKey& Key, std::initializer_list<FKey> Keys)
+	bool CeIsAny(const FKey& Key, std::initializer_list<FKey> Keys)
 	{
 		for (const FKey& Candidate : Keys)
 		{
@@ -78,7 +78,7 @@ namespace
 		return false;
 	}
 
-	const FSlateBrush& RoundBrush(const float Radius)
+	const FSlateBrush& CeRoundBrush(const float Radius)
 	{
 		static const FSlateRoundedBoxBrush Small(FLinearColor::White, 8.0f);
 		static const FSlateRoundedBoxBrush Medium(FLinearColor::White, 16.0f);
@@ -95,7 +95,7 @@ namespace
 		}
 		FSlateDrawElement::MakeBox(P.Elements, P.Layer,
 			P.Geometry.ToPaintGeometry(FVector2f(Size), FSlateLayoutTransform(FVector2f(R.Min))),
-			&RoundBrush(Radius), ESlateDrawEffect::None, WithAlpha(Color, P.Alpha));
+			&CeRoundBrush(Radius), ESlateDrawEffect::None, WithAlpha(Color, P.Alpha));
 	}
 
 	void DrawFrame(const FPainter& P, const FBox2D& R, const FLinearColor& Color, const float Width)
@@ -149,7 +149,7 @@ namespace
 		P.Line(FVector2D(R.Min.X + 6.0f, R.Max.Y - 6.0f), FVector2D(R.Max.X - 6.0f, R.Min.Y + 6.0f), WithAlpha(Paper, 0.7f), 3.0f);
 	}
 
-	FSlateBrush MakePictureBrush(AChaosImpactCharacterPreview* Stage)
+	FSlateBrush CeMakePictureBrush(AChaosImpactCharacterPreview* Stage)
 	{
 		FSlateBrush Brush;
 		if (Stage && Stage->GetPicture())
@@ -189,7 +189,7 @@ void UChaosImpactColourEdit::Open(AChaosImpactPlayerController* InController)
 	Parameters.ObjectFlags |= RF_Transient;
 	Preview = World->SpawnActor<AChaosImpactCharacterPreview>(AChaosImpactCharacterPreview::StaticClass(),
 		FVector(0.0f, -110000.0f, 40000.0f), FRotator::ZeroRotator, Parameters);
-	PreviewBrush = MakePictureBrush(Preview);
+	PreviewBrush = CeMakePictureBrush(Preview);
 	Portraits.Init(nullptr, ChaosImpactRoster::Num());
 	PortraitBrushes.Init(FSlateBrush(), ChaosImpactRoster::Num());
 	PortraitBornAt.Init(0.0, ChaosImpactRoster::Num());
@@ -848,7 +848,8 @@ void UChaosImpactColourEdit::Back()
 		}
 		if (AChaosImpactPlayerController* Owner = Controller.Get())
 		{
-			Owner->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+			// Back to the menu it was opened from (the mode select, the online menu, a room's pause menu).
+			Owner->CloseColourEdit();
 		}
 		break;
 	}
@@ -871,26 +872,26 @@ bool UChaosImpactColourEdit::HandleKeyDown(const FKeyEvent& Event)
 		FinishNaming();
 		return true;
 	}
-	if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_Special_Left, EKeys::N})) { OpenNaming(); return true; }
-	if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W})) { Move(0, -1); }
-	else if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S})) { Move(0, 1); }
-	else if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Left, EKeys::Left, EKeys::A})) { Move(-1, 0); }
-	else if (IsAny(MenuKey, {EKeys::Gamepad_DPad_Right, EKeys::Right, EKeys::D})) { Move(1, 0); }
-	else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Bottom, EKeys::Enter, EKeys::SpaceBar})) { Confirm(); }
-	else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Right, EKeys::Escape, EKeys::BackSpace})) { Back(); }
-	else if (IsAny(MenuKey, {EKeys::Gamepad_LeftShoulder, EKeys::Q})) { ShiftPreset(-1); }
-	else if (IsAny(MenuKey, {EKeys::Gamepad_RightShoulder, EKeys::E})) { ShiftPreset(1); }
+	if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_Special_Left, EKeys::N})) { OpenNaming(); return true; }
+	if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W})) { Move(0, -1); }
+	else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S})) { Move(0, 1); }
+	else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Left, EKeys::Left, EKeys::A})) { Move(-1, 0); }
+	else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Right, EKeys::Right, EKeys::D})) { Move(1, 0); }
+	else if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_FaceButton_Bottom, EKeys::Enter, EKeys::SpaceBar})) { Confirm(); }
+	else if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_FaceButton_Right, EKeys::Escape, EKeys::BackSpace})) { Back(); }
+	else if (CeIsAny(MenuKey, {EKeys::Gamepad_LeftShoulder, EKeys::Q})) { ShiftPreset(-1); }
+	else if (CeIsAny(MenuKey, {EKeys::Gamepad_RightShoulder, EKeys::E})) { ShiftPreset(1); }
 	else if (!bRepeat && MenuKey == EKeys::Tab) { CyclePicker(Event.IsShiftDown() ? -1 : 1); }
 	else if (!bRepeat && MenuKey == EKeys::Gamepad_RightTrigger) { CyclePicker(1); }
 	else if (!bRepeat && MenuKey == EKeys::Gamepad_LeftTrigger) { CyclePicker(-1); }
-	else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Top, EKeys::T})) { ToggleFine(); }
-	else if (!bRepeat && IsAny(MenuKey, {EKeys::Gamepad_FaceButton_Left, EKeys::F})) { SavePreset(false); }
+	else if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_FaceButton_Top, EKeys::T})) { ToggleFine(); }
+	else if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_FaceButton_Left, EKeys::F})) { SavePreset(false); }
 	else if (!bRepeat && MenuKey == EKeys::R && Area != EArea::Characters && Area != EArea::Presets)
 	{
 		SetPart(PartCursor, false);
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 	}
-	else if (IsAny(MenuKey, {EKeys::Z, EKeys::X}))
+	else if (CeIsAny(MenuKey, {EKeys::Z, EKeys::X}))
 	{
 		// The model turned round.
 		ViewYaw += MenuKey == EKeys::Z ? -10.0f : 10.0f;
@@ -943,7 +944,7 @@ bool UChaosImpactColourEdit::HandleAnalog(const FAnalogInputEvent& Event)
 
 FBox2D UChaosImpactColourEdit::TileRect(const int32 Index) const
 {
-	const FVector2D At(GridLeft + (Index % GridColumns) * (Tile + TileGap), GridTop + (Index / GridColumns) * (Tile + TileGap));
+	const FVector2D At(CeGridLeft + (Index % GridColumns) * (Tile + TileGap), CeGridTop + (Index / GridColumns) * (Tile + TileGap));
 	return FBox2D(At, At + FVector2D(Tile));
 }
 
@@ -1164,7 +1165,7 @@ void UChaosImpactColourEdit::Tick(const float DeltaSeconds)
 		Preview->SetFacing(ViewYaw, 0.0f);
 		Preview->Animate(Step);
 		Preview->FilmNow();
-		PreviewBrush = MakePictureBrush(Preview);
+		PreviewBrush = CeMakePictureBrush(Preview);
 	}
 	// The icon faces, two more each frame; each filmed now and then for its first seconds (until its textures are
 	// in), then held still.
@@ -1182,7 +1183,7 @@ void UChaosImpactColourEdit::Tick(const float DeltaSeconds)
 			Portrait->UseAsPortrait();
 		}
 		Portraits[PortraitsMade] = Portrait;
-		PortraitBrushes[PortraitsMade] = MakePictureBrush(Portrait);
+		PortraitBrushes[PortraitsMade] = CeMakePictureBrush(Portrait);
 		PortraitBornAt[PortraitsMade] = FPlatformTime::Seconds();
 	}
 	const double Now = FPlatformTime::Seconds();
@@ -1480,7 +1481,7 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	}
 
 	// Guide bar and notices.
-	Back.Box(0.0f, BarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
+	Back.Box(0.0f, CeBarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
 	const TCHAR* Guide = Area == EArea::Characters ? TEXT("A / Enter：このキャラにする　　B / Esc：もどる")
 		: Area == EArea::Palette ? TEXT("十字 / 矢印：色をえらぶ（すぐ反映）　　A / Enter：決定して次の部位へ　　T / Y：こまかく　　B / Esc：やめる")
 		: Area == EArea::Ring ? TEXT("←→：色相　　↓：四角へ　　Tab / LT RT：次へ　　A / Enter：決定　　B / Esc：やめる")
@@ -1491,7 +1492,7 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 		: Area == EArea::Presets ? TEXT("←→：プリセット　　A / Enter：よびだす　　B / Esc：キャラへ")
 		: TEXT("←→：ボタン　　A / Enter：決定　　↑：最近の色へ　　View / N：名前");
 	// (The name entry shows its own keys.)
-	if (!Naming.IsOpen()) P.Text(Guide, 800.0f, BarTop + 15.0f, 18.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+	if (!Naming.IsOpen()) P.Text(Guide, 800.0f, CeBarTop + 15.0f, 18.0f, Paper, ETextAlign::Center, TEXT("Bold"));
 	if (Now - NoticeAt < 2.5)
 	{
 		const float Fade = FMath::Clamp(static_cast<float>(2.5 - (Now - NoticeAt)) / 0.4f, 0.0f, 1.0f);

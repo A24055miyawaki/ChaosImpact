@@ -71,6 +71,24 @@ import time
 ROOM_TIMEOUT = 20.0       # no update from the host for this long: the room is gone
 CLIENT_TIMEOUT = 60.0     # a client silent this long is dropped
 MAX_ROOMS_PER_PASSWORD = 8
+TOURNEY_PASSWORD = "#TOURNEY"    # public tournaments: every one is listed under this
+MAX_TOURNEYS = 40
+
+
+def clean_tourney(data):
+    """A public tournament's notice: its name, start (unix seconds), how it runs, its places and its state."""
+    if not isinstance(data, dict):
+        return None
+
+    def number(key, low, high, default):
+        try:
+            return max(low, min(high, int(data.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+    state = str(data.get("state", "open"))
+    return {"title": str(data.get("title", ""))[:24], "starts": number("starts", 0, 2 ** 40, 0), "mode": number("mode", 0, 1, 0),
+            "cpus": number("cpus", 0, 31, 0), "max": number("max", 2, 8, 8), "level": number("level", -1, 3, -1),
+            "state": state if state in ("open", "running", "done") else "open"}
 MAX_CLIENTS_PER_ROOM = 16
 MAX_PACKET = 2048
 MUX_FORGET = 120.0        # a player's one-port (mux) address unheard this long is forgotten
@@ -119,6 +137,7 @@ class Room:
         self.name = info.get("name", "")[:24]
         self.host_name = info.get("host", "")[:24]
         self.listed = listed
+        self.tourney = clean_tourney(info.get("tourney")) if info.get("password") == TOURNEY_PASSWORD else None
         self.members = 1
         self.spectators = 0
         self.open = True
@@ -144,8 +163,11 @@ class Room:
             self.transport.sendto(data, addr)
 
     def listing(self):
-        return {"room": self.id, "name": self.name, "host": self.host_name, "members": self.members,
-                "spectators": self.spectators, "open": self.open, "port": self.port}
+        listing = {"room": self.id, "name": self.name, "host": self.host_name, "members": self.members,
+                   "spectators": self.spectators, "open": self.open, "port": self.port}
+        if self.tourney:
+            listing["tourney"] = self.tourney
+        return listing
 
     # ---- relay traffic
     def datagram(self, data, addr):
@@ -547,6 +569,8 @@ class Relay:
             room.spectators = int(request.get("spectators", room.spectators))
             room.open = bool(request.get("open", room.open))
             room.name = str(request.get("name", room.name))[:24]
+            if room.tourney and isinstance(request.get("tourney_state"), str) and request["tourney_state"] in ("open", "running", "done"):
+                room.tourney["state"] = request["tourney_state"]
             room.updated = time.monotonic()
             return {"ok": True}
         if op == "close":
@@ -558,7 +582,8 @@ class Relay:
         if not isinstance(request.get("password"), str) or not isinstance(request.get("ver"), str):
             return {"ok": False, "error": "bad request"}
         same = sum(1 for room in self.rooms.values() if room.password == request["password"])
-        if same >= MAX_ROOMS_PER_PASSWORD or not self.free_ports:
+        limit = MAX_TOURNEYS if request["password"] == TOURNEY_PASSWORD else MAX_ROOMS_PER_PASSWORD
+        if same >= limit or not self.free_ports:
             return {"ok": False, "error": "full"}
         room = await self.open_room(request, listed=True)
         if room is None:

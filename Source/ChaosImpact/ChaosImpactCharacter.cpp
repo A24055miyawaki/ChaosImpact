@@ -388,7 +388,8 @@ FRotator AChaosImpactCharacter::GetTopDownCameraRotation() const
 {
 	FRotator View = SavedCameraBoomRotation;
 	const auto* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	if (Match && Match->IsDuel() && Match->Duel.SideOf(GetPlayerState()) == 1)
+	const FChaosImpactDuelState* Duel = Match ? Match->FindDuelFor(GetPlayerState()) : nullptr;
+	if (Duel && Duel->SideOf(GetPlayerState()) == 1)
 	{
 		View.Yaw = FRotator::NormalizeAxis(View.Yaw + 180.f);
 	}
@@ -2087,7 +2088,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	// hurt each other.
 	if (AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, this)
 		|| (Match && Match->bVersusMatch && Match->Phase != EChaosImpactOnlinePhase::Match)
-		|| (Match && Match->IsDuel() && !Match->IsDuelLive()))
+		|| (Match && Match->IsDuelAt(GetActorLocation()) && !Match->IsDuelLiveAt(GetActorLocation())))
 	{
 		return 0.0f;
 	}
@@ -2100,7 +2101,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	float AllowedDamage = DamageAmount;
 	const auto* DirectBall = Cast<AChaosImpactBall>(DamageCauser);
 	const bool bUncappedRoyaleNova = bNovaHit || (DirectBall && DirectBall->GetBallType() == EChaosImpactBallType::Nova);
-	if (Match && (Match->IsDuel() || (Match->IsBattleRoyale() && !bUncappedRoyaleNova)))
+	if (Match && (Match->IsDuel() || Match->IsTournament() || (Match->IsBattleRoyale() && !bUncappedRoyaleNova)))
 	{
 		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage;
 		if (auto* Ball = Cast<AChaosImpactBall>(DamageCauser)) { ThrowDamage = Ball->GetDuelThrowDamage(); }
@@ -2131,7 +2132,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 			ScoringMode->RecordHit(SourcePawn, this, DamageCauser);
 		}
 	}
-	if (Match && Match->IsDuel() && AppliedDamage > 0.0f)
+	if (Match && Match->IsDuelAt(GetActorLocation()) && AppliedDamage > 0.0f)
 	{
 		if (AChaosImpactGameMode* DuelMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
 		{
@@ -2198,7 +2199,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		StartEliminationEffect();
 		OnPlayerEliminated();
 		OnEliminated.Broadcast(this);
-		if (Match && Match->IsDuel())
+		if (Match && Match->IsDuelAt(GetActorLocation()))
 		{
 			if (AChaosImpactGameMode* DuelMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
 			{
@@ -2244,7 +2245,9 @@ void AChaosImpactCharacter::BeginRespawnCountdown()
 		return;
 	}
 	// A duel: whoever goes down stays down; the next round puts both back (AChaosImpactGameMode::PlaceDuelists).
-	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>(); Match && (Match->IsDuel() || Match->IsBattleRoyale()))
+	// (A tournament's practice area is not a duel: there everyone comes back as in training.)
+	if (const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+		Match && (Match->IsDuelAt(GetActorLocation()) || Match->IsBattleRoyale()))
 	{
 		return;
 	}
@@ -4111,8 +4114,9 @@ FString AChaosImpactCharacter::GetOverheadDisplayName() const
 	}
 	const APlayerState* State = GetPlayerState();
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	if (Room && Room->bOnlineRoom)
+	if (Room && (Room->bOnlineRoom || Room->bLocalTournament))
 	{
+		// (ローカルトーナメント: the registered person's name.)
 		return State ? State->GetPlayerName() : FString();
 	}
 	// Offline: split-screen players are P1-P4; a player alone on the machine uses the title-screen name.
@@ -4379,6 +4383,18 @@ void AChaosImpactCharacter::UpdateBlackHolePull(const float DeltaSeconds)
 bool AChaosImpactCharacter::IsMatchInputLocked() const
 {
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Match && Match->IsTournament())
+	{
+		// A tournament: in an arena only while its round is fought; nowhere while its player has the tournament's
+		// panel (bracket, choices) open.
+		if (const AChaosImpactPlayerController* PanelOwner = Cast<AChaosImpactPlayerController>(GetController());
+			PanelOwner && PanelOwner->IsTournamentPanelOpen())
+		{
+			return true;
+		}
+		const FChaosImpactDuelState* Duel = Match->FindDuelAt(GetActorLocation());
+		return Duel && !AChaosImpactGameState::IsDuelStepLive(*Duel);
+	}
 	return Match && Match->IsMatchInputLocked();
 }
 

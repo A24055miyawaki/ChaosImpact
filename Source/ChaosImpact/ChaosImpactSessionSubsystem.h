@@ -57,7 +57,36 @@ struct FChaosImpactRoomListing
 	FOnlineSessionSearchResult Result;
 	/** An internet room: its port on the relay (0 for a LAN room). */
 	int32 RelayPort = 0;
+	/** A public tournament's notice (bTourney false for an ordinary room). */
+	bool bTourney = false;
+	FString TourneyTitle;
+	/** Its start, in unix seconds (UTC). */
+	int64 TourneyStartsUnix = 0;
+	int32 TourneyMode = 0;
+	int32 TourneyCPUs = 0;
+	int32 TourneyMaxPlayers = 8;
+	int32 TourneyLevel = INDEX_NONE;
+	/** open (recruiting), running, done. */
+	FString TourneyState;
 };
+
+/** A public tournament this machine is making (its room's notice on the relay). */
+struct FChaosImpactTourneyNotice
+{
+	FString Title;
+	int64 StartsUnix = 0;
+	int32 Mode = 0;
+	int32 CPUs = 0;
+	int32 MaxPlayers = 8;
+	/** Every CPU's strength (INDEX_NONE: each at random). */
+	int32 Level = INDEX_NONE;
+};
+
+namespace ChaosImpactTourney
+{
+	/** Every public tournament room is listed on the relay under this. */
+	inline const TCHAR* const Password = TEXT("#TOURNEY");
+}
 
 /** One member of an online room as the room's previous level knew them (host; see UChaosImpactSessionSubsystem::RoomCarry). */
 struct FChaosImpactRoomCarryMember
@@ -89,6 +118,13 @@ public:
 	static constexpr int32 MaxRoomNameLength = 12;
 
 	void CreateRoom(const FString& InPassword, const FString& InRoomName);
+	/** A public tournament: a room listed for anyone, starting at its time (see AChaosImpactGameMode::ScheduleTournament). */
+	void CreateTourneyRoom(const FChaosImpactTourneyNotice& InNotice);
+	/** The public tournament this machine hosts (none: Title empty). */
+	const FChaosImpactTourneyNotice& GetHostedTourney() const { return HostedTourney; }
+	bool IsHostingTourney() const { return !HostedTourney.Title.IsEmpty(); }
+	/** The hosted tournament's state for its notice: open, running, done. */
+	void SetTourneyState(const FString& InState) { TourneyState = InState; }
 	/** Lists the rooms using the password, refreshing until StopSearch or a join. */
 	void StartSearch(const FString& InPassword);
 	void StopSearch();
@@ -151,6 +187,10 @@ public:
 	double GetNoticeTime() const { return NoticeAt; }
 	/** True once after a disconnect, so the title world can send the player back to training. */
 	bool ConsumeReturnToTraining();
+	/** True once in the training a room was left for (left, disbanded, or gone): the online menu comes up there. */
+	bool ConsumeReturnToOnlineMenu();
+	/** A short message for the menus (as the session's own are shown). */
+	void ShowNotice(const FString& Message) { PostNotice(Message); }
 	/** Rooms go over the internet through the relay (else the LAN). */
 	bool IsInternet() const;
 	/** Hosting an internet room and the relay is answering. */
@@ -200,6 +240,8 @@ public:
 	double GetQueueMatchedAt() const { return QueueMatchedAt; }
 	/** Players searching in this mode now, this machine's included. */
 	int32 GetQueueWaitingCount() const { return QueueWaiting; }
+	/** The last round trip to the relay (0: none yet). */
+	int32 GetLastRelayRtt() const { return LastRelayRtt; }
 	/** ランダムマッチ: seconds until the players gathered so far are matched (negative while fewer than two wait). */
 	float GetQueueStartsIn() const { return QueueStartsIn; }
 	int32 GetQueueExpected() const { return QueueExpected; }
@@ -211,6 +253,8 @@ public:
 	EChaosImpactQueueMode GetMatchmadeMode() const { return MatchmadeMode; }
 	/** This machine's matched room's match has reached GO (leaving it from now on forfeits a ランクマッチ). */
 	void NotifyMatchmadeMatchStarted();
+	/** This machine's matched room's match is over (its results are up): leaving from now on loses nothing. */
+	void NotifyMatchmadeMatchOver();
 	/** After a matched room's results: back to this machine's own training, where the menu to search again comes up. */
 	void FinishMatchmade();
 	/** Once, in the training a matched room returned to: which menu to bring up there (None: none). */
@@ -222,12 +266,48 @@ public:
 
 	// ---- ランダムマッチ 1v1: the opponent found is shown, and both accept before the match is made
 	bool IsDuelOffered() const { return bDuelOffered; }
+#if !UE_BUILD_SHIPPING
+	/** Development (-CIFakeDuelOffer): a 1v1 found, made up here, for screenshots of its card. */
+	void DevFakeDuelOffer()
+	{
+		bDuelOffered = true;
+		DuelOffer = FChaosImpactDuelOffer();
+		DuelOffer.MatchId = TEXT("dev");
+		DuelOffer.Name = TEXT("ライバル");
+		DuelOffer.Character = 2;
+		DuelOffer.Colour = 1;
+		DuelOffer.PingMs = 48;
+		DuelOffer.EndsAt = FPlatformTime::Seconds() + 15.0;
+		DuelOffer.Record.Wins = 12;
+		DuelOffer.Record.Losses = 7;
+		DuelOffer.Record.Recent = {TEXT("W"), TEXT("W"), TEXT("L"), TEXT("W"), TEXT("D")};
+		DuelOffer.bOpponentAccepted = true;
+	}
+#endif
 	const FChaosImpactDuelOffer& GetDuelOffer() const { return DuelOffer; }
 	/** This player's answer: yes waits for the opponent's; no stops searching. */
 	void AnswerDuelOffer(bool bAccept);
 
 	// ---- 戦績 (the relay keeps them)
 	void RefreshRecords();
+
+	// ---- 回線チェック: LineCheckSamples round trips to the relay, a few a second (-1: lost, -2: not back yet)
+	static constexpr int32 LineCheckSamples = 16;
+	struct FLineCheck
+	{
+		bool bRunning = false;
+		bool bDone = false;
+		/** No relay set up: nothing could be measured. */
+		bool bNoRelay = false;
+		int32 Sent = 0;
+		TArray<int32> Rtts;
+		double StartedAt = 0.0;
+		double LastSentAt = 0.0;
+	};
+	void StartLineCheck();
+	const FLineCheck& GetLineCheck() const { return LineCheck; }
+	/** How this machine talks to the relay: UDP, UDP on port 443, or a WebSocket. */
+	FString GetRelayTransportName() const;
 	const FChaosImpactRecords& GetRecords() const { return Records; }
 	bool IsRecordsPending() const { return bRecordsPending; }
 	/** The 1v1 just played, for this machine's player ("win", "lose" or "draw"): into the records once per game. */
@@ -246,6 +326,9 @@ public:
 	FString GetPlayerToken() const;
 
 private:
+	FLineCheck LineCheck;
+	FTSTicker::FDelegateHandle LineCheckTicker;
+	int32 LineCheckGeneration = 0;
 	TMap<FString, FRememberedMember> RememberedMembers;
 	double RoomTravelAt = -100.0;
 	bool WatchRoomTravel();
@@ -288,6 +371,8 @@ private:
 	/** Options the matched room's host opens it with (who and how many are coming). */
 	FString MatchmadeOptions;
 	bool bMatchmadeStarted = false;
+	/** The matched room's match reached its results (the room going away now is the other side leaving them). */
+	bool bMatchmadeOver = false;
 	EChaosImpactQueueMode ShowQueueMenu = EChaosImpactQueueMode::None;
 	bool bQueueAgain = false;
 	bool bDuelOffered = false;
@@ -346,11 +431,14 @@ private:
 	EChaosImpactRoomState State = EChaosImpactRoomState::None;
 	FString Password;
 	FString RoomName;
+	FChaosImpactTourneyNotice HostedTourney;
+	FString TourneyState = TEXT("open");
 	FString CreateError;
 	FString Notice;
 	double NoticeAt = -100.0;
 	FString GeneratedName;
 	bool bReturnToTraining = false;
+	bool bReturnToOnlineMenu = false;
 	bool bSessionDelegatesBound = false;
 	bool bRecruitmentOpen = true;
 	int32 MemberCount = 1;

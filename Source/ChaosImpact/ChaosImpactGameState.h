@@ -47,7 +47,9 @@ enum class EChaosImpactOnlinePhase : uint8
 	/** VS opening: flyover, dive to each player's own view, Ready?. Nobody can act until it ends. */
 	Intro,
 	/** Online lobby: everyone is ready (or the wait ran out); a short "match starting" countdown before the match. */
-	Starting
+	Starting,
+	/** トーナメント: played in this world's arenas (see AChaosImpactGameState::Tournament). */
+	Tournament
 };
 
 /**
@@ -78,7 +80,9 @@ enum class EChaosImpactDuelStep : uint8
 	/** The round is decided; shown for a moment before the next. */
 	RoundOver,
 	/** The match is decided (the results follow). */
-	Finished
+	Finished,
+	/** A tournament's match opening in its arena: which round it is, and how it is won (before the ball slot). */
+	Opening
 };
 
 /** How a ランクマッチ round was decided. */
@@ -123,6 +127,18 @@ struct FChaosImpactDuelState
 	UPROPERTY() TArray<uint8> BallPicks;
 
 	int32 SideOf(const APlayerState* Member) const { return Member && Sides[0] == Member ? 0 : Member && Sides[1] == Member ? 1 : INDEX_NONE; }
+};
+
+/** A tournament's arena: the match played in it and that match's duel (the same steps as a ランクマッチ). */
+USTRUCT()
+struct FChaosImpactTournamentArena
+{
+	GENERATED_BODY()
+	/** The tournament match played here (INDEX_NONE: free). */
+	UPROPERTY() int32 Match = INDEX_NONE;
+	UPROPERTY() FVector_NetQuantize Center = FVector::ZeroVector;
+	UPROPERTY() float HalfExtent = 1850.0f;
+	UPROPERTY() FChaosImpactDuelState Duel;
 };
 
 /** Room member or VS competitor. Display name comes from APlayerState::GetPlayerName; CPUs are bots. */
@@ -178,6 +194,18 @@ public:
 	/** Watching through a spectator camera: not a competitor or a room member for the match. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
 	bool bSpectating = false;
+
+	/** トーナメント: what this member is doing now, and where (an arena they play or watch in, their practice area). */
+	UPROPERTY(Replicated)
+	EChaosImpactTournamentRole TournamentRole = EChaosImpactTournamentRole::None;
+	UPROPERTY(Replicated)
+	int32 TournamentArena = INDEX_NONE;
+	UPROPERTY(Replicated)
+	FVector_NetQuantize PracticeCenter = FVector::ZeroVector;
+	/** What they chose to do while not playing (they go back to it after each match). */
+	EChaosImpactTournamentWait TournamentWait = EChaosImpactTournamentWait::Practice;
+	/** The match they asked to watch (INDEX_NONE: any being played). */
+	int32 TournamentWatchMatch = INDEX_NONE;
 
 	/** Lobby: this member pressed 準備OK for the rules the host decided. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
@@ -383,6 +411,43 @@ public:
 
 	UPROPERTY(Replicated)
 	FChaosImpactDuelState Duel;
+
+	// ---- トーナメント (see ChaosImpactTournament.h): played in this world, in arenas far apart ----
+	UPROPERTY(Replicated)
+	FChaosImpactTournamentState Tournament;
+	UPROPERTY(Replicated)
+	TArray<FChaosImpactTournamentArena> TournamentArenas;
+	/** A public tournament's start (server time; 0: none scheduled). It starts then with two people or more. */
+	UPROPERTY(Replicated)
+	double TournamentStartsAt = 0.0;
+	/** A public tournament room (listed on the relay for anyone to enter). */
+	UPROPERTY(Replicated)
+	bool bPublicTournament = false;
+	/** A public tournament's places for people. */
+	UPROPERTY(Replicated)
+	int32 PublicTournamentMaxPlayers = 8;
+	bool IsTournament() const { return Tournament.bActive; }
+	/** ローカルトーナメント: played on this machine alone (VS モード); 1試合ずつ seats its players match by match. */
+	UPROPERTY()
+	bool bLocalTournament = false;
+	/** The arena a point is in (INDEX_NONE: none, or no tournament). */
+	int32 GetTournamentArenaAt(const FVector& Location) const;
+	/**
+	 * The duel played where Location is: a tournament arena's, or else the room's own duel (a ランクマッチ / 1対1). Null
+	 * where no duel is played (a practice area, the lobby).
+	 */
+	const FChaosImpactDuelState* FindDuelAt(const FVector& Location) const;
+	/** The duel a member plays or watches: their tournament arena's, or the room's own duel. */
+	const FChaosImpactDuelState* FindDuelFor(const APlayerState* Member) const;
+	bool IsDuelAt(const FVector& Location) const { return FindDuelAt(Location) != nullptr; }
+	/** A round is being fought where Location is (hits count). */
+	bool IsDuelLiveAt(const FVector& Location) const;
+	static bool IsDuelStepLive(const FChaosImpactDuelState& Duel)
+	{
+		return Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath;
+	}
+	float GetDuelStepRemaining(const FChaosImpactDuelState& Of) const;
+	float GetDuelStepElapsed(const FChaosImpactDuelState& Of) const;
 	bool IsDuel() const { return bVersusMatch && Rules.bDuel; }
 	/** A ランクマッチ round is being fought (hits count). */
 	bool IsDuelLive() const;

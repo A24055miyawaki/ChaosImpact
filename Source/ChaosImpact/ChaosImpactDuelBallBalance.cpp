@@ -5,13 +5,14 @@
 bool ChaosImpactDuelBallBalance::IsDuel(const UWorld* World)
 {
 	const auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
-	return Match && Match->IsDuel();
+	// A tournament plays the duel's rules everywhere (its practice areas too, so practice is like the matches).
+	return Match && (Match->IsDuel() || Match->IsTournament());
 }
 
 TSharedPtr<FChaosImpactDuelThrowDamage> FChaosImpactDuelThrowDamage::Create(const UWorld* World)
 {
 	const auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
-	if (Match && (Match->IsDuel() || Match->IsBattleRoyale()) && World->GetNetMode() != NM_Client)
+	if (Match && (Match->IsDuel() || Match->IsTournament() || Match->IsBattleRoyale()) && World->GetNetMode() != NM_Client)
 	{
 		return MakeShared<FChaosImpactDuelThrowDamage>();
 	}

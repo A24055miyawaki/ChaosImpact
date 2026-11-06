@@ -56,6 +56,9 @@ private:
 		const AChaosImpactGameState& Match, float Time) const;
 	/** The duel's side shown on the left: this player's own (side 0 when watching or sharing the screen). */
 	int32 GetDuelLeftSide(const AChaosImpactGameState& Match) const;
+	/** While a duel is painted: whose (a tournament arena's, for one player's part of the screen). Null: the room's own. */
+	mutable const struct FChaosImpactDuelState* PaintingDuel = nullptr;
+	mutable const APlayerController* PaintingViewer = nullptr;
 	/**
 	 * バトルロイヤル: the clock in the middle (red-hot at the end, orange through sudden death), the survivors on its left,
 	 * and under it everyone as a tile with their health, going dark with their place as they fall.

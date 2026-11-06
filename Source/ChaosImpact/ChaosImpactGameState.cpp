@@ -31,6 +31,9 @@ void AChaosImpactPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AChaosImpactPlayerState, PointsHistory);
 	DOREPLIFETIME(AChaosImpactPlayerState, bViewingResults);
 	DOREPLIFETIME(AChaosImpactPlayerState, bWantsRematch);
+	DOREPLIFETIME(AChaosImpactPlayerState, TournamentRole);
+	DOREPLIFETIME(AChaosImpactPlayerState, TournamentArena);
+	DOREPLIFETIME(AChaosImpactPlayerState, PracticeCenter);
 }
 
 void AChaosImpactPlayerState::ResetMatchStats()
@@ -72,6 +75,71 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, MatchmadeDeadline);
 	DOREPLIFETIME(AChaosImpactGameState, Duel);
 	DOREPLIFETIME(AChaosImpactGameState, Royale);
+	DOREPLIFETIME(AChaosImpactGameState, Tournament);
+	DOREPLIFETIME(AChaosImpactGameState, TournamentArenas);
+	DOREPLIFETIME(AChaosImpactGameState, TournamentStartsAt);
+	DOREPLIFETIME(AChaosImpactGameState, bPublicTournament);
+	DOREPLIFETIME(AChaosImpactGameState, PublicTournamentMaxPlayers);
+}
+
+int32 AChaosImpactGameState::GetTournamentArenaAt(const FVector& Location) const
+{
+	if (!Tournament.bActive)
+	{
+		return INDEX_NONE;
+	}
+	for (int32 Index = 0; Index < TournamentArenas.Num(); ++Index)
+	{
+		const FChaosImpactTournamentArena& Arena = TournamentArenas[Index];
+		const FVector Offset = Location - FVector(Arena.Center);
+		const float Reach = Arena.HalfExtent + 900.0f;
+		if (FMath::Abs(Offset.X) <= Reach && FMath::Abs(Offset.Y) <= Reach && FMath::Abs(Offset.Z) <= 4000.0f)
+		{
+			return Index;
+		}
+	}
+	return INDEX_NONE;
+}
+
+const FChaosImpactDuelState* AChaosImpactGameState::FindDuelAt(const FVector& Location) const
+{
+	if (Tournament.bActive)
+	{
+		const int32 Arena = GetTournamentArenaAt(Location);
+		return TournamentArenas.IsValidIndex(Arena) && TournamentArenas[Arena].Match != INDEX_NONE ? &TournamentArenas[Arena].Duel : nullptr;
+	}
+	return IsDuel() ? &Duel : nullptr;
+}
+
+const FChaosImpactDuelState* AChaosImpactGameState::FindDuelFor(const APlayerState* Member) const
+{
+	if (Tournament.bActive)
+	{
+		const AChaosImpactPlayerState* State = Cast<AChaosImpactPlayerState>(Member);
+		const int32 Arena = State ? State->TournamentArena : INDEX_NONE;
+		return TournamentArenas.IsValidIndex(Arena) && TournamentArenas[Arena].Match != INDEX_NONE ? &TournamentArenas[Arena].Duel : nullptr;
+	}
+	return IsDuel() ? &Duel : nullptr;
+}
+
+bool AChaosImpactGameState::IsDuelLiveAt(const FVector& Location) const
+{
+	if (Tournament.bActive)
+	{
+		const FChaosImpactDuelState* Arena = FindDuelAt(Location);
+		return Arena && IsDuelStepLive(*Arena);
+	}
+	return IsDuelLive();
+}
+
+float AChaosImpactGameState::GetDuelStepRemaining(const FChaosImpactDuelState& Of) const
+{
+	return Of.StepEndsAt > 0.0 ? FMath::Max(0.0f, static_cast<float>(Of.StepEndsAt - GetServerWorldTimeSeconds())) : 0.0f;
+}
+
+float AChaosImpactGameState::GetDuelStepElapsed(const FChaosImpactDuelState& Of) const
+{
+	return FMath::Max(0.0f, static_cast<float>(GetServerWorldTimeSeconds() - Of.StepStartedAt));
 }
 
 const FChaosImpactRoyaleEntry* AChaosImpactGameState::GetRoyaleEntry(const APlayerState* Member) const
@@ -303,6 +371,21 @@ bool AChaosImpactGameState::AreTeammates(const UWorld* World, const AActor* A, c
 		return false;
 	}
 	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Match && Match->IsTournament())
+	{
+		// A tournament: only those in the same arena face each other; anyone elsewhere (another match, a practice
+		// area) is left alone, as a teammate would be.
+		const int32 ArenaA = Match->GetTournamentArenaAt(A->GetActorLocation());
+		const int32 ArenaB = Match->GetTournamentArenaAt(B->GetActorLocation());
+		if (ArenaA != ArenaB)
+		{
+			return true;
+		}
+		if (ArenaA != INDEX_NONE)
+		{
+			return false;
+		}
+	}
 	if (!Match || !Match->bVersusMatch)
 	{
 		// Solo mode and training: sides given on the characters themselves (placed enemies are all on one).

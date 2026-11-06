@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
+#include "ChaosImpactTournament.h"
 #include "ChaosImpactMatchTypes.generated.h"
 
 /** CPU strength as Blueprints and the details panel show it (same order as ChaosImpactMatch::CPULevel*). */
@@ -55,6 +56,11 @@ struct FChaosImpactMatchRules
 	/** One life, one round; last surviving player/team or most remaining HP at the bell. */
 	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
 	bool bBattleRoyale = false;
+	/** トーナメント (online rooms only): 1v1 duels in a bracket; Tournament holds how it runs and its CPUs. */
+	UPROPERTY(BlueprintReadOnly, Category="Chaos Impact|Match")
+	bool bTournament = false;
+	UPROPERTY()
+	FChaosImpactTournamentSettings Tournament;
 
 	bool IsTeamBattle() const { return !bDuel && (bCrashBall || TeamCount >= 2); }
 	bool IsCrashBall() const { return bCrashBall; }
@@ -225,6 +231,29 @@ namespace ChaosImpactMatch
 
 	inline FChaosImpactMatchRules Sanitize(FChaosImpactMatchRules Rules, int32 Humans)
 	{
+		if (Rules.bTournament)
+		{
+			// Every match a duel; the CPUs listed in the tournament's set-up (at most to 32 entrants in all).
+			Rules.bDuel = true;
+			Rules.bBattleRoyale = false;
+			Rules.bCrashBall = false;
+			Rules.bSpectate = false;
+			Rules.TeamCount = 0;
+			Rules.Minutes = 3;
+			Rules.CPULevel = SanitizeCPULevel(Rules.CPULevel);
+			const int32 MaxCPUs = FMath::Max(0, ChaosImpactTournament::MaxEntrants - FMath::Max(Humans, 0));
+			if (Rules.Tournament.CPUs.Num() > MaxCPUs)
+			{
+				Rules.Tournament.CPUs.SetNum(MaxCPUs);
+			}
+			for (FChaosImpactTournamentCPU& CPU : Rules.Tournament.CPUs)
+			{
+				CPU.Name = CPU.Name.Left(10);
+				CPU.Level = CPU.Level < 0 ? INDEX_NONE : SanitizeCPULevel(CPU.Level);
+			}
+			Rules.CPUCount = Rules.Tournament.CPUs.Num();
+			return Rules;
+		}
 		if (Rules.bBattleRoyale)
 		{
 			Rules.bDuel = false;
@@ -299,6 +328,11 @@ namespace ChaosImpactMatch
 
 	inline FString DescribeRule(const FChaosImpactMatchRules& Rules)
 	{
+		if (Rules.bTournament)
+		{
+			return Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? FString(TEXT("トーナメント  同時進行"))
+				: FString(TEXT("トーナメント  1試合ずつ"));
+		}
 		if (Rules.bBattleRoyale)
 		{
 			return Rules.IsTeamBattle() ? FString::Printf(TEXT("バトルロイヤル  %dチーム"), Rules.TeamCount) : FString(TEXT("バトルロイヤル  個人戦"));

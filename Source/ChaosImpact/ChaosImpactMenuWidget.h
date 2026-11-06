@@ -71,6 +71,8 @@ private:
 	};
 
 	TArray<FMenuEntry> Entries;
+	/** The public tournaments' list: each row's listing (sorted by start). */
+	TArray<int32> TourneyRowListing;
 	/** 0..1 eased selection state per entry, advanced in NativeTick. */
 	TArray<float> SelectBlend;
 	/** Per-slot join tracking so a newly connected device plays its entry animation once. */
@@ -88,6 +90,17 @@ private:
 	int32 PressedIndex = INDEX_NONE;
 	/** Pause entries that leave the room/search need a second confirm on the same entry. */
 	int32 ArmedIndex = INDEX_NONE;
+	/** The pause menu's yes/no question (本当に部屋から抜けてもよろしいですか？ ...): the choice it is about, empty while none. */
+	FString PauseConfirm;
+	/** The rules screen's list of every kind of match (opened from its ルール row). */
+	bool bModePicker = false;
+	double ModePickerAt = 0.0;
+	void OpenModePicker(bool bOpen);
+	double PauseConfirmAt = 0.0;
+	/** The question and the line under it for PauseConfirm. */
+	void GetPauseConfirmText(FString& OutQuestion, FString& OutNote) const;
+	/** Where the pause menu was opened: the mode, and the room or match (the line under PAUSE). */
+	FString GetPauseContext() const;
 	void DisarmSelection();
 	/** The results' numbers: the cursor among their rows, the tab arrows and the choices below. */
 	void NavigateResults(FKey Key);
@@ -132,12 +145,22 @@ private:
 	/** オンラインメニュー: the 戦績 page, and the card of a 1v1 opponent found. */
 	void PaintOnlineRecord(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
 	void PaintDuelFound(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
+	/** The online menu's top-right card (who is playing, the line to the relay) and the 回線チェック page. */
+	void PaintOnlinePlayerCard(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
+	void PaintLineCheck(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactCharacterSelect> CharacterSelect;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactColourEdit> ColourEdit;
+
+	/** ローカルトーナメント's registration screen. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UChaosImpactTourneyEntry> TourneyEntry;
+	/** Its controller-taking screen: the places, each person's model on it. */
+	void PaintTourneySeat(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
+	void UpdateSeatPreviews(float DeltaSeconds);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactSettingsScreen> SettingsScreen;
@@ -155,4 +178,13 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTexture2D>> StageShots;
 	TArray<FSlateBrush> StageShotBrushes;
+
+	/** The 1v1 found's card: both players' characters, filmed far from the training (this player first). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class AChaosImpactCharacterPreview>> DuelPreviews;
+	TArray<FSlateBrush> DuelPreviewBrushes;
+	/** Who the opponent's preview shows (made again when the offer changes). */
+	FString DuelPreviewFor;
+	void UpdateDuelPreviews(float DeltaSeconds);
+	void CloseDuelPreviews();
 };

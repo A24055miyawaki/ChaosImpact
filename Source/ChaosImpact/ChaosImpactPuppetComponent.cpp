@@ -574,9 +574,9 @@ void UChaosImpactPuppetComponent::TickComponent(const float DeltaTime, const ELe
 	UpdatePose(false, DeltaTime);
 }
 
-void UChaosImpactPuppetComponent::SetCustomColours(const TArray<FLinearColor>& PartColours)
+void UChaosImpactPuppetComponent::SetCustomColours(const TArray<FLinearColor>& InPartColours)
 {
-	CustomColours = PartColours;
+	CustomColours = InPartColours;
 	bCustomColoursDirty = true;
 	if (bReady)
 	{

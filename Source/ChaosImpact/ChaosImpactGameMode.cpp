@@ -198,6 +198,30 @@ void AChaosImpactGameMode::BeginPlay()
 			}
 		}
 		GetWorldTimerManager().SetTimer(LobbyReadyTimer, this, &AChaosImpactGameMode::UpdateLobbyReady, 0.25f, true);
+		// A public tournament this machine made: its rules as set up, and its start at its time.
+		if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+			Sessions && Sessions->IsHostingTourney() && !bRoomMatchLevel && !RoomState->IsMatchmade())
+		{
+			const FChaosImpactTourneyNotice& Notice = Sessions->GetHostedTourney();
+			FChaosImpactMatchRules Rules;
+			Rules.bTournament = true;
+			Rules.Tournament.Mode = Notice.Mode == 1 ? EChaosImpactTournamentMode::Simultaneous : EChaosImpactTournamentMode::OneAtATime;
+			for (int32 Index = 0; Index < Notice.CPUs; ++Index)
+			{
+				FChaosImpactTournamentCPU CPU;
+				CPU.Name = FString::Printf(TEXT("CPU%d"), Index + 1);
+				CPU.Level = Notice.Level;
+				Rules.Tournament.CPUs.Add(CPU);
+			}
+			RoomState->Rules = ChaosImpactMatch::Sanitize(Rules, 1);
+			RoomState->RoomName = Notice.Title;
+			PublicTourneyMaxPlayers = FMath::Clamp(Notice.MaxPlayers, 2, AChaosImpactGameState::MaxMembers);
+			RoomState->PublicTournamentMaxPlayers = PublicTourneyMaxPlayers;
+			const double Delay = static_cast<double>(Notice.StartsUnix - FDateTime::UtcNow().ToUnixTimestamp());
+			ScheduleTournament(RoomState->GetServerWorldTimeSeconds() + FMath::Max(0.0, Delay));
+			UE_LOG(LogChaosImpact, Log, TEXT("Public tournament \"%s\": starts in %.0f s, up to %d people, %d CPUs"), *Notice.Title,
+				Delay, PublicTourneyMaxPlayers, Notice.CPUs);
+		}
 		FParse::Value(FCommandLine::Get(), TEXT("CIReadyWaitSeconds="), ReadyWaitSecondsOverride);
 		FString AutoLobby;
 		if (!bRoomMatchLevel && !bBackFromMatch && FParse::Value(FCommandLine::Get(), TEXT("CIAutoLobby="), AutoLobby))
@@ -207,6 +231,28 @@ void AChaosImpactGameMode::BeginPlay()
 			DevAutoLobbyRules.TeamCount = Parts.IsValidIndex(0) ? FCString::Atoi(*Parts[0]) : 0;
 			DevAutoLobbyRules.CPUCount = Parts.IsValidIndex(1) ? FCString::Atoi(*Parts[1]) : 0;
 			const float Delay = Parts.IsValidIndex(2) ? FMath::Max(1.0f, FCString::Atof(*Parts[2])) : 20.0f;
+			GetWorldTimerManager().SetTimer(DevAutoLobbyTimer, this, &AChaosImpactGameMode::RunDevAutoLobby, Delay, false);
+		}
+		// Development: -CIAutoTournament=<cpus>:<0 one at a time | 1 all at once>:<delay>:<machines> decides a tournament.
+		FString AutoTournament;
+		if (!bRoomMatchLevel && !bBackFromMatch && FParse::Value(FCommandLine::Get(), TEXT("CIAutoTournament="), AutoTournament))
+		{
+			TArray<FString> Parts;
+			AutoTournament.ParseIntoArray(Parts, TEXT(":"));
+			DevAutoLobbyRules = FChaosImpactMatchRules();
+			DevAutoLobbyRules.bTournament = true;
+			const int32 CPUs = Parts.IsValidIndex(0) ? FCString::Atoi(*Parts[0]) : 3;
+			for (int32 Index = 0; Index < CPUs; ++Index)
+			{
+				FChaosImpactTournamentCPU CPU;
+				CPU.Name = FString::Printf(TEXT("CPU%d"), Index + 1);
+				DevAutoLobbyRules.Tournament.CPUs.Add(CPU);
+			}
+			DevAutoLobbyRules.Tournament.Mode = Parts.IsValidIndex(1) && FCString::Atoi(*Parts[1]) == 1
+				? EChaosImpactTournamentMode::Simultaneous : EChaosImpactTournamentMode::OneAtATime;
+			DevAutoLobbyRules.Tournament.bSkipCPUMatches = Parts.IsValidIndex(4) && FCString::Atoi(*Parts[4]) == 1;
+			const float Delay = Parts.IsValidIndex(2) ? FMath::Max(1.0f, FCString::Atof(*Parts[2])) : 10.0f;
+			DevAutoLobbyMachines = Parts.IsValidIndex(3) ? FMath::Max(1, FCString::Atoi(*Parts[3])) : 1;
 			GetWorldTimerManager().SetTimer(DevAutoLobbyTimer, this, &AChaosImpactGameMode::RunDevAutoLobby, Delay, false);
 		}
 		if (FParse::Value(FCommandLine::Get(), TEXT("CIReserveSlots="), DevReservedSlots))
@@ -252,6 +298,27 @@ void AChaosImpactGameMode::BeginPlay()
 		MatchDurationOverride = OverrideSeconds;
 	}
 	bLocalMatchWorld = !IsOnlineRoom() && GetWorld() && GetWorld()->URL.HasOption(TEXT("CIMatch=1"));
+	if (!IsOnlineRoom() && GetWorld() && GetWorld()->URL.HasOption(TEXT("CILocalTournament=1")))
+	{
+		// Once this machine's players are all in (their pawns spawned), the registration is played.
+		LocalTournamentWaitSince = FPlatformTime::Seconds();
+		GetWorldTimerManager().SetTimer(LocalTournamentTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			const UGameInstance* GameInstance = GetGameInstance();
+			const int32 Wanted = FMath::Clamp(FCString::Atoi(GetWorld()->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))), 1, 4);
+			bool bReady = GameInstance && GameInstance->GetLocalPlayers().Num() >= Wanted;
+			for (int32 Index = 0; bReady && Index < GameInstance->GetLocalPlayers().Num(); ++Index)
+			{
+				const APlayerController* Local = GameInstance->GetLocalPlayers()[Index]->GetPlayerController(GetWorld());
+				bReady = Local && Local->GetPawn() && Local->PlayerState;
+			}
+			if (bReady || FPlatformTime::Seconds() - LocalTournamentWaitSince > 8.0)
+			{
+				GetWorldTimerManager().ClearTimer(LocalTournamentTimer);
+				BeginLocalTournament();
+			}
+		}), 0.25f, true, 0.5f);
+	}
 	if (GetWorld() && GetWorld()->URL.HasOption(TEXT("CITraining=1")))
 	{
 		GetWorldTimerManager().SetTimerForNextTick(
@@ -379,11 +446,11 @@ void AChaosImpactGameMode::SetupLocalTrainingPlayers()
 void AChaosImpactGameMode::ApplyTrainingControllerAssignments(
 	const int32 DesiredPlayers, const int32 KeyboardPlayerIndex)
 {
-	ApplyLocalControllerAssignments(GetWorld(), DesiredPlayers, KeyboardPlayerIndex);
+	ApplyLocalControllerAssignments(GetWorld(), DesiredPlayers, KeyboardPlayerIndex, bUseLocalSeatDevices ? &LocalSeatPadDevices : nullptr);
 }
 
 void AChaosImpactGameMode::ApplyLocalControllerAssignments(UWorld* World,
-	const int32 DesiredPlayers, const int32 KeyboardPlayerIndex)
+	const int32 DesiredPlayers, const int32 KeyboardPlayerIndex, const TArray<int32>* PadDevices)
 {
 	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
 	if (!GameInstance)
@@ -439,9 +506,10 @@ void AChaosImpactGameMode::ApplyLocalControllerAssignments(UWorld* World,
 
 		int32 AssignedInputDeviceId = INDEX_NONE;
 		const FString DeviceOption = FString::Printf(TEXT("CIPadDevice%d="), PadIndex);
-		if (const TCHAR* DeviceValue = World->URL.GetOption(*DeviceOption, nullptr))
+		const TCHAR* DeviceValue = PadDevices ? nullptr : World->URL.GetOption(*DeviceOption, nullptr);
+		if (DeviceValue || (PadDevices && PadDevices->IsValidIndex(PadIndex)))
 		{
-			const int32 RequestedInputDeviceId = FCString::Atoi(DeviceValue);
+			const int32 RequestedInputDeviceId = DeviceValue ? FCString::Atoi(DeviceValue) : (*PadDevices)[PadIndex];
 			const bool bRequestedDeviceIsConnected = ConnectedControllers.ContainsByPredicate(
 				[RequestedInputDeviceId](const FJSL4UControllerInfo& Info)
 				{
@@ -570,7 +638,7 @@ void AChaosImpactGameMode::SetTrainingLocalPlayerCountLive(const int32 DesiredPl
 	}
 
 	const TCHAR* KeyboardOption = GetWorld()->URL.GetOption(TEXT("CIKeyboardPlayer="), nullptr);
-	const int32 KeyboardPlayerIndex = KeyboardOption
+	const int32 KeyboardPlayerIndex = bUseLocalSeatDevices ? LocalSeatKeyboard : KeyboardOption
 		? FCString::Atoi(KeyboardOption)
 		: (GetWorld()->URL.HasOption(TEXT("CIP1Gamepad=1")) ? INDEX_NONE : 0);
 	TrainingKeyboardPlayerIndex = KeyboardPlayerIndex;
@@ -663,12 +731,13 @@ void AChaosImpactGameMode::PreLogin(const FString& Options, const FString& Addre
 		? RoomState->CountHumanMembers() + DevReservedSlots
 		: RoomState->CountHumanMembers() + GetReservedRoomSlots() + DevReservedSlots) - StalePlaces;
 	// The client's session subsystem turns these codes into a readable notice.
-	if (Occupied + Arriving > AChaosImpactGameState::MaxMembers)
+	if (Occupied + Arriving > AChaosImpactGameState::MaxMembers
+		|| (RoomState->bPublicTournament && !RoomState->IsTournament() && Occupied + Arriving > PublicTourneyMaxPlayers))
 	{
 		ErrorMessage = TEXT("CIFULL");
 	}
 	else if (!bSecondPlayerOfMachine
-		&& ((RoomState->bRecruitmentClosed && StalePlaces == 0) || RoomState->Phase != EChaosImpactOnlinePhase::Lobby))
+		&& !RoomState->IsTournament() && ((RoomState->bRecruitmentClosed && StalePlaces == 0) || RoomState->Phase != EChaosImpactOnlinePhase::Lobby))
 	{
 		ErrorMessage = TEXT("CICLOSED");
 	}
@@ -856,11 +925,32 @@ void AChaosImpactGameMode::PostLogin(APlayerController* NewPlayer)
 	{
 		Character->SetTrainingStartTransform(Character->GetActorLocation(), Character->GetActorRotation());
 	}
+	// Into a tournament being played: watching it.
+	if (const AChaosImpactGameState* Room = GetGameState<AChaosImpactGameState>(); Room && Room->IsTournament() && !Room->bLocalTournament && Member && NewPlayer)
+	{
+		if (Room->Tournament.FindEntrant(Member) == INDEX_NONE)
+		{
+			Member->bSpectating = true;
+			Member->TournamentWait = EChaosImpactTournamentWait::Spectate;
+		}
+		GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this, Joined = TWeakObjectPtr<APlayerController>(NewPlayer)]()
+		{
+			if (Joined.IsValid())
+			{
+				PlaceTournamentMember(Joined.Get());
+			}
+		}));
+	}
 	UpdateRoomMemberCount();
 }
 
 void AChaosImpactGameMode::Logout(AController* Exiting)
 {
+	// A tournament: whoever leaves loses their match being played and every one still to come.
+	if (const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>(); Match && Exiting && Match->IsTournament())
+	{
+		ForfeitTournamentEntrant(Match->Tournament.FindEntrant(Exiting->PlayerState));
+	}
 	// A duellist leaving mid-match gives it to the other.
 	if (const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>(); Match && Exiting && Match->IsDuel()
 		&& (Match->Phase == EChaosImpactOnlinePhase::Intro || Match->Phase == EChaosImpactOnlinePhase::Match))
@@ -990,7 +1080,8 @@ int32 AChaosImpactGameMode::CountMembersOfMachine(const FString& Token) const
 void AChaosImpactGameMode::DecideLobbyRules(const FChaosImpactMatchRules& InRules)
 {
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
-	if (!IsOnlineRoom() || !Match || Match->bVersusMatch || Match->Phase != EChaosImpactOnlinePhase::Lobby)
+	// (A public tournament keeps the rules it was made with.)
+	if (!IsOnlineRoom() || !Match || Match->bVersusMatch || Match->Phase != EChaosImpactOnlinePhase::Lobby || Match->bPublicTournament)
 	{
 		return;
 	}
@@ -1176,6 +1267,12 @@ void AChaosImpactGameMode::StartDecidedMatch()
 		return;
 	}
 	ClearReady();
+	if (Match->Rules.bTournament && IsOnlineRoom())
+	{
+		// A tournament is played here, in the lobby's own world.
+		StartTournament();
+		return;
+	}
 	if (IsOnlineRoom() && !bRoomMatchLevel)
 	{
 		TravelRoomToMatch();
@@ -1197,7 +1294,7 @@ void AChaosImpactGameMode::RunDevAutoLobby()
 	{
 		return;
 	}
-	if (Match->CountMachines() + Match->CountSpectators() < 2)
+	if (Match->CountMachines() + Match->CountSpectators() < DevAutoLobbyMachines)
 	{
 		GetWorldTimerManager().SetTimer(DevAutoLobbyTimer, this, &AChaosImpactGameMode::RunDevAutoLobby, 1.0f, false);
 		return;
@@ -2015,8 +2112,24 @@ void AChaosImpactGameMode::ReturnFromResults(APlayerState* Member)
 		}
 		else if (Viewer->bRoomHost)
 		{
+			// The host goes home now, not once its guests have left their results: they are sent home too (told the
+			// other player left), a moment ahead so the room does not vanish under them.
 			bMatchmadeHostDone = true;
-			FinishMatchmadeIfEmpty(false);
+			for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+			{
+				AChaosImpactPlayerController* Guest = Cast<AChaosImpactPlayerController>(It->Get());
+				if (Guest && !Guest->IsLocalController() && !Cast<UChildConnection>(Guest->Player))
+				{
+					Guest->ClientLeaveMatchmade(true);
+				}
+			}
+			if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+			{
+				Loading->BeginTravel(EChaosImpactLoadingKind::RoomLeave);
+			}
+			FTimerHandle LeaveTimer;
+			GetWorldTimerManager().SetTimer(LeaveTimer, FTimerDelegate::CreateWeakLambda(this, [this]() { FinishMatchmadeIfEmpty(true); }),
+				0.35f, false);
 		}
 		return;
 	}
@@ -2681,6 +2794,16 @@ void AChaosImpactGameMode::HandleDuelTimeUp()
 void AChaosImpactGameMode::NotifyDuelKnockout(APawn* Victim)
 {
 	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (Match && Match->IsTournament())
+	{
+		// Judged on the arena's next update, once this frame's hits are all in (both may go down at once).
+		const int32 Arena = Victim ? Match->GetTournamentArenaAt(Victim->GetActorLocation()) : INDEX_NONE;
+		if (TournamentKnockoutPending.IsValidIndex(Arena))
+		{
+			TournamentKnockoutPending[Arena] = true;
+		}
+		return;
+	}
 	if (!Match || !Match->IsDuelLive() || bDuelKnockoutCheckPending)
 	{
 		return;
@@ -2717,6 +2840,20 @@ void AChaosImpactGameMode::EvaluateDuelKnockouts()
 void AChaosImpactGameMode::NotifyDuelHit(APawn* Victim)
 {
 	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (Match && Match->IsTournament())
+	{
+		// Sudden death in an arena: the first hit takes the round.
+		const int32 Arena = Victim ? Match->GetTournamentArenaAt(Victim->GetActorLocation()) : INDEX_NONE;
+		if (Match->TournamentArenas.IsValidIndex(Arena) && Match->TournamentArenas[Arena].Duel.Step == EChaosImpactDuelStep::SuddenDeath)
+		{
+			const int32 Side = Match->TournamentArenas[Arena].Duel.SideOf(Victim->GetPlayerState());
+			if (Side != INDEX_NONE)
+			{
+				EndArenaRound(Arena, 1 - Side, EChaosImpactDuelEnd::SuddenDeath);
+			}
+		}
+		return;
+	}
 	if (!Match || Match->Duel.Step != EChaosImpactDuelStep::SuddenDeath || !Victim)
 	{
 		return;

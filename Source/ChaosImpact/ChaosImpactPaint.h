@@ -442,6 +442,13 @@ namespace ChaosImpactPaint
 			->Measure(Value, FCoreStyle::GetDefaultFontStyle(Face, Size)).X);
 	}
 
+	/** The size at which Value fits in MaxWidth (Size itself when it already does): no text runs out of its box. */
+	inline float HudFit(const FString& Value, const float Size, const float MaxWidth, const FName Face = TEXT("Black"))
+	{
+		const float Width = HudMeasure(Value, Size, Face);
+		return Width > MaxWidth && Width > 0.0f ? Size * MaxWidth / Width : Size;
+	}
+
 	/** A few small pieces flying out from Center as T goes 0 to 1 (a shape breaking). */
 	inline void HudShatter(const FPainter& P, const FVector2D& Center, const float T, const float Size, const FHudFill& Fill,
 		const int32 Pieces = 6, const float Seed = 0.0f)

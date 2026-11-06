@@ -56,7 +56,17 @@ enum class EChaosImpactScreen : uint8
 	/** ランダムマッチ 1v1: the opponent found, their connection, and both players' answers. */
 	DuelFound,
 	/** ColourEdit: each character's custom colour presets (UChaosImpactColourEdit). */
-	ColourEdit
+	ColourEdit,
+	/** Online: the public tournaments being recruited (pick one to enter; make one from the corner). */
+	TourneyList,
+	/** Online: a public tournament's set-up (its name, when it starts, how it runs). */
+	TourneyCreate,
+	/** Online: the line to the relay measured (round trips, how steady, how many lost). */
+	LineCheck,
+	/** VS: the local tournament's registration (people, their characters, how it runs). */
+	TourneyEntry,
+	/** Local tournament: the players of a match (or of the whole tournament) take a controller each. */
+	TourneySeat
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

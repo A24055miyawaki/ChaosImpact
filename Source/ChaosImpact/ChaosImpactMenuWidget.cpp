@@ -1,4 +1,6 @@
 #include "ChaosImpactMenuWidget.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Engine/GameViewportClient.h"
 #include "ChaosImpactPaint.h"
 
@@ -12,7 +14,10 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCharacterSelect.h"
 #include "ChaosImpactColourEdit.h"
+#include "ChaosImpactLocalTourney.h"
 #include "ChaosImpactLoadoutSubsystem.h"
+#include "ChaosImpactCustomColour.h"
+#include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSettingsScreen.h"
 #include "ChaosImpactResults.h"
@@ -244,7 +249,7 @@ namespace
 		constexpr float W = 390.0f;
 		constexpr float H = 484.0f;
 		const float In = EaseOut((Time - 0.3f) / 0.35f);
-		const FGeometry Card = MakeSkewed(Design, 1190.0f + (1.0f - In) * 90.0f, 206.0f, W, H, -0.06f);
+		const FGeometry Card = MakeSkewed(Design, 1100.0f + (1.0f - In) * 90.0f, 196.0f, W, H, -0.06f);
 		const FMenuPainter P{Card, Elements, Layer, In};
 		const FLinearColor Red = ChaosImpactMatch::GetTeamColor(0);
 		const FLinearColor Blue = ChaosImpactMatch::GetTeamColor(1);
@@ -405,7 +410,8 @@ namespace
 
 		const FLinearColor Resting = bDisabled ? WithAlpha(Muted, 0.55f) : Paper;
 		const FLinearColor TextColor = FMath::Lerp(Resting, bInkText ? Ink : Paper, Fold);
-		const float Size = H >= 80.0f ? 32.0f : 27.0f;
+		// (Smaller when the label would run past the bar's chevron.)
+		const float Size = ChaosImpactPaint::HudFit(Label, H >= 80.0f ? 32.0f : 27.0f, W - 38.0f - 60.0f);
 		P.Text(Label, 38.0f, H * 0.5f - Size * 0.8f, Size, TextColor);
 		if (Fold > 0.05f)
 		{
@@ -414,6 +420,375 @@ namespace
 			P.Line(FVector2D(CX, H * 0.5f), FVector2D(CX - 12.0f, H * 0.5f + 12.0f), WithAlpha(TextColor, Fold), 4.0f);
 			P.Outline(-6.0f, -6.0f, W + 12.0f, H + 12.0f,
 				WithAlpha(Paper, Fold * (0.3f + 0.3f * FMath::Sin(Time * 6.0f))), 2.0f);
+		}
+	}
+
+	/**
+	 * The pause menu's item: a slanted row down its panel, numbered; the one chosen fills with its colour, slides out
+	 * and carries a chevron.
+	 */
+	void PaintPauseItem(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+		const FSlateRect& Rect, const FString& Label, const FLinearColor& Accent, const float Blend,
+		const bool bPressed, const bool bDisabled, const float Alpha, const float Time, const int32 Number)
+	{
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const float B = bDisabled ? 0.0f : EaseOut(Blend);
+		const FGeometry Row = MakeSkewed(Design, Rect.Left + 22.0f * B, Rect.Top, W, H, -0.22f, bPressed ? 0.97f : 1.0f);
+		const ChaosImpactPaint::FPainter P{Row, Elements, Layer, Alpha * (bDisabled ? 0.5f : 1.0f)};
+		const ChaosImpactPaint::FPainter Up = ChaosImpactPaint::HudAbove(P, 1);
+		const ChaosImpactPaint::FPainter Top = ChaosImpactPaint::HudAbove(P, 2);
+		const TArray<FVector2D> Shape{FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)};
+		// Resting: a dark glassy row with its colour's tick; chosen: its colour, light at the top.
+		P.Box(6.0f, 7.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.35f * (0.4f + 0.6f * B)));
+		ChaosImpactPaint::HudPoly(P, Shape, ChaosImpactPaint::MakeFill(FLinearColor(0.05f, 0.07f, 0.12f, 0.78f), FLinearColor(0.012f, 0.018f, 0.035f, 0.82f)));
+		if (B > 0.01f)
+		{
+			FLinearColor Deep = Accent * 0.55f;
+			Deep.A = 1.0f;
+			ChaosImpactPaint::HudPoly(ChaosImpactPaint::FPainter{Row, Elements, Layer, Alpha * B}, {FVector2D(0.0, 0.0), FVector2D(W * B, 0.0),
+				FVector2D(W * B, H), FVector2D(0.0, H)}, ChaosImpactPaint::MakeFill(FMath::Lerp(Accent, Paper, 0.18f), Deep));
+			Up.Box(0.0f, 0.0f, W * B, 2.0f, WithAlpha(Paper, 0.6f * B));
+		}
+		Up.Box(0.0f, 0.0f, 7.0f, H, bDisabled ? WithAlpha(Muted, 0.5f) : Accent);
+		Up.Box(0.0f, H - 1.0f, W, 1.0f, WithAlpha(Paper, 0.08f));
+		// The number, then the label.
+		Top.Text(FString::Printf(TEXT("%02d"), Number), 30.0f, H * 0.5f - 13.0f, 18.0f,
+			B > 0.5f ? WithAlpha(Paper, 0.85f) : WithAlpha(Accent, 0.9f), ChaosImpactPaint::ETextAlign::Left, TEXT("BlackItalic"));
+		const float Size = ChaosImpactPaint::HudFit(Label, H >= 58.0f ? 29.0f : H >= 48.0f ? 25.0f : 21.0f, W - 74.0f - 56.0f);
+		if (B > 0.5f)
+		{
+			ChaosImpactPaint::HudText3D(Top, Label, 74.0f, H * 0.5f - Size * 0.72f, Size, Paper, ChaosImpactPaint::ETextAlign::Left,
+				TEXT("Black"), 2.0f);
+		}
+		else
+		{
+			Top.Text(Label, 74.0f, H * 0.5f - Size * 0.72f, Size, bDisabled ? Muted : WithAlpha(Paper, 0.92f), ChaosImpactPaint::ETextAlign::Left,
+				TEXT("Black"));
+		}
+		if (B > 0.05f)
+		{
+			// A chevron nudging the way it goes, and a breathing rim.
+			const float CX = W - 34.0f + 5.0f * FMath::Sin(Time * 6.0f) * B;
+			const FLinearColor Mark = WithAlpha(Paper, B);
+			Top.Line(FVector2D(CX - 11.0f, H * 0.5f - 11.0f), FVector2D(CX, H * 0.5f), Mark, 4.0f);
+			Top.Line(FVector2D(CX, H * 0.5f), FVector2D(CX - 11.0f, H * 0.5f + 11.0f), Mark, 4.0f);
+			Top.Outline(-4.0f, -4.0f, W + 8.0f, H + 8.0f, WithAlpha(Paper, B * (0.35f + 0.25f * FMath::Sin(Time * 5.0f))), 2.0f);
+		}
+	}
+
+	/**
+	 * A setting on the rules page: its name on the left, its value in a box between ◀ ▶ (they nudge while it is chosen,
+	 * to show it changes sideways). A fixed one shows 固定 instead of the arrows.
+	 */
+	void PaintRuleRow(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const FSlateRect& Rect,
+		const FString& Label, const FString& Value, const FLinearColor& Accent, const float Blend, const bool bPressed, const bool bDisabled,
+		const bool bFixed, const float Alpha, const float Time)
+	{
+		namespace CP = ChaosImpactPaint;
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const float B = bDisabled ? 0.0f : EaseOut(Blend);
+		const FGeometry Row = MakeSkewed(Design, Rect.Left + 14.0f * B, Rect.Top, W, H, -0.12f, bPressed ? 0.98f : 1.0f);
+		const CP::FPainter P{Row, Elements, Layer, Alpha * (bDisabled && !bFixed ? 0.55f : 1.0f)};
+		const CP::FPainter Up = CP::HudAbove(P, 1);
+		const CP::FPainter Top = CP::HudAbove(P, 2);
+		P.Box(8.0f, 9.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		FLinearColor Lit = Accent * (0.16f + 0.2f * B);
+		Lit.A = 0.96f;
+		CP::HudPoly(P, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)},
+			CP::MakeFill(FMath::Lerp(FLinearColor(0.04f, 0.055f, 0.1f, 0.94f), Lit, B), FLinearColor(0.008f, 0.012f, 0.026f, 0.96f)));
+		Up.Box(0.0f, 0.0f, 8.0f, H, bDisabled && !bFixed ? WithAlpha(Muted, 0.5f) : Accent);
+		Up.Box(0.0f, 0.0f, W, 1.5f, WithAlpha(Paper, 0.12f + 0.3f * B));
+		// The name.
+		Top.Text(Label, 32.0f, H * 0.5f - 15.0f, CP::HudFit(Label, 22.0f, W * 0.3f - 40.0f), B > 0.5f ? Paper : WithAlpha(Paper, 0.75f),
+			CP::ETextAlign::Left, TEXT("Black"));
+		// The value in its box, between the arrows.
+		const float BoxL = W * 0.3f;
+		const float BoxW = W - BoxL - 24.0f;
+		CP::RoundedBox(Up, BoxL, 10.0f, BoxW, H - 20.0f, 10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.35f));
+		const float Mid = BoxL + BoxW * 0.5f;
+		const float ValueRoom = BoxW - 140.0f;
+		const float ValueSize = CP::HudFit(Value, 30.0f, ValueRoom, TEXT("Black"));
+		CP::HudText3D(Top, Value, Mid, H * 0.5f - ValueSize * 0.72f, ValueSize, bDisabled && !bFixed ? Muted : Paper, CP::ETextAlign::Center,
+			TEXT("Black"), 2.0f);
+		if (bFixed)
+		{
+			const float TagW = CP::HudMeasure(TEXT("固定"), 14.0f, TEXT("Black")) + 20.0f;
+			CP::RoundedBox(Top, BoxL + BoxW - TagW - 12.0f, H * 0.5f - 12.0f, TagW, 24.0f, 12.0f, WithAlpha(Paper, 0.16f));
+			CP::HudAbove(Top, 1).Text(TEXT("固定"), BoxL + BoxW - TagW * 0.5f - 12.0f, H * 0.5f - 10.0f, 14.0f, WithAlpha(Paper, 0.8f),
+				CP::ETextAlign::Center, TEXT("Black"));
+		}
+		else if (!bDisabled)
+		{
+			const float Nudge = 4.0f * FMath::Sin(Time * 6.0f) * B;
+			const FLinearColor Arrow = FMath::Lerp(WithAlpha(Paper, 0.45f), Accent.Equals(Muted) ? Paper : FMath::Lerp(Accent, Paper, 0.3f), B);
+			const float Y = H * 0.5f;
+			const float LX = BoxL + 30.0f - Nudge;
+			const float RX = BoxL + BoxW - 30.0f + Nudge;
+			Top.Line(FVector2D(LX + 9.0f, Y - 13.0f), FVector2D(LX - 4.0f, Y), Arrow, 5.0f);
+			Top.Line(FVector2D(LX - 4.0f, Y), FVector2D(LX + 9.0f, Y + 13.0f), Arrow, 5.0f);
+			Top.Line(FVector2D(RX - 9.0f, Y - 13.0f), FVector2D(RX + 4.0f, Y), Arrow, 5.0f);
+			Top.Line(FVector2D(RX + 4.0f, Y), FVector2D(RX - 9.0f, Y + 13.0f), Arrow, 5.0f);
+		}
+		if (B > 0.01f)
+		{
+			CP::HudAbove(P, 3).Outline(-4.0f, -4.0f, W + 8.0f, H + 8.0f, WithAlpha(Paper, B * (0.45f + 0.3f * FMath::Sin(Time * 5.0f))), 2.0f);
+		}
+	}
+
+	/** A kind of match in the rules screen's list: its emblem, its name, a line on how it is won; the one in use marked. */
+	void PaintModeEmblem(const ChaosImpactPaint::FPainter& Icon, const FChaosImpactMatchRules& Rules, const FVector2D& At, const float Unit,
+		const FLinearColor& Mark, const float Time);
+
+	void PaintModeTile(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const FSlateRect& Rect, const int32 Mode,
+		const FString& Name, const FLinearColor& Accent, const float Blend, const bool bPressed, const bool bDisabled, const bool bCurrent,
+		const FString& Blocker, const float Alpha, const float Time)
+	{
+		namespace CP = ChaosImpactPaint;
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const float B = bDisabled ? 0.0f : EaseOut(Blend);
+		const FGeometry Card = MakeSkewed(Design, Rect.Left, Rect.Top - 8.0f * B, W, H, -0.1f, (1.0f + 0.03f * B) * (bPressed ? 0.97f : 1.0f));
+		const CP::FPainter P{Card, Elements, Layer, Alpha * (bDisabled ? 0.45f : 1.0f)};
+		const CP::FPainter Up = CP::HudAbove(P, 1);
+		const CP::FPainter Top = CP::HudAbove(P, 3);
+		FLinearColor Deep = Accent * (0.16f + 0.26f * B);
+		Deep.A = 0.97f;
+		P.Box(10.0f, 12.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		CP::HudPoly(P, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)},
+			CP::MakeFill(Deep, FLinearColor(0.008f, 0.01f, 0.025f, 0.97f)));
+		CP::HudPoly(Up, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, 5.0), FVector2D(0.0, 5.0)}, CP::MakeFill(FMath::Lerp(Accent, Paper, 0.35f), Accent));
+		Up.Outline(0.0f, 0.0f, W, H, WithAlpha(Paper, 0.1f), 1.0f);
+		FChaosImpactMatchRules Kind;
+		AChaosImpactPlayerController::ApplyMatchMode(Kind, Mode);
+		PaintModeEmblem(CP::HudAbove(P, 2), Kind, FVector2D(W - 62.0f, H * 0.5f), 42.0f, WithAlpha(FMath::Lerp(Accent, Paper, 0.3f), 0.45f + 0.5f * B),
+			Time * (0.4f + 0.6f * B));
+		const float NameSize = CP::HudFit(Name, 34.0f, W - 130.0f);
+		CP::HudText3D(Top, Name, 20.0f, 30.0f + (34.0f - NameSize) * 0.6f, NameSize, Paper, CP::ETextAlign::Left, TEXT("Black"), 2.0f);
+		const FString Line = !Blocker.IsEmpty() ? Blocker
+			: Mode == 0 ? TEXT("ポイントを一番かせいだ人の勝ち")
+			: Mode <= 3 ? TEXT("チームの合計ポイントで勝負")
+			: Mode == 4 ? TEXT("巨大球を相手のゴールへ押し込め")
+			: Mode == 5 ? TEXT("3回当てて倒す・2本先取")
+			: Mode == 6 ? TEXT("最後の1人になれば勝ち")
+			: Mode <= 9 ? TEXT("最後まで生き残ったチームの勝ち")
+			: Mode == AChaosImpactPlayerController::TournamentAllAtOnceChoice ? TEXT("全試合いっしょに・待ち時間は練習や観戦")
+			: TEXT("1試合ずつ順番に・みんなで観戦");
+		Top.Text(Line, 21.0f, H - 40.0f, CP::HudFit(Line, 16.0f, W - 42.0f, TEXT("Bold")), Blocker.IsEmpty() ? WithAlpha(Paper, 0.75f) : Fire,
+			CP::ETextAlign::Left, TEXT("Bold"));
+		if (bCurrent)
+		{
+			const float TagW = CP::HudMeasure(TEXT("いまのルール"), 12.0f, TEXT("Black")) + 18.0f;
+			CP::RoundedBox(Top, 18.0f, 10.0f, TagW, 20.0f, 10.0f, Gold);
+			CP::HudAbove(Top, 1).Text(TEXT("いまのルール"), 18.0f + TagW * 0.5f, 11.0f, 12.0f, Ink, CP::ETextAlign::Center, TEXT("Black"));
+		}
+		if (B > 0.01f)
+		{
+			CP::HudAbove(P, 4).Outline(-5.0f, -5.0f, W + 10.0f, H + 10.0f, WithAlpha(Paper, B * (0.6f + 0.3f * FMath::Sin(Time * 5.0f))), 3.0f);
+		}
+	}
+
+	/** The rules page's emblem for a kind of match (everyone for themselves, teams, 1 v 1, battle royale, tournament). */
+	void PaintModeEmblem(const ChaosImpactPaint::FPainter& Icon, const FChaosImpactMatchRules& Rules, const FVector2D& At, const float Unit,
+		const FLinearColor& Mark, const float Time)
+	{
+		namespace CP = ChaosImpactPaint;
+		if (Rules.bTournament)
+		{
+			const float L = At.X - Unit * 0.9f;
+			const float M = At.X - Unit * 0.2f;
+			const float R = At.X + Unit * 0.5f;
+			for (int32 Leaf = 0; Leaf < 4; ++Leaf)
+			{
+				const float Y = At.Y - Unit * 0.75f + Leaf * Unit * 0.5f;
+				Icon.Line(FVector2D(L, Y), FVector2D(M, Y), Mark, 5.0f);
+			}
+			for (int32 Pair = 0; Pair < 2; ++Pair)
+			{
+				const float Y0 = At.Y - Unit * 0.75f + Pair * Unit;
+				Icon.Line(FVector2D(M, Y0), FVector2D(M, Y0 + Unit * 0.5f), Mark, 5.0f);
+				Icon.Line(FVector2D(M, Y0 + Unit * 0.25f), FVector2D(R, Y0 + Unit * 0.25f), Mark, 5.0f);
+			}
+			Icon.Line(FVector2D(R, At.Y - Unit * 0.5f), FVector2D(R, At.Y + Unit * 0.5f), Mark, 5.0f);
+			Icon.Line(FVector2D(R, At.Y), FVector2D(R + Unit * 0.45f, At.Y), Gold, 6.0f);
+			Icon.Disc(FVector2D(R + Unit * 0.6f, At.Y), Unit * 0.17f, Gold);
+		}
+		else if (Rules.bDuel)
+		{
+			const float Bob = FMath::Sin(Time * 4.0f) * 4.0f;
+			Icon.Disc(At + FVector2D(-Unit * 0.62f, Bob), Unit * 0.34f, ChaosImpactMatch::GetTeamColor(1));
+			Icon.Disc(At + FVector2D(Unit * 0.62f, -Bob), Unit * 0.34f, ChaosImpactMatch::GetTeamColor(0));
+			Icon.Line(At + FVector2D(-Unit * 0.14f, -Unit * 0.42f), At + FVector2D(Unit * 0.1f, -Unit * 0.02f), Mark, 6.0f);
+			Icon.Line(At + FVector2D(Unit * 0.1f, -Unit * 0.02f), At + FVector2D(-Unit * 0.1f, Unit * 0.06f), Mark, 6.0f);
+			Icon.Line(At + FVector2D(-Unit * 0.1f, Unit * 0.06f), At + FVector2D(Unit * 0.14f, Unit * 0.46f), Mark, 6.0f);
+		}
+		else if (Rules.bBattleRoyale)
+		{
+			// A ring closing on the last ones standing.
+			Icon.Ring(At, Unit * (0.85f + 0.08f * FMath::Sin(Time * 2.0f)), Mark, 4.0f, 56);
+			for (int32 Seat = 0; Seat < 5; ++Seat)
+			{
+				const float Angle = Time * 0.6f + Seat * UE_TWO_PI / 5.0f;
+				Icon.Disc(At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.45f, Unit * 0.11f, Seat == 0 ? Gold : WithAlpha(Mark, 0.5f));
+			}
+		}
+		else if (Rules.IsTeamBattle())
+		{
+			// The teams' colours, a few each, facing.
+			const int32 Teams = FMath::Clamp(Rules.TeamCount, 2, 4);
+			for (int32 Team = 0; Team < Teams; ++Team)
+			{
+				const float Angle = Team * UE_TWO_PI / Teams + Time * 0.3f;
+				const FVector2D Home = At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.55f;
+				for (int32 Member = 0; Member < 3; ++Member)
+				{
+					const float Around = Angle + (Member - 1) * 0.5f;
+					Icon.Disc(Home + FVector2D(FMath::Cos(Around), FMath::Sin(Around)) * Unit * 0.24f, Unit * 0.14f, ChaosImpactMatch::GetTeamColor(Team));
+				}
+			}
+		}
+		else
+		{
+			// Everyone for themselves: players round a ball.
+			Icon.Disc(At, Unit * 0.26f, Mark);
+			for (int32 Seat = 0; Seat < 8; ++Seat)
+			{
+				const float Angle = Time * 0.5f + Seat * UE_TWO_PI / 8.0f;
+				Icon.Disc(At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.75f, Unit * 0.11f, Mark);
+			}
+		}
+	}
+
+	/**
+	 * The online menu's tile: a leaning card in its colour, an emblem for what it is (eight players round a ball, two
+	 * facing, a bracket, a key, rising bars, signal bars), its name big in English and in Japanese, and a line on what
+	 * it does. The one chosen lifts and lights.
+	 */
+	void PaintOnlineTile(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const FSlateRect& Rect,
+		const FString& Big, const FString& Name, const FString& Kind, const FLinearColor& Accent, const float Blend, const bool bPressed,
+		const bool bDisabled, const float Alpha, const float Time)
+	{
+		namespace CP = ChaosImpactPaint;
+		const float W = Rect.Right - Rect.Left;
+		const float H = Rect.Bottom - Rect.Top;
+		const float B = EaseOut(Blend);
+		const FGeometry Card = MakeSkewed(Design, Rect.Left, Rect.Top - 10.0f * B, W, H, -0.12f, (1.0f + 0.02f * B) * (bPressed ? 0.97f : 1.0f));
+		const float Fade = Alpha * (bDisabled ? 0.5f : 1.0f);
+		const CP::FPainter P{Card, Elements, Layer, Fade};
+		const CP::FPainter Up = CP::HudAbove(P, 1);
+		const CP::FPainter Top = CP::HudAbove(P, 3);
+		FLinearColor Deep = Accent * (0.18f + 0.22f * B);
+		Deep.A = 0.97f;
+		P.Box(14.0f, 16.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		CP::HudPoly(P, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)},
+			CP::MakeFill(Deep, FLinearColor(0.008f, 0.01f, 0.025f, 0.97f)));
+		// Speed streaks leaning with it, brighter once chosen.
+		for (int32 Band = 0; Band < 3; ++Band)
+		{
+			Up.Box(W * 0.56f + Band * 52.0f, 0.0f, 20.0f - Band * 5.0f, H, WithAlpha(Accent, 0.05f + 0.1f * B));
+		}
+		CP::HudPoly(Up, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, 6.0), FVector2D(0.0, 6.0)},
+			CP::MakeFill(FMath::Lerp(Accent, Paper, 0.35f), Accent));
+		Up.Box(0.0f, H - 10.0f, W, 10.0f, Accent);
+		Up.Outline(0.0f, 0.0f, W, H, WithAlpha(Paper, 0.1f), 1.0f);
+
+		// The emblem, toward the right.
+		const float Unit = FMath::Min(H * 0.36f, 96.0f);
+		// A narrow tile keeps its words wide: its emblem sits faintly behind them, low on the right.
+		const bool bNarrow = W < 440.0f;
+		const FVector2D At(W - Unit * 1.25f, bNarrow ? H * 0.56f : H * 0.42f);
+		const FLinearColor Mark = WithAlpha(FMath::Lerp(Accent, Paper, 0.35f), bNarrow ? 0.18f + 0.22f * B : 0.35f + 0.55f * B);
+		const CP::FPainter Icon = CP::HudAbove(P, 2);
+		const float Spin = Time * (0.4f + 0.8f * B);
+		if (Kind == TEXT("random"))
+		{
+			Icon.Disc(At, Unit * 0.28f, Mark);
+			for (int32 Seat = 0; Seat < 8; ++Seat)
+			{
+				const float Angle = Spin + Seat * UE_TWO_PI / 8.0f;
+				Icon.Disc(At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.78f, Unit * 0.12f, Mark);
+			}
+		}
+		else if (Kind == TEXT("duel"))
+		{
+			const float Bob = FMath::Sin(Time * 4.0f) * 4.0f * B;
+			Icon.Disc(At + FVector2D(-Unit * 0.62f, Bob), Unit * 0.34f, Mark);
+			Icon.Disc(At + FVector2D(Unit * 0.62f, -Bob), Unit * 0.34f, Mark);
+			Icon.Line(At + FVector2D(-Unit * 0.14f, -Unit * 0.42f), At + FVector2D(Unit * 0.1f, -Unit * 0.02f), Mark, 6.0f);
+			Icon.Line(At + FVector2D(Unit * 0.1f, -Unit * 0.02f), At + FVector2D(-Unit * 0.1f, Unit * 0.06f), Mark, 6.0f);
+			Icon.Line(At + FVector2D(-Unit * 0.1f, Unit * 0.06f), At + FVector2D(Unit * 0.14f, Unit * 0.46f), Mark, 6.0f);
+		}
+		else if (Kind == TEXT("tourney"))
+		{
+			// Four leaves to one: the bracket, its winner's line lit.
+			const float L = At.X - Unit * 0.9f;
+			const float M = At.X - Unit * 0.2f;
+			const float R = At.X + Unit * 0.5f;
+			for (int32 Leaf = 0; Leaf < 4; ++Leaf)
+			{
+				const float Y = At.Y - Unit * 0.75f + Leaf * Unit * 0.5f;
+				Icon.Line(FVector2D(L, Y), FVector2D(M, Y), Mark, 4.0f);
+			}
+			for (int32 Pair = 0; Pair < 2; ++Pair)
+			{
+				const float Y0 = At.Y - Unit * 0.75f + Pair * Unit;
+				Icon.Line(FVector2D(M, Y0), FVector2D(M, Y0 + Unit * 0.5f), Mark, 4.0f);
+				Icon.Line(FVector2D(M, Y0 + Unit * 0.25f), FVector2D(R, Y0 + Unit * 0.25f), Mark, 4.0f);
+			}
+			Icon.Line(FVector2D(R, At.Y - Unit * 0.5f), FVector2D(R, At.Y + Unit * 0.5f), Mark, 4.0f);
+			Icon.Line(FVector2D(R, At.Y), FVector2D(R + Unit * 0.5f, At.Y), WithAlpha(Gold, 0.5f + 0.5f * B), 5.0f);
+			Icon.Disc(FVector2D(R + Unit * 0.62f, At.Y), Unit * 0.16f, WithAlpha(Gold, 0.5f + 0.5f * B));
+		}
+		else if (Kind == TEXT("private"))
+		{
+			// A key.
+			Icon.Ring(At + FVector2D(-Unit * 0.5f, 0.0), Unit * 0.34f, Mark, 8.0f, 40);
+			Icon.Line(At + FVector2D(-Unit * 0.16f, 0.0), At + FVector2D(Unit * 0.9f, 0.0), Mark, 9.0f);
+			Icon.Line(At + FVector2D(Unit * 0.58f, 0.0), At + FVector2D(Unit * 0.58f, Unit * 0.3f), Mark, 8.0f);
+			Icon.Line(At + FVector2D(Unit * 0.82f, 0.0), At + FVector2D(Unit * 0.82f, Unit * 0.22f), Mark, 8.0f);
+		}
+		else if (Kind == TEXT("record"))
+		{
+			// Rising bars and the line over them.
+			for (int32 Bar = 0; Bar < 4; ++Bar)
+			{
+				const float BarH = Unit * (0.4f + Bar * 0.3f) * (0.85f + 0.15f * FMath::Sin(Time * 3.0f + Bar) * B);
+				CP::RoundedBox(Icon, At.X - Unit * 0.9f + Bar * Unit * 0.48f, At.Y + Unit * 0.7f - BarH, Unit * 0.3f, BarH, 3.0f, Mark);
+			}
+		}
+		else if (Kind == TEXT("linecheck"))
+		{
+			// Signal bars, and waves going out from them.
+			for (int32 Bar = 0; Bar < 4; ++Bar)
+			{
+				const float BarH = Unit * (0.3f + Bar * 0.25f);
+				CP::RoundedBox(Icon, At.X - Unit * 0.8f + Bar * Unit * 0.42f, At.Y + Unit * 0.6f - BarH, Unit * 0.26f, BarH, 3.0f, Mark);
+			}
+			const float Wave = FMath::Frac(Time * 0.9f);
+			Icon.Arc(At + FVector2D(Unit * 0.7f, -Unit * 0.3f), Unit * (0.2f + 0.4f * Wave), -60.0f, 60.0f, WithAlpha(Mark, Mark.A * (1.0f - Wave)), 4.0f);
+		}
+
+		// Its name, big in English, then in Japanese, then what it does.
+		const float TextW = bNarrow ? W - 70.0f : W - Unit * 2.4f - 30.0f;
+		const float BigSize = CP::HudFit(Big, H >= 240.0f ? 52.0f : 40.0f, TextW, TEXT("BlackItalic"));
+		CP::HudText3D(Top, Big, 34.0f, 22.0f, BigSize, FMath::Lerp(WithAlpha(Paper, 0.85f), Paper, B), CP::ETextAlign::Left, TEXT("BlackItalic"), 3.0f);
+		const float NameSize = CP::HudFit(Name, H >= 240.0f ? 30.0f : 26.0f, TextW);
+		Top.Text(Name, 36.0f, 30.0f + BigSize * 1.25f, NameSize, Paper, CP::ETextAlign::Left, TEXT("Black"));
+		const FString Line = Kind == TEXT("random") ? TEXT("8人で3分間の個人戦。たりない分はCPU")
+			: Kind == TEXT("duel") ? (bDisabled ? TEXT("1v1は1人で参加してください") : TEXT("1対1・2本先取のデュエル"))
+			: Kind == TEXT("tourney") ? TEXT("大会にエントリー・大会をひらく")
+			: Kind == TEXT("private") ? TEXT("あいことばで友だちと部屋をつくる・入る")
+			: Kind == TEXT("record") ? TEXT("これまでの成績")
+			: Kind == TEXT("linecheck") ? TEXT("中継サーバーまでの回線をはかる") : TEXT("");
+		if (!Line.IsEmpty() && H >= 150.0f)
+		{
+			Top.Text(Line, 37.0f, H - 50.0f, CP::HudFit(Line, 18.0f, W - 60.0f, TEXT("Bold")), WithAlpha(Paper, 0.6f + 0.3f * B),
+				CP::ETextAlign::Left, TEXT("Bold"));
+		}
+		if (B > 0.01f)
+		{
+			CP::HudAbove(P, 4).Outline(-6.0f, -6.0f, W + 12.0f, H + 12.0f, WithAlpha(Paper, B * (0.6f + 0.3f * FMath::Sin(Time * 5.0f))), 3.0f);
 		}
 	}
 
@@ -442,9 +817,11 @@ namespace
 		P.Box(0.0f, 0.0f, W, 6.0f, WithAlpha(Accent, 0.45f + 0.55f * B));
 		P.Box(0.0f, H - 14.0f, W, 14.0f, Accent);
 
-		P.Text(Big, 40.0f, H - BigSize * 1.3f - 110.0f, BigSize, WithAlpha(Paper, 0.7f + 0.3f * B),
+		// (Both fit across the card.)
+		const float BigFit = ChaosImpactPaint::HudFit(Big, BigSize, W - 80.0f);
+		P.Text(Big, 40.0f, H - BigSize * 1.3f - 110.0f + (BigSize - BigFit) * 0.6f, BigFit, WithAlpha(Paper, 0.7f + 0.3f * B),
 			ETextAlign::Left, TEXT("Black"), 3.0f * B, Ink);
-		P.Text(Sub, 46.0f, H - 84.0f, 30.0f, WithAlpha(Paper, 0.55f + 0.45f * B));
+		P.Text(Sub, 46.0f, H - 84.0f, ChaosImpactPaint::HudFit(Sub, 30.0f, W - 92.0f), WithAlpha(Paper, 0.55f + 0.45f * B));
 		for (int32 Pip = 0; Pip < Pips; ++Pip)
 		{
 			P.Box(W - 34.0f - (Pips - Pip) * 26.0f, 30.0f, 16.0f, 34.0f, WithAlpha(Paper, 0.5f + 0.5f * B));
@@ -936,6 +1313,7 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 
 	CharacterSelect = NewObject<UChaosImpactCharacterSelect>(this);
 	ColourEdit = NewObject<UChaosImpactColourEdit>(this);
+	TourneyEntry = NewObject<UChaosImpactTourneyEntry>(this);
 	SettingsScreen = NewObject<UChaosImpactSettingsScreen>(this);
 
 	if (FSlateApplication::IsInitialized() && !JoinInputProcessor.IsValid())
@@ -985,6 +1363,10 @@ void UChaosImpactMenuWidget::NativeDestruct()
 	{
 		ColourEdit->Close();
 	}
+	if (TourneyEntry)
+	{
+		TourneyEntry->Close();
+	}
 	if (SettingsScreen)
 	{
 		SettingsScreen->Close();
@@ -1019,6 +1401,30 @@ bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
 		return ColourEdit->HandleKeyDown(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return TourneyEntry->HandleKeyDown(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::TourneySeat && GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		// Every device's button takes (or gives back) a place; Escape, before the tournament begins, goes back.
+		if (!InKeyEvent.IsRepeat() && !InKeyEvent.GetKey().IsMouseButton() && !InKeyEvent.GetKey().IsAnalog())
+		{
+			if (AChaosImpactPlayerController* Seats = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+			{
+				if (InKeyEvent.GetKey() == EKeys::Escape)
+				{
+					Seats->CancelTourneySeats();
+				}
+				else
+				{
+					Seats->PressTourneySeat(!InKeyEvent.GetKey().IsGamepadKey(), InKeyEvent.GetInputDeviceId().GetId());
+				}
+			}
+		}
+		return true;
 	}
 	if (IsSettingsActive())
 	{
@@ -1065,6 +1471,15 @@ bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnal
 	{
 		return ColourEdit->HandleAnalog(InAnalogEvent);
 	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return TourneyEntry->HandleAnalog(InAnalogEvent);
+	}
+	if (Screen == EChaosImpactScreen::TourneySeat)
+	{
+		return true;
+	}
 	if (IsSettingsActive())
 	{
 		return SettingsScreen->HandleAnalog(InAnalogEvent);
@@ -1101,6 +1516,22 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		ColourEdit->Close();
 	}
+	if (TourneyEntry && NewScreen != EChaosImpactScreen::TourneyEntry)
+	{
+		TourneyEntry->Close();
+	}
+	if (NewScreen != EChaosImpactScreen::DuelFound && NewScreen != EChaosImpactScreen::TourneySeat)
+	{
+		CloseDuelPreviews();
+	}
+	// The line check measures as its page comes up.
+	if (NewScreen == EChaosImpactScreen::LineCheck && PreviousScreen != EChaosImpactScreen::LineCheck)
+	{
+		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this); Sessions && !Sessions->GetLineCheck().bRunning)
+		{
+			Sessions->StartLineCheck();
+		}
+	}
 	// Leaving the select screen: the level is drawn again at once (this widget may stop ticking when hidden).
 	if (UGameViewportClient* Viewport = bLevelHiddenByMenu && NewScreen != EChaosImpactScreen::CharacterSelect && GetWorld()
 		? GetWorld()->GetGameViewport() : nullptr)
@@ -1132,9 +1563,15 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		ColourEdit->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
 	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && !TourneyEntry->IsOpen())
+	{
+		TourneyEntry->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
+	}
 	SelectedIndex = 0;
 	PressedIndex = INDEX_NONE;
 	ArmedIndex = INDEX_NONE;
+	PauseConfirm.Reset();
+	bModePicker = false;
 	ScreenStartedAt = FPlatformTime::Seconds();
 	AnimationSeconds = 0.0f;
 	BuildEntries();
@@ -1194,8 +1631,8 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 			// Renaming starts from the current name; a new room from "<player>のへや".
 			const AChaosImpactPlayerController* RoomController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 			const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-			NameInput->SetText(FText::FromString(RoomController && RoomController->IsRenamingRoom() && Room
-				? Room->RoomName : Sessions ? Sessions->GetDefaultRoomName() : FString()));
+			NameInput->SetText(FText::FromString(RoomController && RoomController->IsEditingTourneyTitle() ? RoomController->GetPendingTourney().Title
+				: RoomController && RoomController->IsRenamingRoom() && Room ? Room->RoomName : Sessions ? Sessions->GetDefaultRoomName() : FString()));
 		}
 		bNameFocusPending = bNameScreen;
 	}
@@ -1262,6 +1699,10 @@ FString UChaosImpactMenuWidget::GetLiveEntriesKey() const
 	if (Screen == EChaosImpactScreen::DuelFound && Sessions)
 	{
 		return FString::Printf(TEXT("%d%d%d"), Sessions->IsDuelOffered(), Sessions->GetDuelOffer().bAccepted, Sessions->IsQueueMatched());
+	}
+	if (Screen == EChaosImpactScreen::LineCheck && Sessions)
+	{
+		return Sessions->GetLineCheck().bRunning ? TEXT("run") : TEXT("done");
 	}
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	if (Screen == EChaosImpactScreen::MatchEnd && Controller && Room && Room->Matchmade == EChaosImpactMatchmade::Duel)
@@ -1389,9 +1830,85 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 	}
 }
 
+void UChaosImpactMenuWidget::UpdateDuelPreviews(const float DeltaSeconds)
+{
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	UWorld* World = GetWorld();
+	if (!Sessions || !World || !Sessions->IsDuelOffered())
+	{
+		return;
+	}
+	const FChaosImpactDuelOffer& Offer = Sessions->GetDuelOffer();
+	const FString For = FString::Printf(TEXT("%s/%d/%d"), *Offer.MatchId, Offer.Character, Offer.Colour);
+	if (DuelPreviewFor != For)
+	{
+		// This player (as their loadout and カスタムカラー show them) and the opponent, each on a stage of their own.
+		CloseDuelPreviews();
+		DuelPreviewFor = For;
+		const UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(this);
+		const FChaosImpactLoadout Own = Loadouts ? Loadouts->GetLoadout(0) : FChaosImpactLoadout();
+		FActorSpawnParameters Parameters;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Parameters.ObjectFlags |= RF_Transient;
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			AChaosImpactCharacterPreview* Preview = World->SpawnActor<AChaosImpactCharacterPreview>(AChaosImpactCharacterPreview::StaticClass(),
+				FVector(Side * 1600.0f, -126000.0f, 40000.0f), FRotator::ZeroRotator, Parameters);
+			if (!Preview)
+			{
+				continue;
+			}
+			if (Side == 0)
+			{
+				Preview->ShowLoadout(Own.Character, FMath::Max(Own.Colour, 0), Ice);
+				if (const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(this))
+				{
+					Preview->ShowCustomColours(Colours->GetPresetParts(Own.Character, Own.ColourPreset));
+				}
+			}
+			else
+			{
+				Preview->ShowLoadout(Offer.Character, FMath::Max(Offer.Colour, 0), Fire);
+			}
+			// Turned a little toward each other.
+			Preview->SetFacing(Side == 0 ? -24.0f : 24.0f, 0.0f);
+			FSlateBrush Brush;
+			Brush.SetResourceObject(Preview->GetPicture());
+			Brush.ImageSize = FVector2D(AChaosImpactCharacterPreview::PictureWidth, AChaosImpactCharacterPreview::PictureHeight);
+			Brush.DrawAs = ESlateBrushDrawType::Image;
+			DuelPreviews.Add(Preview);
+			DuelPreviewBrushes.Add(Brush);
+		}
+	}
+	// The training is paused under the card: the previews move and are filmed from here.
+	for (AChaosImpactCharacterPreview* Preview : DuelPreviews)
+	{
+		if (IsValid(Preview))
+		{
+			Preview->Animate(DeltaSeconds);
+			Preview->FilmNow();
+		}
+	}
+}
+
+void UChaosImpactMenuWidget::CloseDuelPreviews()
+{
+	for (AChaosImpactCharacterPreview* Preview : DuelPreviews)
+	{
+		if (IsValid(Preview))
+		{
+			Preview->Destroy();
+		}
+	}
+	DuelPreviews.Reset();
+	DuelPreviewBrushes.Reset();
+	DuelPreviewFor.Reset();
+}
+
 void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
 	const float Time) const
 {
+	namespace CP = ChaosImpactPaint;
 	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 	if (!Sessions)
 	{
@@ -1414,72 +1931,599 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 		bool bKnownRecord;
 		FChaosImpactDuelRecord Record;
 		bool bAccepted;
-		float X;
+		FLinearColor Tone;
 	};
 	const FSide Sides[] = {
 		{TEXT("あなた"), Sessions->GetPlayerName(), Own.Character, FMath::Max(0, Own.Colour), KeyboardPlayer == 0,
-			Sessions->GetRecords().bKnown, Sessions->GetRecords().Duel, Offer.bAccepted || bStarting, 150.0f},
+			Sessions->GetRecords().bKnown, Sessions->GetRecords().Duel, Offer.bAccepted || bStarting, Ice},
 		{TEXT("相手"), Offer.Name, Offer.Character, Offer.Colour, Offer.bKeyboard, true, Offer.Record,
-			Offer.bOpponentAccepted || bStarting, 930.0f}};
+			Offer.bOpponentAccepted || bStarting, Fire}};
+
+	// The title: MATCH FOUND, slammed in, and what it means under it.
+	{
+		const float In = EaseOut(Time / 0.28f);
+		const float Scale = FMath::Lerp(1.6f, 1.0f, In);
+		const CP::FPainter Title{CP::MakeAnchor(Design, 800.0f, 92.0f, Scale), Elements, Layer + 2, In};
+		CP::HudText3D(Title, TEXT("MATCH FOUND"), 0.0f, -62.0f, 74.0f, Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
+		const CP::FPainter Under{Design, Elements, Layer + 2, EaseOut((Time - 0.2f) / 0.3f)};
+		Under.Text(TEXT("対戦相手が見つかりました"), 800.0f, 140.0f, 22.0f, WithAlpha(Paper, 0.85f), CP::ETextAlign::Center, TEXT("Black"));
+	}
+
+	constexpr float CardW = 620.0f;
+	constexpr float CardH = 540.0f;
+	constexpr float CardTop = 184.0f;
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
 		const FSide& Side = Sides[Index];
-		const float In = EaseOut((Time - 0.12f - 0.08f * Index) / 0.35f);
-		const float Slide = (1.0f - In) * (Index == 0 ? -120.0f : 120.0f);
+		const bool bRight = Index == 1;
+		const float In = EaseOut((Time - 0.1f - 0.08f * Index) / 0.38f);
+		const float Slide = (1.0f - In) * (bRight ? 160.0f : -160.0f);
+		const float Left = (bRight ? 1600.0f - 70.0f - CardW : 70.0f) + Slide;
+		const FGeometry CardSpace = MakeSkewed(Design, Left, CardTop, CardW, CardH, -0.08f);
+		const CP::FPainter Card{CardSpace, Elements, Layer, In};
+		const CP::FPainter Up = CP::HudAbove(Card, 1);
+		const CP::FPainter Top = CP::HudAbove(Card, 3);
+		FLinearColor Deep = Side.Tone * 0.16f;
+		Deep.A = 0.97f;
+		// The card: a shadow, a body shading from the side's colour down to night, bands top and bottom.
+		Card.Box(14.0f, 16.0f, CardW, CardH, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		CP::HudPoly(Card, {FVector2D(0.0, 0.0), FVector2D(CardW, 0.0), FVector2D(CardW, CardH), FVector2D(0.0, CardH)},
+			CP::MakeFill(Deep, FLinearColor(0.006f, 0.008f, 0.02f, 0.97f)));
+		CP::HudPoly(Up, {FVector2D(0.0, 0.0), FVector2D(CardW, 0.0), FVector2D(CardW, 8.0), FVector2D(0.0, 8.0)},
+			CP::MakeFill(FMath::Lerp(Side.Tone, Paper, 0.35f), Side.Tone));
+		Up.Box(0.0f, CardH - 6.0f, CardW, 6.0f, Side.Tone);
+		Up.Outline(0.0f, 0.0f, CardW, CardH, WithAlpha(Paper, 0.14f), 1.5f);
+		// Light streaks behind the character.
+		const float PicX = bRight ? CardW - 330.0f : 10.0f;
+		for (int32 Band = 0; Band < 3; ++Band)
+		{
+			Up.Box(PicX + 60.0f + Band * 80.0f, 8.0f, 24.0f - Band * 6.0f, CardH - 14.0f, WithAlpha(Side.Tone, 0.07f));
+		}
+		// The character, standing in its half of the card: cut to the card's shape, its stage's edges faded into the card.
+		if (DuelPreviewBrushes.IsValidIndex(Index) && DuelPreviewBrushes[Index].GetResourceObject())
+		{
+			const float PicW = 420.0f;
+			const float PicH = PicW * AChaosImpactCharacterPreview::PictureHeight / AChaosImpactCharacterPreview::PictureWidth;
+			const float PicLeft = bRight ? CardW - PicW + 40.0f : -40.0f;
+			const float PicTop = CardH - PicH + 40.0f;
+			Elements.PushClip(FSlateClippingZone(CardSpace));
+			FSlateDrawElement::MakeBox(Elements, Layer + 2, CardSpace.ToPaintGeometry(FVector2f(PicW, PicH), FSlateLayoutTransform(FVector2f(PicLeft, PicTop))),
+				&DuelPreviewBrushes[Index], ESlateDrawEffect::None, WithAlpha(FLinearColor::White, In));
+			const CP::FPainter Fade{CardSpace, Elements, Layer + 2, In};
+			const FLinearColor Night(0.006f, 0.008f, 0.02f, 1.0f);
+			constexpr int32 Steps = 14;
+			for (int32 Step = 0; Step < Steps; ++Step)
+			{
+				const float A = FMath::Square(1.0f - static_cast<float>(Step) / Steps);
+				// The inner edge (toward the words) and the floor.
+				const float InnerX = bRight ? PicLeft + Step * 8.0f : PicLeft + PicW - (Step + 1) * 8.0f;
+				Fade.Box(InnerX, 0.0f, 8.0f, CardH, WithAlpha(Night, A));
+				Fade.Box(0.0f, CardH - (Step + 1) * 7.0f, CardW, 7.0f, WithAlpha(Night, 0.85f * A));
+				Fade.Box(0.0f, Step * 6.0f, CardW, 6.0f, WithAlpha(Night, 0.6f * A));
+			}
+			// A breath of the side's colour over it, so it sits in the card.
+			Fade.Box(PicLeft, PicTop, PicW, PicH, WithAlpha(Side.Tone, 0.07f));
+			Elements.PopClip();
+		}
+		// The card's bands and rim over the character.
+		const CP::FPainter Rim = CP::HudAbove(Card, 3);
+		CP::HudPoly(Rim, {FVector2D(0.0, 0.0), FVector2D(CardW, 0.0), FVector2D(CardW, 8.0), FVector2D(0.0, 8.0)},
+			CP::MakeFill(FMath::Lerp(Side.Tone, Paper, 0.35f), Side.Tone));
+		Rim.Box(0.0f, CardH - 6.0f, CardW, 6.0f, Side.Tone);
+		Rim.Outline(0.0f, 0.0f, CardW, CardH, WithAlpha(Paper, 0.16f), 1.5f);
+		// The words on the other half.
+		const float TX = bRight ? 30.0f : 330.0f;
+		const float TW = CardW - 330.0f - 30.0f;
+		CP::RoundedBox(Top, TX, 30.0f, 120.0f, 36.0f, 18.0f, Side.Tone);
+		Top.Text(Side.Label, TX + 60.0f, 33.0f, 22.0f, Paper, CP::ETextAlign::Center, TEXT("Black"));
+		const float NameSize = FMath::Clamp(50.0f * TW / FMath::Max(CP::HudMeasure(Side.Name, 50.0f, TEXT("Black")), 1.0f), 24.0f, 50.0f);
+		CP::HudText3D(CP::HudAbove(Top, 1), Side.Name, TX, 84.0f + (50.0f - NameSize) * 0.5f, NameSize, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
 		const FLinearColor Swatch = ChaosImpactRoster::GetColourSwatch(Side.Colour);
-		const FMenuPainter P{MakeSkewed(Design, Side.X + Slide, 214.0f, 520.0f, 470.0f, -0.08f), Elements, Layer, In};
-		P.Box(12.0f, 14.0f, 520.0f, 470.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
-		P.Box(0.0f, 0.0f, 520.0f, 470.0f, FLinearColor(0.015f, 0.02f, 0.04f, 0.96f));
-		P.Box(0.0f, 0.0f, 520.0f, 10.0f, Swatch);
-		P.Box(0.0f, 460.0f, 520.0f, 10.0f, Swatch);
-		P.Box(30.0f, 30.0f, 128.0f, 40.0f, Index == 0 ? Ice : Fire);
-		P.Text(Side.Label, 94.0f, 34.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
-		P.Text(Side.Name, 30.0f, 92.0f, 54.0f, Paper, ETextAlign::Left, TEXT("Black"), 3.0f, Ink);
-		// The character and its colour.
-		P.Box(32.0f, 184.0f, 34.0f, 34.0f, Swatch);
-		P.Outline(32.0f, 184.0f, 34.0f, 34.0f, WithAlpha(Paper, 0.6f), 2.0f);
-		P.Text(ChaosImpactRoster::Get(Side.Character).Name, 82.0f, 182.0f, 30.0f, Paper, ETextAlign::Left, TEXT("Bold"));
-		P.Text(Side.bKeyboard ? TEXT("操作  キーボード") : TEXT("操作  パッド"), 34.0f, 238.0f, 22.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-		P.Box(30.0f, 286.0f, 460.0f, 2.0f, WithAlpha(Paper, 0.14f));
-		P.Text(TEXT("1v1の戦績"), 34.0f, 304.0f, 22.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		CP::RoundedBox(Top, TX, 164.0f, 26.0f, 26.0f, 6.0f, Swatch);
+		const FString CharacterName = ChaosImpactRoster::Get(Side.Character).Name;
+		Top.Text(CharacterName, TX + 38.0f, 160.0f, CP::HudFit(CharacterName, 24.0f, TW - 38.0f), Paper, CP::ETextAlign::Left, TEXT("Black"));
+		// Pad or keyboard, on a small tag.
+		const FString Device = Side.bKeyboard ? TEXT("キーボード") : TEXT("パッド");
+		const float DeviceW = CP::HudMeasure(Device, 15.0f, TEXT("Black")) + 24.0f;
+		CP::RoundedBox(Top, TX, 206.0f, DeviceW, 26.0f, 13.0f, WithAlpha(Paper, 0.14f));
+		Top.Text(Device, TX + DeviceW * 0.5f, 209.0f, 15.0f, WithAlpha(Paper, 0.85f), CP::ETextAlign::Center, TEXT("Black"));
+		Top.Box(TX, 254.0f, TW, 1.0f, WithAlpha(Paper, 0.16f));
+		Top.Text(TEXT("1v1の戦績"), TX, 268.0f, 18.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+		const FMenuPainter Words{CardSpace, Elements, Layer + 3, In};
 		if (Side.bKnownRecord && Side.Record.GetGames() > 0)
 		{
-			P.Text(DescribeDuelRecord(Side.Record), 34.0f, 336.0f, 34.0f, Paper, ETextAlign::Left, TEXT("Black"));
-			PaintDuelRecent(P, Side.Record.Recent, 34.0f, 398.0f, 36.0f);
+			const FString RecordText = DescribeDuelRecord(Side.Record);
+			CP::HudText3D(CP::HudAbove(Top, 1), RecordText, TX, 296.0f, CP::HudFit(RecordText, 34.0f, TW - 6.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 2.0f);
+			const int32 Games = Side.Record.GetGames();
+			const float Rate = Games > 0 ? static_cast<float>(Side.Record.Wins) / Games : 0.0f;
+			Top.Text(FString::Printf(TEXT("勝率 %d%%"), FMath::RoundToInt(Rate * 100.0f)), TX, 346.0f, 18.0f, Gold, CP::ETextAlign::Left, TEXT("Black"));
+			CP::RoundedBox(Top, TX, 374.0f, TW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
+			CP::RoundedBox(CP::HudAbove(Top, 1), TX, 374.0f, TW * Rate, 6.0f, 3.0f, Gold);
+			PaintDuelRecent(Words, Side.Record.Recent, TX, 398.0f, 30.0f);
 		}
 		else
 		{
-			P.Text(Side.bKnownRecord ? TEXT("はじめての1v1") : TEXT("―"), 34.0f, 336.0f, 30.0f, Paper, ETextAlign::Left, TEXT("Bold"));
+			Top.Text(Side.bKnownRecord ? TEXT("はじめての1v1") : TEXT("―"), TX, 298.0f, 28.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
 		}
 		if (Side.bAccepted)
 		{
-			// Said yes: a stamp in the corner.
-			const float Pop = 1.0f + 0.15f * FMath::Max(0.0f, 1.0f - (Time - 0.0f));
-			P.Box(370.0f, 24.0f, 120.0f * Pop, 56.0f, Gold);
-			P.Text(TEXT("OK"), 370.0f + 60.0f * Pop, 26.0f, 42.0f, Ink, ETextAlign::Center, TEXT("Black"));
+			// Said yes: a stamp over the character.
+			const float Pop = 1.0f + 0.25f * FMath::Exp(-8.0f * FMath::Max(0.0f, Time - 0.2f));
+			const float StampX = bRight ? CardW - 180.0f : 170.0f;
+			const CP::FPainter Stamp{CP::MakeAnchor(CardSpace, StampX, 60.0f, Pop), Elements, Layer + 6, In};
+			CP::RoundedBox(Stamp, -66.0f, -30.0f, 132.0f, 60.0f, 12.0f, Gold);
+			Stamp.Outline(-66.0f, -30.0f, 132.0f, 60.0f, WithAlpha(Paper, 0.8f), 2.0f);
+			CP::HudText3D(CP::HudAbove(Stamp, 1), TEXT("OK!"), 0.0f, -27.0f, 42.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 2.0f);
 		}
 	}
-	// Between them: VS, the connection, and how long is left to answer.
-	const float In = EaseOut((Time - 0.25f) / 0.3f);
-	const FMenuPainter Mid{Design, Elements, Layer + 1, In};
-	Mid.Text(TEXT("VS"), 800.0f, 300.0f, 110.0f, Paper, ETextAlign::Center, TEXT("Black"), 5.0f, Fire);
-	Mid.Text(TEXT("回線"), 800.0f, 470.0f, 22.0f, Muted, ETextAlign::Center, TEXT("Bold"));
-	PaintSignal(Mid, Offer.PingMs, 768.0f, 548.0f, 1.0f);
-	Mid.Text(Offer.PingMs > 0 && Offer.PingMs < 999 ? FString::Printf(TEXT("約%dms"), Offer.PingMs) : FString(TEXT("―")), 800.0f, 558.0f,
-		24.0f, Paper, ETextAlign::Center, TEXT("Bold"));
-	const FMenuPainter Clock{MakeSkewed(Design, 1070.0f, 96.0f, 360.0f, 70.0f, -0.3f), Elements, Layer + 1, In};
+
+	// Between them: VS inside the clock's ring, the connection under it.
+	const float MidIn = EaseOut((Time - 0.25f) / 0.3f);
+	const CP::FPainter Mid{Design, Elements, Layer + 4, MidIn};
+	const FVector2D Hub(800.0, 420.0);
+	const float TimeLeft = bStarting ? 0.0f : FMath::Max(0.0f, static_cast<float>(Offer.EndsAt - FPlatformTime::Seconds()));
+	const float Fill = bStarting ? 1.0f : FMath::Clamp(TimeLeft / 15.0f, 0.0f, 1.0f);
+	const bool bHurry = !bStarting && TimeLeft < 5.0f;
+	Mid.Disc(Hub, 92.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.95f));
+	Mid.Ring(Hub, 92.0f, WithAlpha(Paper, 0.12f), 10.0f, 72);
+	CP::HudAbove(Mid, 1).Arc(Hub, 92.0f, -90.0f, -90.0f + 360.0f * Fill, bStarting ? Gold : bHurry ? Fire : Ice, 10.0f);
+	CP::HudText3D(CP::HudAbove(Mid, 2), TEXT("VS"), 800.0f, 352.0f, 76.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 4.0f);
 	if (bStarting)
 	{
-		Clock.Box(0.0f, 0.0f, 360.0f, 70.0f, Gold);
-		Clock.Text(TEXT("対戦開始！"), 180.0f, 12.0f, 34.0f, Ink, ETextAlign::Center);
+		const CP::FPainter Banner{Design, Elements, Layer + 7, MidIn};
+		CP::HudPoly(Banner, {FVector2D(480.0, 540.0), FVector2D(1140.0, 540.0), FVector2D(1120.0, 610.0), FVector2D(460.0, 610.0)},
+			CP::MakeFill(FMath::Lerp(Gold, Paper, 0.3f), Gold));
+		CP::HudText3D(CP::HudAbove(Banner, 1), TEXT("対戦開始！"), 800.0f, 546.0f, 46.0f, Paper, CP::ETextAlign::Center, TEXT("Black"), 3.0f);
 		return;
 	}
-	const float Left = FMath::Max(0.0f, static_cast<float>(Offer.EndsAt - FPlatformTime::Seconds()));
-	const float Fill = FMath::Clamp(Left / 15.0f, 0.0f, 1.0f);
-	Clock.Box(0.0f, 0.0f, 360.0f, 70.0f, FLinearColor(0.02f, 0.027f, 0.047f, 0.97f));
-	Clock.Box(0.0f, 62.0f, 360.0f * Fill, 8.0f, Left < 5.0f ? Fire : Ice);
-	Clock.Text(FString::Printf(TEXT("のこり %d秒"), FMath::CeilToInt(Left)), 180.0f, 10.0f, 34.0f, Left < 5.0f ? Fire : Paper,
-		ETextAlign::Center);
+	CP::HudAbove(Mid, 2).Text(FString::Printf(TEXT("%d"), FMath::CeilToInt(TimeLeft)), 800.0f, 448.0f, 28.0f, bHurry ? Fire : Paper, CP::ETextAlign::Center,
+		TEXT("BlackItalic"));
+	const FMenuPainter Signal{Design, Elements, Layer + 4, MidIn};
+	Mid.Text(TEXT("回線"), 800.0f, 530.0f, 18.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+	PaintSignal(Signal, Offer.PingMs, 768.0f, 600.0f, 1.0f);
+	Mid.Text(Offer.PingMs > 0 && Offer.PingMs < 999 ? FString::Printf(TEXT("約%dms"), Offer.PingMs) : FString(TEXT("―")), 800.0f, 608.0f,
+		22.0f, Paper, CP::ETextAlign::Center, TEXT("Black"));
+}
+
+namespace
+{
+	/** What a line check came to: its numbers and a word on them. */
+	struct FOlLineVerdict
+	{
+		int32 Valid = 0;
+		int32 Lost = 0;
+		int32 Average = 0;
+		int32 Low = 0;
+		int32 High = 0;
+		int32 Jitter = 0;
+		int32 LossPercent = 0;
+		FString Word;
+		FString Advice;
+		FLinearColor Color = FLinearColor::White;
+	};
+
+	FLinearColor OlLineColor(const int32 Rtt)
+	{
+		return Rtt <= 60 ? FLinearColor(0.2f, 0.92f, 0.45f, 1.0f) : Rtt <= 120 ? FLinearColor(0.65f, 0.95f, 0.3f, 1.0f)
+			: Rtt <= 200 ? Gold : Fire;
+	}
+
+	FOlLineVerdict OlJudgeLine(const TArray<int32>& Rtts)
+	{
+		FOlLineVerdict V;
+		int32 Sum = 0;
+		int32 Steps = 0;
+		int32 StepSum = 0;
+		int32 Previous = -1;
+		V.Low = MAX_int32;
+		for (const int32 Rtt : Rtts)
+		{
+			if (Rtt == -1)
+			{
+				++V.Lost;
+			}
+			if (Rtt < 0)
+			{
+				continue;
+			}
+			++V.Valid;
+			Sum += Rtt;
+			V.Low = FMath::Min(V.Low, Rtt);
+			V.High = FMath::Max(V.High, Rtt);
+			if (Previous >= 0)
+			{
+				StepSum += FMath::Abs(Rtt - Previous);
+				++Steps;
+			}
+			Previous = Rtt;
+		}
+		V.Low = V.Valid > 0 ? V.Low : 0;
+		V.Average = V.Valid > 0 ? FMath::RoundToInt(static_cast<float>(Sum) / V.Valid) : 0;
+		V.Jitter = Steps > 0 ? FMath::RoundToInt(static_cast<float>(StepSum) / Steps) : 0;
+		const int32 Counted = V.Valid + V.Lost;
+		V.LossPercent = Counted > 0 ? FMath::RoundToInt(100.0f * V.Lost / Counted) : 0;
+		if (V.Valid == 0)
+		{
+			V.Word = TEXT("つながりません");
+			V.Advice = TEXT("中継サーバーに届きませんでした。ネットワークの設定を確認してください");
+			V.Color = Fire;
+		}
+		else if (V.Average <= 60 && V.LossPercent == 0 && V.Jitter <= 15)
+		{
+			V.Word = TEXT("とても良好");
+			V.Advice = TEXT("快適にオンライン対戦できます");
+			V.Color = FLinearColor(0.2f, 0.92f, 0.45f, 1.0f);
+		}
+		else if (V.Average <= 120 && V.LossPercent <= 6 && V.Jitter <= 30)
+		{
+			V.Word = TEXT("良好");
+			V.Advice = TEXT("問題なく遊べます");
+			V.Color = FLinearColor(0.65f, 0.95f, 0.3f, 1.0f);
+		}
+		else if (V.Average <= 200 && V.LossPercent <= 12)
+		{
+			V.Word = TEXT("ふつう");
+			V.Advice = TEXT("少し遅れを感じることがあります。有線LANがおすすめです");
+			V.Color = Gold;
+		}
+		else
+		{
+			V.Word = TEXT("不安定");
+			V.Advice = TEXT("遅れや切断が起きやすい状態です。有線LANやルーターの再起動をためしてください");
+			V.Color = Fire;
+		}
+		return V;
+	}
+
+	void OlPageCard(const ChaosImpactPaint::FPainter& C, const float W, const float H, const FLinearColor& Accent)
+	{
+		namespace CP = ChaosImpactPaint;
+		C.Box(14.0f, 16.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		CP::HudPoly(C, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)},
+			CP::MakeFill(FLinearColor(0.045f, 0.065f, 0.12f, 0.96f), FLinearColor(0.006f, 0.008f, 0.02f, 0.97f)));
+		const CP::FPainter Up = CP::HudAbove(C, 1);
+		CP::HudPoly(Up, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, 6.0), FVector2D(0.0, 6.0)},
+			CP::MakeFill(FMath::Lerp(Accent, Paper, 0.35f), Accent));
+		Up.Outline(0.0f, 0.0f, W, H, WithAlpha(Paper, 0.12f), 1.0f);
+	}
+}
+
+void UChaosImpactMenuWidget::PaintOnlinePlayerCard(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+	const float Time) const
+{
+	namespace CP = ChaosImpactPaint;
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Sessions)
+	{
+		return;
+	}
+	// Top right: who plays, and the line to the relay as last measured.
+	const float In = EaseOut((Time - 0.1f) / 0.35f);
+	constexpr float W = 400.0f;
+	constexpr float H = 96.0f;
+	const CP::FPainter P{MakeSkewed(Design, 1090.0f + (1.0f - In) * 80.0f, 66.0f, W, H, -0.12f), Elements, Layer, In};
+	OlPageCard(P, W, H, Gold);
+	const CP::FPainter T = CP::HudAbove(P, 2);
+	T.Text(TEXT("PLAYER"), 24.0f, 14.0f, 14.0f, Gold, CP::ETextAlign::Left, TEXT("BlackItalic"));
+	const FString Name = Sessions->GetPlayerName();
+	CP::HudText3D(CP::HudAbove(T, 1), Name, 24.0f, 34.0f, CP::HudFit(Name, 32.0f, 200.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 2.0f);
+	const int32 Rtt = Sessions->GetLastRelayRtt();
+	const FLinearColor Tone = Rtt > 0 ? OlLineColor(Rtt) : Muted;
+	const int32 Level = Rtt <= 0 ? 0 : Rtt <= 60 ? 4 : Rtt <= 120 ? 3 : Rtt <= 200 ? 2 : 1;
+	for (int32 Bar = 0; Bar < 4; ++Bar)
+	{
+		const float BarH = 10.0f + Bar * 8.0f;
+		CP::RoundedBox(T, 236.0f + Bar * 12.0f, 66.0f - BarH, 8.0f, BarH, 2.0f, Bar < Level ? Tone : WithAlpha(Paper, 0.15f));
+	}
+	const FString RttText = Rtt > 0 ? FString::Printf(TEXT("%dms"), Rtt) : FString(TEXT("未計測"));
+	T.Text(RttText, W - 24.0f, 22.0f, CP::HudFit(RttText, 22.0f, 96.0f, TEXT("BlackItalic")), Tone, CP::ETextAlign::Right, TEXT("BlackItalic"));
+	T.Text(TEXT("回線"), W - 24.0f, 58.0f, 15.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
+}
+
+void UChaosImpactMenuWidget::PaintLineCheck(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const float Time) const
+{
+	namespace CP = ChaosImpactPaint;
+	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Sessions)
+	{
+		return;
+	}
+	const UChaosImpactSessionSubsystem::FLineCheck& Check = Sessions->GetLineCheck();
+	const FOlLineVerdict V = OlJudgeLine(Check.Rtts);
+	int32 Latest = -1;
+	for (const int32 Rtt : Check.Rtts)
+	{
+		Latest = Rtt >= 0 ? Rtt : Latest;
+	}
+	const bool bShowResult = Check.bDone && !Check.bNoRelay;
+
+	// ---- Left: the meter ----
+	const float InL = EaseOut((Time - 0.1f) / 0.35f);
+	constexpr float LW = 610.0f;
+	constexpr float LH = 500.0f;
+	const FGeometry LeftSpace = MakeSkewed(Design, 110.0f - (1.0f - InL) * 80.0f, 196.0f, LW, LH, -0.06f);
+	const CP::FPainter L{LeftSpace, Elements, Layer, InL};
+	OlPageCard(L, LW, LH, bShowResult ? V.Color : Ice);
+	const CP::FPainter LT = CP::HudAbove(L, 2);
+	LT.Text(TEXT("PING"), 30.0f, 22.0f, 16.0f, Ice, CP::ETextAlign::Left, TEXT("BlackItalic"));
+	const FVector2D Hub(LW * 0.5f, 330.0);
+	constexpr float Radius = 200.0f;
+	constexpr float Scale = 300.0f;
+	const auto AngleOf = [](const float Ms) { return 180.0f + 180.0f * FMath::Clamp(Ms / Scale, 0.0f, 1.0f); };
+	// The scale's zones: green, light green, gold, red.
+	const float Zones[] = {0.0f, 60.0f, 120.0f, 200.0f, 300.0f};
+	const FLinearColor ZoneColors[] = {FLinearColor(0.2f, 0.92f, 0.45f, 1.0f), FLinearColor(0.65f, 0.95f, 0.3f, 1.0f), Gold, Fire};
+	const CP::FPainter Dial = CP::HudAbove(L, 1);
+	Dial.Arc(Hub, Radius, 180.0f, 360.0f, WithAlpha(Paper, 0.08f), 34.0f);
+	for (int32 Zone = 0; Zone < 4; ++Zone)
+	{
+		Dial.Arc(Hub, Radius, AngleOf(Zones[Zone]) + 0.6f, AngleOf(Zones[Zone + 1]) - 0.6f, WithAlpha(ZoneColors[Zone], 0.75f), 22.0f);
+		const float Rad = FMath::DegreesToRadians(AngleOf(Zones[Zone]));
+		LT.Text(FString::FromInt(FMath::RoundToInt(Zones[Zone])), Hub.X + FMath::Cos(Rad) * (Radius + 34.0f), Hub.Y + FMath::Sin(Rad) * (Radius + 34.0f) - 10.0f,
+			15.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+	}
+	LT.Text(TEXT("300+"), Hub.X + Radius + 34.0f, Hub.Y - 10.0f, 15.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+	// The needle: the latest round trip while measuring, the average once done.
+	const float Shown = bShowResult ? static_cast<float>(V.Average) : Latest >= 0 ? static_cast<float>(Latest)
+		: 150.0f + 140.0f * FMath::Sin(Time * 3.0f);
+	const float NeedleRad = FMath::DegreesToRadians(AngleOf(Shown));
+	const FVector2D Tip = Hub + FVector2D(FMath::Cos(NeedleRad), FMath::Sin(NeedleRad)) * (Radius - 26.0f);
+	CP::HudAbove(LT, 1).Line(Hub, Tip, Paper, 6.0f);
+	CP::HudAbove(LT, 1).Disc(Hub, 16.0f, Paper);
+	CP::HudAbove(LT, 2).Disc(Hub, 8.0f, bShowResult ? V.Color : Ice);
+	// The number under it, and the word.
+	if (Check.bNoRelay)
+	{
+		const FString None = TEXT("中継サーバーが設定されていません");
+		LT.Text(None, LW * 0.5f, 380.0f, CP::HudFit(None, 26.0f, LW - 60.0f), Fire, CP::ETextAlign::Center, TEXT("Black"));
+	}
+	else if (bShowResult)
+	{
+		CP::HudText3D(CP::HudAbove(LT, 1), V.Valid > 0 ? FString::Printf(TEXT("%dms"), V.Average) : FString(TEXT("---")), LW * 0.5f, 350.0f, 56.0f,
+			Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
+		CP::HudText3D(CP::HudAbove(LT, 1), V.Word, LW * 0.5f, 432.0f, CP::HudFit(V.Word, 34.0f, LW - 60.0f), V.Color, CP::ETextAlign::Center,
+			TEXT("Black"), 2.0f);
+	}
+	else
+	{
+		LT.Text(Latest >= 0 ? FString::Printf(TEXT("%dms"), Latest) : FString(TEXT("…")), LW * 0.5f, 360.0f, 52.0f, Paper, CP::ETextAlign::Center,
+			TEXT("BlackItalic"));
+		const int32 Back = Check.Rtts.Num() - Check.Rtts.FilterByPredicate([](const int32 Rtt) { return Rtt == -2; }).Num();
+		const FString Measuring = FString::Printf(TEXT("はかっています  %d / %d"), Back, UChaosImpactSessionSubsystem::LineCheckSamples);
+		LT.Text(Measuring, LW * 0.5f, 432.0f, 24.0f, Ice, CP::ETextAlign::Center, TEXT("Black"));
+		CP::RoundedBox(LT, 80.0f, 470.0f, LW - 160.0f, 8.0f, 4.0f, WithAlpha(Paper, 0.12f));
+		CP::RoundedBox(CP::HudAbove(LT, 1), 80.0f, 470.0f, (LW - 160.0f) * Back / FMath::Max(1, UChaosImpactSessionSubsystem::LineCheckSamples), 8.0f,
+			4.0f, Ice);
+	}
+
+	// ---- Right: the numbers, each round trip, how it is connected, and what to do ----
+	const float InR = EaseOut((Time - 0.18f) / 0.35f);
+	constexpr float RW = 730.0f;
+	constexpr float RH = 500.0f;
+	const FGeometry RightSpace = MakeSkewed(Design, 760.0f + (1.0f - InR) * 80.0f, 196.0f, RW, RH, -0.06f);
+	const CP::FPainter R{RightSpace, Elements, Layer, InR};
+	OlPageCard(R, RW, RH, bShowResult ? V.Color : Ice);
+	const CP::FPainter RT = CP::HudAbove(R, 2);
+	struct FTile
+	{
+		const TCHAR* Label;
+		FString Value;
+		FLinearColor Color;
+	};
+	const bool bAny = bShowResult && V.Valid > 0;
+	const FTile Tiles[] = {
+		{TEXT("平均"), bAny ? FString::Printf(TEXT("%dms"), V.Average) : FString(TEXT("―")), bAny ? OlLineColor(V.Average) : Muted},
+		{TEXT("最小 / 最大"), bAny ? FString::Printf(TEXT("%d / %dms"), V.Low, V.High) : FString(TEXT("―")), Paper},
+		{TEXT("ゆらぎ"), bAny ? FString::Printf(TEXT("±%dms"), V.Jitter) : FString(TEXT("―")), bAny && V.Jitter > 30 ? Gold : Paper},
+		{TEXT("パケットロス"), bShowResult ? FString::Printf(TEXT("%d%%"), V.LossPercent) : FString(TEXT("―")), bShowResult && V.LossPercent > 0 ? Fire : Paper}};
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		const float X = 30.0f + (Index % 2) * 340.0f;
+		const float Y = 30.0f + (Index / 2) * 112.0f;
+		CP::RoundedBox(CP::HudAbove(R, 1), X, Y, 320.0f, 96.0f, 12.0f, WithAlpha(Paper, 0.06f));
+		RT.Text(Tiles[Index].Label, X + 20.0f, Y + 12.0f, 17.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+		CP::HudText3D(CP::HudAbove(RT, 1), Tiles[Index].Value, X + 20.0f, Y + 38.0f, CP::HudFit(Tiles[Index].Value, 36.0f, 280.0f, TEXT("BlackItalic")),
+			Tiles[Index].Color, CP::ETextAlign::Left, TEXT("BlackItalic"), 2.0f);
+	}
+	// Each round trip, a bar (a red cross for one lost).
+	RT.Text(FString::Printf(TEXT("%d回の測定"), UChaosImpactSessionSubsystem::LineCheckSamples), 30.0f, 262.0f, 16.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+	const float GraphX = 30.0f;
+	const float GraphY = 290.0f;
+	const float GraphW = RW - 60.0f;
+	constexpr float GraphH = 96.0f;
+	CP::RoundedBox(CP::HudAbove(R, 1), GraphX, GraphY, GraphW, GraphH, 8.0f, WithAlpha(Paper, 0.05f));
+	const int32 Count = FMath::Max(1, Check.Rtts.Num());
+	const float BarSlot = GraphW / Count;
+	for (int32 Index = 0; Index < Check.Rtts.Num(); ++Index)
+	{
+		const int32 Rtt = Check.Rtts[Index];
+		const float X = GraphX + Index * BarSlot + BarSlot * 0.2f;
+		if (Rtt >= 0)
+		{
+			const float BarH = FMath::Max(4.0f, (GraphH - 12.0f) * FMath::Clamp(Rtt / Scale, 0.0f, 1.0f));
+			CP::RoundedBox(RT, X, GraphY + GraphH - 6.0f - BarH, BarSlot * 0.6f, BarH, 3.0f, OlLineColor(Rtt));
+		}
+		else if (Rtt == -1)
+		{
+			const FVector2D C(X + BarSlot * 0.3f, GraphY + GraphH * 0.5f);
+			RT.Line(C + FVector2D(-8.0, -8.0), C + FVector2D(8.0, 8.0), Fire, 4.0f);
+			RT.Line(C + FVector2D(-8.0, 8.0), C + FVector2D(8.0, -8.0), Fire, 4.0f);
+		}
+	}
+	// How it is connected, and a word on what to do.
+	const FString Transport = FString::Printf(TEXT("接続方式  %s"), *Sessions->GetRelayTransportName());
+	RT.Text(Transport, 30.0f, 404.0f, CP::HudFit(Transport, 20.0f, RW - 60.0f, TEXT("Bold")), Paper, CP::ETextAlign::Left, TEXT("Bold"));
+	const FString Advice = Check.bNoRelay ? FString(TEXT("インターネット対戦の設定がありません"))
+		: bShowResult ? V.Advice : FString(TEXT("中継サーバーとのやりとりを16回はかります"));
+	RT.Text(Advice, 30.0f, 440.0f, CP::HudFit(Advice, 20.0f, RW - 60.0f, TEXT("Bold")), bShowResult ? V.Color : Muted, CP::ETextAlign::Left, TEXT("Bold"));
+}
+
+void UChaosImpactMenuWidget::UpdateSeatPreviews(const float DeltaSeconds)
+{
+	const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	UWorld* World = GetWorld();
+	if (!Owner || !World)
+	{
+		return;
+	}
+	const TArray<AChaosImpactPlayerController::FTourneySeat>& Seats = Owner->GetTourneySeats();
+	FString For = Owner->GetTourneySeatTitle();
+	for (const AChaosImpactPlayerController::FTourneySeat& Seat : Seats)
+	{
+		For += FString::Printf(TEXT("|%s/%d/%d/%d"), *Seat.Name, Seat.Character, Seat.Colour, Seat.CustomColours.Num());
+	}
+	if (DuelPreviewFor != For)
+	{
+		// Each place's person (a CPU too), on a stage of their own.
+		CloseDuelPreviews();
+		DuelPreviewFor = For;
+		FActorSpawnParameters Parameters;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Parameters.ObjectFlags |= RF_Transient;
+		for (int32 Index = 0; Index < Seats.Num(); ++Index)
+		{
+			AChaosImpactCharacterPreview* Preview = World->SpawnActor<AChaosImpactCharacterPreview>(AChaosImpactCharacterPreview::StaticClass(),
+				FVector(Index * 1600.0f, -136000.0f, 40000.0f), FRotator::ZeroRotator, Parameters);
+			if (!Preview)
+			{
+				continue;
+			}
+			Preview->ShowLoadout(Seats[Index].Character, FMath::Max(Seats[Index].Colour, 0), PlayerAccents[Index % 4]);
+			Preview->ShowCustomColours(Seats[Index].CustomColours);
+			Preview->SetFacing(Seats.Num() == 2 ? (Index == 0 ? -24.0f : 24.0f) : -14.0f, 0.0f);
+			FSlateBrush Brush;
+			Brush.SetResourceObject(Preview->GetPicture());
+			Brush.ImageSize = FVector2D(AChaosImpactCharacterPreview::PictureWidth, AChaosImpactCharacterPreview::PictureHeight);
+			Brush.DrawAs = ESlateBrushDrawType::Image;
+			DuelPreviews.Add(Preview);
+			DuelPreviewBrushes.Add(Brush);
+		}
+	}
+	for (AChaosImpactCharacterPreview* Preview : DuelPreviews)
+	{
+		if (IsValid(Preview))
+		{
+			Preview->Animate(DeltaSeconds);
+			Preview->FilmNow();
+		}
+	}
+}
+
+void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const float Time) const
+{
+	namespace CP = ChaosImpactPaint;
+	const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (!Owner)
+	{
+		return;
+	}
+	const TArray<AChaosImpactPlayerController::FTourneySeat>& Seats = Owner->GetTourneySeats();
+	const bool bMatch = Owner->IsTourneySeatForMatch();
+	// The title: which match (or the tournament), and what to do.
+	{
+		const float In = EaseOut(Time / 0.3f);
+		const CP::FPainter Title{CP::MakeAnchor(Design, 800.0f, 86.0f, FMath::Lerp(1.4f, 1.0f, In)), Elements, Layer + 4, In};
+		const FString Name = Owner->GetTourneySeatTitle();
+		CP::HudText3D(Title, Name, 0.0f, -46.0f, CP::HudFit(Name, 68.0f, 1300.0f, TEXT("BlackItalic")), Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 4.0f);
+		const CP::FPainter Under{Design, Elements, Layer + 4, EaseOut((Time - 0.15f) / 0.3f)};
+		const FString Line = bMatch ? TEXT("この試合で遊ぶ人は、自分のコントローラーのボタンを押してください（キーボードは何かのキー）")
+			: TEXT("それぞれ、自分のコントローラーのボタンを押してください（キーボードは何かのキー）");
+		Under.Text(Line, 800.0f, 150.0f, CP::HudFit(Line, 22.0f, 1400.0f, TEXT("Black")), Paper, CP::ETextAlign::Center, TEXT("Black"));
+	}
+	// A card per place.
+	const int32 Count = FMath::Max(1, Seats.Num());
+	const float CardW = Count <= 2 ? 420.0f : 330.0f;
+	const float Gap = Count <= 2 ? 180.0f : 34.0f;
+	const float CardH = 490.0f;
+	const float Left = 800.0f - (Count * CardW + (Count - 1) * Gap) * 0.5f;
+	const float CardTop = 200.0f;
+	const double Now = FPlatformTime::Seconds();
+	for (int32 Index = 0; Index < Seats.Num(); ++Index)
+	{
+		const AChaosImpactPlayerController::FTourneySeat& Seat = Seats[Index];
+		const bool bTaken = Seat.Device != -2 || Seat.bCPU;
+		const FLinearColor Tone = Seat.bCPU ? Muted : PlayerAccents[Index % 4];
+		const float In = EaseOut((Time - 0.1f - 0.07f * Index) / 0.35f);
+		const float X = Left + Index * (CardW + Gap);
+		const FGeometry CardSpace = MakeSkewed(Design, X, CardTop + (1.0f - In) * 40.0f, CardW, CardH, -0.06f);
+		const CP::FPainter C{CardSpace, Elements, Layer, In};
+		FLinearColor Deep = Tone * 0.18f;
+		Deep.A = 0.97f;
+		C.Box(14.0f, 16.0f, CardW, CardH, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		CP::HudPoly(C, {FVector2D(0.0, 0.0), FVector2D(CardW, 0.0), FVector2D(CardW, CardH), FVector2D(0.0, CardH)},
+			CP::MakeFill(Deep, FLinearColor(0.006f, 0.008f, 0.02f, 0.97f)));
+		// The person, cut to the card.
+		if (DuelPreviewBrushes.IsValidIndex(Index) && DuelPreviewBrushes[Index].GetResourceObject())
+		{
+			const float PicW = CardW + 40.0f;
+			const float PicH = PicW * AChaosImpactCharacterPreview::PictureHeight / AChaosImpactCharacterPreview::PictureWidth;
+			Elements.PushClip(FSlateClippingZone(CardSpace));
+			FSlateDrawElement::MakeBox(Elements, Layer + 1, CardSpace.ToPaintGeometry(FVector2f(PicW, PicH),
+				FSlateLayoutTransform(FVector2f(-20.0f, CardH - PicH - 40.0f))), &DuelPreviewBrushes[Index], ESlateDrawEffect::None,
+				WithAlpha(FLinearColor::White, In * (Seat.bCPU ? 0.7f : 1.0f)));
+			const CP::FPainter Fade{CardSpace, Elements, Layer + 1, In};
+			for (int32 Step = 0; Step < 14; ++Step)
+			{
+				const float A = FMath::Square(1.0f - Step / 14.0f);
+				Fade.Box(0.0f, CardH - (Step + 1) * 9.0f, CardW, 9.0f, FLinearColor(0.006f, 0.008f, 0.02f, 0.92f * A));
+			}
+			Elements.PopClip();
+		}
+		const CP::FPainter Up = CP::HudAbove(C, 2);
+		CP::HudPoly(Up, {FVector2D(0.0, 0.0), FVector2D(CardW, 0.0), FVector2D(CardW, 8.0), FVector2D(0.0, 8.0)},
+			CP::MakeFill(FMath::Lerp(Tone, Paper, 0.35f), Tone));
+		Up.Outline(0.0f, 0.0f, CardW, CardH, WithAlpha(Paper, bTaken ? 0.3f : 0.12f), bTaken ? 2.0f : 1.0f);
+		const CP::FPainter T = CP::HudAbove(C, 3);
+		const FString Label = Seat.bCPU ? FString(TEXT("CPU")) : bMatch ? FString(Index == 0 ? TEXT("左") : TEXT("右")) : FString::Printf(TEXT("%dP"), Index + 1);
+		const float LabelW = CP::HudMeasure(Label, 16.0f, TEXT("Black")) + 24.0f;
+		CP::RoundedBox(T, 18.0f, 20.0f, LabelW, 28.0f, 14.0f, Tone);
+		CP::HudAbove(T, 1).Text(Label, 18.0f + LabelW * 0.5f, 23.0f, 16.0f, Paper, CP::ETextAlign::Center, TEXT("Black"));
+		CP::HudText3D(CP::HudAbove(T, 1), Seat.Name, 18.0f, 58.0f, CP::HudFit(Seat.Name, 40.0f, CardW - 36.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
+		const FString CharacterName = ChaosImpactRoster::Get(Seat.Character).Name;
+		T.Text(CharacterName, 20.0f, 108.0f, CP::HudFit(CharacterName, 18.0f, CardW - 40.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), CP::ETextAlign::Left, TEXT("Bold"));
+		// Its controller: taken (which), or waiting for a button; a CPU needs none.
+		const float BoxY = CardH - 76.0f;
+		if (Seat.bCPU)
+		{
+			const FString Strength = FString::Printf(TEXT("CPU（%s）"), ChaosImpactMatch::GetCPULevelName(Seat.CPULevel));
+			CP::RoundedBox(T, 18.0f, BoxY, CardW - 36.0f, 56.0f, 14.0f, WithAlpha(Paper, 0.08f));
+			T.Text(Strength, CardW * 0.5f, BoxY + 14.0f, CP::HudFit(Strength, 22.0f, CardW - 60.0f), Muted, CP::ETextAlign::Center, TEXT("Black"));
+		}
+		else if (Seat.Device != -2)
+		{
+			const FString Device = Seat.Device == -1 ? FString(TEXT("キーボード")) : FString::Printf(TEXT("コントローラー %d"), Seat.Device);
+			CP::HudPoly(T, {FVector2D(18.0, BoxY), FVector2D(CardW - 18.0f, BoxY), FVector2D(CardW - 18.0f, BoxY + 56.0f), FVector2D(18.0, BoxY + 56.0f)},
+				CP::MakeFill(FLinearColor(0.3f, 0.95f, 0.5f, 1.0f), FLinearColor(0.08f, 0.6f, 0.28f, 1.0f)));
+			CP::HudText3D(CP::HudAbove(T, 1), FString::Printf(TEXT("OK!  %s"), *Device), CardW * 0.5f, BoxY + 12.0f,
+				CP::HudFit(FString::Printf(TEXT("OK!  %s"), *Device), 24.0f, CardW - 60.0f), Paper, CP::ETextAlign::Center, TEXT("Black"), 2.0f);
+		}
+		else
+		{
+			const float Breath = 0.55f + 0.45f * FMath::Sin(Time * 5.0f + Index);
+			CP::RoundedBox(T, 18.0f, BoxY, CardW - 36.0f, 56.0f, 14.0f, WithAlpha(Paper, 0.06f + 0.06f * Breath));
+			CP::HudAbove(T, 1).Outline(18.0f, BoxY, CardW - 36.0f, 56.0f, WithAlpha(Tone, Breath), 2.0f);
+			const FString Ask = TEXT("ボタンを押して参加");
+			T.Text(Ask, CardW * 0.5f, BoxY + 14.0f, CP::HudFit(Ask, 22.0f, CardW - 60.0f), WithAlpha(Paper, 0.6f + 0.4f * Breath), CP::ETextAlign::Center, TEXT("Black"));
+		}
+	}
+	// VS between the two of a match.
+	if (bMatch && Seats.Num() == 2)
+	{
+		const CP::FPainter Mid{Design, Elements, Layer + 6, EaseOut((Time - 0.25f) / 0.3f)};
+		CP::HudText3D(Mid, TEXT("VS"), 800.0f, 392.0f, 96.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
+	}
+	// Everyone in: a moment, then it starts (any of them can still give theirs back).
+	const double FullAt = Owner->GetTourneySeatsFullAt();
+	const CP::FPainter Foot{Design, Elements, Layer + 6};
+	if (FullAt > 0.0)
+	{
+		const float Left01 = FMath::Clamp(static_cast<float>((Now - FullAt) / 1.4), 0.0f, 1.0f);
+		CP::HudText3D(Foot, bMatch ? TEXT("試合開始！") : TEXT("トーナメント開始！"), 800.0f, 712.0f, 44.0f, Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
+		CP::RoundedBox(Foot, 600.0f, 780.0f, 400.0f, 10.0f, 5.0f, WithAlpha(Paper, 0.12f));
+		CP::RoundedBox(CP::HudAbove(Foot, 1), 600.0f, 780.0f, 400.0f * Left01, 10.0f, 5.0f, Gold);
+	}
+	const FString Guide = bMatch ? TEXT("もう一度同じボタンで取り消し") : TEXT("もう一度同じボタンで取り消し　・　Esc：登録画面にもどる");
+	Foot.Text(Guide, 800.0f, 830.0f, CP::HudFit(Guide, 17.0f, 1300.0f, TEXT("Bold")), Muted, CP::ETextAlign::Center, TEXT("Bold"));
 }
 
 FString UChaosImpactMenuWidget::GetPasswordString() const
@@ -1597,9 +2641,11 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::VSSelect:
-		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("ローカル"), TEXT(""), TEXT("LOCAL"), Ice});
-		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("通信"), TEXT(""), TEXT("ONLINE"), Fire});
+		Entries.Add({FSlateRect(130, 236, 560, 652), TEXT("ローカル"), TEXT(""), TEXT("LOCAL"), Ice});
+		Entries.Add({FSlateRect(590, 236, 1020, 652), TEXT("通信"), TEXT(""), TEXT("ONLINE"), Fire});
 		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+		// (Index 3, after the back button: the cards' code reads 0 and 1 as before.)
+		Entries.Add({FSlateRect(1050, 236, 1480, 652), TEXT("トーナメント"), TEXT("tourney"), TEXT("TOURNAMENT"), Gold});
 		break;
 	case EChaosImpactScreen::OnlinePlayers:
 	{
@@ -1635,19 +2681,97 @@ void UChaosImpactMenuWidget::BuildEntries()
 		const AChaosImpactPlayerController* OnlineController =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bPair = OnlineController && OnlineController->GetRequestedLocalPlayerCount() >= 2;
-		// ランダムマッチ (8人 / 1v1) above, 合言葉マッチ and 戦績 below; なまえ and 戻る along the bottom.
-		Entries.Add({FSlateRect(150, 214, 770, 414), TEXT("ランダムマッチ 8人"), TEXT("random"), TEXT("8 PLAYERS"), Fire});
-		FMenuEntry Duel{FSlateRect(830, 214, 1450, 414), bPair ? TEXT("ランダムマッチ 1v1（1人で参加）") : TEXT("ランダムマッチ 1v1"),
-			TEXT("duel"), TEXT("1 VS 1"), bPair ? Muted : Gold};
+		// ランダムマッチ 8人 / 1v1 / トーナメント across the top; 合言葉マッチ / 戦績 / 回線チェック under them; 戻る /
+		// カラーエディット / なまえ along the bottom. (The indices stay as they were: 0 8人, 1 1v1, 2 合言葉, 3 戦績, 4 なまえ,
+		// 5 戻る, 6 トーナメント, 7 カラーエディット, 8 回線チェック.)
+		Entries.Add({FSlateRect(110, 196, 590, 470), TEXT("ランダムマッチ 8人"), TEXT("random"), TEXT("8 PLAYERS"), Fire});
+		FMenuEntry Duel{FSlateRect(620, 196, 1100, 470), TEXT("ランダムマッチ 1v1"), TEXT("duel"), TEXT("1 VS 1"), Gold};
 		Duel.bDisabled = bPair;
 		Entries.Add(Duel);
-		Entries.Add({FSlateRect(150, 450, 770, 650), TEXT("合言葉マッチ"), TEXT("private"), TEXT("ROOM"), Ice});
-		Entries.Add({FSlateRect(830, 450, 1450, 650), TEXT("戦績"), TEXT("record"), TEXT("RECORD"), Violet});
-		Entries.Add({FSlateRect(930, 714, 1450, 798),
+		Entries.Add({FSlateRect(110, 500, 700, 680), TEXT("合言葉マッチ"), TEXT("private"), TEXT("ROOM"), Ice});
+		Entries.Add({FSlateRect(730, 500, 1100, 680), TEXT("戦績"), TEXT("record"), TEXT("RECORD"), Violet});
+		Entries.Add({FSlateRect(830, 718, 1490, 798),
 			FString::Printf(TEXT("なまえ  %s%s"), Sessions ? *Sessions->GetPlayerName() : TEXT(""),
 				bPair ? TEXT("  ＋(2)") : TEXT("")),
 			TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(1130, 196, 1490, 470), TEXT("トーナメント"), TEXT("tourney"), TEXT("TOURNAMENT"), Violet});
+		Entries.Add({FSlateRect(430, 726, 800, 790), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT(""), Violet});
+		Entries.Add({FSlateRect(1130, 500, 1490, 680), TEXT("回線チェック"), TEXT("linecheck"), TEXT("NETWORK"), FLinearColor(0.2f, 0.9f, 0.5f, 1.0f)});
+		break;
+	}
+	case EChaosImpactScreen::LineCheck:
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		FMenuEntry Again{FSlateRect(1010, 726, 1490, 800), TEXT("もう一度はかる"), TEXT("again"), TEXT(""), Gold};
+		Again.bDisabled = Sessions && Sessions->GetLineCheck().bRunning;
+		Entries.Add(Again);
+		Entries.Add({FSlateRect(110, 730, 400, 794), TEXT("戻る"), TEXT("back"), TEXT(""), Muted});
+		break;
+	}
+	case EChaosImpactScreen::TourneyList:
+	{
+		// Every public tournament, the soonest first: its name, when it starts, how it runs and its places.
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		static const TArray<FChaosImpactRoomListing> NoListings;
+		const TArray<FChaosImpactRoomListing>& Listings = Sessions ? Sessions->GetRoomListings() : NoListings;
+		TourneyRowListing.Reset();
+		TArray<int32> Order;
+		for (int32 Index = 0; Index < Listings.Num(); ++Index)
+		{
+			Order.Add(Index);
+		}
+		Order.Sort([&Listings](const int32 A, const int32 B) { return Listings[A].TourneyStartsUnix < Listings[B].TourneyStartsUnix; });
+		const int64 Now = FDateTime::UtcNow().ToUnixTimestamp();
+		for (int32 Row = 0; Row < FMath::Min(Order.Num(), 5); ++Row)
+		{
+			const FChaosImpactRoomListing& Listing = Listings[Order[Row]];
+			const bool bRunning = Listing.TourneyState == TEXT("running");
+			const bool bDone = Listing.TourneyState == TEXT("done");
+			const FDateTime Local = FDateTime::FromUnixTimestamp(Listing.TourneyStartsUnix) + (FDateTime::Now() - FDateTime::UtcNow());
+			const int64 Left = Listing.TourneyStartsUnix - Now;
+			const FString When = bDone ? FString(TEXT("終了")) : bRunning ? FString(TEXT("開催中（観戦で参加）"))
+				: Left <= 0 ? FString::Printf(TEXT("%02d:%02d開始・参加者を待っています"), Local.GetHour(), Local.GetMinute())
+				: FString::Printf(TEXT("%02d:%02d開始（あと%d分）"), Local.GetHour(), Local.GetMinute(), static_cast<int32>((Left + 59) / 60));
+			const FString Detail = FString::Printf(TEXT("%s  ・  %s  ・  %s%s"), *When, Listing.TourneyMode == 1 ? TEXT("同時進行") : TEXT("1試合ずつ"),
+				*Listing.HostName, Listing.TourneyCPUs > 0 ? *FString::Printf(TEXT("  ・  CPU%d人"), Listing.TourneyCPUs) : TEXT(""));
+			FMenuEntry Entry{FSlateRect(200, 214 + Row * 92, 1400, 294 + Row * 92),
+				Listing.TourneyTitle.IsEmpty() ? Listing.RoomName : Listing.TourneyTitle, Detail,
+				bRunning ? FString(TEXT("観戦")) : FString::Printf(TEXT("%d/%d人"), Listing.Members, Listing.TourneyMaxPlayers),
+				bRunning ? Gold : bDone ? Muted : Violet};
+			Entry.bDisabled = bDone || (!bRunning && Listing.Members >= Listing.TourneyMaxPlayers) || !Sessions->GetJoinBlocker(Listing).IsEmpty();
+			Entries.Add(Entry);
+			TourneyRowListing.Add(Order[Row]);
+		}
+		Entries.Add({FSlateRect(1010, 714, 1450, 798), TEXT("大会を作る"), TEXT("create"), TEXT(""), Gold});
+		Entries.Add({FSlateRect(560, 724, 960, 788), TEXT("さがしなおす"), TEXT("refresh"), TEXT(""), Ice});
+		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("戻る"), TEXT("back"), TEXT(""), Muted});
+		break;
+	}
+	case EChaosImpactScreen::TourneyCreate:
+	{
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		static const FChaosImpactTourneyNotice NoNotice;
+		const FChaosImpactTourneyNotice& Notice = Controller ? Controller->GetPendingTourney() : NoNotice;
+		const int32 Minutes = Controller ? Controller->GetPendingTourneyMinutes() : 15;
+		const FDateTime Start = FDateTime::Now() + FTimespan::FromMinutes(Minutes);
+		const FString Rows[] = {
+			FString::Printf(TEXT("大会名　%s"), *Notice.Title),
+			FString::Printf(TEXT("開始　＜  %02d:%02d（%d分後）  ＞"), Start.GetHour(), (Start.GetMinute() / 1) % 60, Minutes),
+			FString::Printf(TEXT("進め方　＜  %s  ＞"), Notice.Mode == 1 ? TEXT("同時進行") : TEXT("1試合ずつ")),
+			FString::Printf(TEXT("参加できる人数　＜  %d人まで  ＞"), Notice.MaxPlayers),
+			FString::Printf(TEXT("CPU　＜  %d人  ＞"), Notice.CPUs),
+			Notice.CPUs <= 0 ? FString(TEXT("CPUの強さ　（CPUなし）"))
+				: FString::Printf(TEXT("CPUの強さ　＜  %s  ＞"), Notice.Level < 0 ? TEXT("おまかせ") : ChaosImpactMatch::GetCPULevelName(Notice.Level))};
+		const FLinearColor Accents[] = {Paper, Gold, Ice, Fire, Fire, Violet};
+		for (int32 Row = 0; Row < 6; ++Row)
+		{
+			FMenuEntry Entry{FSlateRect(430, 150 + Row * 70, 1170, 210 + Row * 70), Rows[Row], TEXT(""), TEXT(""), Accents[Row]};
+			Entry.bDisabled = Row == 5 && Notice.CPUs <= 0;
+			Entries.Add(Entry);
+		}
+		Entries.Add({FSlateRect(1030, 712, 1454, 800), TEXT("大会を作る"), TEXT("create"), TEXT(""), Gold});
+		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT("back"), TEXT(""), Muted});
 		break;
 	}
 	case EChaosImpactScreen::OnlinePrivate:
@@ -1664,17 +2788,17 @@ void UChaosImpactMenuWidget::BuildEntries()
 		if (Sessions && Sessions->IsQueueMatched())
 		{
 			// Both said yes: nothing more to choose.
-			FMenuEntry Starting{FSlateRect(560, 728, 1040, 804), TEXT("まもなく対戦開始"), TEXT("starting"), TEXT(""), Gold};
+			FMenuEntry Starting{FSlateRect(560, 756, 1040, 832), TEXT("まもなく対戦開始"), TEXT("starting"), TEXT(""), Gold};
 			Starting.bDisabled = true;
 			Entries.Add(Starting);
 			break;
 		}
 		const bool bAccepted = Sessions && Sessions->GetDuelOffer().bAccepted;
-		FMenuEntry Accept{FSlateRect(380, 724, 860, 808), bAccepted ? TEXT("相手の返事を待っています") : TEXT("対戦する"),
+		FMenuEntry Accept{FSlateRect(430, 756, 910, 836), bAccepted ? TEXT("相手の返事を待っています") : TEXT("対戦する"),
 			TEXT("accept"), TEXT(""), Gold};
 		Accept.bDisabled = bAccepted;
 		Entries.Add(Accept);
-		Entries.Add({FSlateRect(900, 734, 1220, 798), TEXT("やめる"), TEXT("decline"), TEXT(""), Muted});
+		Entries.Add({FSlateRect(950, 764, 1210, 828), TEXT("やめる"), TEXT("decline"), TEXT(""), Muted});
 		break;
 	}
 	case EChaosImpactScreen::OnlineName:
@@ -1734,6 +2858,20 @@ void UChaosImpactMenuWidget::BuildEntries()
 	{
 		const AChaosImpactPlayerController* Controller =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		if (!PauseConfirm.IsEmpty())
+		{
+			// The question's two answers, in its card (いいえ first: a stray press keeps the player where they are).
+			Entries.Add({FSlateRect(560, 520, 790, 590), TEXT("いいえ"), TEXT("confirm_no"), TEXT(""), Ice});
+			Entries.Add({FSlateRect(810, 520, 1040, 590), TEXT("はい"), TEXT("confirm_yes"), TEXT(""), Fire});
+			break;
+		}
+		if (Controller && Controller->IsInMatchmadeMatch())
+		{
+			// A ランダムマッチ being played: nothing but going back to it, or 降参.
+			Entries.Add({FSlateRect(490, 365, 1110, 427), TEXT("ゲームに戻る"), TEXT("resume"), TEXT(""), Ice});
+			Entries.Add({FSlateRect(490, 445, 1110, 507), TEXT("降参する"), TEXT("surrender"), TEXT(""), Fire});
+			break;
+		}
 		if (Controller && Controller->IsOnlineRoom())
 		{
 			float Y = 285.0f;
@@ -1744,6 +2882,11 @@ void UChaosImpactMenuWidget::BuildEntries()
 				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("キャラを変える"), TEXT("change_character"), TEXT(""), Ice});
 				Y += 80.0f;
 				Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("名前を変える"), TEXT("change_name"), TEXT(""), Ice});
+				if (Controller->IsPrimaryLocalPlayerController())
+				{
+					Y += 80.0f;
+					Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT(""), Violet});
+				}
 			}
 			const AChaosImpactGameState* PauseRoom = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 			if (Controller->CanOpenMatchRulesFromPause())
@@ -1774,9 +2917,9 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Y += 80.0f;
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
 			Y += 80.0f;
-			const bool bLeaveArmed = ArmedIndex == Entries.Num();
 			Entries.Add({FSlateRect(490, Y, 1110, Y + 62),
-				bLeaveArmed ? TEXT("もう一度おすと決定")
+				PauseRoom && PauseRoom->bPublicTournament ? (Controller->IsOnlineRoomHost() ? TEXT("大会を中止する") : TEXT("大会からぬける"))
+					: PauseRoom && PauseRoom->IsMatchmade() ? TEXT("部屋をぬける")
 					: Controller->IsOnlineRoomHost() ? TEXT("部屋を解散する") : TEXT("部屋をぬける"),
 				TEXT("leave"), TEXT(""), Fire});
 			// Many choices (a host in the lobby has up to nine): closer together, all on screen under PAUSE.
@@ -1828,17 +2971,30 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Entries.Add({FSlateRect(490, 405, 1110, 467), TEXT("トレーニングをリトライ"), TEXT("training_retry"), TEXT(""), Gold});
 		}
 		const float Below = Controller && Controller->ShowsTrainingPauseEntries() ? 485.0f : 325.0f;
+		if (Controller && Controller->IsSearchingForRoom())
+		{
+			// Searching (in this machine's own training): out of the search, back to the online menu, but no way to
+			// the title or the mode select from here.
+			const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+			Entries.Add({FSlateRect(490, Below, 1110, Below + 62),
+				Sessions && Sessions->IsQueueing() ? TEXT("さがすのをやめる") : TEXT("へやをさがすのをやめる"),
+				TEXT("stop_search"), TEXT(""), Fire});
+			Entries.Add({FSlateRect(490, Below + 80, 1110, Below + 142), TEXT("オンラインメニューへ"), TEXT("online_menu"), TEXT(""), Gold});
+			Entries.Add({FSlateRect(490, Below + 160, 1110, Below + 222), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
+			break;
+		}
+		if (Controller && Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusOnline)
+		{
+			// Back from an online room: the online menu first.
+			Entries.Add({FSlateRect(490, Below, 1110, Below + 62), TEXT("オンラインメニューへ"), TEXT("online_menu"), TEXT(""), Gold});
+			Entries.Add({FSlateRect(490, Below + 80, 1110, Below + 142), TEXT("モード選択へ"), TEXT("goto_mode"), TEXT(""), Fire});
+			Entries.Add({FSlateRect(490, Below + 160, 1110, Below + 222), TEXT("タイトル画面へ"), TEXT("goto_title"), TEXT(""), Muted});
+			Entries.Add({FSlateRect(490, Below + 240, 1110, Below + 302), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
+			break;
+		}
 		Entries.Add({FSlateRect(490, Below, 1110, Below + 62), TEXT("モード選択へ"), TEXT("goto_mode"), TEXT(""), Fire});
 		Entries.Add({FSlateRect(490, Below + 80, 1110, Below + 142), TEXT("タイトル画面へ"), TEXT("goto_title"), TEXT(""), Muted});
 		Entries.Add({FSlateRect(490, Below + 160, 1110, Below + 222), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
-		if (Controller && Controller->IsSearchingForRoom())
-		{
-			const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
-			Entries.Add({FSlateRect(490, Below + 240, 1110, Below + 302),
-				ArmedIndex == Entries.Num() ? TEXT("もう一度おすと決定")
-					: Sessions && Sessions->IsQueueing() ? TEXT("さがすのをやめる") : TEXT("へやをさがすのをやめる"),
-				TEXT("stop_search"), TEXT(""), Fire});
-		}
 		break;
 	}
 	case EChaosImpactScreen::TrainingSettings:
@@ -1920,40 +3076,103 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::MatchRules:
+	if (bModePicker)
 	{
+		// Every kind of match, in rows by kind (バトル / バトルロイヤル / そのほか): Number its mode, greyed out with the
+		// reason when it cannot be chosen here.
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		static const int32 Grid[3][4] = {{0, 1, 2, 3}, {6, 7, 8, 9}, {4, 5, 10, AChaosImpactPlayerController::TournamentAllAtOnceChoice}};
+		for (int32 GridRow = 0; GridRow < 3; ++GridRow)
+		{
+			for (int32 Column = 0; Column < 4; ++Column)
+			{
+				const int32 Mode = Grid[GridRow][Column];
+				if (Mode < 0)
+				{
+					continue;
+				}
+				FChaosImpactMatchRules Kind;
+				AChaosImpactPlayerController::ApplyMatchMode(Kind, Mode);
+				const float Left = 300.0f + Column * 300.0f - GridRow * 148.0f * 0.1f;
+				const float Top = 214.0f + GridRow * 158.0f;
+				// (Short names: the row says which kind it is.)
+				static const TCHAR* Names[] = {TEXT("個人戦"), TEXT("2チーム"), TEXT("3チーム"), TEXT("4チーム"), TEXT("クラッシュボール"),
+					TEXT("デュエル 1対1"), TEXT("個人戦"), TEXT("2チーム"), TEXT("3チーム"), TEXT("4チーム"), TEXT("トーナメント 1試合ずつ"),
+					TEXT("トーナメント 同時進行")};
+				FMenuEntry Tile{FSlateRect(Left, Top, Left + 284.0f, Top + 140.0f), Names[Mode],
+					TEXT("mode"), FString::FromInt(Mode), GridRow == 0 ? Fire : GridRow == 1 ? Gold : Violet};
+				Tile.bDisabled = Controller && !Controller->GetMatchModeBlocker(FMath::Min(Mode, 10)).IsEmpty();
+				Entries.Add(Tile);
+			}
+		}
+		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("picker_back"), TEXT(""), Muted});
+		break;
+	}
+	else
+	{
+		// Four rows of a setting each (its name, its value between ◀ ▶; "fixed" when this rule decides it), then 決定 and
+		// 戻る. Title: the setting, Number: its value, Detail: "fixed" when it cannot be changed.
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const FChaosImpactMatchRules Rules = Controller ? Controller->GetPendingMatchRules() : FChaosImpactMatchRules();
-		// クラッシュボール always lasts five minutes: the time row stays, greyed out.
-		FMenuEntry Minutes{FSlateRect(430, 206, 1170, 270), Rules.bDuel
-				? FString::Printf(TEXT("試合時間　1ラウンド%d秒（固定）"), FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds))
-				: Rules.bCrashBall
-				? FString::Printf(TEXT("試合時間　%d分（固定）"), Rules.Minutes)
-				: FString::Printf(TEXT("試合時間　＜  %d分  ＞"), Rules.Minutes),
-			TEXT(""), TEXT(""), Ice};
-		if (Rules.bBattleRoyale) { Minutes.Title = TEXT("試合時間　2分（固定）"); }
-		Minutes.bDisabled = Rules.bCrashBall || Rules.bDuel || Rules.bBattleRoyale;
-		Entries.Add(Minutes);
-		Entries.Add({FSlateRect(430, 282, 1170, 346),
-			FString::Printf(TEXT("ルール　＜  %s  ＞"), *ChaosImpactMatch::DescribeRule(Rules)),
-			TEXT(""), TEXT(""), Rules.bDuel ? Ice : Rules.bCrashBall ? Violet : Rules.IsTeamBattle() ? Gold : Fire});
-		// The duel: one player faces a CPU, two players face each other (fixed).
-		FMenuEntry CPUs{FSlateRect(430, 358, 1170, 422), Rules.bDuel
-				? FString(Rules.CPUCount > 0 ? TEXT("相手　CPU（固定）") : TEXT("相手　プレイヤー同士（固定）"))
-				: FString::Printf(TEXT("CPU　＜  %d人  ＞"), Rules.CPUCount),
-			TEXT(""), TEXT(""), Rules.CPUCount > 0 ? Fire : Muted};
-		CPUs.bDisabled = Rules.bDuel;
-		Entries.Add(CPUs);
-		// Only with CPUs in the match; otherwise shown greyed out and skipped by the cursor.
-		FMenuEntry Strength{FSlateRect(430, 434, 1170, 498), Rules.CPUCount > 0
-				? FString::Printf(TEXT("CPUの強さ　＜  %s  ＞"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
-				: FString(TEXT("CPUの強さ　（CPUなし）")),
-			TEXT(""), TEXT(""), Rules.CPULevel == ChaosImpactMatch::CPULevelWeak ? Ice
-				: Rules.CPULevel == ChaosImpactMatch::CPULevelNormal ? Gold
-				: Rules.CPULevel == ChaosImpactMatch::CPULevelStrong ? Fire : FLinearColor(0.78f, 0.36f, 1.0f, 1.0f)};
-		Strength.bDisabled = Rules.CPUCount <= 0;
-		Entries.Add(Strength);
-		Entries.Add({FSlateRect(1030, 712, 1454, 800), Rules.bDuel ? TEXT("試合開始") : TEXT("決定"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(146, 724, 470, 788), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		const auto Row = [this](const int32 Index, const TCHAR* Label, const FString& Value, const FLinearColor& Accent, const bool bFixed)
+		{
+			const float Top = 200.0f + Index * 92.0f;
+			FMenuEntry Entry{FSlateRect(110.0f - Index * 92.0f * 0.12f, Top, 880.0f - Index * 92.0f * 0.12f, Top + 76.0f), Label,
+				bFixed ? TEXT("fixed") : TEXT(""), Value, Accent};
+			Entry.bDisabled = bFixed;
+			Entries.Add(Entry);
+		};
+		// 0: how long (a tournament: how it runs).
+		if (Rules.bTournament)
+		{
+			Row(0, TEXT("進め方"), Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? TEXT("同時進行") : TEXT("1試合ずつ"), Ice, false);
+		}
+		else if (Rules.bDuel)
+		{
+			Row(0, TEXT("試合時間"), FString::Printf(TEXT("1ラウンド%d秒"), FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds)), Ice, true);
+		}
+		else if (Rules.bBattleRoyale)
+		{
+			Row(0, TEXT("試合時間"), TEXT("2分"), Ice, true);
+		}
+		else
+		{
+			Row(0, TEXT("試合時間"), FString::Printf(TEXT("%d分"), Rules.Minutes), Ice, Rules.bCrashBall);
+		}
+		// 1: the rule itself.
+		Row(1, TEXT("ルール"), ChaosImpactMatch::DescribeRule(Rules).Replace(TEXT("  "), TEXT(" ")),
+			Rules.bTournament ? Violet : Rules.bDuel ? Ice : Rules.bCrashBall ? Violet : Rules.IsTeamBattle() ? Gold : Fire, false);
+		// 2: the CPUs (the duel: one player faces a CPU, two face each other).
+		if (Rules.bTournament)
+		{
+			Row(2, TEXT("CPU"), FString::Printf(TEXT("%d人"), Rules.Tournament.CPUs.Num()), Rules.Tournament.CPUs.IsEmpty() ? Muted : Fire, false);
+		}
+		else if (Rules.bDuel)
+		{
+			Row(2, TEXT("相手"), Rules.CPUCount > 0 ? TEXT("CPU") : TEXT("プレイヤー同士"), Fire, true);
+		}
+		else
+		{
+			Row(2, TEXT("CPU"), FString::Printf(TEXT("%d人"), Rules.CPUCount), Rules.CPUCount > 0 ? Fire : Muted, false);
+		}
+		// 3: how strong (only with CPUs; otherwise greyed out and skipped by the cursor).
+		const FLinearColor StrengthColor = Rules.CPULevel == ChaosImpactMatch::CPULevelWeak ? Ice
+			: Rules.CPULevel == ChaosImpactMatch::CPULevelNormal ? Gold
+			: Rules.CPULevel == ChaosImpactMatch::CPULevelStrong ? Fire : FLinearColor(0.78f, 0.36f, 1.0f, 1.0f);
+		if (Rules.bTournament)
+		{
+			const int32 Level = Rules.Tournament.CPUs.IsEmpty() ? INDEX_NONE : Rules.Tournament.CPUs[0].Level;
+			Row(3, TEXT("CPUの強さ"), Rules.Tournament.CPUs.IsEmpty() ? TEXT("CPUなし") : Level < 0 ? TEXT("おまかせ") : ChaosImpactMatch::GetCPULevelName(Level),
+				StrengthColor, false);
+			Entries.Last().bDisabled = Rules.Tournament.CPUs.IsEmpty();
+		}
+		else
+		{
+			Row(3, TEXT("CPUの強さ"), Rules.CPUCount > 0 ? ChaosImpactMatch::GetCPULevelName(Rules.CPULevel) : TEXT("CPUなし"), StrengthColor, false);
+			Entries.Last().bDisabled = Rules.CPUCount <= 0;
+		}
+		Entries.Add({FSlateRect(1010, 718, 1490, 800), Rules.bDuel ? TEXT("試合開始") : TEXT("決定"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		break;
 	}
 	case EChaosImpactScreen::StageSelect:
@@ -2061,6 +3280,20 @@ void UChaosImpactMenuWidget::BuildEntries()
 	default:
 		break;
 	}
+	if (Screen == EChaosImpactScreen::Pause && PauseConfirm.IsEmpty() && !Entries.IsEmpty())
+	{
+		// The pause menu: its items down the left panel, closer together the more there are.
+		const int32 Count = Entries.Num();
+		const float Step = FMath::Min(74.0f, 560.0f / Count);
+		const float Height = FMath::Min(60.0f, Step - 10.0f);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Top = 272.0f + Index * Step;
+			// (Following the panel's slanted edge.)
+			const float Lean = (Top - 272.0f) * 0.178f;
+			Entries[Index].Rect = FSlateRect(150.0f - Lean, Top, 660.0f - Lean, Top + Height);
+		}
+	}
 }
 
 void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
@@ -2076,6 +3309,41 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	}
 	SoundScreen = Screen;
 	SoundSelectedIndex = SelectedIndex;
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevModePicker opens the rules screen's list of every kind of match (a screenshot of it).
+	{
+		static bool bDevPickerDone = false;
+		if (!bDevPickerDone && Screen == EChaosImpactScreen::MatchRules && AnimationSeconds > 1.0f && FParse::Param(FCommandLine::Get(), TEXT("CIDevModePicker")))
+		{
+			bDevPickerDone = true;
+			OpenModePicker(true);
+		}
+	}
+	// Development: -CIDevPauseConfirm=<choice> asks the pause menu's question for that choice (a screenshot of it).
+	{
+		static bool bDevConfirmDone = false;
+		FString DevConfirm;
+		if (!bDevConfirmDone && Screen == EChaosImpactScreen::Pause && AnimationSeconds > 1.0f
+			&& FParse::Value(FCommandLine::Get(), TEXT("CIDevPauseConfirm="), DevConfirm))
+		{
+			bDevConfirmDone = true;
+			PauseConfirm = DevConfirm;
+			PauseConfirmAt = Now;
+			BuildEntries();
+			SelectedIndex = 0;
+		}
+	}
+#endif
+	// A 1v1 found settles while the training under its card is paused (the controller's own tick stopped): the card
+	// goes from here when the other side said no, the time ran out, or the match is made.
+	if (Screen == EChaosImpactScreen::DuelFound)
+	{
+		UpdateDuelPreviews(InDeltaTime);
+		if (AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			Owner->UpdateDuelOfferScreen();
+		}
+	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
 	{
 		CharacterSelect->Tick(InDeltaTime);
@@ -2083,6 +3351,38 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
 	{
 		ColourEdit->Tick(InDeltaTime);
+	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry)
+	{
+		TourneyEntry->Tick(InDeltaTime);
+	}
+	if (Screen == EChaosImpactScreen::TourneySeat)
+	{
+		UpdateSeatPreviews(InDeltaTime);
+		if (AChaosImpactPlayerController* Seats = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+#if !UE_BUILD_SHIPPING
+			// Development (-CIDevAutoSeat): the places are taken by themselves (the keyboard, then made-up pads) a moment in.
+			if (FParse::Param(FCommandLine::Get(), TEXT("CIDevAutoSeat")) && AnimationSeconds > 2.5f && Seats->GetTourneySeatsFullAt() <= 0.0)
+			{
+				int32 FakePad = 9001;
+				for (const AChaosImpactPlayerController::FTourneySeat& Seat : Seats->GetTourneySeats())
+				{
+					FakePad += Seat.Device != -2 ? 1 : 0;
+				}
+				for (const AChaosImpactPlayerController::FTourneySeat& Seat : Seats->GetTourneySeats())
+				{
+					if (!Seat.bCPU && Seat.Device == -2)
+					{
+						const bool bKeyboardFree = !Seats->GetTourneySeats().ContainsByPredicate([](const AChaosImpactPlayerController::FTourneySeat& Each) { return Each.Device == -1; });
+						Seats->PressTourneySeat(bKeyboardFree, FakePad++);
+						break;
+					}
+				}
+			}
+#endif
+			Seats->UpdateTourneySeats();
+		}
 	}
 	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
 	{
@@ -2096,7 +3396,8 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 		// (Not once the VS card is up: its pictures are filmed with the level's drawing.)
 		const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bHideLevel = ((Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
-			|| (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen()))
+			|| (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen())
+			|| (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()))
 			&& Owner && !Owner->IsTravelPending();
 		if (Viewport->bDisableWorldRendering != bHideLevel && (bHideLevel || bLevelHiddenByMenu))
 		{
@@ -2132,7 +3433,7 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 			NameInput->SetUserFocus(GetOwningPlayer());
 		}
 	}
-	if (Screen == EChaosImpactScreen::DuelFound || Screen == EChaosImpactScreen::MatchEnd)
+	if (Screen == EChaosImpactScreen::DuelFound || Screen == EChaosImpactScreen::MatchEnd || Screen == EChaosImpactScreen::LineCheck)
 	{
 		// The other player's answers change the choices (対戦する / 相手を待っています, the rematch).
 		const FString Key = GetLiveEntriesKey();
@@ -2148,7 +3449,20 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 			}
 		}
 	}
-	if (Screen == EChaosImpactScreen::RoomList)
+#if !UE_BUILD_SHIPPING
+	// Development (-CIAutoTourneyJoin): enters the first public tournament listed.
+	if (Screen == EChaosImpactScreen::TourneyList && !TourneyRowListing.IsEmpty() && FParse::Param(FCommandLine::Get(), TEXT("CIAutoTourneyJoin")))
+	{
+		if (AChaosImpactPlayerController* AutoController = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			UE_LOG(LogTemp, Log, TEXT("Public tournament list: %d, entering the first"), TourneyRowListing.Num());
+			const int32 First = TourneyRowListing[0];
+			TourneyRowListing.Reset();
+			AutoController->JoinRoomListing(First);
+		}
+	}
+#endif
+	if (Screen == EChaosImpactScreen::RoomList || Screen == EChaosImpactScreen::TourneyList)
 	{
 		if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 			Sessions && Sessions->GetRoomListingsVersion() != LastRoomListingsVersion)
@@ -2236,6 +3550,27 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		P.Box(68, 122, 150, 8, Fire);
 		P.Box(226, 122, 48, 8, Ice);
 	}
+	else if (Screen == EChaosImpactScreen::Pause)
+	{
+		const FVector2D ViewSize = AllottedGeometry.GetLocalSize();
+		const float BackIn = EaseOut(T / 0.25f);
+		Full.Box(0.0f, 0.0f, ViewSize.X, ViewSize.Y, FLinearColor(0.0f, 0.004f, 0.018f, 0.5f * BackIn));
+		const ChaosImpactPaint::FPainter Back{DesignGeometry, OutDrawElements, BaseLayer + 1, BackIn};
+		const float Slide = (1.0f - BackIn) * -160.0f;
+		ChaosImpactPaint::HudPoly(Back, {FVector2D(-900.0f, 0.0), FVector2D(800.0f + Slide, 0.0), FVector2D(640.0f + Slide, 900.0),
+			FVector2D(-900.0f, 900.0)}, ChaosImpactPaint::MakeFill(FLinearColor(0.03f, 0.05f, 0.1f, 0.93f), FLinearColor(0.004f, 0.006f, 0.016f, 0.96f)));
+		const ChaosImpactPaint::FPainter Edge = ChaosImpactPaint::HudAbove(Back, 1);
+		ChaosImpactPaint::HudPoly(Edge, {FVector2D(800.0f + Slide, 0.0), FVector2D(812.0f + Slide, 0.0), FVector2D(652.0f + Slide, 900.0),
+			FVector2D(640.0f + Slide, 900.0)}, ChaosImpactPaint::MakeFill(FMath::Lerp(Ice, Paper, 0.3f), Ice));
+		ChaosImpactPaint::HudPoly(Edge, {FVector2D(830.0f + Slide, 0.0), FVector2D(836.0f + Slide, 0.0), FVector2D(676.0f + Slide, 900.0),
+			FVector2D(670.0f + Slide, 900.0)}, ChaosImpactPaint::MakeFill(Fire, FLinearColor(0.5f, 0.02f, 0.06f, 1.0f)));
+		// Faint speed streaks across the panel.
+		for (int32 Streak = 0; Streak < 6; ++Streak)
+		{
+			const float Y = 120.0f + Streak * 131.0f;
+			Edge.Box(-900.0f, Y, 1400.0f - Streak * 60.0f, 1.0f, WithAlpha(Paper, 0.035f));
+		}
+	}
 	else if (Screen == EChaosImpactScreen::MatchEnd)
 	{
 		// On the podium nothing is added: any button goes on.
@@ -2273,6 +3608,17 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const int32 EditLayer = ColourEdit->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
 		PaintEnterWipe(DesignGeometry, OutDrawElements, EditLayer + 1, T);
 		return EditLayer + 2;
+	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry)
+	{
+		const int32 EntryLayer = TourneyEntry->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
+		PaintEnterWipe(DesignGeometry, OutDrawElements, EntryLayer + 1, T);
+		return EntryLayer + 2;
+	}
+	if (Screen == EChaosImpactScreen::TourneySeat)
+	{
+		PaintTourneySeat(DesignGeometry, OutDrawElements, BaseLayer + 3, T);
+		return BaseLayer + 20;
 	}
 	if (Screen == EChaosImpactScreen::Settings && SettingsScreen)
 	{
@@ -2392,10 +3738,49 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	else if (Screen == EChaosImpactScreen::MultiReady)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("ONLINE"), T);
+		PaintOnlinePlayerCard(DesignGeometry, OutDrawElements, BaseLayer + 3, T);
+	}
+	else if (Screen == EChaosImpactScreen::LineCheck)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("回線チェック"), T);
+		PaintLineCheck(DesignGeometry, OutDrawElements, BaseLayer + 3, T);
 	}
 	else if (Screen == EChaosImpactScreen::OnlinePrivate)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("合言葉マッチ"), T);
+	}
+	else if (Screen == EChaosImpactScreen::TourneyList)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("トーナメント"), T);
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		if (!Sessions || Sessions->GetRoomListings().IsEmpty())
+		{
+			const FMenuPainter Note{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
+			Note.Text(TEXT("いま募集中の大会はありません"), 800.0f, 330.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"));
+			Note.Text(TEXT("右下の「大会を作る」から、開催時間とルールを決めて募集できます"), 800.0f, 386.0f, 20.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+		}
+	}
+	if (Screen == EChaosImpactScreen::TourneyList)
+	{
+		// Each tournament's row: when it starts and how it runs under its name, its places on the right.
+		const FMenuPainter Rows{DesignGeometry, OutDrawElements, BaseLayer + 40, EaseOut((T - 0.15f) / 0.3f)};
+		for (int32 Row = 0; Row < TourneyRowListing.Num() && Entries.IsValidIndex(Row); ++Row)
+		{
+			const FMenuEntry& Entry = Entries[Row];
+			const float Middle = static_cast<float>(Entry.Rect.Top + Entry.Rect.Bottom) * 0.5f;
+			Rows.Text(Entry.Detail, static_cast<float>(Entry.Rect.Right) - 190.0f, Middle - 11.0f, 17.0f,
+				WithAlpha(Paper, Entry.bDisabled ? 0.45f : 0.9f), ETextAlign::Right, TEXT("Bold"));
+			Rows.Text(Entry.Number, static_cast<float>(Entry.Rect.Right) - 64.0f, Middle - 16.0f, 26.0f,
+				Entry.bDisabled ? Muted : Paper, ETextAlign::Right, TEXT("BlackItalic"));
+		}
+	}
+	if (Screen == EChaosImpactScreen::TourneyCreate)
+	{
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("大会を作る"), T);
+		const FMenuPainter Note{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
+		Note.Text(TEXT("開始時刻に2人以上そろっていれば始まります　・　全試合1対1・2本先取"), 800.0f, 584.0f, 19.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+		Note.Text(TEXT("開始までは大会の部屋で練習しながら待てます（作った人は部屋を開けておいてください）"), 800.0f, 616.0f, 19.0f, Muted,
+			ETextAlign::Center, TEXT("Bold"));
 	}
 	else if (Screen == EChaosImpactScreen::OnlineRecord)
 	{
@@ -2404,7 +3789,6 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	}
 	else if (Screen == EChaosImpactScreen::DuelFound)
 	{
-		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("対戦相手が見つかりました"), T);
 		PaintDuelFound(DesignGeometry, OutDrawElements, BaseLayer + 3, T);
 	}
 	else if (Screen == EChaosImpactScreen::VSSelect)
@@ -2557,73 +3941,209 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	}
 	else if (Screen == EChaosImpactScreen::Pause)
 	{
-		const float Glitch = FMath::Clamp(1.0f - T / 0.55f, 0.0f, 1.0f);
-		const float JitterX = FMath::Sin(T * 93.0f) * Glitch * 13.0f;
-		if (Glitch > 0.0f)
+		const float PauseIn = EaseOut((T - 0.05f) / 0.3f);
+		const ChaosImpactPaint::FPainter PauseTitle{DesignGeometry, OutDrawElements, BaseLayer + 3, PauseIn};
+		ChaosImpactPaint::HudText3D(PauseTitle, TEXT("PAUSE"), 150.0f - (1.0f - PauseIn) * 60.0f, 62.0f, 94.0f, Paper, ChaosImpactPaint::ETextAlign::Left,
+			TEXT("BlackItalic"), 5.0f);
+		PauseTitle.Box(156.0f, 206.0f, 130.0f, 7.0f, Ice);
+		PauseTitle.Box(290.0f, 206.0f, 64.0f, 7.0f, Fire);
+		const FString Context = GetPauseContext();
+		if (!Context.IsEmpty())
 		{
-			for (int32 Scanline = 0; Scanline < 12; ++Scanline)
+			PauseTitle.Text(Context, 156.0f, 222.0f, ChaosImpactPaint::HudFit(Context, 22.0f, 560.0f), Gold, ChaosImpactPaint::ETextAlign::Left, TEXT("Black"));
+		}
+		PauseTitle.Text(TEXT("A / Enter：決定　　B / Esc：もどる"), 96.0f, 852.0f, 17.0f, WithAlpha(Paper, 0.55f), ChaosImpactPaint::ETextAlign::Left,
+			TEXT("Bold"));
+		if (!PauseConfirm.IsEmpty())
+		{
+			// 本当に〜よろしいですか？ on a card of its own, the answers under it.
+			FString Question;
+			FString Note;
+			GetPauseConfirmText(Question, Note);
+			const float Age = static_cast<float>(FPlatformTime::Seconds() - PauseConfirmAt);
+			const float CardIn = EaseOut(Age / 0.22f);
+			Full.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, FLinearColor(0.0f, 0.0f, 0.02f, 0.6f * CardIn));
+			const FGeometry Card = MakeSkewed(DesignGeometry, 430.0f, 330.0f + (1.0f - CardIn) * 24.0f, 740.0f, 290.0f, -0.08f);
+			const FMenuPainter C{Card, OutDrawElements, BaseLayer + 4, CardIn};
+			const ChaosImpactPaint::FPainter CardBody{Card, OutDrawElements, BaseLayer + 4, CardIn};
+			C.Box(14.0f, 16.0f, 740.0f, 290.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+			ChaosImpactPaint::HudPoly(CardBody, {FVector2D(0.0, 0.0), FVector2D(740.0, 0.0), FVector2D(740.0, 290.0), FVector2D(0.0, 290.0)},
+				ChaosImpactPaint::MakeFill(FLinearColor(0.05f, 0.07f, 0.13f, 0.99f), FLinearColor(0.008f, 0.012f, 0.03f, 0.99f)));
+			const FMenuPainter CardUp{Card, OutDrawElements, BaseLayer + 5, CardIn};
+			ChaosImpactPaint::HudPoly(ChaosImpactPaint::FPainter{Card, OutDrawElements, BaseLayer + 5, CardIn},
+				{FVector2D(0.0, 0.0), FVector2D(740.0, 0.0), FVector2D(740.0, 8.0), FVector2D(0.0, 8.0)},
+				ChaosImpactPaint::MakeFill(FMath::Lerp(Fire, Paper, 0.3f), Fire));
+			CardUp.Box(0.0f, 0.0f, 10.0f, 290.0f, Fire);
+			CardUp.Outline(0.0f, 0.0f, 740.0f, 290.0f, WithAlpha(Paper, 0.16f), 2.0f);
+			const FMenuPainter C2{Card, OutDrawElements, BaseLayer + 6, CardIn};
+			C2.Text(TEXT("CONFIRM"), 40.0f, 24.0f, 18.0f, WithAlpha(Fire, 0.95f), ETextAlign::Left, TEXT("BlackItalic"));
+			// (Sized to fit the card.)
+			const float QuestionSize = FMath::Min(40.0f, 34.0f * 640.0f / FMath::Max(ChaosImpactPaint::HudMeasure(Question, 34.0f, TEXT("Black")), 1.0f));
+			C2.Text(Question, 370.0f, 66.0f + (40.0f - QuestionSize) * 0.5f, QuestionSize, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+			if (!Note.IsEmpty())
 			{
-				const float Y = FMath::Fmod(Scanline * 79.0f + T * 920.0f, 900.0f);
-				P.Box(0.0f, Y, 1600.0f, Scanline % 3 == 0 ? 3.0f : 1.0f,
-					FLinearColor(0.72f, 0.88f, 1.0f, 0.11f * Glitch));
+				C2.Text(Note, 370.0f, 130.0f, ChaosImpactPaint::HudFit(Note, 22.0f, 640.0f, TEXT("Bold")), WithAlpha(Paper, 0.72f), ETextAlign::Center, TEXT("Bold"));
 			}
 		}
-		P.Text(TEXT("PAUSE"), 800.0f + JitterX * 0.18f, 94, 78, Paper, ETextAlign::Center);
-		P.Box(650, 206, 150, 8, Ice);
-		P.Box(800, 206, 150, 8, Fire);
 	}
 	else if (Screen == EChaosImpactScreen::MatchRules)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("RULE"), T);
 		if (const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
 		{
+			namespace CP = ChaosImpactPaint;
 			const FChaosImpactMatchRules& Rules = Controller->GetPendingMatchRules();
 			const int32 Humans = ChaosImpactMatch::GetCompetingHumans(Rules, Controller->GetMatchHumanCount());
-			const int32 Total = Humans + Rules.CPUCount;
-			const float In = EaseOut((T - 0.2f) / 0.35f);
-			const FGeometry Panel = MakeSkewed(DesignGeometry, 430.0f + (1.0f - In) * 80.0f, 530.0f, 740.0f, 156.0f, -0.12f);
-			const FMenuPainter Info{Panel, OutDrawElements, BaseLayer + 2, In};
-			Info.Box(12.0f, 14.0f, 740.0f, 156.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
-			Info.Box(0.0f, 0.0f, 740.0f, 156.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
-			Info.Box(0.0f, 0.0f, 10.0f, 156.0f, Rules.bSpectate ? Ice : Gold);
-			if (Rules.bBattleRoyale)
+			const int32 CPUs = Rules.bTournament ? Rules.Tournament.CPUs.Num() : Rules.CPUCount;
+			const int32 People = Rules.bTournament ? Controller->GetMatchHumanCount() : Humans;
+			const int32 Total = People + CPUs;
+			const FLinearColor ModeColor = Rules.bTournament || Rules.bCrashBall ? Violet : Rules.bDuel ? Ice : Rules.IsTeamBattle() ? Gold : Fire;
+			// How the rows change, beside the title.
+			if (!bModePicker)
 			{
-				Info.Text(Rules.IsTeamBattle() ? TEXT("最後まで生き残ったチームの勝ち") : TEXT("最後の1人になれば勝利"), 36.f, 14.f, 30.f, Paper);
-				Info.Text(Rules.IsTeamBattle() ? TEXT("時間切れは生存人数 → 残りHP合計で判定") : TEXT("時間切れは残りHPで判定"), 38.f, 66.f, 24.f, Gold);
-				Info.Text(TEXT("同率首位だけでサドンデス・復活なし・縮小なし"), 38.f, 110.f, 22.f, Muted);
+				const FString Hint = TEXT("◀ ▶ で変更　・　ルールは決定で一覧から選べます");
+				P.Text(Hint, 880.0f, 156.0f, ChaosImpactPaint::HudFit(Hint, 18.0f, 500.0f, TEXT("Bold")), Muted, ETextAlign::Right, TEXT("Bold"));
 			}
-			else if (Rules.bDuel)
+
+			// Under the rows: who plays, as a sum (not while the list of kinds is open over the page).
+			if (!bModePicker)
 			{
-				// The duel: who faces whom, and how a round and the match are won.
-				Info.Box(0.0f, 0.0f, 10.0f, 156.0f, Ice);
-				Info.Text(Rules.CPUCount > 0 ? FString::Printf(TEXT("1対1：あなた 対 CPU（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
-					: FString(TEXT("1対1：プレイヤー同士")), 36.0f, 14.0f, 30.0f, Paper);
-				Info.Text(FString::Printf(TEXT("%d本先取・体力3・特殊ボールは毎試合スロットで%d種類"), ChaosImpactMatch::DuelRoundsToWin,
-					ChaosImpactMatch::DuelBallPicks), 38.0f, 66.0f, 24.0f, Ice);
-				Info.Text(FString::Printf(TEXT("時間切れは体力の多いほう、同じなら%d秒のサドンデス"), FMath::RoundToInt(ChaosImpactMatch::DuelSuddenDeathSeconds)),
-					38.0f, 110.0f, 22.0f, Muted);
+				const float In = EaseOut((T - 0.25f) / 0.35f);
+				constexpr float SW = 818.0f;
+				constexpr float SH = 112.0f;
+				const CP::FPainter S{MakeSkewed(DesignGeometry, 62.0f - (1.0f - In) * 60.0f, 578.0f, SW, SH, -0.12f), OutDrawElements, BaseLayer + 3, In};
+				S.Box(8.0f, 9.0f, SW, SH, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+				CP::HudPoly(S, {FVector2D(0.0, 0.0), FVector2D(SW, 0.0), FVector2D(SW, SH), FVector2D(0.0, SH)},
+					CP::MakeFill(FLinearColor(0.04f, 0.055f, 0.1f, 0.94f), FLinearColor(0.008f, 0.012f, 0.026f, 0.96f)));
+				const CP::FPainter ST = CP::HudAbove(S, 2);
+				if (Rules.bSpectate && !Rules.bTournament)
+				{
+					ST.Text(TEXT("観戦"), 32.0f, 16.0f, 18.0f, Ice, CP::ETextAlign::Left, TEXT("Black"));
+					const FString Watch = FString::Printf(TEXT("CPU %d人の試合をカメラで見る"), CPUs);
+					CP::HudText3D(CP::HudAbove(ST, 1), Watch, 32.0f, 46.0f, CP::HudFit(Watch, 32.0f, SW - 64.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 2.0f);
+				}
+				else
+				{
+					struct FPart
+					{
+						const TCHAR* Label;
+						int32 Count;
+						FLinearColor Color;
+					};
+					const FPart Parts[] = {{TEXT("プレイヤー"), People, Ice}, {TEXT("CPU"), CPUs, CPUs > 0 ? Fire : Muted}, {TEXT("合計"), Total, Gold}};
+					const TCHAR* Signs[] = {TEXT("＋"), TEXT("＝")};
+					for (int32 Part = 0; Part < 3; ++Part)
+					{
+						const float X = 40.0f + Part * 270.0f;
+						ST.Text(Parts[Part].Label, X, 16.0f, 17.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+						CP::HudText3D(CP::HudAbove(ST, 1), FString::Printf(TEXT("%d"), Parts[Part].Count), X, 36.0f, 52.0f, Parts[Part].Color,
+							CP::ETextAlign::Left, TEXT("BlackItalic"), 3.0f);
+						ST.Text(TEXT("人"), X + CP::HudMeasure(FString::FromInt(Parts[Part].Count), 52.0f, TEXT("BlackItalic")) + 10.0f, 66.0f, 22.0f, Paper,
+							CP::ETextAlign::Left, TEXT("Black"));
+						if (Part < 2)
+						{
+							ST.Text(Signs[Part], X + 210.0f, 44.0f, 34.0f, WithAlpha(Paper, 0.5f), CP::ETextAlign::Center, TEXT("Black"));
+						}
+					}
+				}
+			}
+
+			// On the right: the kind of match chosen, what it is and how it is won (クラッシュボール has its own guide).
+			if (bModePicker)
+			{
+			}
+			else if (Rules.bCrashBall)
+			{
+				PaintCrashRuleGuide(DesignGeometry, OutDrawElements, BaseLayer + 2, T);
 			}
 			else
 			{
-				Info.Text(Rules.bSpectate
-					? FString::Printf(TEXT("観戦：CPU %d人の試合をカメラで見る"), Rules.CPUCount)
-					: FString::Printf(TEXT("プレイヤー %d人 ＋ CPU %d人 ＝ %d人"), Humans, Rules.CPUCount, Total),
-					36.0f, 14.0f, 30.0f, Paper);
-				Info.Text(Rules.bCrashBall
-					? FString::Printf(TEXT("レッド 対 ブルー・1チーム最大 %d人"), ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
-					: Rules.IsTeamBattle()
-					? FString::Printf(TEXT("1チーム最大 %d人・チームの合計ポイントで勝負"),
-						ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total))
-					: FString(TEXT("ポイントが一番多い人の勝ち")), 38.0f, 66.0f, 24.0f, Rules.bCrashBall ? Violet : Gold);
-				if (!Rules.bSpectate)
+				const float In = EaseOut((T - 0.18f) / 0.35f);
+				constexpr float CW = 570.0f;
+				constexpr float CH = 494.0f;
+				const FGeometry CardSpace = MakeSkewed(DesignGeometry, 920.0f + (1.0f - In) * 80.0f, 196.0f, CW, CH, -0.06f);
+				const CP::FPainter C{CardSpace, OutDrawElements, BaseLayer + 2, In};
+				C.Box(14.0f, 16.0f, CW, CH, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+				FLinearColor Deep = ModeColor * 0.2f;
+				Deep.A = 0.96f;
+				CP::HudPoly(C, {FVector2D(0.0, 0.0), FVector2D(CW, 0.0), FVector2D(CW, CH), FVector2D(0.0, CH)},
+					CP::MakeFill(Deep, FLinearColor(0.008f, 0.01f, 0.025f, 0.97f)));
+				const CP::FPainter CU = CP::HudAbove(C, 1);
+				CP::HudPoly(CU, {FVector2D(0.0, 0.0), FVector2D(CW, 0.0), FVector2D(CW, 8.0), FVector2D(0.0, 8.0)},
+					CP::MakeFill(FMath::Lerp(ModeColor, Paper, 0.35f), ModeColor));
+				CU.Outline(0.0f, 0.0f, CW, CH, WithAlpha(Paper, 0.12f), 1.0f);
+				const CP::FPainter CT = CP::HudAbove(C, 3);
+				const FString English = Rules.bTournament ? TEXT("TOURNAMENT") : Rules.bDuel ? TEXT("DUEL") : Rules.bBattleRoyale ? TEXT("BATTLE ROYALE")
+					: Rules.IsTeamBattle() ? TEXT("TEAM BATTLE") : TEXT("FREE FOR ALL");
+				CT.Text(English, 34.0f, 26.0f, 18.0f, ModeColor, CP::ETextAlign::Left, TEXT("BlackItalic"));
+				const FString Kind = ChaosImpactMatch::DescribeRule(Rules).Replace(TEXT("  "), TEXT(" "));
+				CP::HudText3D(CP::HudAbove(CT, 1), Kind, 34.0f, 52.0f, CP::HudFit(Kind, 44.0f, CW - 68.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
+				// The emblem.
+				PaintModeEmblem(CP::HudAbove(C, 2), Rules, FVector2D(CW * 0.5f, 196.0), 72.0f, WithAlpha(FMath::Lerp(ModeColor, Paper, 0.3f), 0.85f), T);
+				// How it goes, three points.
+				TArray<FString> Points;
+				if (Rules.bTournament)
 				{
-					Info.Text(Rules.bCrashBall ? TEXT("巨大球に当てる +1pt　　敵に当てる +1pt") : TEXT("敵に当てる +1pt　　撃破ボーナス +1pt"),
-						38.0f, 110.0f, 24.0f, Muted);
+					Points.Add(Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? TEXT("同じ回戦の試合を全部いっしょに・CPU同士は裏で決着")
+						: TEXT("1試合ずつ順番に・CPU同士は観るかとばすか選べる"));
+					Points.Add(FString::Printf(TEXT("全試合1対1・%d本先取の勝ちぬき戦"), ChaosImpactMatch::DuelRoundsToWin));
+					Points.Add(TEXT("待ち時間は練習／観戦を自由に"));
 				}
+				else if (Rules.bDuel)
+				{
+					Points.Add(Rules.CPUCount > 0 ? FString::Printf(TEXT("あなた 対 CPU（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
+						: FString(TEXT("プレイヤー同士の1対1")));
+					Points.Add(FString::Printf(TEXT("%d本先取・体力3・特殊ボールはスロットで%d種類"), ChaosImpactMatch::DuelRoundsToWin, ChaosImpactMatch::DuelBallPicks));
+					Points.Add(FString::Printf(TEXT("時間切れは体力の多いほう、同じなら%d秒のサドンデス"), FMath::RoundToInt(ChaosImpactMatch::DuelSuddenDeathSeconds)));
+				}
+				else if (Rules.bBattleRoyale)
+				{
+					Points.Add(Rules.IsTeamBattle() ? TEXT("最後まで生き残ったチームの勝ち") : TEXT("最後の1人になれば勝利"));
+					Points.Add(Rules.IsTeamBattle() ? TEXT("時間切れは生存人数 → 残りHP合計で判定") : TEXT("時間切れは残りHPで判定"));
+					Points.Add(TEXT("同率首位だけでサドンデス・復活なし"));
+				}
+				else if (Rules.IsTeamBattle())
+				{
+					Points.Add(FString::Printf(TEXT("%dチーム・1チーム最大%d人"), Rules.TeamCount, ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total)));
+					Points.Add(TEXT("チームの合計ポイントで勝負"));
+					Points.Add(TEXT("敵に当てる +1pt ・ 撃破ボーナス +1pt"));
+				}
+				else
+				{
+					Points.Add(TEXT("ポイントが一番多い人の勝ち"));
+					Points.Add(TEXT("敵に当てる +1pt ・ 撃破ボーナス +1pt"));
+					Points.Add(FString::Printf(TEXT("%d分間の勝負"), Rules.Minutes));
+				}
+				for (int32 Index = 0; Index < Points.Num(); ++Index)
+				{
+					const float Y = 298.0f + Index * 42.0f;
+					CT.Disc(FVector2D(44.0, Y + 14.0), 5.0f, ModeColor);
+					CT.Text(Points[Index], 62.0f, Y, CP::HudFit(Points[Index], 21.0f, CW - 96.0f, TEXT("Bold")), Index == 0 ? Paper : WithAlpha(Paper, 0.8f),
+						CP::ETextAlign::Left, TEXT("Bold"));
+				}
+				const FString Stage = Rules.bDuel || Rules.bTournament ? FString::Printf(TEXT("ステージ：%s"), ChaosImpactMatch::GetDuelStageName())
+					: FString(TEXT("ステージは次の画面で選びます"));
+				CT.Box(34.0f, CH - 60.0f, CW - 68.0f, 1.0f, WithAlpha(Paper, 0.14f));
+				CT.Text(Stage, 34.0f, CH - 46.0f, CP::HudFit(Stage, 18.0f, CW - 68.0f, TEXT("Bold")), Muted, CP::ETextAlign::Left, TEXT("Bold"));
 			}
-			if (Rules.bCrashBall)
+			if (bModePicker)
 			{
-				PaintCrashRuleGuide(DesignGeometry, OutDrawElements, BaseLayer + 2, T);
+				// The list of every kind: the page dimmed under it, a heading, and each row's kind on its left.
+				const float Veil = EaseOut(static_cast<float>(FPlatformTime::Seconds() - ModePickerAt) / 0.2f);
+				FMenuPainter{AllottedGeometry, OutDrawElements, BaseLayer + 7}.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y,
+					FLinearColor(0.0f, 0.004f, 0.02f, 0.9f * Veil));
+				const CP::FPainter Head{DesignGeometry, OutDrawElements, BaseLayer + 8, Veil};
+				CP::HudText3D(Head, TEXT("ルールをえらぶ"), 110.0f, 100.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
+				Head.Text(TEXT("十字 / 矢印：えらぶ　　A / Enter：決定　　B / Esc：もどる"), 1490.0f, 128.0f, 17.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
+				const TCHAR* Kinds[] = {TEXT("バトル"), TEXT("バトルロイヤル"), TEXT("そのほか")};
+				const FLinearColor KindColors[] = {Fire, Gold, Violet};
+				for (int32 GridRow = 0; GridRow < 3; ++GridRow)
+				{
+					const float Top = 214.0f + GridRow * 158.0f;
+					Head.Box(110.0f - GridRow * 15.0f, Top + 10.0f, 6.0f, 120.0f, KindColors[GridRow]);
+					Head.Text(Kinds[GridRow], 128.0f - GridRow * 15.0f, Top + 54.0f, CP::HudFit(Kinds[GridRow], 24.0f, 150.0f), KindColors[GridRow],
+						CP::ETextAlign::Left, TEXT("Black"));
+				}
 			}
 		}
 	}
@@ -2758,15 +4278,15 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			if (bCurrent) { TileText.Text(TEXT("✓"),X + W - 22,Y + 8,22,Gold,ChaosImpactPaint::ETextAlign::Center); }
 		}
 		else if ((Screen == EChaosImpactScreen::ModeSelect || Screen == EChaosImpactScreen::VSSelect
-			|| Screen == EChaosImpactScreen::OnlinePrivate) && Index < 2)
+			|| Screen == EChaosImpactScreen::OnlinePrivate) && (Index < 2 || (Screen == EChaosImpactScreen::VSSelect && Index == 3)))
 		{
 			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
 				Entry.Accent, Blend, bPressed, EntryIn, T, 118.0f, 0);
 		}
-		else if (Screen == EChaosImpactScreen::MultiReady && Index < 4)
+		else if (Screen == EChaosImpactScreen::MultiReady && !Entry.Number.IsEmpty())
 		{
-			PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
-				Entry.Accent, Entry.bDisabled ? 0.0f : Blend, bPressed, EntryIn * (Entry.bDisabled ? 0.55f : 1.0f), T, 60.0f, 0);
+			PaintOnlineTile(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title, Entry.Detail, Entry.Accent,
+				Entry.bDisabled ? 0.0f : Blend, bPressed, Entry.bDisabled, EntryIn, T);
 		}
 		else if (Screen == EChaosImpactScreen::StageSelect && Index < ChaosImpactMatch::StageCount)
 		{
@@ -2782,6 +4302,23 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 					Entry.Accent, Blend, bPressed, EntryIn, T, BigFontSize, 0);
 				PaintStageMap(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Index, Blend, EntryIn);
 			}
+		}
+		else if (Screen == EChaosImpactScreen::MatchRules && bModePicker && Entry.Detail == TEXT("mode"))
+		{
+			const float TileIn = EaseOut(static_cast<float>(FPlatformTime::Seconds() - ModePickerAt - 0.02 * Index) / 0.25f);
+			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			const int32 Mode = FCString::Atoi(*Entry.Number);
+			PaintModeTile(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Mode, Entry.Title, Entry.Accent, Blend, bPressed, Entry.bDisabled,
+				Owner && Owner->GetMatchModeChoice() == Mode, Owner ? Owner->GetMatchModeBlocker(FMath::Min(Mode, 10)) : FString(), TileIn, T);
+		}
+		else if (Screen == EChaosImpactScreen::MatchRules && bModePicker)
+		{
+			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Entry.Title, Entry.Accent, Blend, bPressed, Entry.bDisabled, 1.0f, T);
+		}
+		else if (Screen == EChaosImpactScreen::MatchRules && Index < 4)
+		{
+			PaintRuleRow(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Entry.Title, Entry.Number, Entry.Accent, Blend, bPressed,
+				Entry.bDisabled, Entry.Detail == TEXT("fixed"), EntryIn, T);
 		}
 		else if ((Screen == EChaosImpactScreen::TrainingSetup && Index < 4)
 			|| (Screen == EChaosImpactScreen::OnlinePlayers && Index < 2))
@@ -2872,9 +4409,16 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				Tab.Outline(X - 3.0f, Y - 3.0f, W + 6.0f, H + 6.0f, WithAlpha(Paper, 0.7f * Blend), 3.0f);
 			}
 		}
+		else if (Screen == EChaosImpactScreen::Pause && PauseConfirm.IsEmpty())
+		{
+			const float ItemIn = EaseOut((T - 0.08f - 0.04f * Index) / 0.3f);
+			const FSlateRect ItemRect = Rect.OffsetBy(FVector2D((1.0f - ItemIn) * -80.0f, 0.0f));
+			PaintPauseItem(DesignGeometry, OutDrawElements, BaseLayer + 4, ItemRect, Entry.Title, Entry.Accent, Blend, bPressed,
+				Entry.bDisabled, ItemIn, T, Index + 1);
+		}
 		else
 		{
-			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Entry.Title, Entry.Accent,
+			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + (Screen == EChaosImpactScreen::Pause ? 8 : 4), Rect, Entry.Title, Entry.Accent,
 				Blend, bPressed, Entry.bDisabled, EntryIn, T);
 		}
 	}
@@ -2898,11 +4442,41 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	}
 	const bool bLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
 	const bool bRight = Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right;
+	if (Screen == EChaosImpactScreen::MatchRules && bModePicker && Key != EKeys::Tab)
+	{
+		// Rows of 4 tiles, then もどる (index 12).
+		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
+		const int32 RowStarts[] = {0, 4, 8, 12};
+		const int32 RowLengths[] = {4, 4, 4, 1};
+		int32 GridRow = SelectedIndex >= 12 ? 3 : SelectedIndex >= 8 ? 2 : SelectedIndex >= 4 ? 1 : 0;
+		int32 Column = SelectedIndex - RowStarts[GridRow];
+		if (bLeft || bRight)
+		{
+			Column = (Column + (bRight ? 1 : -1) + RowLengths[GridRow]) % RowLengths[GridRow];
+		}
+		else
+		{
+			GridRow = (GridRow + (bUp ? -1 : 1) + 4) % 4;
+			Column = FMath::Min(Column, RowLengths[GridRow] - 1);
+		}
+		SelectedIndex = RowStarts[GridRow] + Column;
+		return;
+	}
 	if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		Controller && (bLeft || bRight))
 	{
 		// Rule rows change their value sideways; team select moves P1 between teams.
-		if (Screen == EChaosImpactScreen::MatchRules && SelectedIndex <= 3)
+		if (Screen == EChaosImpactScreen::TourneyCreate && SelectedIndex >= 1 && SelectedIndex <= 5)
+		{
+			if (!Entries[SelectedIndex].bDisabled)
+			{
+				Controller->AdjustTourneySetting(SelectedIndex, bRight ? 1 : -1);
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
+				BuildEntries();
+			}
+			return;
+		}
+		if (Screen == EChaosImpactScreen::MatchRules && !bModePicker && SelectedIndex <= 3)
 		{
 			if (Entries[SelectedIndex].bDisabled)
 			{
@@ -2974,16 +4548,19 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 			SelectedIndex = Vertical[SelectedIndex];
 		}
 	}
-	else if (Screen == EChaosImpactScreen::MultiReady && Key != EKeys::Tab && Entries.Num() == 6)
+	else if (Screen == EChaosImpactScreen::MultiReady && Key != EKeys::Tab && Entries.Num() == 9)
 	{
-		// 8人 / 1v1 above, 合言葉 / 戦績 below them, then 戻る and なまえ along the bottom.
-		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
-			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		// Rows: 8人 (0), 1v1 (1), トーナメント (6) / 合言葉 (2), 戦績 (3), 回線チェック (8) / 戻る (5), カラーエディット (7), なまえ (4).
 		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
-		const int32 Horizontal[] = {1, 0, 3, 2, 5, 4};
-		const int32 Down[] = {2, 3, 5, 4, 1, 0};
-		const int32 Up[] = {5, 4, 0, 1, 3, 2};
-		SelectedIndex = bHorizontal ? Horizontal[SelectedIndex] : bUp ? Up[SelectedIndex] : Down[SelectedIndex];
+		const int32 ToRight[] = {1, 6, 3, 8, 5, 7, 0, 4, 2};
+		const int32 ToLeft[] = {6, 0, 8, 2, 7, 4, 1, 5, 3};
+		const int32 Down[] = {2, 3, 5, 7, 6, 0, 8, 1, 4};
+		const int32 Up[] = {5, 7, 0, 1, 8, 2, 4, 3, 6};
+		SelectedIndex = bRight ? ToRight[SelectedIndex] : bLeft ? ToLeft[SelectedIndex] : bUp ? Up[SelectedIndex] : Down[SelectedIndex];
+	}
+	else if (Screen == EChaosImpactScreen::LineCheck && Key != EKeys::Tab)
+	{
+		SelectedIndex = 1 - FMath::Clamp(SelectedIndex, 0, 1);
 	}
 	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab)
 	{
@@ -3026,6 +4603,22 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		{
 			LastStageCard = SelectedIndex;
 			SelectedIndex = SelectedIndex + Cols < Stages ? SelectedIndex + Cols : Stages;
+		}
+	}
+	else if (Screen == EChaosImpactScreen::VSSelect && Key != EKeys::Tab && Entries.Num() == 4)
+	{
+		// ローカル / 通信 / トーナメント across, the back button under them.
+		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		const bool bForward = Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right;
+		const int32 Across[] = {0, 1, 3};
+		if (bHorizontal && SelectedIndex != 2)
+		{
+			const int32 At = SelectedIndex == 3 ? 2 : SelectedIndex;
+			SelectedIndex = Across[(At + (bForward ? 1 : 2)) % 3];
+		}
+		else if (!bHorizontal)
+		{
+			SelectedIndex = SelectedIndex == 2 ? 0 : 2;
 		}
 	}
 	else if ((Screen == EChaosImpactScreen::VSSelect || Screen == EChaosImpactScreen::SoloStageSelect
@@ -3195,6 +4788,117 @@ void UChaosImpactMenuWidget::NavigateResults(const FKey Key)
 	}
 }
 
+FString UChaosImpactMenuWidget::GetPauseContext() const
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Controller)
+	{
+		return FString();
+	}
+	if (Controller->IsOnlineRoom() && Room)
+	{
+		if (Room->Matchmade == EChaosImpactMatchmade::Duel)
+		{
+			return TEXT("ランダムマッチ  1v1");
+		}
+		if (Room->Matchmade == EChaosImpactMatchmade::Random)
+		{
+			return TEXT("ランダムマッチ  8人");
+		}
+		if (Room->IsMatchmade())
+		{
+			return TEXT("ランクマッチ");
+		}
+		const FString Name = Room->RoomName.IsEmpty() ? FString::Printf(TEXT("あいことば %s"), *Room->RoomPassword) : Room->RoomName;
+		return FString::Printf(TEXT("%s  ・  %s"), Room->bPublicTournament || Room->IsTournament() ? TEXT("トーナメント") : TEXT("合言葉マッチ"), *Name);
+	}
+	if (Controller->IsSearchingForRoom())
+	{
+		return TEXT("オンライン  ・  対戦相手をさがしています");
+	}
+	if (Controller->IsSoloWorldMap())
+	{
+		return TEXT("ソロ  ・  ワールドマップ");
+	}
+	if (Controller->IsSoloMode())
+	{
+		return TEXT("ソロ");
+	}
+	if (Controller->IsTrainingMode())
+	{
+		return TEXT("トレーニング");
+	}
+	return FString();
+}
+
+void UChaosImpactMenuWidget::GetPauseConfirmText(FString& OutQuestion, FString& OutNote) const
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	const bool bHost = Controller && Controller->IsOnlineRoomHost();
+	OutNote.Reset();
+	if (PauseConfirm == TEXT("leave"))
+	{
+		if (Room && Room->bPublicTournament)
+		{
+			OutQuestion = bHost ? TEXT("本当に大会を中止してもよろしいですか？") : TEXT("本当に大会から抜けてもよろしいですか？");
+			OutNote = bHost ? TEXT("参加者全員が大会から抜けます") : Room->IsTournament() ? TEXT("このあとの試合はすべて不戦敗になります") : TEXT("");
+		}
+		else if (bHost && Room && !Room->IsMatchmade())
+		{
+			OutQuestion = TEXT("本当に部屋を解散してもよろしいですか？");
+			OutNote = Room->IsTournament() ? TEXT("トーナメントは中止され、全員が部屋から抜けます") : TEXT("メンバー全員が部屋から抜けます");
+		}
+		else
+		{
+			OutQuestion = TEXT("本当に部屋から抜けてもよろしいですか？");
+			OutNote = Room && Room->IsTournament() ? TEXT("このあとの試合はすべて不戦敗になります") : TEXT("");
+		}
+	}
+	else if (PauseConfirm == TEXT("surrender"))
+	{
+		OutQuestion = TEXT("本当に降参しますか？");
+		OutNote = Room && Room->IsDuel() ? TEXT("この試合は負けになります") : TEXT("この試合から抜けます");
+	}
+	else if (PauseConfirm == TEXT("stop_search"))
+	{
+		OutQuestion = TEXT("さがすのをやめますか？");
+	}
+	else if (PauseConfirm == TEXT("online_menu"))
+	{
+		OutQuestion = TEXT("オンラインメニューへ戻りますか？");
+		OutNote = TEXT("さがすのをやめます");
+	}
+	else if (PauseConfirm == TEXT("goto_title"))
+	{
+		OutQuestion = TEXT("タイトル画面へ戻りますか？");
+	}
+	else if (PauseConfirm == TEXT("goto_mode"))
+	{
+		OutQuestion = TEXT("モード選択へ戻りますか？");
+	}
+}
+
+void UChaosImpactMenuWidget::OpenModePicker(const bool bOpen)
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	bModePicker = bOpen;
+	ModePickerAt = FPlatformTime::Seconds();
+	RefreshEntries();
+	if (bOpen)
+	{
+		// The cursor starts on the kind chosen now.
+		const FString Current = FString::FromInt(Controller ? Controller->GetMatchModeChoice() : 0);
+		SelectedIndex = FMath::Max(0, Entries.IndexOfByPredicate([&Current](const FMenuEntry& Entry) { return Entry.Number == Current; }));
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiOpen);
+	}
+	else
+	{
+		SelectedIndex = 1;
+	}
+}
+
 void UChaosImpactMenuWidget::DisarmSelection()
 {
 	if (ArmedIndex != INDEX_NONE && ArmedIndex != SelectedIndex)
@@ -3227,7 +4931,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (SelectedIndex == 1) { Controller->ShowMenuScreen(EChaosImpactScreen::VSSelect); }
 		else if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
 		else if (SelectedIndex == 4) { Controller->OpenSettings(); }
-		else if (SelectedIndex == 5) { Controller->ShowMenuScreen(EChaosImpactScreen::ColourEdit); }
+		else if (SelectedIndex == 5) { Controller->OpenColourEdit(EChaosImpactScreen::ModeSelect); }
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::Title); }
 		break;
 
@@ -3262,6 +4966,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 	case EChaosImpactScreen::VSSelect:
 		if (SelectedIndex == 0) { Controller->BeginVersusLocal(); }
 		else if (SelectedIndex == 1) { Controller->BeginVersusOnline(); }
+		else if (SelectedIndex == 3) { Controller->BeginLocalTourney(); }
 		else { GoBack(); }
 		break;
 	case EChaosImpactScreen::OnlinePlayers:
@@ -3313,6 +5018,62 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			Controller->BeginOnlineRename();
 		}
+		else if (SelectedIndex == 6)
+		{
+			Controller->OpenTourneyList();
+		}
+		else if (SelectedIndex == 7)
+		{
+			Controller->OpenColourEdit(EChaosImpactScreen::MultiReady);
+		}
+		else if (SelectedIndex == 8)
+		{
+			Controller->OpenLineCheck();
+		}
+		else
+		{
+			GoBack();
+		}
+		break;
+	case EChaosImpactScreen::TourneyList:
+		if (Entries[SelectedIndex].bDisabled)
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiDeny);
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("create"))
+		{
+			Controller->OpenTourneyCreate();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("refresh"))
+		{
+			Controller->RefreshTourneyList();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("back"))
+		{
+			GoBack();
+		}
+		else if (TourneyRowListing.IsValidIndex(SelectedIndex))
+		{
+			Controller->JoinRoomListing(TourneyRowListing[SelectedIndex]);
+		}
+		break;
+	case EChaosImpactScreen::TourneyCreate:
+		if (SelectedIndex == 0)
+		{
+			Controller->EditTourneyTitle();
+		}
+		else if (SelectedIndex >= 1 && SelectedIndex <= 5)
+		{
+			if (!Entries[SelectedIndex].bDisabled)
+			{
+				Controller->AdjustTourneySetting(SelectedIndex, 1);
+				BuildEntries();
+			}
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("create"))
+		{
+			Controller->CreatePublicTourney();
+		}
 		else
 		{
 			GoBack();
@@ -3330,6 +5091,23 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		break;
 	case EChaosImpactScreen::OnlineRecord:
 		GoBack();
+		break;
+	case EChaosImpactScreen::LineCheck:
+		if (Entries[SelectedIndex].Detail == TEXT("again"))
+		{
+			if (!Entries[SelectedIndex].bDisabled)
+			{
+				if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+				{
+					Sessions->StartLineCheck();
+				}
+				RefreshEntries();
+			}
+		}
+		else
+		{
+			GoBack();
+		}
 		break;
 	case EChaosImpactScreen::DuelFound:
 		if (Entries.IsValidIndex(SelectedIndex) && !Entries[SelectedIndex].bDisabled)
@@ -3364,7 +5142,25 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		Controller->CancelOnlineStatus();
 		break;
 	case EChaosImpactScreen::MatchRules:
-		if (SelectedIndex <= 3)
+		if (bModePicker)
+		{
+			if (Entries[SelectedIndex].Detail == TEXT("mode"))
+			{
+				if (Entries[SelectedIndex].bDisabled)
+				{
+					ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiDeny);
+					break;
+				}
+				Controller->SetMatchModeChoice(FCString::Atoi(*Entries[SelectedIndex].Number));
+			}
+			OpenModePicker(false);
+		}
+		else if (SelectedIndex == 1)
+		{
+			// The kind of match: every one listed to pick from.
+			OpenModePicker(true);
+		}
+		else if (SelectedIndex <= 3)
 		{
 			if (!Entries[SelectedIndex].bDisabled)
 			{
@@ -3460,12 +5256,45 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			break;
 		}
-		if ((Entries[SelectedIndex].Detail == TEXT("leave") || Entries[SelectedIndex].Detail == TEXT("stop_search"))
-			&& ArmedIndex != SelectedIndex)
+		if (Entries[SelectedIndex].Detail == TEXT("confirm_no"))
 		{
-			ArmedIndex = SelectedIndex;
+			// Not after all: back to the menu, on the choice that was asked about.
+			const FString Asked = PauseConfirm;
+			PauseConfirm.Reset();
 			BuildEntries();
+			SelectedIndex = FMath::Max(0, Entries.IndexOfByPredicate([&Asked](const FMenuEntry& Entry) { return Entry.Detail == Asked; }));
 			break;
+		}
+		if (Entries[SelectedIndex].Detail == TEXT("confirm_yes"))
+		{
+			// Yes: what was asked about goes ahead (below, as if chosen).
+			const FString Asked = PauseConfirm;
+			PauseConfirm.Reset();
+			BuildEntries();
+			const int32 Asking = Entries.IndexOfByPredicate([&Asked](const FMenuEntry& Entry) { return Entry.Detail == Asked; });
+			if (Asking == INDEX_NONE)
+			{
+				break;
+			}
+			SelectedIndex = Asking;
+		}
+		else
+		{
+			// Leaving the room, giving the match up, stopping the search, or (online) heading for the title: asked first.
+			const FString Choice = Entries[SelectedIndex].Detail;
+			const bool bOnline = Controller->IsOnlineRoom() || Controller->IsSearchingForRoom()
+				|| Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusOnline;
+			if (Choice == TEXT("leave") || Choice == TEXT("surrender") || Choice == TEXT("stop_search")
+				|| (Choice == TEXT("online_menu") && Controller->IsSearchingForRoom())
+				|| (bOnline && (Choice == TEXT("goto_title") || Choice == TEXT("goto_mode"))))
+			{
+				PauseConfirm = Choice;
+				PauseConfirmAt = FPlatformTime::Seconds();
+				BuildEntries();
+				SelectedIndex = 0;
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiOpen);
+				break;
+			}
 		}
 		if (Controller->HandleWorldMapPauseChoice(Entries[SelectedIndex].Detail))
 		{
@@ -3515,6 +5344,19 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (Entries[SelectedIndex].Detail == TEXT("leave"))
 		{
 			Controller->LeaveOnlineRoom();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("surrender"))
+		{
+			Controller->Surrender();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("colour_edit"))
+		{
+			Controller->OpenColourEdit(EChaosImpactScreen::Pause);
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("online_menu"))
+		{
+			Controller->StopRoomSearch();
+			Controller->ShowMenuScreen(EChaosImpactScreen::MultiReady);
 		}
 		else if (Entries[SelectedIndex].Detail == TEXT("stop_search"))
 		{
@@ -3623,6 +5465,12 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 
 void UChaosImpactMenuWidget::GoBack()
 {
+	// A back pressed on the screen before this one (closing it) can arrive here too, through the other way keys come
+	// in: it must not go back a second time (the settings to the mode select, then on to the title).
+	if (FPlatformTime::Seconds() - ScreenStartedAt < 0.2)
+	{
+		return;
+	}
 	// A 1v1 found is answered with its own buttons only (a stray back must not end the search).
 	if (Screen == EChaosImpactScreen::DuelFound)
 	{
@@ -3641,6 +5489,14 @@ void UChaosImpactMenuWidget::GoBack()
 		switch (Screen)
 		{
 		case EChaosImpactScreen::Pause:
+			if (!PauseConfirm.IsEmpty())
+			{
+				const FString Asked = PauseConfirm;
+				PauseConfirm.Reset();
+				BuildEntries();
+				SelectedIndex = FMath::Max(0, Entries.IndexOfByPredicate([&Asked](const FMenuEntry& Entry) { return Entry.Detail == Asked; }));
+				break;
+			}
 			Controller->ResumeGameplay();
 			break;
 		case EChaosImpactScreen::TrainingSettings:
@@ -3693,10 +5549,21 @@ void UChaosImpactMenuWidget::GoBack()
 			break;
 		case EChaosImpactScreen::OnlinePrivate:
 		case EChaosImpactScreen::OnlineRecord:
+		case EChaosImpactScreen::LineCheck:
 			Controller->ShowMenuScreen(EChaosImpactScreen::MultiReady);
 			break;
+		case EChaosImpactScreen::TourneyList:
+			Controller->CloseTourneyList();
+			break;
+		case EChaosImpactScreen::TourneyCreate:
+			Controller->OpenTourneyList();
+			break;
 		case EChaosImpactScreen::OnlineRoomName:
-			if (Controller->IsRenamingRoom())
+			if (Controller->IsEditingTourneyTitle())
+			{
+				Controller->SubmitRoomName(FString());
+			}
+			else if (Controller->IsRenamingRoom())
 			{
 				Controller->CancelRoomRename();
 			}
@@ -3712,6 +5579,11 @@ void UChaosImpactMenuWidget::GoBack()
 			Controller->CancelOnlineStatus();
 			break;
 		case EChaosImpactScreen::MatchRules:
+			if (bModePicker)
+			{
+				OpenModePicker(false);
+				break;
+			}
 			Controller->CancelMatchRules();
 			break;
 		case EChaosImpactScreen::StageSelect:
@@ -3898,6 +5770,10 @@ FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, cons
 	{
 		return FReply::Handled();
 	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen() && TourneyEntry->HandleCharacter(InCharEvent.GetCharacter()))
+	{
+		return FReply::Handled();
+	}
 	return Super::NativeOnKeyChar(InGeometry, InCharEvent);
 }
 
@@ -3926,6 +5802,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 	{
 		ColourEdit->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),
 			InMouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton));
+	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()
+		&& !InMouseEvent.GetCursorDelta().IsNearlyZero())
+	{
+		TourneyEntry->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
 	}
 	if (!IsMenuMouseAllowed(this))
 	{
@@ -3959,6 +5840,15 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
 	{
 		ColourEdit->HandleClick(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry)
+	{
+		TourneyEntry->HandleClick(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::TourneySeat)
+	{
 		return FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
@@ -4025,6 +5915,23 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry
 		const int32 Released = HitTestEntry(InGeometry, InMouseEvent.GetScreenSpacePosition());
 		const bool bActivate = PressedIndex != INDEX_NONE && PressedIndex == Released;
 		PressedIndex = INDEX_NONE;
+		// A rules row: a click on its left half (the ◀ side of its value) goes back a step, on its right half on.
+		AChaosImpactPlayerController* RulesController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		if (bActivate && Screen == EChaosImpactScreen::MatchRules && !bModePicker && Released <= 3 && Released != 1 && Entries.IsValidIndex(Released)
+			&& RulesController)
+		{
+			SelectedIndex = Released;
+			if (!Entries[Released].bDisabled)
+			{
+				const FSlateRect& Row = Entries[Released].Rect;
+				const float ValueMid = Row.Left + (Row.Right - Row.Left) * 0.3f + (Row.Right - Row.Left) * 0.7f * 0.5f;
+				const FVector2D Point = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+				RulesController->AdjustMatchRule(Released, Point.X < ValueMid ? -1 : 1);
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
+				BuildEntries();
+			}
+			return FReply::Handled().ReleaseMouseCapture();
+		}
 		if (bActivate)
 		{
 			SelectedIndex = Released;

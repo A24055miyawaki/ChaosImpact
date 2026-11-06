@@ -206,6 +206,54 @@ public:
 	/** オンラインメニュー: 合言葉マッチ (make a room or find one) and 戦績 (asks the relay for the latest). */
 	void OpenOnlinePrivate();
 	void OpenOnlineRecord();
+	/**
+	 * The rules screen's kinds of match, by number: 0 個人戦, 1-3 チーム戦 2-4チーム, 4 クラッシュボール, 5 1対1,
+	 * 6 バトルロイヤル 個人, 7-9 バトルロイヤル 2-4チーム, 10 トーナメント.
+	 */
+	static constexpr int32 MatchModeCount = 11;
+	static void ApplyMatchMode(FChaosImpactMatchRules& Rules, int32 Mode);
+	int32 GetMatchMode() const;
+	/** Why a kind cannot be chosen here (empty: it can). */
+	FString GetMatchModeBlocker(int32 Mode) const;
+	void SetMatchMode(int32 Mode);
+	/** The rules screen's list also offers トーナメント's two ways to run as two choices: 11 is トーナメント 同時進行. */
+	static constexpr int32 TournamentAllAtOnceChoice = 11;
+	int32 GetMatchModeChoice() const;
+	void SetMatchModeChoice(int32 Choice);
+	// ---- ローカルトーナメント (VS モードの「トーナメント」)
+	/** Its registration screen. */
+	void BeginLocalTourney();
+	/** From the registration: 同時進行 has its people take their controllers first; 1試合ずつ starts straight away. */
+	void StartLocalTourney();
+	/** A place to take with a controller: a person of the match (or of the whole tournament), or a CPU (nothing to take). */
+	struct FTourneySeat
+	{
+		FString Name;
+		int32 Character = 0;
+		int32 Colour = 0;
+		TArray<uint8> CustomColours;
+		bool bCPU = false;
+		int32 CPULevel = 0;
+		/** -2 nobody yet, -1 the keyboard, else the pad's input device id. */
+		int32 Device = -2;
+	};
+	const TArray<FTourneySeat>& GetTourneySeats() const { return TourneySeats; }
+	const FString& GetTourneySeatTitle() const { return TourneySeatTitle; }
+	/** When every place was taken (0: not yet); it starts a moment after. */
+	double GetTourneySeatsFullAt() const { return TourneySeatsFullAt; }
+	bool IsTourneySeatForMatch() const { return TourneySeatMatch != INDEX_NONE; }
+	/** A button on some device: it takes the next free place, or gives its own back. */
+	void PressTourneySeat(bool bKeyboard, int32 InputDeviceId);
+	/** Escape before the tournament has begun: back to the registration. */
+	void CancelTourneySeats();
+	/** From the menu (the world is paused under it): starts once every place has been taken for a moment. */
+	void UpdateTourneySeats();
+	/** The game mode's word: the tournament is over, back to the registration. */
+	void OnLocalTournamentOver();
+	/** Which of this machine's players each device works (the menus' own reading of it). */
+	void SetLocalInputRouting(int32 Players, int32 KeyboardPlayer, const TArray<int32>& PadDevices);
+	/** 回線チェック: measures the line to the relay and shows it. */
+	void OpenLineCheck();
 	/** ランダムマッチ 1v1 found (DuelFound): this player's answer. */
 	void AnswerDuelOffer(bool bAccept);
 	/** A matched room's results: leave them, to search again the same way or for the online menu. */
@@ -217,9 +265,24 @@ public:
 	bool IsRematchOpponentHere(bool& bOutAsked) const;
 	UFUNCTION(Server, Reliable)
 	void ServerRequestRematch();
-	/** The matched room is over for this machine: back to its own training. */
+	/** The matched room is over for this machine: back to its own training (bOpponentLeft: told so there). */
 	UFUNCTION(Client, Reliable)
-	void ClientLeaveMatchmade();
+	void ClientLeaveMatchmade(bool bOpponentLeft = false);
+	/** The host closed the room (解散): this machine is told so and goes back to the online menu at once. */
+	UFUNCTION(Client, Reliable)
+	void ClientRoomDisbanded(bool bTournament);
+	/** 降参: a matched 1v1 under way is given to the other player (its results follow); any other match is left. */
+	void Surrender();
+	UFUNCTION(Server, Reliable)
+	void ServerSurrender();
+	/** A matched room's match is being played (the pause menu then offers only 降参). */
+	bool IsInMatchmadeMatch() const;
+	/** カラーエディット from any menu: it goes back to ReturnTo when it closes. */
+	void OpenColourEdit(EChaosImpactScreen ReturnTo);
+	void CloseColourEdit();
+	/** ランダムマッチ 1v1: the card of the opponent found comes up over the training, and goes when it is settled (the menu
+	 * calls it too: the training is paused under the card). */
+	void UpdateDuelOfferScreen();
 	/** Room name screen: names a new room, or renames this room from the lobby. */
 	void SubmitRoomName(const FString& Name);
 	void BeginRoomRename();
@@ -296,6 +359,32 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetSpectating(bool bSpectate);
+
+	// ---- 公開トーナメント (the online menu's トーナメント: a list of tournaments to enter, and making one) ----
+	void OpenTourneyList();
+	void RefreshTourneyList();
+	void CloseTourneyList();
+	void OpenTourneyCreate();
+	/** The set-up's rows: 0 name (opens the name entry), 1 start, 2 how it runs, 3 people, 4 CPUs, 5 CPU strength. */
+	void AdjustTourneySetting(int32 Row, int32 Direction);
+	void EditTourneyTitle();
+	bool IsEditingTourneyTitle() const { return bEditingTourneyTitle; }
+	void CreatePublicTourney();
+	const struct FChaosImpactTourneyNotice& GetPendingTourney() const;
+	/** How long after now the tournament being set up starts. */
+	int32 GetPendingTourneyMinutes() const { return PendingTourneyMinutes; }
+
+	// ---- トーナメント ----
+	/** This player has the tournament's panel (bracket, choices) open: their character stands still meanwhile. */
+	bool IsTournamentPanelOpen() const { return bTournamentPanelOpen; }
+	void SetTournamentPanelOpen(const bool bOpen) { bTournamentPanelOpen = bOpen; }
+	/** While not playing: practise, watch a match (INDEX_NONE: any being played) or look at the bracket. */
+	UFUNCTION(Server, Reliable)
+	void ServerSetTournamentWait(EChaosImpactTournamentWait Wait, int32 WatchMatch);
+	/** The host's answer for two CPUs next (one match at a time): 0 watch, 1 skip, 2 skip every one. */
+	UFUNCTION(Server, Reliable)
+	void ServerAnswerTournamentCPUMatch(int32 Choice);
+	class UChaosImpactTournamentWidget* GetTournamentWidget() const { return TournamentWidget; }
 
 	/** The character and colour this player picked on their own machine. */
 	UFUNCTION(Server, Reliable)
@@ -448,8 +537,16 @@ protected:
 	bool bRoomCharacterChange = false;
 	/** A matched room: tells the session when its match is under way, and sends a ランクマッチ's result once. */
 	void UpdateMatchmadeProgress();
-	/** ランダムマッチ 1v1: the card of the opponent found comes up over the training, and goes when it is settled. */
-	void UpdateDuelOfferScreen();
+	EChaosImpactScreen ColourEditReturnScreen = EChaosImpactScreen::ModeSelect;
+	TArray<FTourneySeat> TourneySeats;
+	FString TourneySeatTitle;
+	int32 TourneySeatMatch = INDEX_NONE;
+	double TourneySeatsFullAt = 0.0;
+	void OpenTourneySeatsForMatch(int32 MatchIndex);
+	void FinishTourneySeats();
+	void TravelToLocalTourney();
+	/** In a local tournament's level: a match waiting for its players brings up the seats. */
+	void UpdateLocalTourneySeatRequest();
 	bool bRenamingPlayer = false;
 	/** へやをつくる: the password waits here while the room name is entered. */
 	FString PendingRoomPassword;
@@ -515,6 +612,16 @@ protected:
 	/** Full-viewport Ready? / GO! / countdown / FINISH, one per machine. */
 	UPROPERTY(Transient)
 	TObjectPtr<UUserWidget> MatchAnnouncer;
+
+	/** Each local player's own tournament panel (in their part of a split screen). */
+	UPROPERTY(Transient)
+	TObjectPtr<class UChaosImpactTournamentWidget> TournamentWidget;
+	bool bTournamentPanelOpen = false;
+	/** The public tournament being set up (a pointer: its type lives with the session). */
+	TSharedPtr<struct FChaosImpactTourneyNotice> PendingTourney;
+	int32 PendingTourneyMinutes = 15;
+	bool bEditingTourneyTitle = false;
+	void UpdateTournamentWidget();
 	/** Primary player: split screen is held off so the flyover fills the whole screen. */
 	bool bIntroFullScreen = false;
 	/** The opening this controller already reported finished, by its server start time. */

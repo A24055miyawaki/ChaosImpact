@@ -13,6 +13,7 @@
 #include "Containers/Ticker.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactBallSpawner.h"
+#include "ChaosImpactTournamentWidget.h"
 #include "ChaosImpactTrainingArena.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactWarpPad.h"
@@ -23,6 +24,7 @@
 #include "ChaosImpactLoadingScreen.h"
 #include "Misc/App.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactLocalTourney.h"
 #include "ChaosImpactCustomColour.h"
 #include "ChaosImpactStageBase.h"
 #include "ChaosImpactNetStats.h"
@@ -340,6 +342,49 @@ void AChaosImpactPlayerController::BeginPlay()
 			BeginMatchQueue(AutoQueue == TEXT("duel") ? EChaosImpactQueueMode::Duel : EChaosImpactQueueMode::Random);
 			return;
 		}
+		// Development: -CIAutoTourneyCreate=<minutes>:<cpus>:<0|1 mode> makes a public tournament; -CIAutoTourneyJoin enters the
+		// first one listed.
+		static bool bAutoTourneyConsumed = false;
+		FString AutoTourney;
+		if (!bAutoTourneyConsumed && (FParse::Value(FCommandLine::Get(), TEXT("CIAutoTourneyCreate="), AutoTourney)
+			|| FParse::Param(FCommandLine::Get(), TEXT("CIAutoTourneyJoin")) || FParse::Param(FCommandLine::Get(), TEXT("CIAutoTourneyBrowse"))))
+		{
+			bAutoTourneyConsumed = true;
+			FString AutoName;
+			if (FParse::Value(FCommandLine::Get(), TEXT("CIAutoName="), AutoName))
+			{
+				if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+				{
+					Sessions->SetPlayerName(AutoName);
+				}
+			}
+			int32 AutoPlayers = 1;
+			FParse::Value(FCommandLine::Get(), TEXT("CIAutoPlayers="), AutoPlayers);
+			PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+			RequestedLocalPlayerCount = FMath::Clamp(AutoPlayers, 1, 2);
+			RequestedKeyboardPlayerIndex = 0;
+			JoinedInputDeviceIds.Reset();
+			JoinedLegacyControllerIds.Reset();
+			if (!AutoTourney.IsEmpty())
+			{
+				TArray<FString> Parts;
+				AutoTourney.ParseIntoArray(Parts, TEXT(":"));
+				OpenTourneyCreate();
+				PendingTourneyMinutes = Parts.IsValidIndex(0) ? FMath::Max(1, FCString::Atoi(*Parts[0])) : 1;
+				PendingTourney->CPUs = Parts.IsValidIndex(1) ? FCString::Atoi(*Parts[1]) : 2;
+				PendingTourney->Mode = Parts.IsValidIndex(2) ? FCString::Atoi(*Parts[2]) : 1;
+				CreatePublicTourney();
+			}
+			else if (FParse::Param(FCommandLine::Get(), TEXT("CIAutoTourneyBrowse")))
+			{
+				OpenTourneyList();
+			}
+			else
+			{
+				OpenTourneyList();
+			}
+			return;
+		}
 		static bool bAutoRoomConsumed = false;
 		FString AutoRoom;
 		if (!bAutoRoomConsumed && FParse::Value(FCommandLine::Get(), TEXT("CIAutoRoom="), AutoRoom))
@@ -402,6 +447,16 @@ void AChaosImpactPlayerController::BeginPlay()
 	{
 		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
 		{
+			if (Sessions->ConsumeReturnToOnlineMenu())
+			{
+				// Out of a room (left it, disbanded it, or it went away): the online menu, not the training.
+				PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+				GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]()
+				{
+					ShowMenuScreen(EChaosImpactScreen::MultiReady);
+					RequestDevShot(TEXT("online_menu_after_room"), 6.0f);
+				}));
+			}
 			const EChaosImpactQueueMode Again = Sessions->ConsumeShowQueueMenu();
 			const bool bSearchAgain = Sessions->ConsumeQueueAgain();
 			if (Again != EChaosImpactQueueMode::None)
@@ -428,6 +483,102 @@ void AChaosImpactPlayerController::BeginPlay()
 		}
 	}
 
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevPauseAt=<seconds> opens the pause menu that long into the first world it can be opened in
+	// (screenshots of it); -CIFakeDuelOffer shows a made-up 1v1 found in training.
+	if (IsLocalController() && IsPrimaryLocalPlayerController())
+	{
+		static bool bDevPauseDone = false;
+		float PauseAt = -1.0f;
+		if (!bDevPauseDone && FParse::Value(FCommandLine::Get(), TEXT("CIDevPauseAt="), PauseAt) && (bTrainingMode || IsOnlineRoom() || bSoloMode))
+		{
+			bDevPauseDone = true;
+			FTimerHandle PauseTimer;
+			GetWorldTimerManager().SetTimer(PauseTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+			{
+				UE_LOG(LogChaosImpact, Log, TEXT("Development: pause menu opened"));
+				TogglePauseMenu();
+			}), FMath::Max(0.5f, PauseAt), false);
+		}
+		// -CIDevLeaveAt=<seconds>: leaves the first online room (its lobby) that long after arriving; -CIDevSurrenderAt=<seconds>:
+		// surrenders the first matched match that long into its level.
+		static bool bDevLeaveDone = false;
+		float LeaveAt = -1.0f;
+		if (!bDevLeaveDone && IsOnlineRoom() && !GetWorld()->URL.HasOption(TEXT("CIRoomMatch"))
+			&& FParse::Value(FCommandLine::Get(), TEXT("CIDevLeaveAt="), LeaveAt))
+		{
+			bDevLeaveDone = true;
+			FTimerHandle LeaveTimer;
+			GetWorldTimerManager().SetTimer(LeaveTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+			{
+				UE_LOG(LogChaosImpact, Log, TEXT("Development: leaving the room"));
+				LeaveOnlineRoom();
+			}), FMath::Max(0.5f, LeaveAt), false);
+		}
+		static bool bDevSurrenderDone = false;
+		float SurrenderAt = -1.0f;
+		if (!bDevSurrenderDone && IsOnlineRoom() && GetWorld()->URL.HasOption(TEXT("CIRoomMatch"))
+			&& FParse::Value(FCommandLine::Get(), TEXT("CIDevSurrenderAt="), SurrenderAt))
+		{
+			bDevSurrenderDone = true;
+			FTimerHandle SurrenderTimer;
+			GetWorldTimerManager().SetTimer(SurrenderTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+			{
+				UE_LOG(LogChaosImpact, Log, TEXT("Development: surrendering (in match %d)"), IsInMatchmadeMatch());
+				Surrender();
+			}), FMath::Max(0.5f, SurrenderAt), false);
+		}
+		// -CIDevLocalTourney=<people>:<cpus>:<0 one at a time | 1 all at once>: registers that many people from the title and
+		// starts a local tournament (screenshots and runs of it).
+		static bool bDevLocalTourneyDone = false;
+		FString DevLocalTourney;
+		if (!bDevLocalTourneyDone && !bTrainingMode && !IsOnlineRoom() && FParse::Value(FCommandLine::Get(), TEXT("CIDevLocalTourney="), DevLocalTourney))
+		{
+			bDevLocalTourneyDone = true;
+			// (On the core ticker: the title's menus pause the world.)
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this, DevLocalTourney](float)
+			{
+				TArray<FString> Parts;
+				DevLocalTourney.ParseIntoArray(Parts, TEXT(":"));
+				if (UChaosImpactLocalTourneySubsystem* Data = UChaosImpactLocalTourneySubsystem::Get(this))
+				{
+					Data->People.Reset();
+					Data->Mode = Parts.IsValidIndex(2) && FCString::Atoi(*Parts[2]) == 1 ? EChaosImpactTournamentMode::Simultaneous
+						: EChaosImpactTournamentMode::OneAtATime;
+					Data->CPUs = Parts.IsValidIndex(1) ? FCString::Atoi(*Parts[1]) : 2;
+					const int32 People = Parts.IsValidIndex(0) ? FCString::Atoi(*Parts[0]) : 2;
+					for (int32 Index = 0; Index < People; ++Index)
+					{
+						Data->AddPerson();
+					}
+					UE_LOG(LogChaosImpact, Log, TEXT("Development: local tournament of %d people and %d CPUs"), Data->People.Num(), Data->CPUs);
+				}
+				if (FParse::Param(FCommandLine::Get(), TEXT("CIDevTourneyEntryOnly")))
+				{
+					ShowMenuScreen(EChaosImpactScreen::TourneyEntry);
+					return false;
+				}
+				StartLocalTourney();
+				return false;
+			}), 3.0f);
+		}
+		static bool bFakeOfferDone = false;
+		if (!bFakeOfferDone && bTrainingMode && FParse::Param(FCommandLine::Get(), TEXT("CIFakeDuelOffer")))
+		{
+			bFakeOfferDone = true;
+			FTimerHandle OfferTimer;
+			GetWorldTimerManager().SetTimer(OfferTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+			{
+				if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+				{
+					PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+					Sessions->DevFakeDuelOffer();
+					UE_LOG(LogChaosImpact, Log, TEXT("Development: a 1v1 found made up"));
+				}
+			}), 3.0f, false);
+		}
+	}
+#endif
 	// Every world: once the effects are in, they are shown once out of sight, then any loading screen goes.
 	if (IsLocalController() && IsPrimaryLocalPlayerController())
 	{
@@ -995,6 +1146,11 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	if (!MenuWidget || bTravelPending)
 	{
 		return;
+	}
+	if (IsPrimaryLocalPlayerController() && NewScreen != CurrentScreen)
+	{
+		// (Where the menus go, in the log: the online flows are checked by it.)
+		UE_LOG(LogChaosImpact, Log, TEXT("Menu screen: %s"), *StaticEnum<EChaosImpactScreen>()->GetNameStringByValue(static_cast<int64>(NewScreen)));
 	}
 	if (NewScreen == EChaosImpactScreen::Playing)
 	{
@@ -1795,6 +1951,17 @@ void AChaosImpactPlayerController::SubmitRoomName(const FString& Name)
 		return;
 	}
 	const FString Trimmed = Name.TrimStartAndEnd().Left(UChaosImpactSessionSubsystem::MaxRoomNameLength);
+	if (bEditingTourneyTitle)
+	{
+		// A public tournament's name: back to its set-up.
+		bEditingTourneyTitle = false;
+		if (PendingTourney.IsValid() && !Trimmed.IsEmpty())
+		{
+			PendingTourney->Title = Trimmed;
+		}
+		ShowMenuScreen(EChaosImpactScreen::TourneyCreate);
+		return;
+	}
 	if (bRenamingRoom)
 	{
 		bRenamingRoom = false;
@@ -1859,6 +2026,10 @@ void AChaosImpactPlayerController::CancelRoomPlayerRename()
 bool AChaosImpactPlayerController::CanRenameRoom() const
 {
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Room && Room->bPublicTournament)
+	{
+		return false;
+	}
 	return IsOnlineRoomHost() && Room && !Room->bVersusMatch && Room->Phase == EChaosImpactOnlinePhase::Lobby
 		&& !Room->IsMatchmade();
 }
@@ -1866,6 +2037,10 @@ bool AChaosImpactPlayerController::CanRenameRoom() const
 bool AChaosImpactPlayerController::CanReopenRecruitment() const
 {
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Room && Room->bPublicTournament)
+	{
+		return false;
+	}
 	return IsOnlineRoomHost() && Room && Room->bRecruitmentClosed && !Room->bVersusMatch
 		&& Room->Phase == EChaosImpactOnlinePhase::Lobby && !Room->IsMatchmade();
 }
@@ -1916,6 +2091,10 @@ bool AChaosImpactPlayerController::CanToggleReady() const
 bool AChaosImpactPlayerController::CanToggleSpectating() const
 {
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Room && Room->bPublicTournament)
+	{
+		return false;
+	}
 	return IsOnlineRoom() && Room && !Room->bRecruitmentClosed && !Room->bVersusMatch
 		&& Room->Phase == EChaosImpactOnlinePhase::Lobby;
 }
@@ -2090,6 +2269,148 @@ void AChaosImpactPlayerController::UpdateRumble()
 	SustainedBig = 0.0f;
 }
 
+void AChaosImpactPlayerController::OpenTourneyList()
+{
+	UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Sessions || bTravelPending)
+	{
+		return;
+	}
+	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+	// The players and controllers chosen come along into the tournament's room.
+	Sessions->SetLocalSetup(BuildLocalSetupOptions(), RequestedLocalPlayerCount);
+	Sessions->StopSearch();
+	Sessions->StartSearch(ChaosImpactTourney::Password);
+	ShowMenuScreen(EChaosImpactScreen::TourneyList);
+}
+
+void AChaosImpactPlayerController::RefreshTourneyList()
+{
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->StopSearch();
+		Sessions->StartSearch(ChaosImpactTourney::Password);
+	}
+}
+
+void AChaosImpactPlayerController::CloseTourneyList()
+{
+	StopRoomSearch();
+	ShowMenuScreen(EChaosImpactScreen::MultiReady);
+}
+
+const FChaosImpactTourneyNotice& AChaosImpactPlayerController::GetPendingTourney() const
+{
+	static const FChaosImpactTourneyNotice None;
+	return PendingTourney.IsValid() ? *PendingTourney : None;
+}
+
+void AChaosImpactPlayerController::OpenTourneyCreate()
+{
+	StopRoomSearch();
+	if (!PendingTourney.IsValid())
+	{
+		PendingTourney = MakeShared<FChaosImpactTourneyNotice>();
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+		PendingTourney->Title = FString::Printf(TEXT("%sの大会"), Sessions ? *Sessions->GetPlayerName() : TEXT(""));
+		PendingTourney->MaxPlayers = 8;
+		PendingTourneyMinutes = 15;
+	}
+	ShowMenuScreen(EChaosImpactScreen::TourneyCreate);
+}
+
+void AChaosImpactPlayerController::AdjustTourneySetting(const int32 Row, const int32 Direction)
+{
+	if (!PendingTourney.IsValid())
+	{
+		return;
+	}
+	FChaosImpactTourneyNotice& Notice = *PendingTourney;
+	const auto Wrap = [](const int32 Value, const int32 Count) { return (Value % Count + Count) % Count; };
+	if (Row == 1)
+	{
+		// 5 minutes to 3 hours ahead, 5 minutes at a time.
+		PendingTourneyMinutes = 5 + Wrap(PendingTourneyMinutes / 5 - 1 + Direction, 36) * 5;
+	}
+	else if (Row == 2)
+	{
+		Notice.Mode = 1 - Notice.Mode;
+	}
+	else if (Row == 3)
+	{
+		Notice.MaxPlayers = 2 + Wrap(Notice.MaxPlayers - 2 + Direction, 7);
+		Notice.CPUs = FMath::Min(Notice.CPUs, ChaosImpactTournament::MaxEntrants - Notice.MaxPlayers);
+	}
+	else if (Row == 4)
+	{
+		Notice.CPUs = Wrap(Notice.CPUs + Direction, ChaosImpactTournament::MaxEntrants - Notice.MaxPlayers + 1);
+	}
+	else if (Row == 5 && Notice.CPUs > 0)
+	{
+		Notice.Level = Wrap(Notice.Level + 1 + Direction, ChaosImpactMatch::CPULevelCount + 1) - 1;
+	}
+}
+
+void AChaosImpactPlayerController::EditTourneyTitle()
+{
+	bEditingTourneyTitle = true;
+	ShowMenuScreen(EChaosImpactScreen::OnlineRoomName);
+}
+
+void AChaosImpactPlayerController::CreatePublicTourney()
+{
+	UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Sessions || !PendingTourney.IsValid() || bTravelPending)
+	{
+		return;
+	}
+	// The start on a whole minute.
+	const int64 Now = FDateTime::UtcNow().ToUnixTimestamp();
+	PendingTourney->StartsUnix = (Now / 60 + 1) * 60 + static_cast<int64>(PendingTourneyMinutes - 1) * 60;
+	Sessions->SetLocalSetup(BuildLocalSetupOptions(), RequestedLocalPlayerCount);
+	Sessions->CreateTourneyRoom(*PendingTourney);
+	ShowMenuScreen(EChaosImpactScreen::OnlineStatus);
+}
+
+void AChaosImpactPlayerController::ServerSetTournamentWait_Implementation(const EChaosImpactTournamentWait Wait, const int32 WatchMatch)
+{
+	if (AChaosImpactGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		GameMode->SetTournamentWait(this, Wait, WatchMatch);
+	}
+}
+
+void AChaosImpactPlayerController::ServerAnswerTournamentCPUMatch_Implementation(const int32 Choice)
+{
+	if (AChaosImpactGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		GameMode->AnswerTournamentCPUMatch(this, Choice);
+	}
+}
+
+void AChaosImpactPlayerController::UpdateTournamentWidget()
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	// (A public tournament's room shows its countdown on it before it starts.)
+	const bool bWanted = IsLocalController() && Match && (Match->IsTournament() || (Match->bPublicTournament && Match->TournamentStartsAt > 0.0));
+	if (bWanted && !TournamentWidget)
+	{
+		// Each local player's own, in their own part of the screen.
+		TournamentWidget = CreateWidget<UChaosImpactTournamentWidget>(this);
+		if (TournamentWidget)
+		{
+			TournamentWidget->AddToPlayerScreen(40);
+			UE_LOG(LogChaosImpact, Log, TEXT("Tournament screen shown for local player %d"), GetThisLocalPlayerIndex());
+		}
+	}
+	if (TournamentWidget && !bWanted)
+	{
+		TournamentWidget->RemoveFromParent();
+		TournamentWidget = nullptr;
+		bTournamentPanelOpen = false;
+	}
+}
+
 void AChaosImpactPlayerController::ServerSetReadyForMatch_Implementation(const bool bReady)
 {
 	if (AChaosImpactGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
@@ -2158,7 +2479,66 @@ void AChaosImpactPlayerController::LeaveOnlineRoom()
 		return;
 	}
 	bTravelPending = true;
+	if (IsOnlineRoomHost() && GetWorld())
+	{
+		// The host closes the room: every guest is told first (and goes to the online menu at once, instead of waiting for
+		// the connection to time out), then the host leaves a moment later.
+		const AChaosImpactGameState* Room = GetWorld()->GetGameState<AChaosImpactGameState>();
+		const bool bMatchmade = Room && Room->IsMatchmade();
+		const bool bTournament = Room && (Room->bPublicTournament || Room->IsTournament());
+		int32 Told = 0;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			AChaosImpactPlayerController* Guest = Cast<AChaosImpactPlayerController>(It->Get());
+			if (Guest && !Guest->IsLocalController() && !Cast<UChildConnection>(Guest->Player))
+			{
+				if (bMatchmade)
+				{
+					Guest->ClientLeaveMatchmade(true);
+				}
+				else
+				{
+					Guest->ClientRoomDisbanded(bTournament);
+				}
+				++Told;
+			}
+		}
+		if (Told > 0)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Room closed by its host: %d guest machine(s) told"), Told);
+			if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+			{
+				Loading->BeginTravel(EChaosImpactLoadingKind::RoomLeave);
+			}
+			FTimerHandle LeaveTimer;
+			GetWorldTimerManager().SetTimer(LeaveTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+			{
+				if (UChaosImpactSessionSubsystem* Later = UChaosImpactSessionSubsystem::Get(this))
+				{
+					Later->LeaveRoom();
+				}
+			}), 0.4f, false);
+			return;
+		}
+	}
 	Sessions->LeaveRoom();
+}
+
+void AChaosImpactPlayerController::ClientRoomDisbanded_Implementation(const bool bTournament)
+{
+	// Every local player of the machine hears it; its first player takes the machine to the online menu.
+	const UGameInstance* GameInstance = GetGameInstance();
+	const ULocalPlayer* First = GameInstance && !GameInstance->GetLocalPlayers().IsEmpty() ? GameInstance->GetLocalPlayers()[0] : nullptr;
+	AChaosImpactPlayerController* Primary = First ? Cast<AChaosImpactPlayerController>(First->GetPlayerController(GetWorld())) : this;
+	UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
+	if (!Primary || Primary->bTravelPending || !Sessions)
+	{
+		return;
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("The host closed the room"));
+	Primary->bTravelPending = true;
+	Sessions->LeaveRoom();
+	Sessions->ShowNotice(bTournament ? TEXT("大会が中止されました") : TEXT("へやが解散しました"));
 }
 
 void AChaosImpactPlayerController::StopRoomSearch()
@@ -2185,6 +2565,10 @@ bool AChaosImpactPlayerController::CanCloseRecruitment() const
 {
 	const AChaosImpactGameState* RoomState = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	// A room of one machine has nobody to play with (or watch) yet.
+	if (RoomState && RoomState->bPublicTournament)
+	{
+		return false;
+	}
 	return IsOnlineRoomHost() && RoomState && !RoomState->bRecruitmentClosed && !RoomState->IsMatchmade()
 		&& RoomState->Phase == EChaosImpactOnlinePhase::Lobby && RoomState->CountMachines() + RoomState->CountSpectators() >= 2;
 }
@@ -2233,6 +2617,247 @@ void AChaosImpactPlayerController::OpenOnlinePrivate()
 {
 	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
 	ShowMenuScreen(EChaosImpactScreen::OnlinePrivate);
+}
+
+void AChaosImpactPlayerController::BeginLocalTourney()
+{
+	PlayFlow = EChaosImpactPlayFlow::VersusLocal;
+	ShowMenuScreen(EChaosImpactScreen::TourneyEntry);
+}
+
+void AChaosImpactPlayerController::StartLocalTourney()
+{
+	const UChaosImpactLocalTourneySubsystem* Data = UChaosImpactLocalTourneySubsystem::Get(this);
+	if (!Data || !Data->GetStartBlocker().IsEmpty() || bTravelPending)
+	{
+		return;
+	}
+	if (Data->IsAllAtOnce())
+	{
+		// Each person takes their controller for the whole tournament (in the order they are registered).
+		TourneySeats.Reset();
+		const TArray<FChaosImpactTournamentEntrant> People = Data->MakeEntrants();
+		for (const FChaosImpactTournamentEntrant& Person : People)
+		{
+			FTourneySeat& Seat = TourneySeats.AddDefaulted_GetRef();
+			Seat.Name = Person.Name;
+			Seat.Character = Person.Character;
+			Seat.Colour = Person.Colour;
+			Seat.CustomColours = Person.CustomColours;
+		}
+		TourneySeatTitle = TEXT("同時進行トーナメント");
+		TourneySeatMatch = INDEX_NONE;
+		TourneySeatsFullAt = 0.0;
+		ShowMenuScreen(EChaosImpactScreen::TourneySeat);
+		return;
+	}
+	// One match at a time: this machine has one player until a match seats its people.
+	RequestedLocalPlayerCount = 1;
+	RequestedKeyboardPlayerIndex = 0;
+	bRequestedPrimaryUsesGamepad = false;
+	JoinedInputDeviceIds.Reset();
+	JoinedLegacyControllerIds.Reset();
+	TravelToLocalTourney();
+}
+
+void AChaosImpactPlayerController::TravelToLocalTourney()
+{
+	const FString MapPackage = TrainingLevel.GetLongPackageName();
+	if (MapPackage.IsEmpty() || bTravelPending)
+	{
+		return;
+	}
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+	if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::Training);
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Local tournament: opening its level (%d local player(s))"), RequestedLocalPlayerCount);
+	UGameplayStatics::OpenLevel(this, FName(*MapPackage), true,
+		FString::Printf(TEXT("CITraining=1?CITargets=0?CILocalTournament=1?%s"), *BuildLocalSetupOptions()));
+}
+
+void AChaosImpactPlayerController::OpenTourneySeatsForMatch(const int32 MatchIndex)
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Match || !Match->Tournament.Matches.IsValidIndex(MatchIndex))
+	{
+		return;
+	}
+	const FChaosImpactTournamentState& Tournament = Match->Tournament;
+	const FChaosImpactTournamentMatch& Called = Tournament.Matches[MatchIndex];
+	TourneySeats.Reset();
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		FTourneySeat& Seat = TourneySeats.AddDefaulted_GetRef();
+		if (const FChaosImpactTournamentEntrant* Who = Tournament.Entrants.IsValidIndex(Called.Entrants[Side]) ? &Tournament.Entrants[Called.Entrants[Side]] : nullptr)
+		{
+			Seat.Name = Who->Name;
+			Seat.Character = Who->Character;
+			Seat.Colour = Who->Colour;
+			Seat.CustomColours = Who->CustomColours;
+			Seat.bCPU = Who->bCPU;
+			Seat.CPULevel = Who->CPULevel;
+		}
+	}
+	// Which match: the round, and which of its matches really played this is.
+	int32 Number = 1;
+	int32 InRound = 0;
+	for (const FChaosImpactTournamentMatch& Other : Tournament.Matches)
+	{
+		if (Other.Round == Called.Round && !Other.bBye)
+		{
+			++InRound;
+			Number += Other.Slot < Called.Slot ? 1 : 0;
+		}
+	}
+	TourneySeatTitle = Tournament.GetRoundName(Called.Round) + (InRound > 1 ? FString::Printf(TEXT(" 第%d試合"), Number) : FString());
+	TourneySeatMatch = MatchIndex;
+	TourneySeatsFullAt = 0.0;
+	bTournamentPanelOpen = false;
+	UE_LOG(LogChaosImpact, Log, TEXT("Local tournament: %s, its players take their controllers"), *TourneySeatTitle);
+	ShowMenuScreen(EChaosImpactScreen::TourneySeat);
+}
+
+void AChaosImpactPlayerController::PressTourneySeat(const bool bKeyboard, const int32 InputDeviceId)
+{
+	if (CurrentScreen != EChaosImpactScreen::TourneySeat)
+	{
+		return;
+	}
+	const int32 Device = bKeyboard ? -1 : InputDeviceId;
+	if (Device < -1)
+	{
+		return;
+	}
+	// The same device again: its place given back.
+	for (FTourneySeat& Seat : TourneySeats)
+	{
+		if (!Seat.bCPU && Seat.Device == Device)
+		{
+			Seat.Device = -2;
+			TourneySeatsFullAt = 0.0;
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiBack);
+			return;
+		}
+	}
+	for (FTourneySeat& Seat : TourneySeats)
+	{
+		if (!Seat.bCPU && Seat.Device == -2)
+		{
+			Seat.Device = Device;
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiReady);
+			break;
+		}
+	}
+	const bool bFull = !TourneySeats.ContainsByPredicate([](const FTourneySeat& Seat) { return !Seat.bCPU && Seat.Device == -2; });
+	TourneySeatsFullAt = bFull ? FPlatformTime::Seconds() : 0.0;
+}
+
+void AChaosImpactPlayerController::CancelTourneySeats()
+{
+	if (CurrentScreen == EChaosImpactScreen::TourneySeat && TourneySeatMatch == INDEX_NONE)
+	{
+		ShowMenuScreen(EChaosImpactScreen::TourneyEntry);
+	}
+}
+
+void AChaosImpactPlayerController::UpdateTourneySeats()
+{
+	if (CurrentScreen == EChaosImpactScreen::TourneySeat && TourneySeatsFullAt > 0.0 && FPlatformTime::Seconds() - TourneySeatsFullAt >= 1.4)
+	{
+		FinishTourneySeats();
+	}
+}
+
+void AChaosImpactPlayerController::FinishTourneySeats()
+{
+	TourneySeatsFullAt = 0.0;
+	if (TourneySeatMatch == INDEX_NONE)
+	{
+		// 同時進行: this machine's players are the people, each on the device they took.
+		RequestedLocalPlayerCount = FMath::Clamp(TourneySeats.Num(), 1, 4);
+		RequestedKeyboardPlayerIndex = INDEX_NONE;
+		JoinedInputDeviceIds.Reset();
+		JoinedLegacyControllerIds.Reset();
+		for (int32 Index = 0; Index < TourneySeats.Num(); ++Index)
+		{
+			if (TourneySeats[Index].Device == -1)
+			{
+				RequestedKeyboardPlayerIndex = Index;
+			}
+			else if (TourneySeats[Index].Device >= 0)
+			{
+				JoinedInputDeviceIds.Add(TourneySeats[Index].Device);
+				JoinedLegacyControllerIds.Add(TourneySeats[Index].Device);
+			}
+		}
+		bRequestedPrimaryUsesGamepad = RequestedKeyboardPlayerIndex != 0;
+		TravelToLocalTourney();
+		return;
+	}
+	// 1試合ずつ: the match's players are seated and it begins.
+	TArray<int32> SideDevices;
+	for (const FTourneySeat& Seat : TourneySeats)
+	{
+		SideDevices.Add(Seat.bCPU ? -3 : Seat.Device);
+	}
+	const int32 MatchIndex = TourneySeatMatch;
+	TourneySeatMatch = INDEX_NONE;
+	EnterPlayingScreen();
+	if (AChaosImpactGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		Mode->SeatLocalTournamentMatch(MatchIndex, SideDevices);
+	}
+}
+
+void AChaosImpactPlayerController::UpdateLocalTourneySeatRequest()
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Match || !Match->bLocalTournament || !IsPrimaryLocalPlayerController() || bTravelPending || CurrentScreen != EChaosImpactScreen::Playing)
+	{
+		return;
+	}
+	const AChaosImpactGameMode* Mode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>();
+	const int32 Waiting = Mode ? Mode->GetLocalSeatRequest() : INDEX_NONE;
+	if (Waiting != INDEX_NONE)
+	{
+		OpenTourneySeatsForMatch(Waiting);
+	}
+}
+
+void AChaosImpactPlayerController::OnLocalTournamentOver()
+{
+	if (!IsPrimaryLocalPlayerController())
+	{
+		return;
+	}
+	RemoveSecondaryLocalPlayers();
+	SetLocalInputRouting(1, 0, TArray<int32>());
+	ShowMenuScreen(EChaosImpactScreen::TourneyEntry);
+}
+
+void AChaosImpactPlayerController::SetLocalInputRouting(const int32 Players, const int32 KeyboardPlayer, const TArray<int32>& PadDevices)
+{
+	RequestedLocalPlayerCount = FMath::Clamp(Players, 1, 4);
+	RequestedKeyboardPlayerIndex = KeyboardPlayer;
+	bRequestedPrimaryUsesGamepad = KeyboardPlayer != 0;
+	JoinedInputDeviceIds = PadDevices;
+	JoinedLegacyControllerIds = PadDevices;
+}
+
+void AChaosImpactPlayerController::OpenLineCheck()
+{
+	// (Its page starts the measuring as it comes up.)
+	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+	ShowMenuScreen(EChaosImpactScreen::LineCheck);
 }
 
 void AChaosImpactPlayerController::OpenOnlineRecord()
@@ -2364,7 +2989,66 @@ bool AChaosImpactPlayerController::IsRematchOpponentHere(bool& bOutAsked) const
 	return false;
 }
 
-void AChaosImpactPlayerController::ClientLeaveMatchmade_Implementation()
+bool AChaosImpactPlayerController::IsInMatchmadeMatch() const
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	return IsOnlineRoom() && Match && Match->IsMatchmade() && Match->bVersusMatch
+		&& (Match->Phase == EChaosImpactOnlinePhase::Intro || Match->Phase == EChaosImpactOnlinePhase::TeamSelect
+			|| Match->Phase == EChaosImpactOnlinePhase::Match);
+}
+
+void AChaosImpactPlayerController::Surrender()
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Match && Match->IsDuel() && Match->Duel.SideOf(PlayerState) != INDEX_NONE)
+	{
+		// The duel is given to the other player; both then see its results as usual.
+		ResumeGameplay();
+		ServerSurrender();
+		return;
+	}
+	// Any other match: this machine leaves it (a ranked or 1v1 one counts as lost).
+	LeaveOnlineRoom();
+}
+
+void AChaosImpactPlayerController::ServerSurrender_Implementation()
+{
+	AChaosImpactGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr;
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Mode && Match && Match->IsDuel() && (Match->Phase == EChaosImpactOnlinePhase::Intro || Match->Phase == EChaosImpactOnlinePhase::Match))
+	{
+		const int32 Side = Match->Duel.SideOf(PlayerState);
+		if (Side != INDEX_NONE)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("%s surrenders"), PlayerState ? *PlayerState->GetPlayerName() : TEXT("?"));
+			Mode->ForfeitDuel(Side);
+		}
+	}
+}
+
+void AChaosImpactPlayerController::OpenColourEdit(const EChaosImpactScreen ReturnTo)
+{
+	if (!IsPrimaryLocalPlayerController())
+	{
+		return;
+	}
+	ColourEditReturnScreen = ReturnTo;
+	ShowMenuScreen(EChaosImpactScreen::ColourEdit);
+}
+
+void AChaosImpactPlayerController::CloseColourEdit()
+{
+	if (CurrentScreen != EChaosImpactScreen::ColourEdit)
+	{
+		return;
+	}
+	const EChaosImpactScreen ReturnTo = ColourEditReturnScreen;
+	ColourEditReturnScreen = EChaosImpactScreen::ModeSelect;
+	// (A room's pause menu, if the room is still there; else the menu it was opened from.)
+	ShowMenuScreen(ReturnTo == EChaosImpactScreen::Pause && !IsOnlineRoom() ? EChaosImpactScreen::ModeSelect : ReturnTo);
+}
+
+void AChaosImpactPlayerController::ClientLeaveMatchmade_Implementation(const bool bOpponentLeft)
 {
 	// Every local player of the machine hears it; its first player takes the machine home.
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -2376,6 +3060,10 @@ void AChaosImpactPlayerController::ClientLeaveMatchmade_Implementation()
 		return;
 	}
 	Primary->bTravelPending = true;
+	if (bOpponentLeft)
+	{
+		Sessions->ShowNotice(TEXT("対戦相手が退出しました"));
+	}
 	Sessions->FinishMatchmade();
 }
 
@@ -2390,6 +3078,10 @@ void AChaosImpactPlayerController::UpdateMatchmadeProgress()
 	if (Match->bVersusMatch && (Match->Phase == EChaosImpactOnlinePhase::Intro || Match->Phase == EChaosImpactOnlinePhase::Match))
 	{
 		Sessions->NotifyMatchmadeMatchStarted();
+	}
+	if (Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Results)
+	{
+		Sessions->NotifyMatchmadeMatchOver();
 	}
 	// Development: -CIAutoRematch=N asks for 同じ相手と再戦 after the first N 1v1s; -CIAutoAfterMatch=search|menu leaves the
 	// results that way a few seconds in (otherwise they run out by themselves).
@@ -2852,6 +3544,10 @@ bool AChaosImpactPlayerController::CanOpenMatchRulesFromPause() const
 {
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	// Rules are decided once recruitment is closed (closing it opens the rule screen straight away).
+	if (Match && Match->bPublicTournament)
+	{
+		return false;
+	}
 	return IsOnlineRoomHost() && Match && !Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Lobby
 		&& Match->bRecruitmentClosed && !Match->IsMatchmade();
 }
@@ -2922,6 +3618,42 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	const int32 Humans = GetMatchHumanCount();
 	FChaosImpactMatchRules& Rules = PendingMatchRules;
 	const auto Wrap = [](const int32 Value, const int32 Count) { return (Value % Count + Count) % Count; };
+	// トーナメント (a 合言葉 room's host only): its own rows: how it runs, its CPUs, their strength.
+	if (Rules.bTournament && Row != 1)
+	{
+		FChaosImpactTournamentSettings& Tournament = Rules.Tournament;
+		if (Row == 0)
+		{
+			Tournament.Mode = Tournament.Mode == EChaosImpactTournamentMode::OneAtATime ? EChaosImpactTournamentMode::Simultaneous
+				: EChaosImpactTournamentMode::OneAtATime;
+		}
+		else if (Row == 2)
+		{
+			const int32 MaxCPUs = FMath::Max(0, ChaosImpactTournament::MaxEntrants - Humans);
+			const int32 Count = Wrap(Tournament.CPUs.Num() + Direction, MaxCPUs + 1);
+			const int32 Level = Tournament.CPUs.IsEmpty() ? INDEX_NONE : Tournament.CPUs.Last().Level;
+			while (Tournament.CPUs.Num() < Count)
+			{
+				FChaosImpactTournamentCPU CPU;
+				CPU.Name = FString::Printf(TEXT("CPU%d"), Tournament.CPUs.Num() + 1);
+				CPU.Level = Level;
+				Tournament.CPUs.Add(CPU);
+			}
+			Tournament.CPUs.SetNum(Count);
+		}
+		else if (Row == 3 && !Tournament.CPUs.IsEmpty())
+		{
+			// おまかせ (each one at random) → よわい → … → さいきょう, for every CPU at once.
+			const int32 Current = Tournament.CPUs[0].Level;
+			const int32 Next = Wrap(Current + 1 + Direction, ChaosImpactMatch::CPULevelCount + 1) - 1;
+			for (FChaosImpactTournamentCPU& CPU : Tournament.CPUs)
+			{
+				CPU.Level = Next;
+			}
+		}
+		Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
+		return;
+	}
 	if (Row == 0 && !Rules.bCrashBall && !Rules.bDuel && !Rules.bBattleRoyale)
 	{
 		// 3 → 4 → 5 minutes (クラッシュボール is always five).
@@ -2936,18 +3668,19 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	}
 	else if (Row == 1)
 	{
-		// Existing rules plus the objective team battle and the duel (ランクマッチ's rules), with the same
-		// left/right selector. The duel is offered to one or two players only.
-		static constexpr int32 Modes[] = {0, 2, 3, 4, 2, 0, 0, 2, 3, 4};
-		const int32 Current = Rules.bBattleRoyale ? (Rules.TeamCount >= 2 ? Rules.TeamCount + 5 : 6)
-			: Rules.bDuel ? 5 : Rules.bCrashBall ? 4 : (Rules.TeamCount >= 2 ? Rules.TeamCount - 1 : 0);
-		int32 Next = Current;
-		do { Next = Wrap(Next + Direction, UE_ARRAY_COUNT(Modes)); }
-		while ((Next == 5 && Humans > 2) || (Next == 8 && Humans > 6));
-		Rules.bCrashBall = Next == 4;
-		Rules.bDuel = Next == 5;
-		Rules.bBattleRoyale = Next >= 6;
-		Rules.TeamCount = Modes[Next];
+		// Every kind of match in turn, sideways (the ones that cannot be chosen here passed over); the rules screen also
+		// lists them all to pick from (SetMatchMode).
+		int32 Next = GetMatchMode();
+		for (int32 Step = 0; Step < MatchModeCount; ++Step)
+		{
+			Next = Wrap(Next + Direction, MatchModeCount);
+			if (GetMatchModeBlocker(Next).IsEmpty())
+			{
+				break;
+			}
+		}
+		SetMatchMode(Next);
+		return;
 	}
 	else if (Row == 2 && !Rules.bDuel)
 	{
@@ -2973,6 +3706,79 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 	}
 
 	Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
+}
+
+void AChaosImpactPlayerController::ApplyMatchMode(FChaosImpactMatchRules& Rules, const int32 Mode)
+{
+	static constexpr int32 Teams[] = {0, 2, 3, 4, 2, 0, 0, 2, 3, 4, 0};
+	const int32 Kind = FMath::Clamp(Mode, 0, MatchModeCount - 1);
+	Rules.bTournament = Kind == 10;
+	Rules.bCrashBall = Kind == 4;
+	Rules.bDuel = Kind == 5 || Kind == 10;
+	Rules.bBattleRoyale = Kind >= 6 && Kind < 10;
+	Rules.TeamCount = Teams[Kind];
+}
+
+int32 AChaosImpactPlayerController::GetMatchMode() const
+{
+	const FChaosImpactMatchRules& Rules = PendingMatchRules;
+	return Rules.bTournament ? 10 : Rules.bBattleRoyale ? (Rules.TeamCount >= 2 ? Rules.TeamCount + 5 : 6)
+		: Rules.bDuel ? 5 : Rules.bCrashBall ? 4 : (Rules.TeamCount >= 2 ? Rules.TeamCount - 1 : 0);
+}
+
+FString AChaosImpactPlayerController::GetMatchModeBlocker(const int32 Mode) const
+{
+	const int32 Humans = GetMatchHumanCount();
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Mode == 5 && Humans > 2)
+	{
+		return TEXT("3人以上では選べません");
+	}
+	if (Mode == 8 && Humans > 6)
+	{
+		return TEXT("7人以上では選べません");
+	}
+	if (Mode == 10 && !(IsOnlineRoomHost() && Room && !Room->IsMatchmade()))
+	{
+		return TEXT("合言葉の部屋のホストのみ");
+	}
+	return FString();
+}
+
+void AChaosImpactPlayerController::SetMatchMode(const int32 Mode)
+{
+	if (Mode < 0 || Mode >= MatchModeCount || !GetMatchModeBlocker(Mode).IsEmpty())
+	{
+		return;
+	}
+	const int32 Humans = GetMatchHumanCount();
+	FChaosImpactMatchRules& Rules = PendingMatchRules;
+	ApplyMatchMode(Rules, Mode);
+	if (Rules.bTournament && Rules.Tournament.CPUs.IsEmpty() && Humans < 2)
+	{
+		// A lone person: a CPU to face at least.
+		FChaosImpactTournamentCPU CPU;
+		CPU.Name = TEXT("CPU1");
+		Rules.Tournament.CPUs.Add(CPU);
+	}
+	Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
+}
+
+int32 AChaosImpactPlayerController::GetMatchModeChoice() const
+{
+	const int32 Mode = GetMatchMode();
+	return Mode == 10 && PendingMatchRules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? TournamentAllAtOnceChoice : Mode;
+}
+
+void AChaosImpactPlayerController::SetMatchModeChoice(const int32 Choice)
+{
+	const bool bTournament = Choice == 10 || Choice == TournamentAllAtOnceChoice;
+	SetMatchMode(bTournament ? 10 : Choice);
+	if (bTournament && PendingMatchRules.bTournament)
+	{
+		PendingMatchRules.Tournament.Mode = Choice == TournamentAllAtOnceChoice ? EChaosImpactTournamentMode::Simultaneous
+			: EChaosImpactTournamentMode::OneAtATime;
+	}
 }
 
 void AChaosImpactPlayerController::OpenStageSelect()
@@ -3423,6 +4229,10 @@ void AChaosImpactPlayerController::EnterPlayingScreen()
 	{
 		return;
 	}
+	if (IsPrimaryLocalPlayerController() && CurrentScreen != EChaosImpactScreen::Playing)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Menu screen: Playing"));
+	}
 	CurrentScreen = EChaosImpactScreen::Playing;
 	MenuWidget->ShowScreen(CurrentScreen);
 	ApplyScreenInput();
@@ -3440,6 +4250,11 @@ void AChaosImpactPlayerController::SendLoadout()
 	const int32 LocalIndex = FMath::Max(0, GameInstance->GetLocalPlayers().IndexOfByKey(GetLocalPlayer()));
 	const FChaosImpactLoadout Loadout = Loadouts->GetLoadout(LocalIndex);
 	bLoadoutSent = true;
+	if (GetWorld() && GetWorld()->URL.HasOption(TEXT("CILocalTournament=1")))
+	{
+		// ローカルトーナメント: the registration dresses this machine's players (not the select screen's choices).
+		return;
+	}
 	// The preset's colours themselves (everyone else's machine has no such preset).
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(this);
 	const TArray<uint8> Custom = Colours ? Colours->GetPresetParts(Loadout.Character, Loadout.ColourPreset) : TArray<uint8>();
@@ -3609,6 +4424,9 @@ void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 	}
 	if (bTrainingTeams) { ApplyTrainingTeams(); }
 	SendLoadout();
+	UpdateTournamentWidget();
+	UpdateLocalTourneySeatRequest();
+
 	UpdateMatchmadeProgress();
 	UpdateDuelOfferScreen();
 	UpdateMatchScreens();
@@ -3752,10 +4570,24 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 	// The demo watches a CPU: the opening plays as that CPU's player would see it.
 	const AChaosImpactCharacter* PlayerCharacter = bDemoPlay && DemoIntroCharacter.IsValid() ? DemoIntroCharacter.Get()
 		: Cast<AChaosImpactCharacter>(GetPawn());
-	const float Elapsed = Match ? Match->GetIntroElapsedSeconds() : 0.0f;
+	float Elapsed = Match ? Match->GetIntroElapsedSeconds() : 0.0f;
 	const float CameraSeconds = ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds;
-	const bool bActive = IsLocalController() && PlayerCharacter && Match && Match->bVersusMatch
-		&& Match->Phase == EChaosImpactOnlinePhase::Intro && Elapsed < CameraSeconds;
+	// A tournament's match opens in its arena as a duel opens: the same sweep around the arena and dive into the player.
+	FVector StageCenter = Match ? FVector(Match->StageCenter) : FVector::ZeroVector;
+	bool bTournamentOpening = false;
+	if (Match && Match->IsTournament() && PlayerCharacter && !bDemoPlay)
+	{
+		const AChaosImpactPlayerState* Member = GetPlayerState<AChaosImpactPlayerState>();
+		const FChaosImpactDuelState* Duel = Member ? Match->FindDuelFor(Member) : nullptr;
+		if (Duel && Duel->Step == EChaosImpactDuelStep::Opening && Match->TournamentArenas.IsValidIndex(Member->TournamentArena))
+		{
+			bTournamentOpening = true;
+			Elapsed = Match->GetDuelStepElapsed(*Duel);
+			StageCenter = Match->TournamentArenas[Member->TournamentArena].Center;
+		}
+	}
+	const bool bActive = IsLocalController() && PlayerCharacter && Match && Elapsed < CameraSeconds
+		&& (bTournamentOpening || (Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Intro));
 	// Tell the host this screen has shown the whole opening; Ready? waits for every player's report.
 	if (IsLocalController() && Match && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Intro
 		&& Elapsed >= CameraSeconds && ReportedIntroStartedAt != Match->PhaseStartedAt)
@@ -3767,7 +4599,8 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 	// begins, and every view then dives from the same spot into its own player.
 	if (IsPrimaryLocalPlayerController())
 	{
-		const bool bFullScreen = bActive && Elapsed < ChaosImpactMatch::FlyoverSeconds;
+		// (Not in a tournament: the views may be in different arenas.)
+		const bool bFullScreen = bActive && !bTournamentOpening && Elapsed < ChaosImpactMatch::FlyoverSeconds;
 		if (bFullScreen != bIntroFullScreen)
 		{
 			bIntroFullScreen = bFullScreen;
@@ -3817,8 +4650,7 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 	}
 
 	// A wide sweep around the stage that ends facing the same way as the player's own camera.
-	const FVector StageCenter = Match->StageCenter;
-	const float DuelViewYaw = Match->IsDuel() ? PlayerCharacter->GetTopDownCameraRotation().Yaw : 0.f;
+	const float DuelViewYaw = Match->IsDuel() || bTournamentOpening ? PlayerCharacter->GetTopDownCameraRotation().Yaw : 0.f;
 	const auto FlyoverPose = [&StageCenter, DuelViewYaw](const float Alpha, FVector& OutLocation, FRotator& OutRotation)
 	{
 		const float Ease = FMath::InterpEaseInOut(0.0f, 1.0f, FMath::Clamp(Alpha, 0.0f, 1.0f), 2.0f);

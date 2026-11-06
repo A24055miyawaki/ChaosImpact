@@ -128,17 +128,23 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchReady);
 		}
 	}
-	else if (Match->Phase == EChaosImpactOnlinePhase::Match && Match->Rules.bDuel)
+	else if ((Match->Phase == EChaosImpactOnlinePhase::Match && Match->Rules.bDuel && Match->bVersusMatch)
+		|| (Match->IsTournament() && GetOwningPlayer() && Match->FindDuelFor(GetOwningPlayer()->PlayerState)))
 	{
-		// The duel: a sound for each step of a round, and the last five seconds of a round ticking.
-		const FChaosImpactDuelState& Duel = Match->Duel;
+		// The duel: a sound for each step of a round, and the last five seconds of a round ticking (in a tournament,
+		// the arena this machine's first player is in).
+		const FChaosImpactDuelState& Duel = Match->IsTournament() ? *Match->FindDuelFor(GetOwningPlayer()->PlayerState) : Match->Duel;
 		if (static_cast<int32>(Duel.Step) != SoundDuelStep || Duel.StepStartedAt != SoundDuelStepAt)
 		{
 			SoundDuelStep = static_cast<int32>(Duel.Step);
 			SoundDuelStepAt = Duel.StepStartedAt;
 			SoundSecond = MAX_int32;
 			SoundReelsStopped = 0;
-			if (Duel.Step == EChaosImpactDuelStep::BallDraw || Duel.Step == EChaosImpactDuelStep::RoundIntro)
+			if (Duel.Step == EChaosImpactDuelStep::Opening)
+			{
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchStarting);
+			}
+			else if (Duel.Step == EChaosImpactDuelStep::BallDraw || Duel.Step == EChaosImpactDuelStep::RoundIntro)
 			{
 				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchReady);
 			}
@@ -154,7 +160,7 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 		// The slot's reels: a tick as each one stops, rising, and the cheer once all three are in.
 		if (Duel.Step == EChaosImpactDuelStep::BallDraw)
 		{
-			const float DrawAge = Match->GetDuelStepElapsed();
+			const float DrawAge = Match->GetDuelStepElapsed(Duel);
 			while (SoundReelsStopped < ChaosImpactMatch::DuelBallPicks && DrawAge >= ChaosImpactMatch::DuelReelStopSeconds[SoundReelsStopped])
 			{
 				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchTick, 1.0f, 1.0f + SoundReelsStopped * 0.12f);
@@ -164,7 +170,7 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 				}
 			}
 		}
-		const float RoundLeft = Match->GetDuelStepRemaining();
+		const float RoundLeft = Match->GetDuelStepRemaining(Duel);
 		const int32 RoundSeconds = FMath::CeilToInt(RoundLeft);
 		if ((Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath)
 			&& RoundLeft > 0.0f && RoundSeconds <= 5 && RoundSeconds < SoundSecond)
@@ -348,7 +354,29 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
 	// (The match level's wait for everyone to arrive is no countdown.)
 	const bool bStarting = Match && Match->bOnlineRoom && !Match->bRoomMatchLevel && Match->Phase == EChaosImpactOnlinePhase::Starting;
-	if (!Match || (!Match->bVersusMatch && !bStarting) || Size.X < 1.0f || Size.Y < 1.0f)
+	struct FDuelView { FGeometry Area; const FChaosImpactDuelState* Duel; const APlayerController* Viewer; };
+	TArray<FDuelView> DuelViews;
+	if (Match && Match->IsTournament() && GetGameInstance() && Size.X >= 1.0f && Size.Y >= 1.0f)
+	{
+		for (ULocalPlayer* Local : GetGameInstance()->GetLocalPlayers())
+		{
+			const APlayerController* Viewer = Local ? Local->GetPlayerController(GetWorld()) : nullptr;
+			const FChaosImpactDuelState* Arena = Viewer ? Match->FindDuelFor(Viewer->PlayerState) : nullptr;
+			if (!Arena || Local->Size.X <= 0.0 || Local->Size.Y <= 0.0)
+			{
+				continue;
+			}
+			const FVector2f PaneSize(Size.X * Local->Size.X, Size.Y * Local->Size.Y);
+			DuelViews.Add({AllottedGeometry.MakeChild(PaneSize, FSlateLayoutTransform(FVector2f(Size.X * Local->Origin.X, Size.Y * Local->Origin.Y))),
+				Arena, Viewer});
+		}
+	}
+	else if (Match && Match->Phase == EChaosImpactOnlinePhase::Match && Match->Rules.bDuel && Match->bVersusMatch)
+	{
+		DuelViews.Add({AllottedGeometry, &Match->Duel, nullptr});
+	}
+	const bool bDuelView = !DuelViews.IsEmpty();
+	if (!Match || (!Match->bVersusMatch && !bStarting && !bDuelView) || Size.X < 1.0f || Size.Y < 1.0f)
 	{
 		return BaseLayer;
 	}
@@ -479,34 +507,109 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		}
 		return BaseLayer + 20;
 	}
-	if (Match->Phase == EChaosImpactOnlinePhase::Match && Match->Rules.bDuel)
+	if (bDuelView)
 	{
-		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
-		PaintDuelScoreboard(TopCenter, OutDrawElements, BaseLayer + 1, *Match, Time);
-		const FChaosImpactDuelState& Duel = Match->Duel;
-		const float Age = Match->GetDuelStepElapsed();
-		const auto Fade = [](const float T, const float Hold, const float Out) { return EaseOut(T / 0.12f) * (1.0f - FMath::Clamp((T - Hold) / Out, 0.0f, 1.0f)); };
-		if (Duel.Step == EChaosImpactDuelStep::BallDraw)
+		// The duel's own screen: one for the room's duel, or in a tournament one for each player here in an arena (in
+		// their own part of a split screen).
+		for (const FDuelView& View : DuelViews)
 		{
-			PaintDuelBallSlot(Center, OutDrawElements, BaseLayer + 10, *Match, Time);
+			PaintingDuel = View.Duel;
+			PaintingViewer = View.Viewer;
+			const FVector2f ViewSize = View.Area.GetLocalSize();
+			const float ViewScale = FMath::Clamp(FMath::Min(ViewSize.X / 1600.0f, ViewSize.Y / 900.0f), 0.42f, 1.4f);
+			const FGeometry ViewCenter = MakeAnchor(View.Area, ViewSize.X * 0.5f, ViewSize.Y * 0.5f, ViewScale);
+			const FGeometry ViewTop = MakeAnchor(View.Area, ViewSize.X * 0.5f, 0.0f, ViewScale);
+			const auto ViewCallout = [&](const FString& Word, const float TextSize, const float Scale, const float Alpha,
+				const FLinearColor& Color, const int32 Layer)
+			{
+				const FGeometry Space = MakeSkewed(ViewCenter, -800.0f, -TextSize * 0.8f, 1600.0f, TextSize * 1.6f, -0.12f, Scale);
+				HudText3D(FPainter{Space, OutDrawElements, Layer + 3, Alpha}, Word, 800.0f, 0.0f, TextSize, Color, ETextAlign::Center,
+					TEXT("BlackItalic"), TextSize * 0.07f);
+			};
+		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
+		const FChaosImpactDuelState& Duel = *PaintingDuel;
+		// (A tournament match's opening has the screen to itself, as a duel's does.)
+		if (Duel.Step != EChaosImpactDuelStep::Opening)
+		{
+			PaintDuelScoreboard(ViewTop, OutDrawElements, BaseLayer + 1, *Match, Time);
+		}
+		const float Age = Match->GetDuelStepElapsed(Duel);
+		const auto Fade = [](const float T, const float Hold, const float Out) { return EaseOut(T / 0.12f) * (1.0f - FMath::Clamp((T - Hold) / Out, 0.0f, 1.0f)); };
+		if (Duel.Step == EChaosImpactDuelStep::Opening)
+		{
+			// A tournament's match opening, as a match opens: bars top and bottom, the round's name in the opening's own
+			// type, and how it is won under it.
+			FString RoundName;
+			for (const FChaosImpactTournamentArena& Arena : Match->TournamentArenas)
+			{
+				if (&Arena.Duel == View.Duel && Match->Tournament.Matches.IsValidIndex(Arena.Match))
+				{
+					// One match at a time: which of the round's matches this is (準決勝 第1試合); all at once: the round only.
+					const FChaosImpactTournamentMatch& Played = Match->Tournament.Matches[Arena.Match];
+					RoundName = Match->Tournament.GetRoundName(Played.Round);
+					// (Counted among the round's matches really played: a bye is no match.)
+					int32 Number = 1;
+					int32 InRound = 0;
+					for (const FChaosImpactTournamentMatch& Other : Match->Tournament.Matches)
+					{
+						if (Other.Round == Played.Round && !Other.bBye)
+						{
+							++InRound;
+							Number += Other.Slot < Played.Slot ? 1 : 0;
+						}
+					}
+					if (!Match->Tournament.IsSimultaneous() && InRound > 1)
+					{
+						RoundName += FString::Printf(TEXT(" 第%d試合"), Number);
+					}
+				}
+			}
+			const FVector2f PaneSize = View.Area.GetLocalSize();
+			const float Bars = EaseOut(Age / 0.4f) * (1.0f - FMath::Clamp((Age - (ChaosImpactTournament::OpeningSeconds - 0.5f)) / 0.5f, 0.0f, 1.0f));
+			const FPainter Frame{View.Area, OutDrawElements, BaseLayer + 8};
+			Frame.Box(0.0f, 0.0f, PaneSize.X, PaneSize.Y * 0.09f * Bars, Ink);
+			Frame.Box(0.0f, PaneSize.Y - PaneSize.Y * 0.09f * Bars, PaneSize.X, PaneSize.Y * 0.09f * Bars, Ink);
+			// Over the flyover, as a match's opening is (the camera then dives into the player).
+			const float In = EaseOut((Age - 0.3f) / 0.35f);
+			const float Out = FMath::Clamp((Age - (ChaosImpactMatch::FlyoverSeconds - 0.35f)) / 0.3f, 0.0f, 1.0f);
+			if (In > 0.0f && Out < 1.0f)
+			{
+				const float Alpha = In * (1.0f - Out);
+				const float Rise = (1.0f - In) * 16.0f;
+				const FPainter Words{ViewCenter, OutDrawElements, BaseLayer + 10, Alpha};
+				// (Each line fits across this player's part of the screen.)
+				const float Across = PaneSize.X / ViewScale - 80.0f;
+				const FString Goal = TEXT("相手を3回当てて倒せ！");
+				const FString Detail = FString::Printf(TEXT("%s ・ 1ラウンド%d秒 ・ %s"), *ChaosImpactMatch::DescribeRule(Match->Rules),
+					FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::GetDuelStageName());
+				Words.Text(RoundName, 0.0f, -172.0f + Rise, HudFit(RoundName, 76.0f, Across), Gold, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+				Words.Text(Goal, 0.0f, -78.0f + Rise, HudFit(Goal, 52.0f, Across), Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+				Words.Box(-150.0f * In, 14.0f + Rise, 300.0f * In, 2.0f, WithAlpha(Paper, 0.6f));
+				Words.Text(Detail, 0.0f, 28.0f + Rise, HudFit(Detail, 22.0f, Across, TEXT("Regular")), WithAlpha(Paper, 0.85f), ETextAlign::Center,
+					TEXT("Regular"), 2.0f, Ink);
+			}
+		}
+		else if (Duel.Step == EChaosImpactDuelStep::BallDraw)
+		{
+			PaintDuelBallSlot(ViewCenter, OutDrawElements, BaseLayer + 10, *Match, Time);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::RoundIntro && Age < 1.6f)
 		{
 			const bool bFinal = Duel.Round >= ChaosImpactMatch::DuelMaxRounds
 				|| (Duel.Wins[0] == ChaosImpactMatch::DuelRoundsToWin - 1 && Duel.Wins[1] == ChaosImpactMatch::DuelRoundsToWin - 1);
-			PaintCallout(bFinal ? FString(TEXT("FINAL ROUND")) : FString::Printf(TEXT("ROUND %d"), Duel.Round), 110.0f,
+			ViewCallout(bFinal ? FString(TEXT("FINAL ROUND")) : FString::Printf(TEXT("ROUND %d"), Duel.Round), 110.0f,
 				1.0f + 0.6f * FMath::Exp(-11.0f * Age), Fade(Age, 1.2f, 0.4f), bFinal ? Gold : Paper, BaseLayer + 12);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::Fight && Age < 0.9f)
 		{
-			PaintCallout(TEXT("FIGHT!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Age / 0.18f)),
+			ViewCallout(TEXT("FIGHT!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Age / 0.18f)),
 				1.0f - FMath::Clamp((Age - 0.55f) / 0.35f, 0.0f, 1.0f), Paper, BaseLayer + 12);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::SuddenDeath && Age < 2.0f)
 		{
 			const float Alpha = Fade(Age, 1.6f, 0.4f);
-			PaintCallout(TEXT("サドンデス！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age), Alpha, Paper, BaseLayer + 12);
-			FPainter{Center, OutDrawElements, BaseLayer + 16, Alpha}.Text(TEXT("先に当てたほうがラウンドを取る"), 0.0f, 86.0f, 30.0f, Gold,
+			ViewCallout(TEXT("サドンデス！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age), Alpha, Paper, BaseLayer + 12);
+			FPainter{ViewCenter, OutDrawElements, BaseLayer + 16, Alpha}.Text(TEXT("先に当てたほうがラウンドを取る"), 0.0f, 86.0f, 30.0f, Gold,
 				ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::RoundOver)
@@ -517,7 +620,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 				const TCHAR* Word = Duel.RoundEnd == EChaosImpactDuelEnd::Time ? TEXT("TIME!")
 					: Duel.RoundEnd == EChaosImpactDuelEnd::DoubleKnockout ? TEXT("DOUBLE K.O.")
 					: Duel.RoundEnd == EChaosImpactDuelEnd::Draw ? TEXT("TIME UP") : TEXT("K.O.!");
-				PaintCallout(Word, 140.0f, FMath::Lerp(1.9f, 1.0f, EaseOut(Age / 0.18f)), Fade(Age, 1.1f, 0.4f), Paper, BaseLayer + 12);
+				ViewCallout(Word, 140.0f, FMath::Lerp(1.9f, 1.0f, EaseOut(Age / 0.18f)), Fade(Age, 1.1f, 0.4f), Paper, BaseLayer + 12);
 			}
 			else if (Age >= 1.5f)
 			{
@@ -525,20 +628,32 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 				const float Local = Age - 1.5f;
 				const bool bDrawn = Duel.RoundWinner == INDEX_NONE;
 				const FLinearColor Color = bDrawn ? Paper : FMath::Lerp(DuelSideColor(Duel.RoundWinner), Paper, 0.2f);
-				PaintCallout(bDrawn ? FString(TEXT("ROUND DRAW")) : FString::Printf(TEXT("%s WIN"), *GetAnnouncerName(Duel.Sides[Duel.RoundWinner])),
+				ViewCallout(bDrawn ? FString(TEXT("ROUND DRAW")) : FString::Printf(TEXT("%s WIN"), *GetAnnouncerName(Duel.Sides[Duel.RoundWinner])),
 					96.0f, 1.0f + 0.5f * FMath::Exp(-10.0f * Local), Fade(Local, 1.5f, 0.35f), Color, BaseLayer + 12);
 			}
 		}
+		else if (Duel.Step == EChaosImpactDuelStep::Finished && (Duel.MatchWinner == 0 || Duel.MatchWinner == 1))
+		{
+			// A tournament's match decided (its arena shows it a moment before everyone goes back): who won it.
+			const int32 OwnSide = PaintingViewer ? Duel.SideOf(PaintingViewer->PlayerState) : INDEX_NONE;
+			const FString Word = OwnSide != INDEX_NONE ? FString(OwnSide == Duel.MatchWinner ? TEXT("YOU WIN!") : TEXT("YOU LOSE"))
+				: FString::Printf(TEXT("%s WIN!"), *GetAnnouncerName(Duel.Sides[Duel.MatchWinner]));
+			ViewCallout(Word, 124.0f, FMath::Lerp(1.8f, 1.0f, EaseOut(Age / 0.2f)), Fade(Age, 3.6f, 0.5f),
+				FMath::Lerp(DuelSideColor(Duel.MatchWinner), Paper, 0.2f), BaseLayer + 12);
+		}
 		// The last five seconds of a round, large in the middle.
-		const float RoundLeft = Match->GetDuelStepRemaining();
+		const float RoundLeft = Match->GetDuelStepRemaining(Duel);
 		if ((Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath) && RoundLeft > 0.0f && RoundLeft <= 5.0f
 			&& Age > 1.0f)
 		{
 			const int32 Seconds = FMath::CeilToInt(RoundLeft);
 			const float Local = static_cast<float>(Seconds) - RoundLeft;
-			PaintCallout(FString::FromInt(Seconds), 120.0f, 1.0f + 0.5f * FMath::Exp(-8.0f * Local), 0.7f * (1.0f - 0.6f * Local), Paper,
+			ViewCallout(FString::FromInt(Seconds), 120.0f, 1.0f + 0.5f * FMath::Exp(-8.0f * Local), 0.7f * (1.0f - 0.6f * Local), Paper,
 				BaseLayer + 12);
 		}
+		}
+		PaintingDuel = nullptr;
+		PaintingViewer = nullptr;
 		return BaseLayer + 18;
 	}
 
@@ -668,9 +783,10 @@ int32 UChaosImpactMatchAnnouncerWidget::GetDuelLeftSide(const AChaosImpactGameSt
 {
 	const UGameInstance* GameInstance = GetGameInstance();
 	const ULocalPlayer* Single = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
-	const APlayerController* Viewer = Single ? Single->GetPlayerController(GetWorld()) : GetOwningPlayer();
-	const bool bShared = !Single && GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
-	const int32 OwnSide = Viewer ? Match.Duel.SideOf(Viewer->PlayerState) : INDEX_NONE;
+	// A tournament's pane is its own player's alone.
+	const APlayerController* Viewer = PaintingViewer ? PaintingViewer : Single ? Single->GetPlayerController(GetWorld()) : GetOwningPlayer();
+	const bool bShared = !PaintingViewer && !Single && GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
+	const int32 OwnSide = Viewer ? (PaintingDuel ? *PaintingDuel : Match.Duel).SideOf(Viewer->PlayerState) : INDEX_NONE;
 	return !bShared && OwnSide == 1 ? 1 : 0;
 }
 
@@ -679,12 +795,13 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 {
 	using namespace ChaosImpactPaint;
 	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
-	const FChaosImpactDuelState& Duel = Match.Duel;
+	const FChaosImpactDuelState& Duel = PaintingDuel ? *PaintingDuel : Match.Duel;
 	const bool bLive = Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath;
 	const bool bSudden = Duel.Step == EChaosImpactDuelStep::SuddenDeath;
-	const float Remaining = Match.GetDuelStepRemaining();
+	const float Remaining = Match.GetDuelStepRemaining(Duel);
 	const bool bHurry = bLive && Remaining <= 10.0f;
 	const int32 Seconds = Duel.Step == EChaosImpactDuelStep::RoundIntro || Duel.Step == EChaosImpactDuelStep::BallDraw
+		|| Duel.Step == EChaosImpactDuelStep::Opening
 		? FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds)
 		: bLive ? FMath::CeilToInt(Remaining) : 0;
 
@@ -704,8 +821,8 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	const int32 LeftSide = GetDuelLeftSide(Match);
 	const UGameInstance* GameInstance = GetGameInstance();
 	const ULocalPlayer* Single = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
-	const APlayerController* Viewer = Single ? Single->GetPlayerController(GetWorld()) : GetOwningPlayer();
-	const bool bShared = !Single && GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
+	const APlayerController* Viewer = PaintingViewer ? PaintingViewer : Single ? Single->GetPlayerController(GetWorld()) : GetOwningPlayer();
+	const bool bShared = !PaintingViewer && !Single && GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
 	const int32 OwnSide = Viewer ? Duel.SideOf(Viewer->PlayerState) : INDEX_NONE;
 	for (int32 PlateIndex = 0; PlateIndex < 2; ++PlateIndex)
 	{
@@ -782,7 +899,7 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	}
 
 	// The special balls of this match, small, at the outer ends of the plates' feet (once the slot has shown them).
-	if (Duel.Step != EChaosImpactDuelStep::BallDraw && !Duel.BallPicks.IsEmpty())
+	if (Duel.Step != EChaosImpactDuelStep::BallDraw && Duel.Step != EChaosImpactDuelStep::Opening && !Duel.BallPicks.IsEmpty())
 	{
 		const FPainter Balls{TopCenter, OutDrawElements, BaseLayer + 4};
 		for (int32 Pick = 0; Pick < Duel.BallPicks.Num(); ++Pick)
@@ -814,9 +931,9 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelBallSlot(const FGeometry& Center
 {
 	using namespace ChaosImpactPaint;
 	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
-	const FChaosImpactDuelState& Duel = Match.Duel;
-	const float Age = Match.GetDuelStepElapsed();
-	const float Alpha = EaseOut(Age / 0.3f) * FMath::Clamp(Match.GetDuelStepRemaining() / 0.35f, 0.0f, 1.0f);
+	const FChaosImpactDuelState& Duel = PaintingDuel ? *PaintingDuel : Match.Duel;
+	const float Age = Match.GetDuelStepElapsed(Duel);
+	const float Alpha = EaseOut(Age / 0.3f) * FMath::Clamp(Match.GetDuelStepRemaining(Duel) / 0.35f, 0.0f, 1.0f);
 	if (Alpha <= 0.0f)
 	{
 		return;

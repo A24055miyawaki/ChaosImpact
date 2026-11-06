@@ -13,6 +13,8 @@ class AChaosImpactPlayerState;
 class AChaosImpactStageBase;
 class AChaosImpactSpectatorPawn;
 class AChaosImpactCrashGoal;
+class AChaosImpactTrainingArena;
+class AChaosImpactCPUController;
 enum class EChaosImpactOnlinePhase : uint8;
 enum class EChaosImpactDuelStep : uint8;
 enum class EChaosImpactDuelEnd : uint8;
@@ -92,6 +94,32 @@ public:
 	void NotifyDuelKnockout(APawn* Victim);
 	/** ランクマッチ, server: Victim was hit (in sudden death the first hit takes the round). */
 	void NotifyDuelHit(APawn* Victim);
+	// ---- トーナメント (ChaosImpactGameModeTournament.cpp) ----
+	/**
+	 * Starts the tournament the lobby decided (Rules.Tournament), with everyone in the room who plays and its CPUs; or,
+	 * People given (ローカルトーナメント 1試合ずつ), with those people instead (nobody's player yet).
+	 */
+	void StartTournament(const TArray<FChaosImpactTournamentEntrant>* People = nullptr);
+
+	// ---- ローカルトーナメント (ChaosImpactGameModeLocalTourney.cpp) ----
+	/** The level opened for it (?CILocalTournament=1): the registration (UChaosImpactLocalTourneySubsystem) is played. */
+	void BeginLocalTournament();
+	/** 1試合ずつ: a match called whose people have not taken their controllers yet (INDEX_NONE: none). */
+	int32 GetLocalSeatRequest() const;
+	/**
+	 * Its people took them: SideDevices per side, -1 the keyboard, a pad's input device id, or anything below for a
+	 * CPU. They become this machine's players for the match (one or two, split screen), and it begins.
+	 */
+	void SeatLocalTournamentMatch(int32 MatchIndex, const TArray<int32>& SideDevices);
+	/** A member's choice while not playing: practise, watch (a match, or any being played), or the bracket. */
+	void SetTournamentWait(APlayerController* Member, EChaosImpactTournamentWait Wait, int32 WatchMatch = INDEX_NONE);
+	/** The host's answer for two CPUs next (one match at a time): 0 watch it, 1 skip it, 2 skip every one. */
+	void AnswerTournamentCPUMatch(APlayerController* Member, int32 Choice);
+	/** The tournament is over (or given up by the host): everyone back to the lobby. */
+	void EndTournament();
+	/** A public tournament room: its start (server time); it starts then with two people or more. */
+	void ScheduleTournament(double StartsAt);
+
 	/** A matched room (ランダムマッチ / ランクマッチ): how long it waits for everyone matched before it starts anyway. */
 	static constexpr float MatchmadeWaitSeconds = 25.0f;
 	/** A matched room closes this long after its results began, whoever is still looking at them. */
@@ -101,7 +129,9 @@ public:
 	 * Pairs input devices with this machine's local players using the world URL
 	 * (CIPadDevice options). Online clients have no game mode and call this themselves.
 	 */
-	static void ApplyLocalControllerAssignments(UWorld* World, int32 DesiredPlayers, int32 KeyboardPlayerIndex);
+	/** PadDevices: the pads' input device ids in player order (else the level's CIPadDevice options). */
+	static void ApplyLocalControllerAssignments(UWorld* World, int32 DesiredPlayers, int32 KeyboardPlayerIndex,
+		const TArray<int32>* PadDevices = nullptr);
 
 protected:
 	virtual void BeginPlay() override;
@@ -147,6 +177,16 @@ private:
 	FVector RoomAnchor = FVector::ZeroVector;
 	bool bHasRoomAnchor = false;
 	int32 TrainingKeyboardPlayerIndex = 0;
+	/** ローカルトーナメント: the seats' devices (instead of the level's options) while its players change match by match. */
+	bool bUseLocalSeatDevices = false;
+	TArray<int32> LocalSeatPadDevices;
+	int32 LocalSeatKeyboard = 0;
+	int32 LocalSeatedMatch = INDEX_NONE;
+	FTimerHandle LocalTournamentTimer;
+	double LocalTournamentWaitSince = 0.0;
+	bool IsLocalSeatPending(int32 MatchIndex) const;
+	/** After a seated match: its players go back to being the one watching player. */
+	void UnseatLocalTournament();
 	int32 LiveDesiredPlayerCount = INDEX_NONE;
 	int32 LiveDesiredCPUCount = INDEX_NONE;
 	double LocalPlayerSetupStartedAt = 0.0;
@@ -261,13 +301,80 @@ private:
 	/** The pads put out normal balls and the duel's drawn kinds (only normal balls before the draw is shown). */
 	void ApplyDuelBallChances(bool bWithPicks);
 	/** A duellist left mid-match: the other one wins it. */
+public:
+	/** The duel is given to the other side (LeavingSide left, or surrendered). */
 	void ForfeitDuel(int32 LeavingSide);
+private:
 	float GetDuelRoundSeconds() const;
 	/** The pawn (alive or knocked out) of a duel side. */
 	APawn* GetDuelPawn(int32 Side) const;
 	FTimerHandle DuelTimer;
 	bool bDuelKnockoutCheckPending = false;
 	FChaosImpactMatchRules DevAutoLobbyRules;
+	/** Machines (and spectators) the auto lobby waits for. */
+	int32 DevAutoLobbyMachines = 2;
+
+	// ---- トーナメント (server) ----
+	void TickTournament();
+	/** The next round (byes and walk-overs decided at once). */
+	void StartTournamentRound();
+	/** Starts what can be started now: every ready match (at once), or the next one (one at a time). */
+	void ScheduleTournamentMatches();
+	/** Decides a match without it being played (a bye, a walk-over, two CPUs) and moves the bracket on. */
+	void DecideTournamentMatch(int32 MatchIndex, int32 WinnerSide, bool bForfeit, bool bBye);
+	/** Calls a match's players: an arena for it, the call shown, the players brought in after CallSeconds. */
+	void CallTournamentMatch(int32 MatchIndex);
+	void BeginTournamentMatch(int32 MatchIndex);
+	/** One arena's duel, step by step (as the room's own duel, by server time). */
+	void UpdateTournamentArena(int32 Arena);
+	void SetArenaStep(int32 Arena, EChaosImpactDuelStep Step, float Seconds);
+	void StartArenaRound(int32 Arena, int32 Round);
+	void PlaceArenaDuellists(int32 Arena);
+	void EndArenaRound(int32 Arena, int32 WinnerSide, EChaosImpactDuelEnd How);
+	void EvaluateArenaKnockouts(int32 Arena);
+	void FinishTournamentMatch(int32 MatchIndex);
+	/** The match's players go back to what they chose (practice, watching), its CPUs leave, the arena is cleared. */
+	void ReleaseTournamentArena(int32 Arena);
+	/** A free arena (one is made, beside the others, when none is). */
+	int32 AcquireTournamentArena();
+	void ClearArenaBalls(int32 Arena);
+	void ApplyArenaBallChances(int32 Arena, bool bWithPicks);
+	APawn* GetArenaPawn(int32 Arena, int32 Side) const;
+	/** An entrant's pawn for their match: a person's own character (made if they were watching), a new CPU. */
+	APawn* BringEntrantToArena(int32 Entrant, int32 Arena, int32 Side);
+	/** Where a member goes when not playing: their machine's practice area, or a spectator camera over an arena. */
+	void PlaceTournamentMember(APlayerController* Member);
+	void PlaceInPractice(APlayerController* Member);
+	void PlaceAsTournamentSpectator(APlayerController* Member, int32 Arena);
+	/** The practice area of a member's machine (made the first time). */
+	FVector GetPracticeCenter(const AChaosImpactPlayerState* Member);
+	/** The arena a spectator should look at: the match they asked for if it is being played, else any being played. */
+	int32 PickArenaToWatch(int32 WantedMatch) const;
+	/** An entrant left the room (or lost the connection): their match being played and all still to come are lost. */
+	void ForfeitTournamentEntrant(int32 Entrant);
+	void ClearTournamentWorld();
+	FTimerHandle TournamentTimer;
+	FTimerHandle TournamentScheduleTimer;
+	FRandomStream TournamentRandom;
+	double TournamentRoundBreakUntil = 0.0;
+	double TournamentAskUntil = 0.0;
+	/** Per arena: its stage, its ball pads, its CPUs, a knock-out to judge. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AChaosImpactStageBase>> TournamentStages;
+	TArray<TArray<TWeakObjectPtr<AChaosImpactBallSpawner>>> TournamentArenaSpawners;
+	TArray<TArray<TWeakObjectPtr<AController>>> TournamentArenaCPUs;
+	TArray<bool> TournamentKnockoutPending;
+	/** Per arena: when its finished match's banner is over (0: not finished). */
+	TArray<double> TournamentArenaReleaseAt;
+	/** Two CPUs being decided in the background (simultaneous rounds): match -> when. */
+	TMap<int32, double> TournamentCPUDecideAt;
+	/** Each machine's practice area (by its token), and its ball pads. */
+	TMap<FString, TWeakObjectPtr<AChaosImpactTrainingArena>> TournamentPractice;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AActor>> TournamentPracticeActors;
+	FVector TournamentArenaOrigin = FVector::ZeroVector;
+	/** A public tournament's places for people (it takes no more before it starts). */
+	int32 PublicTourneyMaxPlayers = 8;
 	/** Development: -CIReadyWaitSeconds= shortens the wait before a decided match starts by itself. */
 	float ReadyWaitSecondsOverride = 0.0f;
 

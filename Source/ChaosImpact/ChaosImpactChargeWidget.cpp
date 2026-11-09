@@ -1557,7 +1557,9 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 		return;
 	}
 	if (PC->IsUsingGamepad() || !FSlateApplication::IsInitialized()) { return; }
-	const FVector2D Pointer = Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+	// The cursor is in desktop coordinates; a paint geometry is in the window's own, so converting with it would be off
+	// by where the window sits. The cached (tick-space) geometry is the desktop one, and the local point is the same.
+	const FVector2D Pointer = GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
 	const bool bEasy = ChaosImpactSettings::GetPlayerControlScheme(PC) != EChaosImpactControlScheme::Normal;
 	const int32 Hover = GetGameplayPointerHit();
 	// The pointer and its marks above the buttons (each a three-layer shard with its label on it).
@@ -1593,7 +1595,7 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 		if (PC->ProjectWorldLocationToScreen(Character->GetClickMoveGoal()
 			- FVector::UpVector * (Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() - 8.0f), ViewportPosition))
 		{
-			const FVector2D At = Geometry.AbsoluteToLocal(UWidgetLayoutLibrary::GetViewportWidgetGeometry(this).LocalToAbsolute(
+			const FVector2D At = GetCachedGeometry().AbsoluteToLocal(UWidgetLayoutLibrary::GetViewportWidgetGeometry(this).LocalToAbsolute(
 				ViewportPosition / UWidgetLayoutLibrary::GetViewportScale(this)));
 			Paint.Ring(At, 14.0f * S, Ink, 6.0f * S);
 			Paint.Ring(At, 14.0f * S, Ice, 2.5f * S);
@@ -2333,7 +2335,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		const FGeometry Viewport = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this);
 		const FVector2D ViewportSize = Viewport.GetLocalSize();
 		const float ScoreScale = FMath::Clamp(static_cast<float>(FMath::Min(ViewportSize.X / 1600., ViewportSize.Y / 900.)), .42f, 1.4f);
-		MarkerTopInset = FMath::Clamp(static_cast<float>(AllottedGeometry.AbsoluteToLocal(
+		MarkerTopInset = FMath::Clamp(static_cast<float>(GetCachedGeometry().AbsoluteToLocal(
 			Viewport.LocalToAbsolute(FVector2D(ViewportSize.X * .5, (Match->IsBattleRoyale() ? 190.f : 155.f) * ScoreScale))).Y), 0.f, static_cast<float>(Center.Y * .75));
 	}
 

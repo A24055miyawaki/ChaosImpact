@@ -304,7 +304,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
                 Draw=Project(End,At); At.X=Size.X*.5; At.Y=FMath::Clamp(At.Y,24.0,Size.Y-24.0);
             }
             else if(!PC->IsUsingGamepad() && FSlateApplication::IsInitialized())
-            { At=Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos()); Draw=FBox2D(FVector2D::ZeroVector,Size).IsInside(At); }
+            { At=GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos()); Draw=FBox2D(FVector2D::ZeroVector,Size).IsInside(At); }
             if(Draw)
             {
                 WorldPaint.Ring(At,8*Scale,Ink,5*Scale); WorldPaint.Ring(At,8*Scale,Paper,2*Scale);

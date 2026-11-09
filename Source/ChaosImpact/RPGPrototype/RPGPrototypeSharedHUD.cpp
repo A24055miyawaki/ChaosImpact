@@ -137,7 +137,7 @@ void URPGPrototypeHUD::PaintSharedHUD(const FGeometry& Geometry,FSlateWindowElem
         const auto* Other=Cast<ARPGPrototypeCharacter>(It->Get()->GetPawn()); if(!Other || Other->IsEliminated()) { continue; }
         if(const auto* Input=Cast<AChaosImpactPlayerController>(It->Get());Input && !Input->IsUsingGamepad() && !Other->IsBagOpen() && FSlateApplication::IsInitialized())
         {
-            const FVector2D SharedCursorAt=Geometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+            const FVector2D SharedCursorAt=GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
             WorldPaint.Ring(SharedCursorAt,8*Scale,Ink,5*Scale); WorldPaint.Ring(SharedCursorAt,8*Scale,Paper,2*Scale);
             WorldPaint.Line(SharedCursorAt-FVector2D(13*Scale,0),SharedCursorAt+FVector2D(13*Scale,0),Paper,2*Scale);
             WorldPaint.Line(SharedCursorAt-FVector2D(0,13*Scale),SharedCursorAt+FVector2D(0,13*Scale),Paper,2*Scale);

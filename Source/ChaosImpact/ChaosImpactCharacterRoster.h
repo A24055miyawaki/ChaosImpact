@@ -42,6 +42,10 @@ struct FChaosImpactCharacterInfo
 	/** Short character bio shown under the character's name on the character select screen. */
 	const TCHAR* DescriptionLine1 = TEXT("");
 	const TCHAR* DescriptionLine2 = TEXT("");
+	/** Further lines for a longer bio; the select screen sizes them to the room it has. */
+	const TCHAR* DescriptionLine3 = TEXT("");
+	const TCHAR* DescriptionLine4 = TEXT("");
+	const TCHAR* DescriptionLine5 = TEXT("");
 };
 
 namespace ChaosImpactRoster
@@ -78,8 +82,10 @@ namespace ChaosImpactRoster
 			TEXT("西暦1923生産のアンティーク物。"), TEXT("広島のファン。")},
 		{TEXT("究極電子生命体 セル"), TEXT("/Game/ChaosImpact/Cell"), TEXT("Cell"), EChaosImpactModelKind::Skinned, false,
 			TEXT("「ボク、セル！」が口癖の電子体。"), TEXT("データを取り込むことで際限なく強くなれる。")},
-		{TEXT("人々の子守歌"), TEXT("/Game/ChaosImpact/Cat"), TEXT("Cat"), EChaosImpactModelKind::Skinned, false,
-			TEXT("黒目に見えるところは空洞。ハイライトはすべて目。"), TEXT("将来の夢は、この世すべての人間を救済すること。")},
+		{TEXT("虚瞳救世衆"), TEXT("/Game/ChaosImpact/Cat"), TEXT("Cat"), EChaosImpactModelKind::Skinned, false,
+			TEXT("人類を救済することを使命とする異形の種族。"), TEXT("頭部にある黒い穴はただの「空洞」であり、"),
+			TEXT("その中に揺らめく無数の光こそが彼らの「真の瞳」である。"), TEXT("愛くるしい外見は、"),
+			TEXT("人間を警戒させないために模した仮の姿に過ぎない。")},
 		{TEXT("バードストライカー"), TEXT("/Game/ChaosImpact/Kawaii"), TEXT("Kawaii"), EChaosImpactModelKind::Authored, false,
 			TEXT("かつて名を馳せたが、ドッチ・ボール大統領に"), TEXT("クチバシを縮められ引退を決意。油淋鶏が好き。")},
 	};

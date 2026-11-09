@@ -10,6 +10,8 @@
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSettings.h"
 #include "Engine/GameInstance.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Engine/LocalPlayer.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -183,13 +185,16 @@ void UChaosImpactCharacterSelect::Open(AChaosImpactPlayerController* InControlle
 	PortraitPendingSeconds.Init(0.0f, ChaosImpactRoster::Num());
 	PortraitsMade = 0;
 
-	const int32 PlayerCount = FMath::Clamp(InController->GetRequestedLocalPlayerCount(), 1, 4);
+	int32 DevPlayers = 0, DevCharacter = INDEX_NONE;
+	FParse::Value(FCommandLine::Get(), TEXT("CIDevSelectPlayers="), DevPlayers);
+	FParse::Value(FCommandLine::Get(), TEXT("CIDevSelectCharacter="), DevCharacter);
+	const int32 PlayerCount = FMath::Clamp(DevPlayers > 0 ? DevPlayers : InController->GetRequestedLocalPlayerCount(), 1, 4);
 	Slots.SetNum(PlayerCount);
 	for (int32 Player = 0; Player < PlayerCount; ++Player)
 	{
 		FSlot& Slot = Slots[Player];
 		const FChaosImpactLoadout Saved = Loadouts ? Loadouts->GetLoadout(Player) : FChaosImpactLoadout();
-		Slot.Character = ChaosImpactRoster::ClampIndex(Saved.Character);
+		Slot.Character = ChaosImpactRoster::ClampIndex(DevCharacter >= 0 ? DevCharacter : Saved.Character);
 		Slot.Cursor = Slot.Character;
 		// Keep the last colour unless an earlier player already wears it on the same character.
 		Slot.Colour = FindFreeColour(Player, Slot.Character,
@@ -1102,7 +1107,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	const float AreaTop = 58.0f;
 	const bool bTall = !bWide && W > 400.0f;
 	// Tall windows keep the bottom for the name, character description, and the hint or colour row.
-	const float AreaHeight = H - AreaTop - (bWide ? 14.0f : bTall ? 210.0f : 114.0f);
+	// (A long bio in a small window takes some of the picture's height, so it stays readable.)
+	const float LongBioLift = !bWide && !bTall && !bOnLockedTile && *ChaosImpactRoster::Get(Slot.Character).DescriptionLine3 ? 34.0f : 0.0f;
+	const float AreaHeight = H - AreaTop - (bWide ? 14.0f : bTall ? 210.0f : 114.0f + LongBioLift);
 	float PictureW = AreaHeight * 0.75f;
 	float PictureH = AreaHeight;
 	float VisibleTop = 0.0f;
@@ -1139,15 +1146,47 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	const FChaosImpactCharacterInfo& Info = ChaosImpactRoster::Get(Slot.Character);
 	const bool bBigWindow = W > 400.0f;
 	const float NameX = bWide ? PictureX + PictureW + 26.0f : W * 0.5f;
-	const float NameY = bWide ? 68.0f : bBigWindow ? H - 202.0f : H - 110.0f;
+	const float NameY = bWide ? 68.0f : bBigWindow ? H - 202.0f : H - 110.0f - LongBioLift;
 	const ETextAlign NameAlign = bWide ? ETextAlign::Left : ETextAlign::Center;
 	const bool bHasDesc1 = !bOnLockedTile && Info.DescriptionLine1 && *Info.DescriptionLine1;
 	const bool bHasDesc2 = !bOnLockedTile && Info.DescriptionLine2 && *Info.DescriptionLine2;
+	// A bio of more than two lines takes the room down to whatever is below it, all its lines at one size that fits.
+	TArray<FString> LongBio;
+	if (!bOnLockedTile && *Info.DescriptionLine3)
+	{
+		for (const TCHAR* Line : {Info.DescriptionLine1, Info.DescriptionLine2, Info.DescriptionLine3, Info.DescriptionLine4, Info.DescriptionLine5})
+		{
+			if (*Line) { LongBio.Add(Line); }
+		}
+	}
+	const bool bRoomy = bWide || bBigWindow;
+	const float BioTop = NameY + (bRoomy ? 48.0f : 30.0f);
+	float BioStep = bRoomy ? 21.0f : 16.0f;
+	float BioSize = bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f;
+	const bool bPill = Slot.Step != EStep::Character && PresetCount(Slot.Character) > 0;
+	if (bPill && !bRoomy)
+	{
+		// No room for it all over the custom colour pill: the bio's first two lines, as any other character's.
+		LongBio.Reset();
+	}
+	if (!LongBio.IsEmpty())
+	{
+		const float Floor = bPill ? H - (bRoomy ? 76.0f : 70.0f)
+			: Slot.Step != EStep::Character ? H - 16.0f
+			: bWide ? H - 56.0f : bBigWindow ? H - 54.0f : H - 42.0f;
+		BioStep = FMath::Min(BioStep, (Floor - BioTop) / LongBio.Num());
+		BioSize = FMath::Min(BioSize, BioStep * 0.76f);
+		const float BioWidth = bWide ? W - NameX - 28.0f : bBigWindow ? W - 76.0f : W - 40.0f;
+		for (const FString& Line : LongBio)
+		{
+			BioSize = FMath::Min(BioSize, ChaosImpactPaint::HudFit(Line, BioSize, BioWidth, TEXT("Bold")));
+		}
+	}
 	if (bBigWindow || bWide)
 	{
 		const float BannerX = bWide ? NameX - 10.0f : 28.0f;
 		const float BannerW = bWide ? W - BannerX - 18.0f : W - 56.0f;
-		const float BannerH = bHasDesc1 ? (bHasDesc2 ? 98.0f : 76.0f) : 50.0f;
+		const float BannerH = !LongBio.IsEmpty() ? 48.0f + LongBio.Num() * BioStep + 6.0f : bHasDesc1 ? (bHasDesc2 ? 98.0f : 76.0f) : 50.0f;
 		RoundBox(Back, BannerX, NameY - 4.0f, BannerW, BannerH, 14.0f, FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
 		C.Box(BannerX + 10.0f, NameY + 42.0f, BannerW - 20.0f, 2.5f, WithAlpha(Accent, 0.75f));
 		C.Text(bOnLockedTile ? FString(TEXT("NO.??")) : FString::Printf(TEXT("FIGHTER NO.%02d"), Slot.Character + 1),
@@ -1155,14 +1194,19 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	}
 	else
 	{
-		RoundBox(Back, 10.0f, NameY - 2.0f, W - 20.0f, bHasDesc1 ? 70.0f : 32.0f, 10.0f, FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
+		RoundBox(Back, 10.0f, NameY - 2.0f, W - 20.0f, !LongBio.IsEmpty() ? 30.0f + LongBio.Num() * BioStep + 6.0f : bHasDesc1 ? 72.0f : 32.0f, 10.0f,
+			FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
 	}
 	C.Text(bOnLockedTile ? FString(TEXT("？？？")) : FString(Info.Name), NameX, NameY, bWide || bBigWindow ? 32.0f : 20.0f,
 		bOnLockedTile ? Muted : Paper, NameAlign, TEXT("Black"), 2.0f, Ink);
-	if (bHasDesc1)
+	for (int32 Line = 0; Line < LongBio.Num(); ++Line)
+	{
+		C.Text(LongBio[Line], NameX, BioTop + Line * BioStep, BioSize, FMath::Lerp(Paper, Muted, 0.2f), NameAlign, TEXT("Bold"), 1.0f, Ink);
+	}
+	if (bHasDesc1 && LongBio.IsEmpty())
 	{
 		const float DescFontSize = bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f;
-		const float DescY1 = NameY + (bWide || bBigWindow ? 48.0f : 26.0f);
+		const float DescY1 = NameY + (bWide || bBigWindow ? 48.0f : 30.0f);
 		const float DescY2 = DescY1 + (bWide || bBigWindow ? 21.0f : 16.0f);
 		const FLinearColor DescCol = FMath::Lerp(Paper, Muted, 0.2f);
 		C.Text(Info.DescriptionLine1, NameX, DescY1, DescFontSize, DescCol, NameAlign, TEXT("Bold"), 1.0f, Ink);

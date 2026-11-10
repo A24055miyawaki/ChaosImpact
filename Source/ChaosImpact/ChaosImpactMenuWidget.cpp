@@ -4455,6 +4455,35 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	{
 		PaintEnterWipe(DesignGeometry, OutDrawElements, BaseLayer + 6, T);
 	}
+	if (SecretChoice != INDEX_NONE)
+	{
+		namespace CP = ChaosImpactPaint;
+		const float In = EaseOut(static_cast<float>(FPlatformTime::Seconds() - SecretChoiceAt) / 0.25f);
+		const CP::FPainter Shade{AllottedGeometry, OutDrawElements, BaseLayer + 8, In};
+		Shade.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, FLinearColor(0.0f, 0.005f, 0.02f, 0.82f));
+		const CP::FPainter Card{DesignGeometry, OutDrawElements, BaseLayer + 9, In}, Word{DesignGeometry, OutDrawElements, BaseLayer + 10, In};
+		CP::HudText3D(Word, TEXT("どちらで遊ぶ？"), 800.0f, 214.0f, 54.0f, CP::Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
+		const TCHAR* const Names[] = {TEXT("RPG"), TEXT("バトルロイヤル")};
+		const TCHAR* const Notes[] = {TEXT("冒険と戦いの試作版"), TEXT("60人・ボールで最後の1チームへ")};
+		const FLinearColor Tints[] = {CP::Ice, CP::Fire};
+		for (int32 Index = 0; Index < 2; ++Index)
+		{
+			const FBox2D R = SecretChoiceRect(Index);
+			const float X = static_cast<float>(R.Min.X), Y = static_cast<float>(R.Min.Y), W = static_cast<float>(R.GetSize().X), H = static_cast<float>(R.GetSize().Y);
+			const bool bOn = SecretChoice == Index;
+			FLinearColor Deep = Tints[Index] * 0.25f;
+			Deep.A = 0.97f;
+			CP::HudPoly(Card, {FVector2D(X, Y), FVector2D(X + W, Y), FVector2D(X + W, Y + H), FVector2D(X, Y + H)},
+				bOn ? CP::MakeFill(Tints[Index] * FLinearColor(0.7f, 0.7f, 0.7f, 1.0f), Deep) : CP::MakeFill(FLinearColor(0.05f, 0.07f, 0.13f, 0.96f), FLinearColor(0.01f, 0.014f, 0.03f, 0.96f)));
+			Word.Box(X, Y, W, 6.0f, Tints[Index]);
+			if (bOn) { Word.Outline(X, Y, W, H, CP::Gold, 3.0f); }
+			Word.Text(Names[Index], X + W * 0.5f, Y + 92.0f, CP::HudFit(Names[Index], 50.0f, W - 40.0f, TEXT("Black")), CP::Paper, CP::ETextAlign::Center, TEXT("Black"), 2.0f, CP::Ink);
+			Word.Text(Notes[Index], X + W * 0.5f, Y + 176.0f, CP::HudFit(Notes[Index], 22.0f, W - 40.0f, TEXT("Bold")), CP::WithAlpha(CP::Paper, 0.85f), CP::ETextAlign::Center, TEXT("Bold"));
+		}
+		const FString Hint = TEXT("← →：えらぶ　　決定：はじめる　　戻る：閉じる");
+		Word.Text(Hint, 800.0f, 660.0f, CP::HudFit(Hint, 20.0f, 1000.0f, TEXT("Bold")), CP::WithAlpha(CP::Paper, 0.7f), CP::ETextAlign::Center, TEXT("Bold"));
+		return BaseLayer + 11;
+	}
 	return BaseLayer + 7;
 }
 
@@ -5623,9 +5652,37 @@ void UChaosImpactMenuWidget::GoBack()
 	}
 }
 
+FBox2D UChaosImpactMenuWidget::SecretChoiceRect(const int32 Index) const
+{
+	return FBox2D(FVector2D(300.0 + Index * 520.0, 330.0), FVector2D(780.0 + Index * 520.0, 620.0));
+}
+
+void UChaosImpactMenuWidget::ConfirmSecretChoice()
+{
+	AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const int32 Choice = SecretChoice;
+	SecretChoice = INDEX_NONE;
+	if (Controller)
+	{
+		if (Choice == 1) { Controller->OpenBattleRoyaleIsland(); }
+		else { Controller->OpenExplorationMap(TEXT("?CIRPGTitle=1")); }
+	}
+}
+
 FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
 	const FKey Key = ChaosImpactSettings::ToMenuKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
+	if (SecretChoice != INDEX_NONE)
+	{
+		if (!InKeyEvent.IsRepeat())
+		{
+			if (Key == EKeys::Left || Key == EKeys::Right || Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right
+				|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Down) { SecretChoice = 1 - SecretChoice; }
+			else if (Key == EKeys::Enter || Key == EKeys::SpaceBar || Key == EKeys::Gamepad_FaceButton_Bottom) { ConfirmSecretChoice(); }
+			else if (Key == EKeys::Escape || Key == EKeys::BackSpace || Key == EKeys::Gamepad_FaceButton_Right) { SecretChoice = INDEX_NONE; }
+		}
+		return FReply::Handled();
+	}
 	// The exploration map's hidden way in (OpenWorld/, removable): on the title, up up down down left right left right B A
 	// (the arrow keys or the pad's D-pad, then B and A).
 	if (Screen == EChaosImpactScreen::Title && !InKeyEvent.IsRepeat())
@@ -5642,6 +5699,12 @@ FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
 		if (SecretStep == UE_ARRAY_COUNT(Steps))
 		{
 			SecretStep = 0;
+			if (AChaosImpactPlayerController::HasBattleRoyaleIsland())
+			{
+				SecretChoice = 0;
+				SecretChoiceAt = FPlatformTime::Seconds();
+				return FReply::Handled();
+			}
 			if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 				Controller && Controller->OpenExplorationMap(TEXT("?CIRPGTitle=1")))
 			{
@@ -5817,6 +5880,12 @@ FReply UChaosImpactMenuWidget::NativeOnMouseWheel(const FGeometry& InGeometry, c
 
 FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (SecretChoice != INDEX_NONE)
+	{
+		const FVector2D At = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+		for (int32 Index = 0; Index < 2; ++Index) { if (SecretChoiceRect(Index).IsInside(At)) { SecretChoice = Index; } }
+		return FReply::Handled();
+	}
 	if (IsSettingsActive())
 	{
 		SettingsScreen->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
@@ -5854,6 +5923,16 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (SecretChoice != INDEX_NONE)
+	{
+		const FVector2D At = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+		for (int32 Index = 0; Index < 2; ++Index)
+		{
+			if (SecretChoiceRect(Index).IsInside(At)) { SecretChoice = Index; ConfirmSecretChoice(); return FReply::Handled(); }
+		}
+		SecretChoice = INDEX_NONE;
+		return FReply::Handled();
+	}
 	if (IsSettingsActive())
 	{
 		SettingsScreen->HandleMouseDown(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),

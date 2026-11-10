@@ -94,6 +94,11 @@ private:
 	FString PauseConfirm;
 	/** The rules screen's list of every kind of match (opened from its ルール row). */
 	bool bModePicker = false;
+	/** The title's hidden command, when the battle royale is installed: a card choosing it or the RPG (0 RPG, 1 battle royale; -1 closed). */
+	int32 SecretChoice = INDEX_NONE;
+	double SecretChoiceAt = 0.0;
+	void ConfirmSecretChoice();
+	FBox2D SecretChoiceRect(int32 Index) const;
 	double ModePickerAt = 0.0;
 	void OpenModePicker(bool bOpen);
 	double PauseConfirmAt = 0.0;

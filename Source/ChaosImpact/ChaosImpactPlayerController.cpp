@@ -4930,6 +4930,24 @@ void AChaosImpactPlayerController::PlaySoloClearFireworks()
 	}
 }
 
+bool AChaosImpactPlayerController::HasBattleRoyaleIsland()
+{
+	return FPackageName::DoesPackageExist(TEXT("/Game/ChaosImpact/BattleRoyale/Lvl_BRIsland"));
+}
+
+bool AChaosImpactPlayerController::OpenBattleRoyaleIsland()
+{
+	if (bTravelPending || !HasBattleRoyaleIsland())
+	{
+		return false;
+	}
+	bTravelPending = true;
+	SetPause(false);
+	bIntroFullScreen = false;
+	UGameplayStatics::OpenLevel(this, FName(TEXT("/Game/ChaosImpact/BattleRoyale/Lvl_BRIsland")), true, TEXT("CIOpenWorld=1?CITargets=0?CICPUCount=0"));
+	return true;
+}
+
 bool AChaosImpactPlayerController::OpenExplorationMap(const FString& ExtraOptions)
 {
 	const TCHAR* Map = TEXT("/Game/ChaosImpact/OpenWorld/Lvl_OpenWorld");

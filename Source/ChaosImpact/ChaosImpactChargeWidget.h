@@ -8,6 +8,7 @@
 #include "ChaosImpactChargeWidget.generated.h"
 
 class APlayerState;
+enum class EChaosImpactBallType : uint8;
 class AChaosImpactCharacter;
 class UProgressBar;
 class UTextBlock;
@@ -28,6 +29,9 @@ class UChaosImpactChargeWidget : public UUserWidget
 public:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+	/** One carried ball, shaded and marked by its type, as the game shows it everywhere. Radius is in Paint's own units. */
+	static void PaintBallIcon(const ChaosImpactPaint::FPainter& Paint, const FVector2D& Center, float Radius, bool bFilled,
+		EChaosImpactBallType Type, float Growth, float Time);
 	void SetChargeAlpha(float ChargeAlpha);
 	void SetCharging(bool bCharging);
 	/** Only used to detect damage for the screen-edge hit flash. */
@@ -48,6 +52,8 @@ public:
 	void PaintGameplayPointer(const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer) const;
 	/** A spectator's HUD: no HP or ball stock, a 観戦中 bar, and the standings seen from the followed player. */
 	void SetSpectatorView(bool bSpectator) { bSpectatorView = bSpectator; }
+	/** A mode with its own HUD (the removable battle royale) turns this whole HUD off: nothing here draws or takes the pointer. */
+	void SetReplacedByOwnHud(bool bOff) { bReplacedByOwnHud = bOff; }
 	/** Smoke over this player's view, 0-1 (a smoke ball caught them). */
 	void SetBlindAmount(float Amount);
 	/** How far each carried snowball has grown (0-1), shown on its icon. */
@@ -171,6 +177,7 @@ private:
 	double StaminaSpentAt = -100.0;
 	/** Hidden with the rest of the gameplay HUD outside a VS match's play phase. */
 	bool bVitalsHidden = false;
+	bool bReplacedByOwnHud = false;
 	bool bSpectatorView = false;
 
 	float BlindAmount = 0.0f;

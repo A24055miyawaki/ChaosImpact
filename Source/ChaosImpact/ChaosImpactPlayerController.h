@@ -445,6 +445,9 @@ public:
 
 	/** The exploration map (OpenWorld/, an experiment that can be removed): its hidden way in from the title. */
 	bool OpenExplorationMap(const FString& ExtraOptions = FString());
+	/** The removable battle royale (BattleRoyale/): whether its level is here, and going to it. Nothing else in the core knows about it. */
+	static bool HasBattleRoyaleIsland();
+	bool OpenBattleRoyaleIsland();
 
 	/** A choice from the world map's pause menu (its Detail); false when it is not one. */
 	bool HandleWorldMapPauseChoice(const FString& Choice);

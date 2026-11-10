@@ -20,4 +20,29 @@ namespace ChaosImpactPlayerMarkerLayout
 		}
 		return Center + Direction * Reach;
 	}
+
+	/**
+	 * EdgeTip, then drawn in along the same ray until the marker (a box HalfExtent round the point Back behind the tip)
+	 * is clear of every HUD area in Keep: the direction stays true, the arrow is never under the HUD.
+	 */
+	inline FVector2D EdgeTipClear(const FVector2D& Size, const FVector2D& Direction, const float Scale, const float TopInset,
+		const TConstArrayView<FBox2D> Keep, const FVector2D& HalfExtent, const float Back)
+	{
+		const FVector2D Center = Size * .5;
+		const FVector2D Edge = EdgeTip(Size, Direction, Scale, TopInset);
+		double Reach = (Edge - Center).Size();
+		const double Least = FMath::Min(Reach, FMath::Max(HalfExtent.X, HalfExtent.Y) * 2.0 + Back);
+		for (; Reach > Least; Reach -= 6.0)
+		{
+			const FVector2D Body = Center + Direction * (Reach - Back);
+			const FBox2D Mark(Body - HalfExtent, Body + HalfExtent);
+			bool bClear = true;
+			for (const FBox2D& Box : Keep)
+			{
+				if (Box.bIsValid && Box.Intersect(Mark)) { bClear = false; break; }
+			}
+			if (bClear) { break; }
+		}
+		return Center + Direction * FMath::Max(Reach, Least);
+	}
 }

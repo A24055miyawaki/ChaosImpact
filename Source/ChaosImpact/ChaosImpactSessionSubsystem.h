@@ -93,6 +93,8 @@ struct FChaosImpactRoomCarryMember
 {
 	int32 JoinOrder = 0;
 	bool bSpectating = false;
+	/** The team picked in the lobby, carried to the match's level (online teams are chosen in the lobby). */
+	int32 TeamIndex = INDEX_NONE;
 };
 
 /**

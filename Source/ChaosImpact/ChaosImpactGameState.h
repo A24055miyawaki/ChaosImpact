@@ -190,6 +190,8 @@ public:
 	/** The second player on a machine; it shares the first player's connection. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	bool bSecondOfMachine = false;
+	/** A second player on a machine who chose a name of their own (host only; otherwise they go by the first's, with (2)). */
+	bool bOwnName = false;
 
 	/** Watching through a spectator camera: not a competitor or a room member for the match. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")

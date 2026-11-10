@@ -115,6 +115,11 @@ void AChaosImpactBall::BeginPlay()
 	{
 		CollisionSphere->IgnoreActorWhenMoving(OwningActor, true);
 	}
+	if (HasAuthority() && bIsPickup)
+	{
+		// A new ball out of a pad: the host and CPUs take it no sooner than the farthest player sees it.
+		ArmFairSight();
+	}
 	if (!HasAuthority())
 	{
 		// A client copy is purely visual: no local physics, projectile motion or hits.
@@ -867,7 +872,8 @@ void AChaosImpactBall::TryClaimLocalPickup()
 	if (IsA<AChaosImpactBuddyBall>()) { return; }
 	const bool bPickupState = NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Hover)
 		|| NetState.Mode == static_cast<uint8>(EChaosImpactBallNetMode::Rolling);
-	if (bClientPickupClaimed || !bPickupState || !GetWorld()
+	// (Hidden by the server: someone has taken it.)
+	if (bClientPickupClaimed || !bPickupState || !GetWorld() || IsHidden()
 		|| GetWorld()->GetTimeSeconds() < ClientPickupRetryAt)
 	{
 		return;
@@ -929,14 +935,133 @@ void AChaosImpactBall::CancelLocalPickupClaim()
 
 bool AChaosImpactBall::ConsumePickup(AChaosImpactCharacter* Collector)
 {
+	return ConsumePickupAt(Collector, GetServerNow());
+}
+
+bool AChaosImpactBall::ConsumePickupAt(AChaosImpactCharacter* Collector, const double TouchTime)
+{
 	if (!HasAuthority() || bCosmeticPrediction || !IsPickupAvailable() || bPickupConsumed
 		|| !IsValid(Collector) || !Collector->TryPickupBall(this))
 	{
 		return false;
 	}
 	bPickupConsumed = true;
+	// Online, kept a moment out of sight and reach: a touch from a screen further away that came earlier may still
+	// arrive (TakeOverPickup). (Teammates carried as balls are handled by their own class.)
+	if (GetNetMode() == NM_ListenServer && !IsA<AChaosImpactBuddyBall>())
+	{
+		TakenBy = Collector;
+		TakenTouchTime = TouchTime;
+		TakenAt = GetServerNow();
+		TakenCountAfter = Collector->GetCarriedBallCount();
+		TakenTypesAfter = Collector->GetCarriedBallTypesPacked();
+		SetActorHiddenInGame(true);
+		SetActorEnableCollision(false);
+		ForceNetUpdate();
+		SetLifeSpan(static_cast<float>(FairTouchReachSeconds) + 0.08f);
+#if !UE_BUILD_SHIPPING
+		// Development (-CIDevFairTakeOver): the first few balls the host's own player takes are claimed by a remote
+		// player as touched 30 ms earlier, a moment later, to show the take-over working.
+		static int32 DevTakeOvers = 0;
+		if (DevTakeOvers < 3 && !Collector->IsRemotePlayerOnServer() && Collector->IsPlayerControlled()
+			&& FParse::Param(FCommandLine::Get(), TEXT("CIDevFairTakeOver")))
+		{
+			for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+			{
+				AChaosImpactCharacter* Remote = *It;
+				if (Remote->IsRemotePlayerOnServer() && !Remote->IsEliminated() && Remote->GetCarriedBallCount() < Remote->GetMaximumCarriedBalls())
+				{
+					++DevTakeOvers;
+					const double Earlier = TouchTime - 0.03;
+					FTimerHandle Later;
+					GetWorldTimerManager().SetTimer(Later, FTimerDelegate::CreateWeakLambda(this, [this, Remote, Earlier]()
+					{
+						const int32 Before = IsValid(Remote) ? Remote->GetCarriedBallCount() : -1;
+						const bool bTaken = IsValid(Remote) && TakeOverPickup(Remote, Earlier);
+						UE_LOG(LogChaosImpact, Log, TEXT("DevFairTakeOver: take-over %s (remote balls %d -> %d)"), bTaken ? TEXT("done") : TEXT("refused"),
+							Before, IsValid(Remote) ? Remote->GetCarriedBallCount() : -1);
+					}), 0.05f, false);
+					break;
+				}
+			}
+		}
+#endif
+		return true;
+	}
 	Destroy();
 	return true;
+}
+
+bool AChaosImpactBall::CanTakeOverPickup(const AChaosImpactCharacter* Claimant, const double TouchTime) const
+{
+	const AChaosImpactCharacter* Holder = TakenBy.Get();
+	// (A hair's difference is no reason to move a ball from hand to hand.)
+	return HasAuthority() && bPickupConsumed && IsValid(Holder) && IsValid(Claimant) && Holder != Claimant
+		&& GetServerNow() - TakenAt <= FairTouchReachSeconds + 0.05 && TouchTime < TakenTouchTime - 0.01
+		&& Holder->GetCarriedBallCount() == TakenCountAfter && Holder->GetCarriedBallTypesPacked() == TakenTypesAfter;
+}
+
+bool AChaosImpactBall::TakeOverPickup(AChaosImpactCharacter* Claimant, const double TouchTime)
+{
+	if (!CanTakeOverPickup(Claimant, TouchTime) || !Claimant->GiveContestedPickup(BallType))
+	{
+		return false;
+	}
+	AChaosImpactCharacter* Holder = TakenBy.Get();
+	Holder->TakeBackLastPickup();
+	UE_LOG(LogChaosImpact, Log, TEXT("Pickup: %s touched it %.0f ms before %s; it goes to them"), *Claimant->GetName(),
+		(TakenTouchTime - TouchTime) * 1000.0, *Holder->GetName());
+	TakenBy = Claimant;
+	TakenTouchTime = TouchTime;
+	TakenCountAfter = Claimant->GetCarriedBallCount();
+	TakenTypesAfter = Claimant->GetCarriedBallTypesPacked();
+	return true;
+}
+
+double AChaosImpactBall::GetFairSightDelay(const UWorld* World)
+{
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	if (!GameState || World->GetNetMode() != NM_ListenServer)
+	{
+		return 0.0;
+	}
+	double Farthest = 0.0;
+	for (const APlayerState* State : GameState->PlayerArray)
+	{
+		const AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
+		if (Member && !Member->IsABot() && !Member->bHostMachine && !Member->bSpectating)
+		{
+			Farthest = FMath::Max(Farthest, Member->GetPingInMilliseconds() / 2000.0);
+		}
+	}
+	return FMath::Min(Farthest, FairTouchReachSeconds);
+}
+
+void AChaosImpactBall::ArmFairSight()
+{
+	if (HasAuthority() && GetWorld())
+	{
+		LocalPickupFrom = GetServerNow() + GetFairSightDelay(GetWorld());
+	}
+}
+
+void AChaosImpactBall::RetryLocalOverlaps()
+{
+	if (!IsPickupAvailable() || GetServerNow() < LocalPickupFrom)
+	{
+		return;
+	}
+	TArray<AActor*> Overlapping;
+	CollisionSphere->GetOverlappingActors(Overlapping, AChaosImpactCharacter::StaticClass());
+	bRetryLocalOverlap = false;
+	for (AActor* Actor : Overlapping)
+	{
+		AChaosImpactCharacter* Collector = Cast<AChaosImpactCharacter>(Actor);
+		if (Collector && !Collector->IsRemotePlayerOnServer() && ConsumePickup(Collector))
+		{
+			return;
+		}
+	}
 }
 
 void AChaosImpactBall::EndCosmeticFlight()
@@ -1213,6 +1338,14 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 	if (bDetonated)
 	{
 		return;
+	}
+	if (bRetryLocalOverlap && bIsPickup && !bPickupConsumed)
+	{
+		RetryLocalOverlaps();
+		if (bPickupConsumed)
+		{
+			return;
+		}
 	}
 	if (bIsPickup && LandedPickupExpiresAt > 0.0 && !bPickupConsumed && GetServerNow() >= LandedPickupExpiresAt)
 	{
@@ -1622,6 +1755,7 @@ void AChaosImpactBall::MakePickup()
 	bIsPickup = true;
 	bIsRolling = false;
 	bPickupConsumed = false;
+	ArmFairSight();
 	LandedPickupExpiresAt = 0.0;
 	PickupAvailableAtSeconds = 0.0f;
 	PickupAnimationTime = 0.0f;
@@ -1653,6 +1787,7 @@ void AChaosImpactBall::MakeRollingPickup(const FVector& ImpactVelocity)
 	bIsPickup = true;
 	bIsRolling = true;
 	bPickupConsumed = false;
+	ArmFairSight();
 	// A nova (one a match) lies there until taken.
 	LandedPickupExpiresAt = BallType == EChaosImpactBallType::Nova ? 0.0 : GetServerNow() + LandedPickupLifetimeSeconds;
 	PickupAvailableAtSeconds = GetWorld()
@@ -1788,7 +1923,7 @@ void AChaosImpactBall::ReleaseFromWind(const FVector& Ground, const FVector& Fli
 
 bool AChaosImpactBall::IsPickupAvailable() const
 {
-	return bIsPickup && (!GetWorld()
+	return bIsPickup && !bPickupConsumed && (!GetWorld()
 		|| GetWorld()->GetTimeSeconds() >= PickupAvailableAtSeconds);
 }
 
@@ -1917,9 +2052,14 @@ void AChaosImpactBall::HandlePickupOverlap(UPrimitiveComponent* OverlappedCompon
 {
 	AChaosImpactCharacter* Collector = Cast<AChaosImpactCharacter>(OtherActor);
 	// Remote players claim pickups from their own screen; this copy of them is slightly behind.
-	if (Collector && !Collector->IsRemotePlayerOnServer())
+	if (Collector && !Collector->IsRemotePlayerOnServer() && HasAuthority())
 	{
-		ConsumePickup(Collector);
+		// Online the host and CPUs see a new pickup before anyone else: they may take it once the farthest player can
+		// see it too (and a locked-out ball is looked at again once it may be taken).
+		if (GetServerNow() < LocalPickupFrom || !IsPickupAvailable() || !ConsumePickup(Collector))
+		{
+			bRetryLocalOverlap = bIsPickup && !bPickupConsumed;
+		}
 	}
 }
 

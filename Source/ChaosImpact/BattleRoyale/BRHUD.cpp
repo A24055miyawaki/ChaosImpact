@@ -1,4 +1,5 @@
 #include "BRHUD.h"
+#include "ChaosImpactSettings.h"
 #include "BRGame.h"
 #include "BRIsland.h"
 #include "BRIslandLayout.h"
@@ -204,7 +205,7 @@ void UBRHUD::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 		HoveredResult = INDEX_NONE;
 		if (State && State->Phase == EBRPhase::Over)
 		{
-			const float S = FMath::Min(LastSize.X / 1600.0, LastSize.Y / 900.0);
+			const float S = FMath::Min(LastSize.X / 1600.0, LastSize.Y / 900.0) * ChaosImpactSettings::GetHudSizeFactor();
 			FBox2D Buttons[2];
 			GetResultButtons(LastSize, S, Buttons);
 			const FVector2D Local = FVector2D(GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos()));
@@ -431,7 +432,7 @@ bool UBRHUD::HandleClick(const FVector2D& ScreenPosition)
 	const ABRGameState* State = GetWorld()->GetGameState<ABRGameState>();
 	if (!State) { return false; }
 	const FVector2D Local = FVector2D(GetCachedGeometry().AbsoluteToLocal(ScreenPosition));
-	const float S = FMath::Min(LastSize.X / 1600.0, LastSize.Y / 900.0);
+	const float S = FMath::Min(LastSize.X / 1600.0, LastSize.Y / 900.0) * ChaosImpactSettings::GetHudSizeFactor();
 	if (State->Phase == EBRPhase::Ship && Owner->IsMapOpen())
 	{
 		FVector2D Min;
@@ -1010,7 +1011,7 @@ int32 UBRHUD::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeome
 	const ABRGameState* State = GetWorld() ? GetWorld()->GetGameState<ABRGameState>() : nullptr;
 	if (!State || State->Phase == EBRPhase::Title) { return Base; }
 	const FVector2D Size = FVector2D(AllottedGeometry.GetLocalSize());
-	const float S = static_cast<float>(FMath::Max(0.01, FMath::Min(Size.X / 1600.0, Size.Y / 900.0)));
+	const float S = static_cast<float>(FMath::Max(0.01, FMath::Min(Size.X / 1600.0, Size.Y / 900.0))) * ChaosImpactSettings::GetHudSizeFactor();
 	const ABRCharacter* Me = Cast<ABRCharacter>(Owner->GetPawn());
 	int32 Layer = Base + 1;
 	if (Me && Me->IsFlying())

@@ -1,6 +1,9 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactSuddenDeathZone.h"
+#include "ChaosImpactTutorial.h"
+#include "ChaosImpactTournamentWidget.h"
 #include "ChaosImpactPlayerMarkerLayout.h"
 #include "ChaosImpactGameViewportClient.h"
 #include "ChaosImpactEase.h"
@@ -16,6 +19,9 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactCrashBall.h"
 #include "ChaosImpactStageBase.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/SceneCapture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactCharacterRoster.h"
@@ -437,12 +443,50 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	// The whole-stage map: filmed all the while it is open, thirty times a second (what moves on the stage moves on it;
+	// the people and the balls are drawn over it every frame). Its middle glides after an area that moves.
+	if (const auto* MapOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); MapOwner && MapOwner->IsOverviewMapOpen())
+	{
+		FVector Center;
+		float Half = 0.0f;
+		const double Now = FPlatformTime::Seconds();
+		if (!bMapWasOpen)
+		{
+			MapOpenedAt = Now;
+		}
+		if (FindMapArea(Center, Half))
+		{
+			const float Yaw = MapOwner->PlayerCameraManager ? MapOwner->PlayerCameraManager->GetCameraRotation().Yaw : 0.0f;
+			// (A new area, or the map just opened: straight there; else a quick glide after it.)
+			MapGlideCenter = !bMapWasOpen || !bMapTaken || !MapGlideCenter.Equals(Center, Half * 0.5f) ? Center
+				: FMath::VInterpTo(MapGlideCenter, Center, FMath::Min(InDeltaTime, 0.1f), 12.0f);
+			if (!bMapWasOpen || Now - MapShotAt >= 1.0 / 30.0)
+			{
+				MapShotAt = Now;
+				TakeMapPicture(MapGlideCenter, Half, Yaw);
+			}
+		}
+		bMapWasOpen = true;
+	}
+	else
+	{
+		if (bMapWasOpen && IsValid(MapCamera))
+		{
+			MapCamera->Destroy();
+			MapCamera = nullptr;
+		}
+		bMapWasOpen = false;
+	}
 	const ULocalPlayer* SingleDuelPlayer = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
 	// Slate keeps a player's HUD layer even when their scene view has zero size. Keep its tick alive so it
 	// restores on return to the lobby, but hide the observer's personal HUD during the shared duel view.
 	SetRenderOpacity(SingleDuelPlayer && GetOwningLocalPlayer() != SingleDuelPlayer ? 0.f : 1.f);
 	RefreshPersonalAimGuide();
 	RefreshSplitScreenDividers();
+	if (!bSpectatorView)
+	{
+		Tutorial.Tick(Cast<AChaosImpactPlayerController>(GetOwningPlayer()), BallSwappedAt);
+	}
 	RefreshBallPickupAnimation();
 	UpdateCombatHealth();
 
@@ -585,7 +629,8 @@ void UChaosImpactChargeWidget::PaintRoomToasts(const FGeometry& AllottedGeometry
 		P.Box(6.0f, 6.0f, Width, Height, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f));
 		P.Box(0.0f, 0.0f, Width, Height, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
 		P.Box(0.0f, 0.0f, 8.0f, Height, Toast.Accent);
-		P.Text(Name + Toast.Message, 22.0f, 7.0f, 20.0f, Paper, ETextAlign::Left, TEXT("Bold"));
+		const FString ToastLine = Name + Toast.Message;
+		P.Text(ToastLine, 22.0f, 7.0f, HudFit(ToastLine, 20.0f, Width - 34.0f, TEXT("Bold")), Paper, ETextAlign::Left, TEXT("Bold"));
 	}
 }
 
@@ -1009,6 +1054,51 @@ void UChaosImpactChargeWidget::ShowKnockout(const FString& VictimName)
 	KnockoutVictim = VictimName;
 }
 
+namespace
+{
+	/** Per world: the window-wide HUD areas (absolute), and the frame they were painted in. */
+	struct FCwSharedHud
+	{
+		uint64 Frame = 0;
+		TArray<FBox2D> Boxes;
+	};
+	TMap<uint32, FCwSharedHud>& CwSharedHud()
+	{
+		static TMap<uint32, FCwSharedHud> Shared;
+		return Shared;
+	}
+}
+
+void UChaosImpactChargeWidget::OccupyShared(const FGeometry& Space, const float X, const float Y, const float W, const float H) const
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	FCwSharedHud& Shared = CwSharedHud().FindOrAdd(GetWorld()->GetUniqueID());
+	if (Shared.Frame != GFrameCounter)
+	{
+		Shared.Frame = GFrameCounter;
+		Shared.Boxes.Reset();
+	}
+	FBox2D Box(ForceInit);
+	for (const FVector2f Corner : {FVector2f(X, Y), FVector2f(X + W, Y), FVector2f(X, Y + H), FVector2f(X + W, Y + H)})
+	{
+		Box += FVector2D(Space.LocalToAbsolute(Corner));
+	}
+	Shared.Boxes.Add(Box);
+}
+
+void UChaosImpactChargeWidget::Occupy(const FGeometry& Space, const float X, const float Y, const float W, const float H) const
+{
+	FBox2D Box(ForceInit);
+	for (const FVector2f Corner : {FVector2f(X, Y), FVector2f(X + W, Y), FVector2f(X, Y + H), FVector2f(X + W, Y + H)})
+	{
+		Box += FVector2D(HudPaintGeometry.AbsoluteToLocal(Space.LocalToAbsolute(Corner)));
+	}
+	HudBoxes.Add(Box);
+}
+
 void UChaosImpactChargeWidget::PaintCrashMarkers(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
 	const int32 BaseLayer, const AChaosImpactGameState& Match, const float S) const
 {
@@ -1039,6 +1129,8 @@ void UChaosImpactChargeWidget::PaintCrashMarkers(const FGeometry& AllottedGeomet
 	{
 		return UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(Owner, World, Out, true);
 	};
+	// Its shared scoreboard and gauge across the top.
+	HudBoxes.Add(FBox2D(FVector2D(Size.X * 0.5f - 470.0f * S, 0.0), FVector2D(Size.X * 0.5f + 470.0f * S, 135.0f * S)));
 	const auto OnScreen = [&](const FVector2D& At, const float Margin)
 	{
 		// Clear of the shared scoreboard and its gauge at the top.
@@ -1058,7 +1150,17 @@ void UChaosImpactChargeWidget::PaintCrashMarkers(const FGeometry& AllottedGeomet
 		Direction = Direction.GetSafeNormal();
 		if (Direction.IsNearlyZero()) { Direction = FVector2D(0, -1); }
 		const FVector2D Reach(FMath::Max(30.f, Size.X * .5f - 55 * S), FMath::Max(30.f, Size.Y * .5f - 145 * S));
-		const double Factor = FMath::Min(Reach.X / FMath::Max(.001, FMath::Abs(Direction.X)), Reach.Y / FMath::Max(.001, FMath::Abs(Direction.Y)));
+		double Factor = FMath::Min(Reach.X / FMath::Max(.001, FMath::Abs(Direction.X)), Reach.Y / FMath::Max(.001, FMath::Abs(Direction.Y)));
+		// In along the ray until clear of the HUD's own areas (health, balls, hints...).
+		const FVector2D Half(40.0 * S * Scale, 34.0 * S * Scale);
+		for (const double Least = Factor * 0.35; Factor > Least; Factor -= 6.0)
+		{
+			const FVector2D Body = ViewCenter + Direction * (Factor - 22.0 * S * Scale);
+			const FBox2D Mark(Body - Half, Body + Half);
+			bool bClear = true;
+			for (const FBox2D& Box : HudBoxesLast) { if (Box.bIsValid && Box.Intersect(Mark)) { bClear = false; break; } }
+			if (bClear) { break; }
+		}
 		const FVector2D Tip = ViewCenter + Direction * Factor;
 		const FPainter Marker{AllottedGeometry, OutDrawElements, Layer};
 		PaintMarkerArrow(Marker, Tip, Direction, S * Scale, Color);
@@ -1152,6 +1254,18 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 
 	const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
 		OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	// Last frame's HUD areas for the arrows painted first; this frame's are gathered as the pieces paint.
+	HudBoxesLast = MoveTemp(HudBoxes);
+	HudBoxes.Reset();
+	HudPaintGeometry = AllottedGeometry;
+	// What is drawn once over the whole window (painted just before or after this view).
+	if (const FCwSharedHud* Shared = GetWorld() ? CwSharedHud().Find(GetWorld()->GetUniqueID()) : nullptr; Shared && GFrameCounter - Shared->Frame <= 2)
+	{
+		for (const FBox2D& Box : Shared->Boxes)
+		{
+			HudBoxesLast.Add(FBox2D(FVector2D(AllottedGeometry.AbsoluteToLocal(Box.Min)), FVector2D(AllottedGeometry.AbsoluteToLocal(Box.Max))));
+		}
+	}
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
 	if (Size.X < 1.0f || Size.Y < 1.0f)
 	{
@@ -1174,6 +1288,21 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	{
 		PaintVitals(AllottedGeometry, OutDrawElements, HudLayer);
 		PaintBallInventory(AllottedGeometry, OutDrawElements, HudLayer);
+		if (const AChaosImpactPlayerController* Own = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); Own && !bVitalsHidden)
+		{
+			const float HintScale = GetHudScale(Size.X, Size.Y);
+			// The tutorial at the top right, under the corner buttons (lower when the lobby's ready / watch buttons are there).
+			const bool bCornerColumn = !Own->IsUsingGamepad() && ChaosImpactSettings::GetPlayerControlScheme(Own) != EChaosImpactControlScheme::Normal
+				&& (Own->CanToggleReady() || Own->CanToggleSpectating());
+			const float KnockoutFade = 1.0f - 0.8f * FMath::Clamp(1.0f - static_cast<float>(FPlatformTime::Seconds() - KnockoutAt) / 2.2f, 0.0f, 1.0f);
+			Tutorial.Paint(AllottedGeometry, OutDrawElements, HudLayer + 20, Own, HintScale, bCornerColumn ? 236.0f : 74.0f, KnockoutFade, &HudBoxes);
+			// The button hints down the left side (not while the tutorial is teaching them).
+			if (ChaosImpactSettings::IsButtonHintsOn() && !Tutorial.IsShowing() && Own->IsGameplayActive()
+				&& !(Own->GetTournamentWidget() && Own->GetTournamentWidget()->CoversPlay()))
+			{
+				FChaosImpactTutorial::PaintHints(AllottedGeometry, OutDrawElements, HudLayer + 14, Own, HintScale, &HudBoxes);
+			}
+		}
 		PaintLastHealthWarning(AllottedGeometry, OutDrawElements, HudLayer + 1);
 	}
 	if (!CwIsTournamentOpening(this))
@@ -1184,6 +1313,10 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	{
 		// A boss fight: the boss's own bar across the top.
 		AChaosImpactSimaeBoss::PaintHud(GetWorld(), AllottedGeometry, OutDrawElements, HudLayer + 2, GetHudScale(Size.X, Size.Y));
+		if (TActorIterator<AChaosImpactSimaeBoss> Boss(GetWorld()); Boss && !Boss->IsDormant())
+		{
+			Occupy(MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, GetHudScale(Size.X, Size.Y)), -400.0f, 0.0f, 800.0f, 96.0f);
+		}
 	}
 	const double Clock = FPlatformTime::Seconds();
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -1203,16 +1336,166 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		if (AChaosImpactSimaeBird::HasPerchedBird(Player, &PeckRemaining, &CountdownSeconds, &PecksRemaining))
 		{
 			const float S = GetHudScale(Size.X, Size.Y);
-			const FGeometry WarningSpace = MakeAnchor(AllottedGeometry, Size.X * 0.5f - 205.0f * S, 76.0f * S, S);
-			const FPainter Warning{WarningSpace, OutDrawElements, HudLayer + 8};
-			Warning.Box(0.0f, 0.0f, 410.0f, 68.0f, FLinearColor(0.015f, 0.02f, 0.03f, 0.9f));
-			Warning.Box(0.0f, 0.0f, 5.0f, 68.0f, Gold);
-			Warning.Text(PecksRemaining < ChaosImpactBallTypes::SimaeMaxPecksPerTarget
-				? TEXT("もう一度つつかれる！") : TEXT("ダッシュで振り落とせ！"), 205.0f, 5.0f, 25.0f, Paper,
-				ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+			// Under whatever already stands at the top middle (the clock, a duel's or the battle royale's scoreboard, a
+			// boss's bar), never on it.
+			float TopY = 18.0f * S;
+			const float MidLeft = Size.X * 0.5f - 250.0f * S, MidRight = Size.X * 0.5f + 250.0f * S;
+			for (const TArray<FBox2D>* Boxes : {&HudBoxesLast, &HudBoxes})
+			{
+				for (const FBox2D& Box : *Boxes)
+				{
+					// (Not this card's own area from the frame before.)
+					if (Box.bIsValid && !(SimaeCardBox.bIsValid && Box.Min.Equals(SimaeCardBox.Min, 0.5) && Box.Max.Equals(SimaeCardBox.Max, 0.5))
+						&& Box.Min.Y < Size.Y * 0.3f && Box.Max.X > MidLeft && Box.Min.X < MidRight)
+					{
+						TopY = FMath::Max(TopY, static_cast<float>(Box.Max.Y) + 12.0f * S);
+					}
+				}
+			}
+			constexpr float W = 470.0f;
+			constexpr float H = 86.0f;
 			const float Ratio = FMath::Clamp(PeckRemaining / FMath::Max(CountdownSeconds, UE_SMALL_NUMBER), 0.0f, 1.0f);
-			Warning.Box(22.0f, 50.0f, 366.0f, 6.0f, FLinearColor(0.12f, 0.14f, 0.18f, 1.0f));
-			Warning.Box(22.0f, 50.0f, 366.0f * Ratio, 6.0f, FMath::Lerp(Fire, Gold, Ratio));
+			const bool bAgain = PecksRemaining < ChaosImpactBallTypes::SimaeMaxPecksPerTarget;
+			// Hurrying: it shivers as the peck nears.
+			const float Shiver = Ratio < 0.35f ? FMath::Sin(static_cast<float>(Clock) * 48.0f) * (0.35f - Ratio) * 10.0f : 0.0f;
+			const FGeometry Top = MakeAnchor(AllottedGeometry, Size.X * 0.5f, TopY, S);
+			const FGeometry WarningSpace = MakeSkewed(Top, -W * 0.5f + Shiver, 0.0f, W, H, -0.12f);
+			Occupy(Top, -W * 0.5f - 12.0f, -6.0f, W + 24.0f, H + 14.0f);
+			SimaeCardBox = HudBoxes.Last();
+			const FPainter Warning{WarningSpace, OutDrawElements, HudLayer + 8};
+			const FLinearColor CardAccent = bAgain ? Fire : Gold;
+			// The plate: night blue, a lit top edge, the accent down its left side.
+			HudShard(Warning, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)}, NightFill, 2.5f, FVector2D(6.0, 7.0));
+			const FPainter Face = HudAbove(Warning, 2);
+			Face.Box(0.0f, 0.0f, W, 2.0f, WithAlpha(Paper, 0.35f));
+			HudPoly(Face, {FVector2D(0.0, 0.0), FVector2D(9.0, 0.0), FVector2D(9.0, H), FVector2D(0.0, H)}, bAgain ? FireFill : MakeFill(Gold, FLinearColor(0.85f, 0.45f, 0.05f, 1.0f)));
+			// The bird itself: a round white simaenaga, two black eyes and a little beak.
+			const FVector2D Bird(52.0, H * 0.5f - 2.0f);
+			const float Hop = FMath::Abs(FMath::Sin(static_cast<float>(Clock) * 9.0f)) * 3.0f;
+			Face.Disc(Bird + FVector2D(2.0, 3.0), 25.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f));
+			Face.Disc(Bird - FVector2D(0.0, Hop), 24.0f, WithAlpha(CardAccent, 0.9f));
+			const FPainter BirdFace = HudAbove(Face, 1);
+			BirdFace.Disc(Bird - FVector2D(0.0, Hop), 21.0f, Paper);
+			BirdFace.Disc(Bird + FVector2D(-7.0, -3.0 - Hop), 2.6f, Ink);
+			BirdFace.Disc(Bird + FVector2D(7.0, -3.0 - Hop), 2.6f, Ink);
+			BirdFace.Disc(Bird + FVector2D(0.0, 3.0 - Hop), 2.2f, FLinearColor(0.25f, 0.18f, 0.12f, 1.0f));
+			// What is happening, then what to do (the dash key in a cap), or that it is about to peck again.
+			const FPainter Words = HudAbove(Face, 2);
+			constexpr float TextLeft = 92.0f;
+			const float Room = W - TextLeft - 18.0f;
+			Words.Text(TEXT("シマエナガにつかまった！"), TextLeft, 7.0f, HudFit(TEXT("シマエナガにつかまった！"), 15.0f, Room, TEXT("Bold")),
+				WithAlpha(CardAccent, 0.95f), ETextAlign::Left, TEXT("Bold"));
+			if (bAgain)
+			{
+				HudText3D(Words, TEXT("もう一度つつかれる！"), TextLeft, 27.0f, HudFit(TEXT("もう一度つつかれる！"), 25.0f, Room), Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
+			}
+			else
+			{
+				// (The first key set for it: one cap, as the button hints show it.)
+				FString DashKey = ChaosImpactSettings::DescribeAction(GetOwningPlayer(), EChaosImpactAction::Dash);
+				DashKey.Split(TEXT(" / "), &DashKey, nullptr);
+				const float KeySize = HudFit(DashKey, 17.0f, 140.0f);
+				const float KeyW = FMath::Max(HudMeasure(DashKey, KeySize, TEXT("Black")) + 16.0f, 34.0f);
+				RoundedBox(Words, TextLeft, 29.0f, KeyW, 28.0f, 6.0f, WithAlpha(Paper, 0.92f));
+				HudAbove(Words, 1).Text(DashKey, TextLeft + KeyW * 0.5f, 31.0f + (17.0f - KeySize) * 0.6f, KeySize, Ink, ETextAlign::Center, TEXT("Black"));
+				const FString Line = TEXT("ダッシュで振り落とせ！");
+				HudText3D(Words, Line, TextLeft + KeyW + 8.0f, 27.0f, HudFit(Line, 24.0f, Room - KeyW - 8.0f), Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
+			}
+			// Time until the peck: a bar in five cells that empties, gold to red, flashing at the end.
+			const float BarLeft = TextLeft, BarTop = H - 16.0f, BarW = W - TextLeft - 18.0f;
+			const float Flash = Ratio < 0.3f ? 0.6f + 0.4f * FMath::Sin(static_cast<float>(Clock) * 20.0f) : 1.0f;
+			for (int32 Cell = 0; Cell < 5; ++Cell)
+			{
+				const float CellW = (BarW - 4.0f * 4.0f) / 5.0f;
+				const float X = BarLeft + Cell * (CellW + 4.0f);
+				const float Fill = FMath::Clamp(Ratio * 5.0f - Cell, 0.0f, 1.0f);
+				RoundedBox(Words, X, BarTop, CellW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
+				if (Fill > 0.0f)
+				{
+					RoundedBox(HudAbove(Words, 1), X, BarTop, CellW * Fill, 6.0f, 3.0f, WithAlpha(FMath::Lerp(Fire, Gold, Ratio), Flash));
+				}
+			}
+		}
+	}
+
+	// Sudden death: outside the closing circle, a card like the simaenaga's with a gauge that fills in the moment before
+	// it counts (the host judges it; this is how long this screen has seen the player out).
+	if (!bSpectatorView)
+	{
+		const AChaosImpactCharacter* Player = GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr;
+		const AChaosImpactSuddenDeathZone* Zone = nullptr;
+		if (Player && !Player->IsEliminated())
+		{
+			float Nearest = TNumericLimits<float>::Max();
+			for (TActorIterator<AChaosImpactSuddenDeathZone> It(GetWorld()); It; ++It)
+			{
+				const float Distance = static_cast<float>(FVector::Dist2D(It->GetActorLocation(), Player->GetActorLocation()));
+				if (Distance < Nearest && Distance < 6000.0f)
+				{
+					Nearest = Distance;
+					Zone = *It;
+				}
+			}
+		}
+		const bool bOut = Zone && !Zone->IsInside(Player->GetActorLocation());
+		ZoneOutSince = bOut ? (ZoneOutSince < 0.0 ? Clock : ZoneOutSince) : -1.0;
+		if (bOut)
+		{
+			const float S = GetHudScale(Size.X, Size.Y);
+			float TopY = 18.0f * S;
+			const float MidLeft = Size.X * 0.5f - 250.0f * S, MidRight = Size.X * 0.5f + 250.0f * S;
+			for (const TArray<FBox2D>* Boxes : {&HudBoxesLast, &HudBoxes})
+			{
+				for (const FBox2D& Box : *Boxes)
+				{
+					if (Box.bIsValid && !(ZoneCardBox.bIsValid && Box.Min.Equals(ZoneCardBox.Min, 0.5) && Box.Max.Equals(ZoneCardBox.Max, 0.5))
+						&& Box.Min.Y < Size.Y * 0.3f && Box.Max.X > MidLeft && Box.Min.X < MidRight)
+					{
+						TopY = FMath::Max(TopY, static_cast<float>(Box.Max.Y) + 12.0f * S);
+					}
+				}
+			}
+			constexpr float W = 470.0f;
+			constexpr float H = 86.0f;
+			const float Filled = FMath::Clamp(static_cast<float>(Clock - ZoneOutSince) / AChaosImpactSuddenDeathZone::OutSeconds, 0.0f, 1.0f);
+			const float Shiver = FMath::Sin(static_cast<float>(Clock) * 48.0f) * Filled * 5.0f;
+			const FGeometry Top = MakeAnchor(AllottedGeometry, Size.X * 0.5f, TopY, S);
+			const FGeometry CardSpace = MakeSkewed(Top, -W * 0.5f + Shiver, 0.0f, W, H, -0.12f);
+			Occupy(Top, -W * 0.5f - 12.0f, -6.0f, W + 24.0f, H + 14.0f);
+			ZoneCardBox = HudBoxes.Last();
+			const FPainter Card{CardSpace, OutDrawElements, HudLayer + 8};
+			HudShard(Card, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)}, NightFill, 2.5f, FVector2D(6.0, 7.0));
+			const FPainter Face = HudAbove(Card, 2);
+			Face.Box(0.0f, 0.0f, W, 2.0f, WithAlpha(Paper, 0.35f));
+			HudPoly(Face, {FVector2D(0.0, 0.0), FVector2D(9.0, 0.0), FVector2D(9.0, H), FVector2D(0.0, H)}, FireFill);
+			// A red warning disc with "!" (the circle's colour).
+			const FVector2D Mark(52.0, H * 0.5f - 2.0f);
+			const float Beat = 1.0f + 0.08f * FMath::Sin(static_cast<float>(Clock) * 14.0f);
+			Face.Disc(Mark + FVector2D(2.0, 3.0), 25.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f));
+			Face.Disc(Mark, 24.0f * Beat, Fire);
+			const FPainter MarkFace = HudAbove(Face, 1);
+			MarkFace.Ring(Mark, 18.0f * Beat, WithAlpha(Paper, 0.9f), 2.5f);
+			MarkFace.Text(TEXT("!"), static_cast<float>(Mark.X), static_cast<float>(Mark.Y) - 20.0f, 28.0f, Paper, ETextAlign::Center, TEXT("Black"));
+			const FPainter Words = HudAbove(Face, 2);
+			constexpr float TextLeft = 92.0f;
+			const float Room = W - TextLeft - 18.0f;
+			Words.Text(TEXT("エリアの外！"), TextLeft, 7.0f, HudFit(TEXT("エリアの外！"), 15.0f, Room, TEXT("Bold")), WithAlpha(Fire, 0.95f),
+				ETextAlign::Left, TEXT("Bold"));
+			HudText3D(Words, TEXT("円の中にもどれ！"), TextLeft, 27.0f, HudFit(TEXT("円の中にもどれ！"), 25.0f, Room), Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
+			// The moment before it counts: five cells that fill, gold to red, flashing as they fill up.
+			const float BarLeft = TextLeft, BarTop = H - 16.0f, BarW = W - TextLeft - 18.0f;
+			const float Flash = Filled > 0.6f ? 0.6f + 0.4f * FMath::Sin(static_cast<float>(Clock) * 24.0f) : 1.0f;
+			for (int32 Cell = 0; Cell < 5; ++Cell)
+			{
+				const float CellW = (BarW - 4.0f * 4.0f) / 5.0f;
+				const float X = BarLeft + Cell * (CellW + 4.0f);
+				const float Fill = FMath::Clamp(Filled * 5.0f - Cell, 0.0f, 1.0f);
+				RoundedBox(Words, X, BarTop, CellW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
+				if (Fill > 0.0f)
+				{
+					RoundedBox(HudAbove(Words, 1), X, BarTop, CellW * Fill, 6.0f, 3.0f, WithAlpha(FMath::Lerp(Gold, Fire, Filled), Flash));
+				}
+			}
 		}
 	}
 
@@ -1229,42 +1512,50 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		Edge.Box(0.0f, Size.Y - Band * 0.6f, Size.X, Band * 0.6f, Red);
 	}
 
-	// Respawn notice in the bottom-right corner, above the ball stock.
+	// Knocked out: a card at the bottom middle, between the health and the balls (clear of both, and of the hints at the
+	// sides): a ring that empties as the wait runs out with the count in it, then who did it.
 	if (bRespawnVisible)
 	{
-		const float In = EaseOut(static_cast<float>(Clock - RespawnShownAt) / 0.3f);
-		const float Left = Size.X - 488.0f + (1.0f - In) * 140.0f;
-		const float Top = Size.Y - 298.0f;
-		const FGeometry Corner = MakeAnchor(AllottedGeometry, Left, Top, 1.0f);
+		const float S = GetHudScale(Size.X, Size.Y);
+		const float Age = static_cast<float>(Clock - RespawnShownAt);
+		const float In = EaseOut(Age / 0.3f);
+		constexpr float W = 430.0f;
+		constexpr float H = 92.0f;
+		const FGeometry Bottom = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y, S);
+		const float Top = -262.0f + (1.0f - In) * 40.0f;
+		const FGeometry Card = MakeSkewed(Bottom, -W * 0.5f, Top, W, H, -0.12f);
+		Occupy(Bottom, -W * 0.5f - 16.0f, -270.0f, W + 32.0f, H + 16.0f);
+		const FPainter Plate{Card, OutDrawElements, BaseLayer + 2, In};
+		// The plate: deep night with a lit top edge, a flame of red down its left, a thin ice line under it.
+		HudShard(Plate, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)}, NightFill, 2.5f, FVector2D(6.0, 7.0));
+		const FPainter Above = HudAbove(Plate, 2);
+		Above.Box(0.0f, 0.0f, W, 2.0f, WithAlpha(Paper, 0.35f));
+		HudPoly(Above, {FVector2D(0.0, 0.0), FVector2D(10.0, 0.0), FVector2D(10.0, H), FVector2D(0.0, H)}, FireFill);
+		Above.Box(14.0f, H - 3.0f, W - 14.0f, 3.0f, WithAlpha(Ice, 0.9f));
 
-		const FGeometry Band = MakeSkewed(Corner, 0.0f, 18.0f, 470.0f, 104.0f, -0.3f);
-		const FPainter BandPainter{Band, OutDrawElements, BaseLayer + 2, In};
-		BandPainter.Box(8.0f, 9.0f, 470.0f, 104.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
-		BandPainter.Box(0.0f, 0.0f, 470.0f, 104.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.9f));
-		BandPainter.Box(0.0f, 0.0f, 470.0f, 5.0f, Fire);
-		BandPainter.Box(0.0f, 101.0f, 470.0f, 3.0f, Ice);
-		BandPainter.Box(0.0f, 0.0f, 118.0f, 104.0f, Fire);
-
+		// The ring: the time left goes round it (red to ice as it runs out), the count large in it, popping as it changes.
+		const float Remaining = FMath::Clamp(RespawnRemaining / FMath::Max(RespawnTotal, 0.01f), 0.0f, 1.0f);
+		const FVector2D Ring(62.0, H * 0.5f);
+		const float Radius = 32.0f;
+		const FPainter Dial = HudAbove(Plate, 3);
+		Dial.Disc(Ring, Radius + 6.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		Dial.Arc(Ring, Radius, -90.0f, 270.0f, WithAlpha(Paper, 0.12f), 6.0f);
+		HudAbove(Dial, 1).Arc(Ring, Radius, -90.0f, -90.0f + 360.0f * Remaining, FMath::Lerp(Ice, Fire, Remaining), 6.0f);
 		const float NumberAge = static_cast<float>(Clock - CountdownChangedAt);
-		const FGeometry NumberSpace = MakeSkewed(Corner, 0.0f, 10.0f, 118.0f, 120.0f, -0.2f,
-			1.0f + 0.6f * FMath::Exp(-12.0f * NumberAge));
-		const FPainter NumberPainter{NumberSpace, OutDrawElements, BaseLayer + 3, In};
-		NumberPainter.Text(FString::FromInt(FMath::Max(1, CountdownNumber)), 59.0f, 4.0f, 76.0f, Paper,
-			ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+		const float Pop = 1.0f + 0.45f * FMath::Exp(-12.0f * NumberAge);
+		const FGeometry NumberSpace = MakeSkewed(Card, static_cast<float>(Ring.X) - 40.0f, static_cast<float>(Ring.Y) - 32.0f, 80.0f, 64.0f, 0.0f, Pop);
+		HudText3D(FPainter{NumberSpace, OutDrawElements, BaseLayer + 7, In}, FString::FromInt(FMath::Max(1, CountdownNumber)), 40.0f, -2.0f, 48.0f,
+			Paper, ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
 
-		const FGeometry Labels = MakeSkewed(Corner, 140.0f, 26.0f, 320.0f, 90.0f, -0.25f);
-		const FPainter LabelPainter{Labels, OutDrawElements, BaseLayer + 3, In};
-		LabelPainter.Text(TEXT("復活まで"), 0.0f, -2.0f, 30.0f, Paper);
-		// No name: knocked out for leaving the stage (AChaosImpactCharacter::CheckLeftStage).
-		LabelPainter.Text(DefeatedByName.IsEmpty() ? FString(TEXT("ステージの外に出た！"))
-			: FString::Printf(TEXT("%s にやられた！"), *DefeatedByName), 2.0f, 46.0f, 21.0f, Fire,
+		// The words: what is happening, and who did it (or that the stage was left).
+		const FPainter Words = HudAbove(Plate, 4);
+		constexpr float TextLeft = 112.0f;
+		const float TextRoom = W - TextLeft - 20.0f;
+		HudText3D(Words, TEXT("復活まで"), TextLeft, 10.0f, 26.0f, Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
+		const FString Cause = DefeatedByName.IsEmpty() ? FString(TEXT("ステージの外に出た！"))
+			: FString::Printf(TEXT("%s にやられた！"), *DefeatedByName);
+		Words.Text(Cause, TextLeft + 2.0f, 50.0f, HudFit(Cause, 19.0f, TextRoom, TEXT("Black")), WithAlpha(Fire, 0.95f),
 			ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
-
-		const float Remaining = FMath::Clamp(RespawnRemaining / RespawnTotal, 0.0f, 1.0f);
-		const FGeometry Progress = MakeSkewed(Corner, 44.0f, 134.0f, 416.0f, 9.0f, -0.6f);
-		const FPainter ProgressPainter{Progress, OutDrawElements, BaseLayer + 3, In};
-		ProgressPainter.Box(0.0f, 0.0f, 416.0f, 9.0f, FLinearColor(0.05f, 0.06f, 0.1f, 0.9f));
-		ProgressPainter.Box(0.0f, 0.0f, 416.0f * Remaining, 9.0f, FMath::Lerp(Ice, Fire, Remaining));
 	}
 
 	// KO banner: two slashes cut across the top-right corner, then the KO stamp lands on them. (A duel calls its
@@ -1313,7 +1604,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		const FPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 5, ChipIn * (1.0f - Leave)};
 		ChipPainter.Box(0.0f, 0.0f, 300.0f, 44.0f, WithAlpha(Ink, 0.9f));
 		ChipPainter.Box(0.0f, 0.0f, 10.0f, 44.0f, Accent);
-		ChipPainter.Text(KnockoutVictim, 26.0f, 5.0f, 24.0f, Paper);
+		ChipPainter.Text(KnockoutVictim, 26.0f, 5.0f, HudFit(KnockoutVictim, 24.0f, KnockoutStreak >= 2 ? 160.0f : 262.0f), Paper);
 		if (KnockoutStreak >= 2)
 		{
 			ChipPainter.Text(KnockoutStreak == 2 ? FString(TEXT("DOUBLE")) : KnockoutStreak == 3
@@ -1332,6 +1623,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		const FGeometry HintSpace = MakeAnchor(AllottedGeometry, Size.X*.5f,
 			Size.Y-(bCaptured ? 252 : 160)*Scale+(1-Arrival)*24*Scale, Scale);
 		const FPainter Hint{HintSpace,OutDrawElements,BaseLayer+7,Arrival};
+		Occupy(HintSpace,-215,-16,430,110);
 		if (bCaptured)
 		{
 			// The same bevelled ink outlines, warm gradient and extruded numerals as the HP/stock HUD.
@@ -1378,7 +1670,273 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	}
 	// The online room overlay is rendered once by the full-window announcer, outside split-view clipping.
 	PaintSoloClear(AllottedGeometry, OutDrawElements, HudLayer + 28);
-	return FMath::Max(BaseLayer + 22, HudLayer + 44);
+	if (const auto* MapOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); MapOwner && MapOwner->IsOverviewMapOpen())
+	{
+		PaintOverviewMap(AllottedGeometry, OutDrawElements, HudLayer + 46);
+	}
+	return FMath::Max(BaseLayer + 22, HudLayer + 56);
+}
+
+bool UChaosImpactChargeWidget::FindMapArea(FVector& OutCenter, float& OutHalf) const
+{
+	const UWorld* World = GetWorld();
+	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Match)
+	{
+		return false;
+	}
+	// A tournament: the arena this player is playing in.
+	const APlayerState* Mine = GetOwningPlayerState();
+	for (const FChaosImpactTournamentArena& Arena : Match->TournamentArenas)
+	{
+		if (Mine && Arena.Duel.SideOf(Mine) != INDEX_NONE)
+		{
+			OutCenter = Arena.Center;
+			OutHalf = Arena.HalfExtent;
+			return true;
+		}
+	}
+	if (Match->bVersusMatch)
+	{
+		OutCenter = Match->StageCenter;
+		OutHalf = Match->StageHalfExtent;
+		return true;
+	}
+	// Training or a room's lobby: the stage standing in the level, else the ground round this player.
+	for (TActorIterator<AChaosImpactStageBase> It(World); It; ++It)
+	{
+		OutCenter = It->GetCenter();
+		OutHalf = It->GetHalfExtent();
+		return true;
+	}
+	if (const APawn* Pawn = GetOwningPlayerPawn())
+	{
+		OutCenter = Pawn->GetActorLocation();
+		OutHalf = 3000.0f;
+		return true;
+	}
+	return false;
+}
+
+void UChaosImpactChargeWidget::TakeMapPicture(const FVector& Center, const float Half, const float Yaw)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	if (!MapTarget)
+	{
+		MapTarget = NewObject<UTextureRenderTarget2D>(this);
+		MapTarget->RenderTargetFormat = RTF_RGBA8;
+		MapTarget->ClearColor = FLinearColor(0.02f, 0.03f, 0.06f, 1.0f);
+		MapTarget->InitAutoFormat(1024, 1024);
+		MapTarget->UpdateResourceImmediate(true);
+	}
+	if (!IsValid(MapCamera))
+	{
+		FActorSpawnParameters Parameters;
+		Parameters.ObjectFlags |= RF_Transient;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		MapCamera = World->SpawnActor<ASceneCapture2D>(Center, FRotator(-90.0f, Yaw, 0.0f), Parameters);
+		if (!MapCamera)
+		{
+			return;
+		}
+		USceneCaptureComponent2D* Setup = MapCamera->GetCaptureComponent2D();
+		Setup->ProjectionType = ECameraProjectionMode::Orthographic;
+		Setup->TextureTarget = MapTarget;
+		// The stage's own colours, flat and clear (no light or fog to darken it): a map, not a photo.
+		Setup->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
+		Setup->bCaptureEveryFrame = false;
+		Setup->bCaptureOnMovement = false;
+		MapHiddenAt = -100.0;
+	}
+	USceneCaptureComponent2D* Capture = MapCamera->GetCaptureComponent2D();
+	// Straight down from high above, turned with the player's view so the map's up is the screen's up.
+	MapCamera->SetActorLocationAndRotation(Center + FVector(0.0f, 0.0f, Half * 2.0f + 4000.0f), FRotator(-90.0f, Yaw, 0.0f));
+	Capture->OrthoWidth = Half * 2.0f * 1.08f;
+	// Nobody and no ball in the picture: they are drawn over it as they move (the list kept up as balls come and go).
+	if (const double Now = FPlatformTime::Seconds(); Now - MapHiddenAt > 0.5)
+	{
+		MapHiddenAt = Now;
+		Capture->HiddenActors.Reset();
+		for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+		{
+			Capture->HiddenActors.Add(*It);
+		}
+		for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
+		{
+			Capture->HiddenActors.Add(*It);
+		}
+	}
+	Capture->CaptureScene();
+	MapBrush.SetResourceObject(MapTarget);
+	MapBrush.ImageSize = FVector2D(1024.0, 1024.0);
+	MapBrush.DrawAs = ESlateBrushDrawType::Image;
+	MapCenter = Center;
+	MapHalf = Half;
+	MapYaw = Yaw;
+	bMapTaken = true;
+}
+
+void UChaosImpactChargeWidget::PaintOverviewMap(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+	const int32 Layer) const
+{
+	using namespace ChaosImpactPaint;
+	UWorld* World = GetWorld();
+	if (!bMapTaken || !MapTarget || !World)
+	{
+		return;
+	}
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	const float S = GetHudScale(Size.X, Size.Y);
+	const double Clock = FPlatformTime::Seconds();
+	const float In = EaseOut(static_cast<float>(Clock - MapOpenedAt) / 0.18f);
+	// A dark veil over the play (it shows through), the map square in the middle.
+	FPainter{AllottedGeometry, OutDrawElements, Layer, In}.Box(0.0f, 0.0f, Size.X, Size.Y, FLinearColor(0.004f, 0.008f, 0.02f, 0.62f));
+	// Under whatever stands at the top middle (the clock, a duel's scoreboard), with room for its title over it.
+	float TopY = 0.0f;
+	for (const FBox2D& Box : HudBoxesLast)
+	{
+		// (Only what hangs from the top edge: the clock, a duel's scoreboard; not cards that come and go.)
+		if (Box.bIsValid && Box.Min.Y <= 4.0 && Box.Max.Y < Size.Y * 0.3f && Box.Max.X > Size.X * 0.3f && Box.Min.X < Size.X * 0.7f)
+		{
+			TopY = FMath::Max(TopY, static_cast<float>(Box.Max.Y));
+		}
+	}
+	const float Top = TopY + 50.0f * S;
+	const float Side = FMath::Max(120.0f, FMath::Min(Size.X * 0.9f, Size.Y - Top - 40.0f * S));
+	const FVector2D Origin((Size.X - Side) * 0.5f, Top + (1.0f - In) * 18.0f * S);
+	// (The picture's own alpha is not kept by the capture: drawn as solid colour, faded by the tint.)
+	FSlateDrawElement::MakeBox(OutDrawElements, Layer + 1, AllottedGeometry.ToPaintGeometry(FVector2f(Side, Side),
+		FSlateLayoutTransform(FVector2f(Origin))), &MapBrush, ESlateDrawEffect::IgnoreTextureAlpha, FLinearColor(1.0f, 1.0f, 1.0f, 0.86f * In));
+	const FPainter Frame{AllottedGeometry, OutDrawElements, Layer + 2, In};
+	Frame.Outline(static_cast<float>(Origin.X) - 3.0f * S, static_cast<float>(Origin.Y) - 3.0f * S, Side + 6.0f * S, Side + 6.0f * S,
+		WithAlpha(Ice, 0.85f), 2.5f * S);
+	// Its title over its top left, and how to close it under it.
+	const UWorld* MapWorld = World;
+	const AChaosImpactGameState* Match = MapWorld->GetGameState<AChaosImpactGameState>();
+	const FString Title = Match && (Match->IsDuel() || Match->IsTournament()) ? FString(ChaosImpactMatch::GetDuelStageName())
+		: Match && Match->bVersusMatch ? ChaosImpactMatch::GetStageLabel(Match->Rules.StageIndex) : FString(TEXT("マップ"));
+	HudText3D(Frame, TEXT("MAP"), static_cast<float>(Origin.X), static_cast<float>(Origin.Y) - 44.0f * S, 30.0f * S, Ice, ETextAlign::Left,
+		TEXT("BlackItalic"), 2.0f * S);
+	Frame.Text(Title, static_cast<float>(Origin.X) + 92.0f * S, static_cast<float>(Origin.Y) - 36.0f * S,
+		HudFit(Title, 20.0f * S, Side - 100.0f * S, TEXT("Black")), Paper, ETextAlign::Left, TEXT("Black"), 2.0f * S, Ink);
+	FString CloseKey = ChaosImpactSettings::DescribeAction(GetOwningPlayer(), EChaosImpactAction::OverviewMap);
+	CloseKey.Split(TEXT(" / "), &CloseKey, nullptr);
+	const FString Close = FString::Printf(TEXT("%s で閉じる"), *CloseKey);
+	Frame.Text(Close, static_cast<float>(Origin.X + Side), static_cast<float>(Origin.Y + Side) + 8.0f * S, 16.0f * S,
+		WithAlpha(Paper, 0.85f), ETextAlign::Right, TEXT("Bold"), 1.5f * S, Ink);
+
+	// Where a place in the world falls on the square (its up is the player's view's forward, as the picture was taken).
+	const float Width = MapHalf * 2.0f * 1.08f;
+	const float YawRad = FMath::DegreesToRadians(MapYaw);
+	const float Cos = FMath::Cos(YawRad), Sin = FMath::Sin(YawRad);
+	const auto ToMap = [&](const FVector& Where, bool& bInside)
+	{
+		const FVector Rel = Where - MapCenter;
+		const float Forward = Rel.X * Cos + Rel.Y * Sin;
+		const float Right = -Rel.X * Sin + Rel.Y * Cos;
+		const FVector2D UV(0.5f + Right / Width, 0.5f - Forward / Width);
+		bInside = UV.X >= 0.0 && UV.X <= 1.0 && UV.Y >= 0.0 && UV.Y <= 1.0;
+		return Origin + UV * Side;
+	};
+	const auto Heading = [&](const FVector& Direction)
+	{
+		const float Forward = Direction.X * Cos + Direction.Y * Sin;
+		const float Right = -Direction.X * Sin + Direction.Y * Cos;
+		return FVector2D(Right, -Forward).GetSafeNormal();
+	};
+	const FPainter Marks{AllottedGeometry, OutDrawElements, Layer + 4, In};
+	// The balls lying about (their kind's colour) and those in the air (small and white).
+	for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
+	{
+		const AChaosImpactBall* Ball = *It;
+		bool bInside = false;
+		const FVector2D At = ToMap(Ball->GetActorLocation(), bInside);
+		if (!bInside || Ball->IsHidden() || Ball->GetAttachParentActor())
+		{
+			continue;
+		}
+		if (Ball->IsPickup())
+		{
+			Marks.Disc(At, 6.5f * S, WithAlpha(Ink, 0.9f));
+			HudAbove(Marks, 1).Disc(At, 4.8f * S, ChaosImpactBallTypes::GetColor(Ball->GetBallType()));
+		}
+		else
+		{
+			HudAbove(Marks, 1).Disc(At, 3.5f * S, WithAlpha(Paper, 0.9f));
+		}
+	}
+	// クラッシュボール: the goals (their team's colour) and the giant ball.
+	for (TActorIterator<AChaosImpactCrashGoal> It(World); It; ++It)
+	{
+		bool bInside = false;
+		const FVector2D At = ToMap(It->GetActorLocation(), bInside);
+		if (!bInside) { continue; }
+		const FLinearColor GoalColor = ChaosImpactMatch::GetTeamColor(It->GetTeamIndex());
+		RoundedBox(Marks, static_cast<float>(At.X) - 16.0f * S, static_cast<float>(At.Y) - 16.0f * S, 32.0f * S, 32.0f * S, 6.0f * S, WithAlpha(Ink, 0.9f));
+		RoundedBox(HudAbove(Marks, 1), static_cast<float>(At.X) - 13.0f * S, static_cast<float>(At.Y) - 13.0f * S, 26.0f * S, 26.0f * S, 5.0f * S, GoalColor);
+		HudAbove(Marks, 2).Text(TEXT("ゴール"), static_cast<float>(At.X), static_cast<float>(At.Y) - 36.0f * S, 13.0f * S, GoalColor,
+			ETextAlign::Center, TEXT("Black"), 2.0f * S, Ink);
+	}
+	if (const AChaosImpactCrashBall* Giant = Match ? Match->GetCrashBall() : nullptr)
+	{
+		bool bInside = false;
+		const FVector2D At = ToMap(Giant->GetActorLocation(), bInside);
+		if (bInside)
+		{
+			Marks.Disc(At, 17.0f * S, WithAlpha(Ink, 0.95f));
+			HudAbove(Marks, 1).Disc(At, 14.0f * S, Gold);
+			HudAbove(Marks, 2).Text(TEXT("巨大球"), static_cast<float>(At.X), static_cast<float>(At.Y) - 40.0f * S, 13.0f * S, Gold,
+				ETextAlign::Center, TEXT("Black"), 2.0f * S, Ink);
+		}
+	}
+	// Everyone: this player an arrow the way they face, the others a disc of their side's colour with their name.
+	const UGameInstance* GameInstance = GetGameInstance();
+	const APawn* Me = GetOwningPlayerPawn();
+	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+	{
+		const AChaosImpactCharacter* Character = *It;
+		if (!IsValid(Character) || Character->IsEliminated() || Character->IsHidden())
+		{
+			continue;
+		}
+		bool bInside = false;
+		const FVector2D At = ToMap(Character->GetActorLocation(), bInside);
+		if (!bInside)
+		{
+			continue;
+		}
+		FLinearColor Color = Character->GetCPUNumber() > 0 ? FLinearColor(0.74f, 0.78f, 0.86f, 1.0f) : Gold;
+		if (const APlayerController* Controller = Cast<APlayerController>(Character->GetController());
+			Controller && Controller->IsLocalController() && Controller->GetLocalPlayer() && GameInstance)
+		{
+			Color = PlayerAccents[FMath::Max(GameInstance->GetLocalPlayers().IndexOfByKey(Controller->GetLocalPlayer()), 0) % 4];
+		}
+		if (const AChaosImpactPlayerState* State = Character->GetPlayerState<AChaosImpactPlayerState>();
+			Match && Match->IsTeamBattle() && State && State->TeamIndex >= 0)
+		{
+			Color = ChaosImpactMatch::GetTeamColor(State->TeamIndex);
+		}
+		if (Character == Me)
+		{
+			// A ring that breathes, and the arrow.
+			const float Breath = 0.5f + 0.5f * FMath::Sin(static_cast<float>(Clock) * 5.0f);
+			Marks.Ring(At, (16.0f + 4.0f * Breath) * S, WithAlpha(Color, 0.5f + 0.3f * Breath), 2.5f * S);
+			PaintMarkerArrow(HudAbove(Marks, 2), At + Heading(Character->GetActorForwardVector()) * 14.0f * S,
+				Heading(Character->GetActorForwardVector()), 0.75f * S, Color);
+			HudAbove(Marks, 3).Text(TEXT("YOU"), static_cast<float>(At.X), static_cast<float>(At.Y) - 40.0f * S, 13.0f * S, Color,
+				ETextAlign::Center, TEXT("BlackItalic"), 2.0f * S, Ink);
+			continue;
+		}
+		Marks.Disc(At, 10.0f * S, WithAlpha(Ink, 0.95f));
+		HudAbove(Marks, 1).Disc(At, 7.5f * S, Color);
+		const FString Name = Character->GetOverheadDisplayName();
+		HudAbove(Marks, 2).Text(Name, static_cast<float>(At.X), static_cast<float>(At.Y) - 30.0f * S, HudFit(Name, 13.0f * S, 120.0f * S, TEXT("Bold")),
+			Color, ETextAlign::Center, TEXT("Bold"), 2.0f * S, Ink);
+	}
 }
 
 void UChaosImpactChargeWidget::PaintSoloClear(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
@@ -1495,7 +2053,7 @@ int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
 	if (Size.X < 1 || Size.Y < 1 || !FBox2D(FVector2D::ZeroVector, Size).IsInside(Pointer)) { return 0; }
 	for (int32 Hit = 1; Hit <= 6; ++Hit)
 	{
-		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || CwIsTournamentWorld(this))) { continue; }
+		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this))) { continue; }
 		if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 		if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
 		if (Hit == 6 && (!Character || Character->GetBallForm()->IsCaptured() || !Character->GetBallForm()->IsAvailable())) { continue; }
@@ -1569,11 +2127,12 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 	{
 		for (int32 Hit = 1; Hit <= 6; ++Hit)
 		{
-			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || CwIsTournamentWorld(this))) { continue; }
+			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this))) { continue; }
 			if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
 			if (Hit == 6 && (!ShoulderCharacter || ShoulderCharacter->GetBallForm()->IsCaptured() || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
 			const FBox2D R = EasyButtonRect(Size, S, Hit);
+			HudBoxes.Add(FBox2D(R.Min - FVector2D(8.0, 8.0) * S, R.Max + FVector2D(8.0, 8.0) * S));
 			const bool bHover = Hover == Hit;
 			const FPainter Button{Geometry, Elements, Layer};
 			HudShard(Button, {FVector2D(R.Min.X + 10.0f * S, R.Min.Y), FVector2D(R.Max.X, R.Min.Y), FVector2D(R.Max.X - 10.0f * S, R.Max.Y),
@@ -1626,9 +2185,9 @@ float UChaosImpactChargeWidget::GetHudScale(const double Width, const double Hei
 	{
 		// A split view is only part of the screen but is read from the same distance, so it is sized by what
 		// fits in the view rather than shrunk in proportion to it.
-		return FMath::Clamp(static_cast<float>(FMath::Min(Width / 880.0, Height / 560.0)), 0.62f, 1.1f);
+		return FMath::Clamp(static_cast<float>(FMath::Min(Width / 880.0, Height / 560.0)), 0.62f, 1.1f) * ChaosImpactSettings::GetHudSizeFactor();
 	}
-	return FMath::Clamp(static_cast<float>(FMath::Min(Width / 1600.0, Height / 900.0)), 0.5f, 1.4f);
+	return FMath::Clamp(static_cast<float>(FMath::Min(Width / 1600.0, Height / 900.0)), 0.5f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 }
 
 void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& Paint, const FVector2D& Center, const float Radius, const bool bFilled,
@@ -1857,6 +2416,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		? FMath::Max(0, OwningGameInstance->GetLocalPlayers().IndexOfByKey(OwningLocalPlayer)) : 0;
 	const FLinearColor Accent = PlayerAccents[PlayerIndex % 4];
 	const FGeometry Corner = MakeAnchor(AllottedGeometry, Size.X, Size.Y, S);
+	Occupy(Corner, -300.0f, NovaParts != 0 ? -250.0f : -200.0f, 300.0f, NovaParts != 0 ? 250.0f : 200.0f);
 
 	// The holder: no plate, two round pedestals. The ball thrown next sits large on the front one, with a jagged blast
 	// round it (fire while it holds a ball) and a ring of its ball's colour turning slowly; the other ball sits smaller
@@ -2070,6 +2630,7 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	const int32 PlayerIndex = OwningGameInstance && OwningLocalPlayer
 		? FMath::Max(0, OwningGameInstance->GetLocalPlayers().IndexOfByKey(OwningLocalPlayer)) : 0;
 	const FGeometry Corner = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
+	Occupy(Corner, 0.0f, -185.0f, 400.0f, 185.0f);
 	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
 	// No panel: the pieces stand on the game as they are, each outlined like the logo's letters.
 	const FPainter Low{Corner, OutDrawElements, BaseLayer};
@@ -2088,7 +2649,7 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	}
 	const FString Number = FString::Printf(TEXT("P%d"), PlayerIndex + 1);
 	HudText3D(Top, Number, 44.0f, -160.0f, 18.0f, FireFill.Top, ETextAlign::Left);
-	HudText3D(Top, Name, 50.0f + HudMeasure(Number, 18.0f, TEXT("BlackItalic")), -158.0f, 16.0f, Paper, ETextAlign::Left, TEXT("Black"));
+	HudText3D(Top, Name, 50.0f + HudMeasure(Number, 18.0f, TEXT("BlackItalic")), -158.0f, HudFit(Name, 16.0f, 230.0f), Paper, ETextAlign::Left, TEXT("Black"));
 
 	// HP: a diamond of fire with the number in it (it jolts when hit; on the last point it flares and pulses), then a
 	// chevron of ice per point, pointing on. A lost point breaks apart.
@@ -2231,6 +2792,7 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	// Bottom middle: 観戦中 and who is shown, then the camera keys under it.
 	const FGeometry Bottom = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y, S);
 	const FGeometry Plate = MakeSkewed(Bottom, -300.0f, -128.0f, 600.0f, 64.0f, -0.25f);
+	Occupy(Bottom, -330.0f, -140.0f, 660.0f, 140.0f);
 	const FPainter P{Plate, OutDrawElements, BaseLayer, 1.0f};
 	const auto* RoyaleEntry = Match && Match->IsBattleRoyale() && GetOwningPlayer() ? Match->GetRoyaleEntry(GetOwningPlayer()->PlayerState) : nullptr;
 	const bool bRoyaleOut = RoyaleEntry && RoyaleEntry->bOut;
@@ -2276,8 +2838,8 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	}
 	const FString Caption = RoyaleEntry && RoyaleEntry->bOut
 		? (RoyaleEntry->Place > 0 ? FString::Printf(TEXT("%d位 脱落"), RoyaleEntry->Place) : FString(TEXT("脱落"))) : FString(TEXT("観戦中"));
-	P.Text(Caption, 75.0f, 11.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
-	P.Text(Showing, 375.0f, 12.0f, 30.0f, ShowingColor, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+	P.Text(Caption, 75.0f, 11.0f + (30.0f - HudFit(Caption, 30.0f, 136.0f)) * 0.5f, HudFit(Caption, 30.0f, 136.0f), Paper, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+	P.Text(Showing, 375.0f, 12.0f + (30.0f - HudFit(Showing, 30.0f, 420.0f)) * 0.5f, HudFit(Showing, 30.0f, 420.0f), ShowingColor, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 	const AChaosImpactPlayerController* Viewer = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 	const bool bOnline = Viewer && Viewer->IsOnlineRoom();
 	const FPainter Keys{MakeAnchor(Bottom, 0.0f, -54.0f, 1.0f), OutDrawElements, BaseLayer, 1.0f};
@@ -2288,7 +2850,28 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	KeyHelp += !bOnline ? TEXT("　T / A  時間停止")
 		: Viewer->CanToggleSpectating() ? FString::Printf(TEXT("　%s  プレイヤーに戻る"),
 			*ChaosImpactSettings::DescribeAction(Viewer, EChaosImpactAction::LobbySpectate)) : FString();
-	Keys.Text(KeyHelp, 0.0f, 0.0f, 18.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center, TEXT("Regular"), 1.5f, Ink);
+	// Within this player's part of the screen: smaller to fit, and on two lines when one would be too small to read.
+	const float KeyRoom = Size.X / FMath::Max(S, 0.01f) - 40.0f;
+	if (HudFit(KeyHelp, 18.0f, KeyRoom, TEXT("Regular")) >= 13.0f)
+	{
+		Keys.Text(KeyHelp, 0.0f, 0.0f, HudFit(KeyHelp, 18.0f, KeyRoom, TEXT("Regular")), WithAlpha(Paper, 0.8f), ETextAlign::Center, TEXT("Regular"), 1.5f, Ink);
+	}
+	else
+	{
+		TArray<FString> Parts;
+		KeyHelp.ParseIntoArray(Parts, TEXT("　"), true);
+		FString Lines[2];
+		for (int32 Index = 0; Index < Parts.Num(); ++Index)
+		{
+			FString& Line = Lines[Index < (Parts.Num() + 1) / 2 ? 0 : 1];
+			Line += (Line.IsEmpty() ? TEXT("") : TEXT("　")) + Parts[Index];
+		}
+		for (int32 Row = 0; Row < 2; ++Row)
+		{
+			Keys.Text(Lines[Row], 0.0f, -22.0f + Row * 22.0f, HudFit(Lines[Row], 17.0f, KeyRoom, TEXT("Regular")), WithAlpha(Paper, 0.8f), ETextAlign::Center,
+				TEXT("Regular"), 1.5f, Ink);
+		}
+	}
 
 	if (Viewer && Viewer->IsSpectateTimeStopped())
 	{
@@ -2335,9 +2918,10 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		// Convert its lower edge to this view's widget coordinates, including split screens and DPI scaling.
 		const FGeometry Viewport = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this);
 		const FVector2D ViewportSize = Viewport.GetLocalSize();
-		const float ScoreScale = FMath::Clamp(static_cast<float>(FMath::Min(ViewportSize.X / 1600., ViewportSize.Y / 900.)), .42f, 1.4f);
+		const float ScoreScale = FMath::Clamp(static_cast<float>(FMath::Min(ViewportSize.X / 1600., ViewportSize.Y / 900.)), .42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 		MarkerTopInset = FMath::Clamp(static_cast<float>(GetCachedGeometry().AbsoluteToLocal(
 			Viewport.LocalToAbsolute(FVector2D(ViewportSize.X * .5, (Match->IsBattleRoyale() ? 190.f : 155.f) * ScoreScale))).Y), 0.f, static_cast<float>(Center.Y * .75));
+		HudBoxes.Add(FBox2D(FVector2D(0.0, 0.0), FVector2D(Size.X, MarkerTopInset)));
 	}
 
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
@@ -2452,16 +3036,94 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		const float Nearness = 1.0f - FMath::Clamp(
 			(Distance - PlayerMarkerNearDistance) / (PlayerMarkerRange - PlayerMarkerNearDistance), 0.0f, 1.0f);
 		const float K = S * FMath::Lerp(0.75f, 1.8f, Nearness * Nearness);
-		const FVector2D Tip = ChaosImpactPlayerMarkerLayout::EdgeTip(Size, Direction, K, MarkerTopInset);
+		const float LabelSize = 11.0f * S * FMath::Lerp(0.95f, 1.2f, Nearness);
+		// Along its ray, in from the edge until it is clear of this mode's HUD (scores, health, balls, hints...).
+		const FVector2D Footprint(FMath::Max(30.0f * K, 22.0f * K + HudMeasure(Name, LabelSize, TEXT("Bold")) * 0.5f + 6.0f), 30.0f * K + LabelSize);
+		const FVector2D Tip = ChaosImpactPlayerMarkerLayout::EdgeTipClear(Size, Direction, K, MarkerTopInset, HudBoxesLast, Footprint, 26.0f * K);
 
 		const FPainter Marker{AllottedGeometry, OutDrawElements, BaseLayer, FMath::Lerp(0.6f, 1.0f, Nearness) * Shown};
 		Marker.Disc(Tip - Direction * 16.0f * K, 18.0f * K, WithAlpha(Ink, 0.62f));
 		PaintMarkerArrow(Marker, Tip, Direction, K, Color);
 		const FVector2D Label = Tip - Direction * 48.0f * K;
-		const float LabelSize = 11.0f * S * FMath::Lerp(0.95f, 1.2f, Nearness);
 		Marker.Text(Name, static_cast<float>(Label.X), static_cast<float>(Label.Y) - LabelSize * 0.85f, LabelSize,
 			Color, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
 	}
+
+	// A ball thrown at this player from off screen: a mark at the edge it will come in by, in the ball's colour, larger
+	// and brighter as it nears (gone once it is on screen), and a small sound from that side when it first shows.
+	const AChaosImpactCharacter* Target = Cast<AChaosImpactCharacter>(ViewerPawn);
+	if (!Target || Target->IsEliminated())
+	{
+		return;
+	}
+	constexpr float WarnSeconds = 1.6f;
+	constexpr float WarnMiss = 280.0f;
+	TSet<TWeakObjectPtr<AChaosImpactBall>> StillComing;
+	for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
+	{
+		AChaosImpactBall* Ball = *It;
+		if (!IsValid(Ball) || Ball->IsHidden() || Ball->IsPickup() || Ball->GetAttachParentActor() || Ball->WasThrownBy(Target))
+		{
+			continue;
+		}
+		const APawn* Thrower = Ball->GetShownThrower();
+		if (Thrower && AChaosImpactGameState::AreTeammates(World, Thrower, Target))
+		{
+			continue;
+		}
+		// Coming this way: along the ground it passes within reach of this player, soon.
+		const FVector Velocity = Ball->GetBallVelocity();
+		const FVector2D Flat(Velocity.X, Velocity.Y);
+		const double Speed2 = Flat.SizeSquared();
+		if (Speed2 < FMath::Square(300.0))
+		{
+			continue;
+		}
+		const FVector Offset = Target->GetActorLocation() - Ball->GetActorLocation();
+		const FVector2D Toward(Offset.X, Offset.Y);
+		const double When = FVector2D::DotProduct(Toward, Flat) / Speed2;
+		if (When <= 0.0 || When > WarnSeconds || (Toward - Flat * When).Size() > WarnMiss)
+		{
+			continue;
+		}
+		// Only from off screen (on screen it can be seen and dodged as it is).
+		FVector2D BallScreen;
+		const bool bBallProjected = UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PlayerController, Ball->GetActorLocation(), BallScreen, true);
+		const FVector FromCamera = Ball->GetActorLocation() - CameraLocation;
+		const bool bInFront = FVector::DotProduct(FromCamera, CameraAxes.GetScaledAxis(EAxis::X)) > 0.0;
+		if (bBallProjected && bInFront && BallScreen.X >= 0.0 && BallScreen.Y >= 0.0 && BallScreen.X <= Size.X && BallScreen.Y <= Size.Y)
+		{
+			continue;
+		}
+		FVector2D Direction = bBallProjected && bInFront ? BallScreen - Center
+			: FVector2D(FVector::DotProduct(FromCamera, CameraAxes.GetScaledAxis(EAxis::Y)), -FVector::DotProduct(FromCamera, CameraAxes.GetScaledAxis(EAxis::Z)));
+		if (!Direction.Normalize())
+		{
+			continue;
+		}
+		StillComing.Add(Ball);
+		if (!WarnedBalls.Contains(Ball))
+		{
+			// (Placed a little way toward the ball from this player, so it is heard from that side and not too far.)
+			const FVector Side = FVector(Toward.X, Toward.Y, 0.0).GetSafeNormal() * -420.0f;
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::MatchTick, Target->GetActorLocation() + Side, 0.5f, 1.35f);
+		}
+		const float Urgency = 1.0f - FMath::Clamp(static_cast<float>(When) / WarnSeconds, 0.0f, 1.0f);
+		const float Pulse = 0.5f + 0.5f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * (10.0f + 14.0f * Urgency));
+		const float K = S * FMath::Lerp(0.85f, 1.35f, Urgency);
+		const FLinearColor BallColor = ChaosImpactBallTypes::GetColor(Ball->GetBallType());
+		const FVector2D Tip = ChaosImpactPlayerMarkerLayout::EdgeTipClear(Size, Direction, K, MarkerTopInset, HudBoxesLast,
+			FVector2D(30.0f * K, 30.0f * K), 18.0f * K);
+		// The mark: a soft glow, the ball (its colour, a white rim), and a chevron inside it pointing in, the way it comes.
+		const FVector2D Ball2D = Tip - Direction * 18.0f * K;
+		const FPainter Mark{AllottedGeometry, OutDrawElements, BaseLayer + 2, FMath::Lerp(0.6f, 1.0f, Urgency)};
+		Mark.Disc(Ball2D, (24.0f + 6.0f * Pulse) * K, WithAlpha(BallColor, 0.18f + 0.22f * Pulse));
+		HudAbove(Mark, 1).Disc(Ball2D, 15.0f * K, WithAlpha(Ink, 0.85f));
+		HudAbove(Mark, 2).Disc(Ball2D, 12.5f * K, BallColor);
+		HudAbove(Mark, 2).Ring(Ball2D, 13.5f * K, WithAlpha(Paper, 0.9f), 2.0f * K);
+		PaintMarkerArrow(HudAbove(Mark, 3), Ball2D - Direction * 30.0f * K, -Direction, 0.55f * K, WithAlpha(Paper, 0.75f + 0.25f * Pulse));
+	}
+	WarnedBalls = MoveTemp(StillComing);
 }
 
 void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometry,
@@ -2567,11 +3229,22 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 		// That clock is scaled for the whole screen while this view is scaled for itself, so its height is
 		// converted into this view's units before the rows are placed under it.
 		const UGameInstance* ViewGameInstance = GetGameInstance();
+		{
+			// The shared clock at the top middle of the whole window: taken in this view too (wherever it falls in it). (The
+			// viewport's geometry is in the same space as this widget's cached one, not as the paint geometry.)
+			const FGeometry Viewport = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this);
+			const FVector2D Window = Viewport.GetLocalSize();
+			const float ClockScale = FMath::Clamp(static_cast<float>(FMath::Min(Window.X / 1600.0, Window.Y / 900.0)), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
+			FBox2D ClockBox(ForceInit);
+			ClockBox += FVector2D(GetCachedGeometry().AbsoluteToLocal(Viewport.LocalToAbsolute(FVector2D(Window.X * 0.5 - 175.0 * ClockScale, 0.0))));
+			ClockBox += FVector2D(GetCachedGeometry().AbsoluteToLocal(Viewport.LocalToAbsolute(FVector2D(Window.X * 0.5 + 175.0 * ClockScale, 96.0 * ClockScale))));
+			HudBoxes.Add(ClockBox);
+		}
 		float RowTop = 16.0f;
 		if (ViewGameInstance && ViewGameInstance->GetLocalPlayers().Num() > 1)
 		{
 			const FVector2D Screen = UWidgetLayoutLibrary::GetViewportWidgetGeometry(this).GetLocalSize();
-			const float ScreenScale = FMath::Clamp(static_cast<float>(FMath::Min(Screen.X / 1600.0, Screen.Y / 900.0)), 0.42f, 1.4f);
+			const float ScreenScale = FMath::Clamp(static_cast<float>(FMath::Min(Screen.X / 1600.0, Screen.Y / 900.0)), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 			RowTop = FMath::Max(16.0f, 92.0f * ScreenScale / S + 4.0f);
 		}
 		const auto PaintRow = [&](const int32 Row, const int32 Rank, const FLinearColor& Accent, const FString& Label,
@@ -2581,6 +3254,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			constexpr float RowWidth = 270.0f;
 			constexpr float RowHeight = 28.0f;
 			const float Y = RowTop + Row * 36.0f;
+			Occupy(TopLeft, 0.0f, Y - 8.0f, RowLeft + RowWidth + 60.0f, RowHeight + 16.0f);
 			const auto At = [](const float X, const float YY) { return FVector2D(X, YY); };
 			const FPainter Strip{TopLeft, OutDrawElements, BaseLayer};
 			// A strip with a torn right end; this player's own glows ice blue.
@@ -2596,7 +3270,10 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 				At(RowLeft - 8.0f, Y + RowHeight + 4.0f)}, Medal, 2.5f, FVector2D(3.0, 4.0));
 			const FPainter Words = HudAbove(Front);
 			HudText3D(Words, Rank > 0 ? FString::FromInt(Rank) : FString(TEXT("-")), RowLeft + 14.0f, Y - 2.0f, 20.0f, Paper, ETextAlign::Center);
-			Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, 15.0f, bOwn ? Paper : WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
+			// (Clear of the points at the strip's right end.)
+			const float PointsW = HudMeasure(FString::FromInt(Points), 22.0f, TEXT("BlackItalic"));
+			Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, HudFit(Label, 15.0f, RowWidth - 16.0f - PointsW - 10.0f - 46.0f), bOwn ? Paper : WithAlpha(Paper, 0.85f),
+				ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
 			HudText3D(Words, FString::FromInt(Points), RowLeft + RowWidth - 16.0f, Y - 3.0f, 22.0f, bOwn ? IceFill.Top : Paper, ETextAlign::Right);
 			// Online: their connection, small, just past the strip (the host's own machine has none).
 			if (Player && Match->bOnlineRoom && !Player->IsABot())
@@ -2702,6 +3379,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			const float Pop = 1.0f + 0.5f * FMath::Exp(-9.0f * ChangeAge);
 			const FHudFill Medal = OwnRank == 1 ? FireFill : OwnRank == 2 ? SilverFill : OwnRank == 3 ? BronzeFill : NightFill;
 			const FGeometry BadgeSpace = MakeSkewed(BottomLeft, BadgeLeft, BadgeTop, BadgeWidth, BadgeHeight, 0.0f, Pop);
+			Occupy(BottomLeft, BadgeLeft - 8.0f, BadgeTop - 26.0f, BadgeWidth + 50.0f, BadgeHeight + 34.0f);
 			HudShard(FPainter{BadgeSpace, OutDrawElements, BaseLayer}, {FVector2D(14.0, 0.0), FVector2D(BadgeWidth, 0.0),
 				FVector2D(BadgeWidth - 14.0f, BadgeHeight), FVector2D(0.0, BadgeHeight)}, Medal, 3.5f, FVector2D(5.0, 6.0));
 			if (OwnRank == 1)
@@ -3017,7 +3695,16 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			{
 				ChipX += Tag(HudAbove(R2, 2), ChipX, 9.0f, TEXT("あなた"), 12.0f, Ice, Paper) + 5.0f;
 			}
-			R2.Text(ChaosImpactRoster::Get(Member->CharacterIndex).Name, 58.0f, 35.0f, 15.0f, WithAlpha(Paper, 0.62f), ETextAlign::Left, TEXT("Bold"));
+			const FString CharacterName = ChaosImpactRoster::Get(Member->CharacterIndex).Name;
+			R2.Text(CharacterName, 58.0f, 35.0f, 15.0f, WithAlpha(Paper, 0.62f), ETextAlign::Left, TEXT("Bold"));
+			// Team rules decided: the team this member picked, after the character.
+			if (Room->bRulesDecided && Room->Rules.IsTeamBattle() && Member->TeamIndex >= 0)
+			{
+				const FString TeamWord = FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Member->TeamIndex));
+				const float TeamX = 58.0f + FMath::Min(HudMeasure(CharacterName, 15.0f, TEXT("Bold")), 150.0f) + 10.0f;
+				Tag(HudAbove(R2, 2), TeamX, 34.0f, TeamWord, HudFit(TeamWord, 12.0f, 340.0f - TeamX - 14.0f), ChaosImpactMatch::GetTeamColor(Member->TeamIndex),
+					Member->TeamIndex == 2 ? Ink : Paper);
+			}
 			if (Room->bRulesDecided)
 			{
 				// 準備OK at a glance: a lit green check, or an empty box while still waiting.
@@ -3084,6 +3771,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		const TArray<AChaosImpactPlayerState*> Watchers = Room->GetSpectators();
 		const float WatchTop = ListBottom + 4.0f;
 		const FPainter W{MakeSkewed(TopLeft, 40.0f, WatchTop, ListW, 38.0f, -0.12f), OutDrawElements, BaseLayer};
+		OccupyShared(TopLeft, 20.0f, 0.0f, ListW + 50.0f, WatchTop + 104.0f);
 		TArray<FString> WatcherNames;
 		for (const AChaosImpactPlayerState* Watcher : Watchers)
 		{
@@ -3110,9 +3798,16 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 					W2.Text(FString::Printf(TEXT("%dP"), Index + 1), X, Y + 2.0f, 16.0f, Muted, ETextAlign::Left, TEXT("BlackItalic"));
 					X += 32.0f;
 				}
+				const float TagX = X;
 				X += Tag(HudAbove(W2, 1), X, Y, Keys, 14.0f, WithAlpha(Paper, 0.9f), Ink) + 8.0f;
-				W2.Text(SwitchController->IsSpectating() ? TEXT("プレイヤーに戻る") : TEXT("観戦にする"), X, Y + 2.0f, 17.0f,
+				const FString SwitchLine = SwitchController->IsSpectating() ? TEXT("長押しでプレイヤーに戻る") : TEXT("長押しで観戦にする");
+				W2.Text(SwitchLine, X, Y + 2.0f, HudFit(SwitchLine, 17.0f, FMath::Max(60.0f, ListW - X - 16.0f), TEXT("Bold")),
 					WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
+				// How far the hold has gone, under the key.
+				if (const float Held = SwitchController->GetSpectateHoldProgress(); Held > 0.0f)
+				{
+					HudAbove(W2, 2).Box(TagX, Y + 22.0f, (X - 8.0f - TagX) * Held, 3.0f, Gold);
+				}
 			}
 		}
 
@@ -3130,6 +3825,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 					: bNarrow ? MakeSkewed(TopLeft, 40.f, WatchTop + 78.f, 420.f, 104.f, -.12f)
 					: MakeSkewed(TopCenter, -210.f, 36.f, 420.f, 104.f, -.12f);
 				const FPainter P{Hint, OutDrawElements, BaseLayer + 2};
+				OccupyShared(Hint, -10.0f, -10.0f, 440.0f, 124.0f);
 				DrawCard(P, 420.0f, 104.0f, bCanClose ? Gold : Muted, 7.0f, false);
 				const FPainter P2 = HudAbove(P, 2);
 				HudText3D(P2, bCanClose ? TEXT("長押しで募集終了") : TEXT("メンバーの参加を待っています"), 24.0f, 10.0f,
@@ -3167,7 +3863,35 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			const AChaosImpactPlayerState* OwnState = LocalStates.IsEmpty() ? nullptr : Cast<AChaosImpactPlayerState>(LocalStates[0]);
 			const bool bPrompt = !bStartingNow && Room->Phase == EChaosImpactOnlinePhase::Lobby && !(OwnState && OwnState->bSpectating);
 			constexpr float PW = 440.0f;
-			const float PH = bPrompt ? 288.0f : 246.0f;
+			// Team rules: a line per player on this machine with the team they are on and the key that changes it.
+			TArray<TPair<int32, const AChaosImpactPlayerController*>> TeamPickers;
+			if (const UGameInstance* LocalGI = GetGameInstance(); LocalGI && Rules.IsTeamBattle() && !bStartingNow)
+			{
+				for (int32 Index = 0; Index < LocalGI->GetNumLocalPlayers(); ++Index)
+				{
+					const auto* Picker = Cast<AChaosImpactPlayerController>(LocalGI->GetLocalPlayers()[Index]->GetPlayerController(GetWorld()));
+					if (Picker && Picker->CanChangeLobbyTeam())
+					{
+						TeamPickers.Add({Index, Picker});
+					}
+				}
+			}
+			const float TB = TeamPickers.IsEmpty() ? 0.0f : 12.0f + 34.0f * TeamPickers.Num();
+			// Who on this machine still presses 準備OK: each of a split screen's players presses their own (a line each).
+			TArray<TPair<int32, const AChaosImpactPlayerController*>> ReadyPressers;
+			if (const UGameInstance* LocalGI = GetGameInstance(); LocalGI && bPrompt)
+			{
+				for (int32 Index = 0; Index < LocalGI->GetNumLocalPlayers(); ++Index)
+				{
+					const auto* Presser = Cast<AChaosImpactPlayerController>(LocalGI->GetLocalPlayers()[Index]->GetPlayerController(GetWorld()));
+					if (Presser && Presser->CanToggleReady())
+					{
+						ReadyPressers.Add({Index, Presser});
+					}
+				}
+			}
+			const int32 ReadyRows = bPrompt ? FMath::Max(ReadyPressers.Num(), 1) : 0;
+			const float PH = (bPrompt ? 248.0f + 40.0f * ReadyRows : 246.0f) + TB;
 			// One player on this machine: the top-right corner, under the 練習設定 button and left of the column of buttons. A split screen: the top
 			// centre, or under the member list when the view is too narrow for that.
 			const bool bSinglePlayer = LocalStates.Num() <= 1;
@@ -3178,6 +3902,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				: bNarrow ? MakeSkewed(TopLeft, 40.0f, WatchTop + 76.0f, PW, PH, -0.12f)
 				: MakeSkewed(TopCenter, -PW * 0.5f, 36.0f, PW, PH, -0.12f);
 			const FPainter P{Panel, OutDrawElements, BaseLayer};
+			OccupyShared(Panel, -10.0f, -10.0f, PW + 20.0f, PH + 20.0f);
 			const FPainter P2 = HudAbove(P, 1);
 			const FPainter P3 = HudAbove(P, 2);
 			const auto Rect = [](const float X, const float Y, const float W, const float H)
@@ -3232,10 +3957,46 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			}
 			P2.Box(22.0f, 142.0f, PW - 44.0f, 1.0f, WithAlpha(Paper, 0.12f));
 
+			// The team band: per player here, the team (its colour) and the key that moves to the next one.
+			for (int32 Line = 0; Line < TeamPickers.Num(); ++Line)
+			{
+				const AChaosImpactPlayerController* Picker = TeamPickers[Line].Value;
+				const AChaosImpactPlayerState* PickerState = Picker->GetPlayerState<AChaosImpactPlayerState>();
+				const int32 Team = PickerState ? PickerState->TeamIndex : INDEX_NONE;
+				const float Y = 152.0f + Line * 34.0f;
+				float X = 22.0f;
+				if (TeamPickers.Num() > 1)
+				{
+					P3.Text(FString::Printf(TEXT("%dP"), TeamPickers[Line].Key + 1), X, Y + 3.0f, 17.0f, Muted, ETextAlign::Left, TEXT("BlackItalic"));
+					X += 34.0f;
+				}
+				// (Shorter with two lines: the team's name alone, and で変更.)
+				const bool bShort = TeamPickers.Num() > 1;
+				const FString TeamWord = Team >= 0 ? FString::Printf(TEXT("%s%s"), ChaosImpactMatch::GetTeamName(Team), bShort ? TEXT("") : TEXT("チーム"))
+					: FString(TEXT("未定"));
+				const FLinearColor TeamColor = Team >= 0 ? ChaosImpactMatch::GetTeamColor(Team) : Muted;
+				const float TeamW = HudMeasure(TeamWord, 17.0f, TEXT("Black")) + 26.0f;
+				RoundedBox(P2, X, Y, TeamW, 28.0f, 8.0f, TeamColor);
+				P3.Text(TeamWord, X + TeamW * 0.5f, Y + 3.0f, 17.0f, Team == 2 ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+				X += TeamW + 12.0f;
+				const FString TeamKeys = ChaosImpactSettings::DescribeAction(Picker, EChaosImpactAction::LobbyTeam);
+				const float KeyW = FMath::Max(HudMeasure(TeamKeys, 16.0f, TEXT("Black")) + 18.0f, 32.0f);
+				RoundedBox(P3, X, Y + 2.0f, KeyW, 24.0f, 6.0f, WithAlpha(Paper, 0.9f));
+				HudAbove(P3, 1).Text(TeamKeys, X + KeyW * 0.5f, Y + 3.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
+				X += KeyW + 8.0f;
+				const TCHAR* const ChangeWord = bShort ? TEXT("で変更") : TEXT("でチーム変更");
+				P3.Text(ChangeWord, X, Y + 3.0f, HudFit(ChangeWord, 17.0f, FMath::Max(40.0f, PW - 22.0f - X), TEXT("Bold")),
+					WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
+			}
+			if (TB > 0.0f)
+			{
+				P2.Box(22.0f, TB + 142.0f, PW - 44.0f, 1.0f, WithAlpha(Paper, 0.12f));
+			}
+
 			// 準備OK: how many, and a capsule per member, lit green when ready.
-			P3.Text(TEXT("準備OK"), 22.0f, 152.0f, 20.0f, WithAlpha(Paper, 0.9f), ETextAlign::Left, TEXT("Black"));
+			P3.Text(TEXT("準備OK"), 22.0f, TB + 152.0f, 20.0f, WithAlpha(Paper, 0.9f), ETextAlign::Left, TEXT("Black"));
 			const bool bAllReady = Ready >= Members.Num() && Members.Num() > 0;
-			HudText3D(P3, FString::Printf(TEXT("%d / %d"), Ready, Members.Num()), PW - 22.0f, 146.0f, 28.0f, bAllReady ? ReadyGreen : Paper,
+			HudText3D(P3, FString::Printf(TEXT("%d / %d"), Ready, Members.Num()), PW - 22.0f, TB + 146.0f, 28.0f, bAllReady ? ReadyGreen : Paper,
 				ETextAlign::Right, TEXT("BlackItalic"), 2.0f);
 			const int32 Pips = FMath::Max(1, Members.Num());
 			const float PipGap = 6.0f;
@@ -3244,10 +4005,10 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			{
 				const bool bLit = Pip < Ready;
 				const float X = 22.0f + Pip * (PipW + PipGap);
-				RoundedBox(P2, X, 184.0f, PipW, 12.0f, 6.0f, bLit ? ReadyGreen : WithAlpha(Paper, 0.1f));
+				RoundedBox(P2, X, TB + 184.0f, PipW, 12.0f, 6.0f, bLit ? ReadyGreen : WithAlpha(Paper, 0.1f));
 				if (bLit)
 				{
-					RoundedBox(P3, X + 4.0f, 186.0f, PipW - 8.0f, 3.0f, 1.5f, WithAlpha(Paper, 0.55f));
+					RoundedBox(P3, X + 4.0f, TB + 186.0f, PipW - 8.0f, 3.0f, 1.5f, WithAlpha(Paper, 0.55f));
 				}
 			}
 
@@ -3261,34 +4022,52 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				Viewing += Viewer && Viewer->bViewingResults ? 1 : 0;
 			}
 			const bool bHurry = bStartingNow || WaitLeft <= 10.0f;
-			RoundedBox(P2, 22.0f, 210.0f, PW - 44.0f, 8.0f, 4.0f, WithAlpha(Paper, 0.1f));
-			RoundedBox(P3, 22.0f, 210.0f, (PW - 44.0f) * (bStartingNow ? 1.0f : WaitAlpha), 8.0f, 4.0f, bHurry ? Fire : Ice);
+			RoundedBox(P2, 22.0f, TB + 210.0f, PW - 44.0f, 8.0f, 4.0f, WithAlpha(Paper, 0.1f));
+			RoundedBox(P3, 22.0f, TB + 210.0f, (PW - 44.0f) * (bStartingNow ? 1.0f : WaitAlpha), 8.0f, 4.0f, bHurry ? Fire : Ice);
 			P3.Text(bStartingNow ? FString(TEXT("まもなく開始"))
 				: Viewing > 0 ? FString::Printf(TEXT("成績を見ている人を待っています（%d人）"), Viewing)
 				: FString(TEXT("自動スタートまで")),
-				22.0f, 222.0f, HudFit(Viewing > 0 ? FString::Printf(TEXT("成績を見ている人を待っています（%d人）"), Viewing) : FString(TEXT("まもなく開始")), 17.0f, PW - 44.0f, TEXT("Bold")), Viewing > 0 ? Gold : bStartingNow ? Fire : Muted, ETextAlign::Left, TEXT("Bold"));
+				22.0f, TB + 222.0f, HudFit(Viewing > 0 ? FString::Printf(TEXT("成績を見ている人を待っています（%d人）"), Viewing) : FString(TEXT("まもなく開始")), 17.0f, PW - 44.0f, TEXT("Bold")), Viewing > 0 ? Gold : bStartingNow ? Fire : Muted, ETextAlign::Left, TEXT("Bold"));
 			if (!bStartingNow && Viewing == 0)
 			{
-				P3.Text(FString::Printf(TEXT("%d秒"), FMath::CeilToInt(WaitLeft)), PW - 22.0f, 220.0f, 20.0f, bHurry ? Fire : Paper,
+				P3.Text(FString::Printf(TEXT("%d秒"), FMath::CeilToInt(WaitLeft)), PW - 22.0f, TB + 220.0f, 20.0f, bHurry ? Fire : Paper,
 					ETextAlign::Right, TEXT("Black"));
 			}
 
 			// How this machine presses 準備OK, and whether it already has (only the key for the device in use now).
 			if (bPrompt)
 			{
-				const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-				const bool bOwnReady = OwnState && OwnState->bReadyForMatch;
-				const float Pulse = bOwnReady ? 1.0f : 0.72f + 0.28f * FMath::Sin(static_cast<float>(Clock) * 5.0f);
-				const FString ReadyKeys = ChaosImpactSettings::DescribeAction(InputController, EChaosImpactAction::LobbyReady);
-				const float KeyWidth = FMath::Max(HudMeasure(ReadyKeys, 18.0f, TEXT("Black")) + 22.0f, 38.0f);
-				// A strip across the bottom: green once ready, else the key pulsing.
-				P2.Box(0.0f, PH - 40.0f, PW, 40.0f, bOwnReady ? WithAlpha(ReadyGreen, 0.18f) : FLinearColor(1.0f, 1.0f, 1.0f, 0.04f));
-				P2.Box(0.0f, PH - 40.0f, PW, 1.0f, WithAlpha(Paper, 0.1f));
-				RoundedBox(P3, 22.0f, PH - 33.0f, KeyWidth, 26.0f, 6.0f, WithAlpha(Paper, Pulse));
-				P3.Text(ReadyKeys, 22.0f + KeyWidth * 0.5f, PH - 32.0f, 18.0f, Ink, ETextAlign::Center, TEXT("Black"));
-				P3.Text(bOwnReady ? TEXT("準備OK！　もう一度でキャンセル") : TEXT("で準備OK"), 34.0f + KeyWidth, PH - 32.0f,
-					HudFit(bOwnReady ? TEXT("準備OK！　もう一度でキャンセル") : TEXT("で準備OK"), 19.0f, PW - 56.0f - KeyWidth),
-					bOwnReady ? ReadyGreen : Paper, ETextAlign::Left, TEXT("Black"));
+				if (ReadyPressers.IsEmpty())
+				{
+					ReadyPressers.Add({0, Cast<AChaosImpactPlayerController>(GetOwningPlayer())});
+				}
+				const bool bSplit = ReadyPressers.Num() > 1;
+				for (int32 Row = 0; Row < ReadyPressers.Num(); ++Row)
+				{
+					const AChaosImpactPlayerController* InputController = ReadyPressers[Row].Value;
+					const AChaosImpactPlayerState* RowState = InputController ? InputController->GetPlayerState<AChaosImpactPlayerState>() : OwnState;
+					const bool bOwnReady = RowState && RowState->bReadyForMatch;
+					const float Pulse = bOwnReady ? 1.0f : 0.72f + 0.28f * FMath::Sin(static_cast<float>(Clock) * 5.0f + Row);
+					const FString ReadyKeys = ChaosImpactSettings::DescribeAction(InputController, EChaosImpactAction::LobbyReady);
+					const float KeyWidth = FMath::Max(HudMeasure(ReadyKeys, 18.0f, TEXT("Black")) + 22.0f, 38.0f);
+					const float Y = PH - 40.0f * (ReadyPressers.Num() - Row);
+					// A strip across the bottom per player: green once ready, else their key pulsing (1P, 2P in their colours).
+					P2.Box(0.0f, Y, PW, 40.0f, bOwnReady ? WithAlpha(ReadyGreen, 0.18f) : FLinearColor(1.0f, 1.0f, 1.0f, 0.04f));
+					P2.Box(0.0f, Y, PW, 1.0f, WithAlpha(Paper, 0.1f));
+					float X = 22.0f;
+					if (bSplit)
+					{
+						const int32 LocalIndex = ReadyPressers[Row].Key;
+						RoundedBox(P3, X, Y + 7.0f, 38.0f, 26.0f, 6.0f, PlayerAccents[LocalIndex % 4]);
+						P3.Text(FString::Printf(TEXT("%dP"), LocalIndex + 1), X + 19.0f, Y + 8.0f, 17.0f, Ink, ETextAlign::Center, TEXT("BlackItalic"));
+						X += 46.0f;
+					}
+					RoundedBox(P3, X, Y + 7.0f, KeyWidth, 26.0f, 6.0f, WithAlpha(Paper, Pulse));
+					P3.Text(ReadyKeys, X + KeyWidth * 0.5f, Y + 8.0f, 18.0f, Ink, ETextAlign::Center, TEXT("Black"));
+					const TCHAR* Line = bOwnReady ? TEXT("準備OK！　もう一度でキャンセル") : TEXT("で準備OK");
+					P3.Text(Line, X + KeyWidth + 12.0f, Y + 8.0f, HudFit(Line, 19.0f, PW - 34.0f - X - KeyWidth),
+						bOwnReady ? ReadyGreen : Paper, ETextAlign::Left, TEXT("Black"));
+				}
 			}
 		}
 		else if (Room->bRecruitmentClosed && Room->Phase == EChaosImpactOnlinePhase::Lobby)
@@ -3298,6 +4077,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			const FGeometry Chip = bSinglePlayer ? MakeSkewed(MakeAnchor(AllottedGeometry, Size.X, 0.0f, S), -440.0f - 168.0f, 78.0f, 440.0f, 64.0f, -0.12f)
 				: MakeSkewed(TopCenter, -220.0f, 36.0f, 440.0f, 64.0f, -0.12f);
 			const FPainter P{Chip, OutDrawElements, BaseLayer};
+			OccupyShared(Chip, -10.0f, -10.0f, 460.0f, 84.0f);
 			DrawCard(P, 440.0f, 64.0f, Gold, 8.0f, false);
 			HudText3D(HudAbove(P, 2), TEXT("ホストがルールを決めています"), 30.0f, 14.0f, HudFit(TEXT("ホストがルールを決めています"), 25.0f, 330.0f),
 				WithAlpha(Paper, 0.8f + 0.2f * FMath::Sin(static_cast<float>(Clock) * 4.0f)), ETextAlign::Left, TEXT("Black"), 2.0f);

@@ -285,6 +285,11 @@ void AChaosImpactGameMode::BeginPlay()
 			// A fourth part "duel": the rules of ランクマッチ (against a CPU when alone).
 			DevAutoVersusRules.bDuel = Parts.IsValidIndex(3) && Parts[3] == TEXT("duel");
 			DevAutoVersusRules.bBattleRoyale = Parts.IsValidIndex(3) && Parts[3] == TEXT("royale");
+			// ("crash": クラッシュボール, two teams.)
+			DevAutoVersusRules.bCrashBall = Parts.IsValidIndex(3) && Parts[3] == TEXT("crash");
+			if (DevAutoVersusRules.bCrashBall) { DevAutoVersusRules.TeamCount = 2; }
+			// (A fifth part: the stage, 1 to 6.)
+			if (Parts.IsValidIndex(4)) { DevAutoVersusRules.StageIndex = FMath::Clamp(FCString::Atoi(*Parts[4]) - 1, 0, ChaosImpactMatch::StageCount - 1); }
 			const float Delay = Parts.IsValidIndex(2) ? FMath::Max(1.0f, FCString::Atof(*Parts[2])) : 20.0f;
 			if (!bRoomMatchLevel && !bBackFromMatch)
 			{
@@ -713,10 +718,12 @@ void AChaosImpactGameMode::PreLogin(const FString& Options, const FString& Addre
 	const bool bSecondPlayerOfMachine = UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) >= 2;
 	if (bRoomMatchLevel)
 	{
-		// The match level takes back the room's own machines, as they arrive from the lobby (and nobody else).
-		if (!bSecondPlayerOfMachine && !IsCarriedMachine(UGameplayStatics::ParseOption(Options, TEXT("CIMachine"))))
+		// The match level takes back the room's own machines, as they arrive from the lobby; anyone else comes in to
+		// watch (InitNewPlayer), while there is room for that.
+		if (!bSecondPlayerOfMachine && !IsCarriedMachine(UGameplayStatics::ParseOption(Options, TEXT("CIMachine")))
+			&& (RoomState->IsMatchmade() || RoomState->CountSpectators() + DevReservedSpectators >= AChaosImpactGameState::MaxSpectators))
 		{
-			ErrorMessage = TEXT("CICLOSED");
+			ErrorMessage = RoomState->IsMatchmade() ? TEXT("CICLOSED") : TEXT("CISPECFULL");
 		}
 		UE_LOG(LogChaosImpact, Log, TEXT("Room match level login check: second=%d result=%s"), bSecondPlayerOfMachine,
 			ErrorMessage.IsEmpty() ? TEXT("ok") : *ErrorMessage);
@@ -739,7 +746,16 @@ void AChaosImpactGameMode::PreLogin(const FString& Options, const FString& Addre
 	else if (!bSecondPlayerOfMachine
 		&& !RoomState->IsTournament() && ((RoomState->bRecruitmentClosed && StalePlaces == 0) || RoomState->Phase != EChaosImpactOnlinePhase::Lobby))
 	{
-		ErrorMessage = TEXT("CICLOSED");
+		// Recruitment over, or a match on: in to watch (InitNewPlayer) while there is room for that; a matched room keeps
+		// strangers out.
+		if (RoomState->IsMatchmade())
+		{
+			ErrorMessage = TEXT("CICLOSED");
+		}
+		else if (RoomState->CountSpectators() + DevReservedSpectators >= AChaosImpactGameState::MaxSpectators)
+		{
+			ErrorMessage = TEXT("CISPECFULL");
+		}
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Room login check: arriving=%d occupied=%d second=%d result=%s"),
 		Arriving, Occupied, bSecondPlayerOfMachine, ErrorMessage.IsEmpty() ? TEXT("ok") : *ErrorMessage);
@@ -755,6 +771,21 @@ FString AChaosImpactGameMode::InitNewPlayer(APlayerController* NewPlayerControll
 	{
 		// Gets a spectator camera instead of a character (SpawnDefaultPawnFor).
 		Member->bSpectating = true;
+	}
+	// Someone new arriving once recruitment is over or in the middle of a match (or a tournament): they watch.
+	if (const AChaosImpactGameState* RoomNow = GetGameState<AChaosImpactGameState>(); Member && IsOnlineRoom() && RoomNow
+		&& !RoomNow->IsMatchmade() && NewPlayerController && !NewPlayerController->IsLocalController()
+		&& UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) < 2
+		&& (RoomNow->bRecruitmentClosed || RoomNow->Phase != EChaosImpactOnlinePhase::Lobby))
+	{
+		const FString Machine = UGameplayStatics::ParseOption(Options, TEXT("CIMachine"));
+		const bool bKnown = bRoomMatchLevel ? IsCarriedMachine(Machine) : CountMembersOfMachine(Machine) > 0;
+		if (!bKnown && !Member->bSpectating)
+		{
+			Member->bSpectating = true;
+			UE_LOG(LogChaosImpact, Log, TEXT("Room: a late arrival watches (recruitment %s, phase %d)"),
+				RoomNow->bRecruitmentClosed ? TEXT("closed") : TEXT("open"), static_cast<int32>(RoomNow->Phase));
+		}
 	}
 	if (Member && UGameplayStatics::GetIntOption(Options, TEXT("SplitscreenCount"), 1) < 2)
 	{
@@ -861,7 +892,10 @@ void AChaosImpactGameMode::PostLogin(APlayerController* NewPlayer)
 			if (const FChaosImpactRoomCarryMember* Carried = Sessions->RoomCarry.Find(GetCarryKey(Member, bSecond)))
 			{
 				Member->JoinOrder = Carried->JoinOrder;
-				Member->bSpectating = Member->bSpectating || Carried->bSpectating;
+				// What they were doing when the room moved, not how they first came in: someone who came in to watch
+				// (the room was busy then) and went on to play stays a player (their machine still sends ?CISpectator=1).
+				Member->bSpectating = Carried->bSpectating;
+				Member->TeamIndex = Carried->TeamIndex;
 			}
 			NextJoinOrder = FMath::Max(NextJoinOrder, Sessions->RoomCarryNextJoinOrder);
 		}
@@ -1093,6 +1127,7 @@ void AChaosImpactGameMode::DecideLobbyRules(const FChaosImpactMatchRules& InRule
 	Match->bRulesDecided = true;
 	Match->ReadyDeadline = Match->GetServerWorldTimeSeconds() + GetReadyWaitSeconds();
 	ClearReady();
+	FitLobbyTeams();
 	Match->ForceNetUpdate();
 	UE_LOG(LogChaosImpact, Log, TEXT("Lobby rules decided: %d min, teams=%d, CPUs=%d; starts by itself in %.0f s"),
 		Match->Rules.Minutes, Match->Rules.TeamCount, Match->Rules.CPUCount, GetReadyWaitSeconds());
@@ -1157,6 +1192,7 @@ void AChaosImpactGameMode::SetMemberSpectating(APlayerController* MemberControll
 	{
 		Match->Rules = ChaosImpactMatch::Sanitize(Match->Rules, Match->CountHumanMembers());
 	}
+	FitLobbyTeams();
 	Match->ForceNetUpdate();
 	UE_LOG(LogChaosImpact, Log, TEXT("Lobby: %s now %s (players=%d spectators=%d)"), *Member->GetPlayerName(),
 		bSpectate ? TEXT("watches") : TEXT("plays"), Match->CountHumanMembers(), Match->CountSpectators());
@@ -1176,6 +1212,7 @@ void AChaosImpactGameMode::ReopenRecruitment()
 	Match->bRulesDecided = false;
 	Match->ReadyDeadline = 0.0;
 	ClearReady();
+	FitLobbyTeams();
 	Match->ForceNetUpdate();
 	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
 	{
@@ -1456,9 +1493,44 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 
 	// Humans start spread across the teams in join order; CPUs are placed once the teams are confirmed.
 	const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);
+	// Online the teams were picked in the lobby (carried here): kept while they fit, the rest to the smallest team.
+	const bool bLobbyTeams = IsOnlineRoom() && Rules.IsTeamBattle();
+	TArray<int32> TeamCounts;
+	TeamCounts.Init(0, FMath::Max(Rules.TeamCount, 1));
+	const int32 TeamCapacity = ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Humans.Num() + Rules.CPUCount);
+	if (bLobbyTeams)
+	{
+		for (AChaosImpactPlayerState* Human : Humans)
+		{
+			if (Human->TeamIndex >= 0 && Human->TeamIndex < Rules.TeamCount && TeamCounts[Human->TeamIndex] < TeamCapacity)
+			{
+				++TeamCounts[Human->TeamIndex];
+			}
+			else
+			{
+				Human->TeamIndex = INDEX_NONE;
+			}
+		}
+	}
 	for (int32 Index = 0; Index < Humans.Num(); ++Index)
 	{
-		Humans[Index]->TeamIndex = Rules.IsTeamBattle() ? Index % Rules.TeamCount : INDEX_NONE;
+		if (bLobbyTeams)
+		{
+			if (Humans[Index]->TeamIndex == INDEX_NONE)
+			{
+				int32 Smallest = 0;
+				for (int32 Team = 1; Team < Rules.TeamCount; ++Team)
+				{
+					Smallest = TeamCounts[Team] < TeamCounts[Smallest] ? Team : Smallest;
+				}
+				Humans[Index]->TeamIndex = Smallest;
+				++TeamCounts[Smallest];
+			}
+		}
+		else
+		{
+			Humans[Index]->TeamIndex = Rules.IsTeamBattle() ? Index % Rules.TeamCount : INDEX_NONE;
+		}
 		// Local players have no room name; use the one shown above them (P1, P2 or the title name).
 		if (const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Humans[Index]->GetPawn());
 			Character && !IsOnlineRoom())
@@ -1506,7 +1578,8 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("VS match configured: %d min, teams=%d, humans=%d, CPUs=%d"),
 		Rules.Minutes, Rules.TeamCount, Humans.Num(), Rules.CPUCount);
-	if (Rules.IsTeamBattle())
+	// (Online the teams were picked in the lobby: straight to the opening.)
+	if (Rules.IsTeamBattle() && !IsOnlineRoom())
 	{
 		SetMatchPhase(EChaosImpactOnlinePhase::TeamSelect, 0.0f);
 	}
@@ -1561,8 +1634,11 @@ void AChaosImpactGameMode::SetLocalPlayersSpectating(const bool bSpectate)
 void AChaosImpactGameMode::ChangeMemberTeam(AChaosImpactPlayerState* Member, const int32 Direction)
 {
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
-	if (!Match || !Member || Member->IsABot() || Member->bSpectating || Direction == 0 || !Match->IsTeamBattle()
-		|| Match->Phase != EChaosImpactOnlinePhase::TeamSelect)
+	// (Online the teams are picked in the lobby once team rules are decided; the team select screen is for local play.)
+	const bool bLobbyPick = Match && IsOnlineRoom() && !Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Lobby
+		&& Match->bRulesDecided && Match->Rules.IsTeamBattle();
+	if (!Match || !Member || Member->IsABot() || Member->bSpectating || Direction == 0
+		|| !(bLobbyPick || (Match->IsTeamBattle() && Match->Phase == EChaosImpactOnlinePhase::TeamSelect)))
 	{
 		return;
 	}
@@ -1586,8 +1662,101 @@ void AChaosImpactGameMode::ChangeMemberTeam(AChaosImpactPlayerState* Member, con
 		{
 			Member->TeamIndex = Candidate;
 			Member->ForceNetUpdate();
+			UE_LOG(LogChaosImpact, Log, TEXT("Team change: %s to %s"), *Member->GetPlayerName(), ChaosImpactMatch::GetTeamName(Candidate));
 			return;
 		}
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Team change: %s stays (the other teams are full)"), *Member->GetPlayerName());
+}
+
+void AChaosImpactGameMode::SetMemberTeam(AChaosImpactPlayerState* Member, const int32 Team)
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	// (The same times as ChangeMemberTeam: the lobby once team rules are decided online, the team select screen locally.)
+	const bool bLobbyPick = Match && IsOnlineRoom() && !Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Lobby
+		&& Match->bRulesDecided && Match->Rules.IsTeamBattle();
+	if (!Match || !Member || Member->IsABot() || Member->bSpectating
+		|| !(bLobbyPick || (Match->IsTeamBattle() && Match->Phase == EChaosImpactOnlinePhase::TeamSelect)))
+	{
+		return;
+	}
+	const int32 Teams = Match->Rules.TeamCount;
+	if (Team < 0 || Team >= Teams || Member->TeamIndex == Team)
+	{
+		return;
+	}
+	const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);
+	const int32 Capacity = ChaosImpactMatch::GetTeamCapacity(Teams, Humans.Num() + Match->Rules.CPUCount);
+	int32 Count = 0;
+	for (const AChaosImpactPlayerState* Other : Humans)
+	{
+		Count += Other != Member && Other->TeamIndex == Team ? 1 : 0;
+	}
+	if (Count >= Capacity)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Team change: %s stays (%s is full)"), *Member->GetPlayerName(), ChaosImpactMatch::GetTeamName(Team));
+		return;
+	}
+	Member->TeamIndex = Team;
+	Member->ForceNetUpdate();
+	UE_LOG(LogChaosImpact, Log, TEXT("Team change: %s to %s"), *Member->GetPlayerName(), ChaosImpactMatch::GetTeamName(Team));
+}
+
+void AChaosImpactGameMode::FitLobbyTeams()
+{
+	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	if (!IsOnlineRoom() || !Match || Match->bVersusMatch)
+	{
+		return;
+	}
+	const bool bTeams = Match->bRulesDecided && Match->Rules.IsTeamBattle();
+	const TArray<AChaosImpactPlayerState*> Players = Match->GetMembersInJoinOrder();
+	const int32 Teams = bTeams ? Match->Rules.TeamCount : 0;
+	const int32 Capacity = bTeams ? ChaosImpactMatch::GetTeamCapacity(Teams, Players.Num() + Match->Rules.CPUCount) : 0;
+	const auto Set = [](AChaosImpactPlayerState* Member, const int32 Team)
+	{
+		if (Member->TeamIndex != Team)
+		{
+			Member->TeamIndex = Team;
+			Member->ForceNetUpdate();
+		}
+	};
+	// Watchers (and everyone, without team rules) have no team.
+	for (APlayerState* State : Match->PlayerArray)
+	{
+		AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
+		if (Member && !Member->IsABot() && (!bTeams || Member->bSpectating))
+		{
+			Set(Member, INDEX_NONE);
+		}
+	}
+	if (!bTeams)
+	{
+		return;
+	}
+	TArray<int32> Counts;
+	Counts.Init(0, Teams);
+	TArray<AChaosImpactPlayerState*> Unplaced;
+	for (AChaosImpactPlayerState* Member : Players)
+	{
+		if (Member->TeamIndex >= 0 && Member->TeamIndex < Teams && Counts[Member->TeamIndex] < Capacity)
+		{
+			++Counts[Member->TeamIndex];
+		}
+		else
+		{
+			Unplaced.Add(Member);
+		}
+	}
+	for (AChaosImpactPlayerState* Member : Unplaced)
+	{
+		int32 Smallest = 0;
+		for (int32 Team = 1; Team < Teams; ++Team)
+		{
+			Smallest = Counts[Team] < Counts[Smallest] ? Team : Smallest;
+		}
+		Set(Member, Smallest);
+		++Counts[Smallest];
 	}
 }
 
@@ -2205,6 +2374,7 @@ void AChaosImpactGameMode::TravelRoom(const FString& Level, const TCHAR* Purpose
 		FChaosImpactRoomCarryMember& Carried = Sessions->RoomCarry.Add(GetCarryKey(Member, Member->bSecondOfMachine));
 		Carried.JoinOrder = Member->JoinOrder;
 		Carried.bSpectating = Member->bSpectating;
+		Carried.TeamIndex = FCString::Strstr(Purpose, TEXT("CIRoomMatch")) && !Member->bSpectating ? Member->TeamIndex : INDEX_NONE;
 	}
 	Sessions->RoomCarryNextJoinOrder = NextJoinOrder;
 	Sessions->bRoomCarryValid = true;
@@ -2278,12 +2448,14 @@ void AChaosImpactGameMode::UpdateRoomArrivals()
 		return;
 	}
 	int32 Arrived = 0;
+	int32 ArrivedMachines = 0;
 	for (const APlayerState* State : Room->PlayerArray)
 	{
 		const AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(State);
 		if (Member && !Member->IsABot() && Sessions->RoomCarry.Contains(GetCarryKey(Member, Member->bSecondOfMachine)))
 		{
 			++Arrived;
+			ArrivedMachines += Member->bSecondOfMachine ? 0 : 1;
 		}
 	}
 	const int32 Expected = Sessions->RoomCarry.Num();
@@ -2293,7 +2465,8 @@ void AChaosImpactGameMode::UpdateRoomArrivals()
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(RoomArrivalTimer);
-	if (Room->IsMatchmade() && Arrived < 2)
+	// (By machines: a split-screen pair back in alone is still nobody to play against.)
+	if (Room->IsMatchmade() && (Arrived < 2 || ArrivedMachines < 2))
 	{
 		// A matched room is played by those matched: no stand-in CPU. Everyone goes home (the online menu).
 		UE_LOG(LogChaosImpact, Log, TEXT("Room match level: the other player did not come back; closing the matched room"));
@@ -2559,16 +2732,19 @@ void AChaosImpactGameMode::UpdateMatchmadeRoom()
 		return;
 	}
 	const int32 Humans = Match->CountHumanMembers();
-	const bool bEveryone = Humans >= Match->MatchmadeExpected && GetReservedRoomSlots() == 0;
+	// Counted by machines too: a split-screen pair is two players but one machine, and never a match by itself.
+	const int32 Machines = Match->CountMachines();
+	const bool bEveryone = Humans >= Match->MatchmadeExpected && Machines >= 2 && GetReservedRoomSlots() == 0;
 	const bool bTimeUp = Match->GetServerWorldTimeSeconds() >= Match->MatchmadeDeadline;
 	if (!bEveryone && !bTimeUp)
 	{
 		return;
 	}
-	if (Humans < 2)
+	if (Humans < 2 || Machines < 2)
 	{
-		// Nobody came: back to this machine's training, where the search can start again.
-		UE_LOG(LogChaosImpact, Log, TEXT("Matched room: nobody arrived in %.0f s; closing it"), MatchmadeWaitSeconds);
+		// Nobody else came: back to this machine's training, where the search can start again.
+		UE_LOG(LogChaosImpact, Log, TEXT("Matched room: no other machine arrived in %.0f s (%d player(s) here); closing it"),
+			MatchmadeWaitSeconds, Humans);
 		bMatchmadeMatchBegun = true;
 		GetWorldTimerManager().ClearTimer(MatchmadeTimer);
 		FinishMatchmadeIfEmpty(true);
@@ -2784,9 +2960,12 @@ void AChaosImpactGameMode::HandleDuelTimeUp()
 		return;
 	}
 	SetDuelStep(EChaosImpactDuelStep::SuddenDeath, ChaosImpactMatch::DuelSuddenDeathSeconds);
+	BeginSuddenDeath(INDEX_NONE, Match->StageCenter, Match->StageHalfExtent);
 	GetWorldTimerManager().SetTimer(DuelTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
 	{
-		EndDuelRound(INDEX_NONE, EChaosImpactDuelEnd::Draw);
+		// The bell: the one nearer the middle (the circle has all but closed).
+		const int32 Winner = JudgeSuddenDeathByMiddle(INDEX_NONE);
+		EndDuelRound(Winner, Winner == INDEX_NONE ? EChaosImpactDuelEnd::Draw : EChaosImpactDuelEnd::SuddenDeath);
 	}), ChaosImpactMatch::DuelSuddenDeathSeconds, false);
 	UE_LOG(LogChaosImpact, Log, TEXT("Duel round %d: level at the bell, sudden death"), Match->Duel.Round);
 }
@@ -2873,6 +3052,7 @@ void AChaosImpactGameMode::EndDuelRound(const int32 WinnerSide, const EChaosImpa
 		return;
 	}
 	GetWorldTimerManager().ClearTimer(DuelTimer);
+	EndSuddenDeath(INDEX_NONE);
 	FChaosImpactDuelState& Duel = Match->Duel;
 	Duel.RoundWinner = WinnerSide == 0 || WinnerSide == 1 ? WinnerSide : INDEX_NONE;
 	Duel.RoundEnd = How;

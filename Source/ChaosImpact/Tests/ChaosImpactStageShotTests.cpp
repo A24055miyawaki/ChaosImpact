@@ -9,6 +9,8 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "UnrealClient.h"
 
@@ -69,7 +71,15 @@ namespace
 				// The same framing for every stage: from one corner, high up, the whole arena in view.
 				const FVector Center = Match->StageCenter;
 				const float Reach = Match->StageHalfExtent;
-				const FVector Eye = Center + FVector(-Reach * 1.18f, -Reach * 1.18f, Reach * 0.92f);
+				// (-CIStageShotYaw=<degrees> turns the corner it is taken from, for a stage with something tall in the way.)
+				float Turn = 0.0f;
+				FParse::Value(FCommandLine::Get(), TEXT("CIStageShotYaw="), Turn);
+				// (-CIStageShotPull / -CIStageShotRise: nearer in and higher up, over something at the stage's edge.)
+				float Pull = 1.0f, Rise = 1.0f;
+				FParse::Value(FCommandLine::Get(), TEXT("CIStageShotPull="), Pull);
+				FParse::Value(FCommandLine::Get(), TEXT("CIStageShotRise="), Rise);
+				const FVector Eye = Center + FVector(-Reach * 1.18f * Pull, -Reach * 1.18f * Pull, 0.0f).RotateAngleAxis(Turn, FVector::UpVector)
+					+ FVector(0.0f, 0.0f, Reach * 0.92f * Rise);
 				Camera = World->SpawnActor<ACameraActor>(Eye, (Center - Eye).Rotation());
 				Camera->GetCameraComponent()->SetFieldOfView(70.0f);
 				Camera->GetCameraComponent()->SetConstraintAspectRatio(false);

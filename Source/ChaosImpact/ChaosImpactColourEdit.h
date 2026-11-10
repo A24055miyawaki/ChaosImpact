@@ -32,6 +32,8 @@ public:
 	void Open(AChaosImpactPlayerController* InController);
 	void Close();
 	bool IsOpen() const { return bOpen; }
+	/** このキャラにしますか？ is up (after a save, opened from a room's pause menu). */
+	bool IsApplyAsking() const { return bApplyAsk; }
 	void Tick(float DeltaSeconds);
 	int32 Paint(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 	bool HandleKeyDown(const FKeyEvent& Event);
@@ -133,6 +135,16 @@ private:
 	int32 Dragging = INDEX_NONE;
 	bool bDirty = false;
 	bool bLeaveArmed = false;
+	/** Opened from a room's pause menu: saving a preset asks このキャラにしますか？ (a split screen: 1P, 2P or neither). */
+	bool bOfferApply = false;
+	bool bApplyAsk = false;
+	int32 ApplyChoice = 0;
+	double ApplyAskAt = 0.0;
+	/** The question's choices: このキャラにする / しない, or one per player of this machine and しない. */
+	int32 ApplyPlayers() const;
+	FBox2D ApplyButtonRect(int32 Choice) const;
+	void ChooseApply(int32 Choice);
+	void PaintApplyAsk(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, double Now) const;
 	/** A preset's name being written (the nickname entry's letter grid). */
 	FChaosImpactNameEntry Naming;
 	FString NoticeText;

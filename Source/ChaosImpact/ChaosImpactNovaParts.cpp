@@ -66,9 +66,19 @@ const TCHAR* ChaosImpactNovaParts::GetName(const EChaosImpactNovaPart Part)
 	}
 }
 
+namespace
+{
+	/** A tournament plays the duel's rules everywhere in its world: no nova. */
+	bool NovaIsTournament(const UWorld* World)
+	{
+		const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+		return Match && (Match->IsTournament() || Match->bPublicTournament);
+	}
+}
+
 void ChaosImpactNovaParts::Drop(UWorld* World, const uint8 Parts, const FVector* Near)
 {
-	if (!World || World->GetNetMode() == NM_Client)
+	if (!World || World->GetNetMode() == NM_Client || NovaIsTournament(World))
 	{
 		return;
 	}
@@ -93,7 +103,7 @@ void ChaosImpactNovaParts::Drop(UWorld* World, const uint8 Parts, const FVector*
 
 bool ChaosImpactNovaParts::PutOutAtPad(UWorld* World, const EChaosImpactNovaPart Part)
 {
-	if (!World || World->GetNetMode() == NM_Client)
+	if (!World || World->GetNetMode() == NM_Client || NovaIsTournament(World))
 	{
 		return false;
 	}
@@ -113,7 +123,7 @@ bool ChaosImpactNovaParts::PutOutAtPad(UWorld* World, const EChaosImpactNovaPart
 
 void ChaosImpactNovaParts::DropNovaBall(UWorld* World, const FVector* Near)
 {
-	if (!World || World->GetNetMode() == NM_Client)
+	if (!World || World->GetNetMode() == NM_Client || NovaIsTournament(World))
 	{
 		return;
 	}
@@ -355,6 +365,10 @@ void UChaosImpactNovaDirector::Tick(const float DeltaTime)
 		return;
 	}
 	const AChaosImpactGameState* Match = World->GetGameState<AChaosImpactGameState>();
+	if (NovaIsTournament(World))
+	{
+		return;
+	}
 	if (Match && Match->bVersusMatch)
 	{
 		// One set a match: each part once, at its own random time in the first two thirds or so.

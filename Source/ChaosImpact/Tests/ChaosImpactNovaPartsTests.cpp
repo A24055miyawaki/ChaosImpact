@@ -306,7 +306,8 @@ namespace
 						Live ? Live->GetNovaFireRadius() : -1.0f, CPU && CPU->IsEliminated() ? TEXT("out") : TEXT("standing"));
 					++ShotIndex;
 				}
-				if (Age > 1.8f && Age < 2.2f)
+				// (Just before its ball of fire comes out.)
+				if (Age > AChaosImpactHazardZone::NovaExplodeAfter - 0.4f && Age < AChaosImpactHazardZone::NovaExplodeAfter - 0.05f)
 				{
 					Test->TestFalse(TEXT("Nothing happens while it spins"), CPU && CPU->IsEliminated());
 				}

@@ -144,7 +144,7 @@ namespace
             case 2:
                 Select->PressBack(0);
                 Test->TestTrue(TEXT("Cancel returns directly to character icons"),Select->GetStep(0)==UChaosImpactCharacterSelect::EStep::Character);
-                Test->TestTrue(TEXT("Mouse can pick the new character too"),Select->HandleClick(FVector2D(76+(FirstCharacter%4)*204+40,220+(FirstCharacter/4)*204)));
+                Test->TestTrue(TEXT("Mouse can pick the new character too"),Select->HandleClick(UChaosImpactCharacterSelect::GetTileRect(FirstCharacter).GetCenter()));
                 Test->TestTrue(TEXT("Mouse also skips the non-existent colour variants"),Select->IsReady(0));
                 Select->PressBack(1); GoTo(1,FirstCharacter); Pad(EKeys::Gamepad_FaceButton_Bottom);
                 Test->TestTrue(TEXT("Two players may choose the same fixed-colour character"),Select->GetCharacter(0)==FirstCharacter && Select->GetCharacter(1)==FirstCharacter && Select->AreAllReady());

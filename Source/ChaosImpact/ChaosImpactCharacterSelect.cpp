@@ -139,6 +139,84 @@ FVector2D UChaosImpactCharacterSelect::TileOrigin(const int32 Tile) const
 	return FVector2D(GridLeft + (Tile % GridColumns) * (IconSize + IconGap), GridTop + (Tile / GridColumns) * (IconSize + IconGap));
 }
 
+FBox2D UChaosImpactCharacterSelect::GetTileRect(const int32 Tile)
+{
+	const FVector2D Origin(GridLeft + (Tile % GridColumns) * (IconSize + IconGap), GridTop + (Tile / GridColumns) * (IconSize + IconGap));
+	return FBox2D(Origin, Origin + FVector2D(IconSize, IconSize));
+}
+
+FBox2D UChaosImpactCharacterSelect::RowRect(const int32 Player) const
+{
+	// Along the window's bottom: on the right in a wide window (the picture is on the left), in the middle otherwise.
+	const FBox2D Window = WindowRect(Player);
+	const float W = static_cast<float>(Window.GetSize().X);
+	const float H = static_cast<float>(Window.GetSize().Y);
+	const bool bWide = W > H * 1.3f;
+	const float RowW = bWide ? FMath::Min(W - 320.0f, 470.0f) : FMath::Min(W - 28.0f, 470.0f);
+	const float RowX = bWide ? W - RowW - 18.0f : (W - RowW) * 0.5f;
+	// (Small windows, three or four players: a shorter row under the name, the bio making room for it.)
+	const bool bCompact = !bWide && W <= 400.0f;
+	const float RowH = bCompact ? 76.0f : 94.0f;
+	const float RowY = bCompact ? H - 80.0f : H - 102.0f;
+	return FBox2D(Window.Min + FVector2D(RowX, RowY), Window.Min + FVector2D(RowX + RowW, RowY + RowH));
+}
+
+FBox2D UChaosImpactCharacterSelect::GetRowButtonRect(const int32 Player) const
+{
+	if (!Slots.IsValidIndex(Player) || Slots[Player].Step != EStep::Colour)
+	{
+		return FBox2D(ForceInit);
+	}
+	const FBox2D Row = RowRect(Player);
+	const bool bCompact = Row.GetSize().Y < 90.0f;
+	return FBox2D(FVector2D(Row.Max.X - 102.0f, Row.Min.Y + (bCompact ? 28.0f : 40.0f)), FVector2D(Row.Max.X - 10.0f, Row.Max.Y - (bCompact ? 8.0f : 10.0f)));
+}
+
+void UChaosImpactCharacterSelect::GetChipWindow(const int32 Player, int32& OutFirst, int32& OutCount, float& OutChipWidth) const
+{
+	OutFirst = 0;
+	OutCount = 0;
+	OutChipWidth = 0.0f;
+	if (!Slots.IsValidIndex(Player) || Slots[Player].Step == EStep::Character || ChaosImpactRoster::Get(Slots[Player].Character).bColourVariants)
+	{
+		return;
+	}
+	const int32 Choices = PresetCount(Slots[Player].Character) + 1;
+	if (Choices <= 1)
+	{
+		return;
+	}
+	const FBox2D Row = RowRect(Player);
+	OutChipWidth = Row.GetSize().X > 400.0f ? 58.0f : 46.0f;
+	// From the row's left edge to the 決定 button (kept clear once done, too, so nothing moves).
+	const float Room = static_cast<float>(Row.GetSize().X) - 12.0f - 112.0f;
+	OutCount = FMath::Min(Choices, FMath::Max(1, FMath::FloorToInt((Room + 6.0f) / (OutChipWidth + 6.0f))));
+	// The chosen one stays in view.
+	OutFirst = FMath::Clamp(Slots[Player].Preset + 1 - OutCount / 2, 0, Choices - OutCount);
+}
+
+FBox2D UChaosImpactCharacterSelect::GetChipRect(const int32 Player, const int32 Choice) const
+{
+	int32 First = 0, Count = 0;
+	float ChipW = 0.0f;
+	GetChipWindow(Player, First, Count, ChipW);
+	if (Choice < First || Choice >= First + Count)
+	{
+		return FBox2D(ForceInit);
+	}
+	const FBox2D Row = RowRect(Player);
+	const bool bCompact = Row.GetSize().Y < 90.0f;
+	const FVector2D At(Row.Min.X + 12.0f + (Choice - First) * (ChipW + 6.0f), Row.Min.Y + (bCompact ? 30.0f : 42.0f));
+	return FBox2D(At, At + FVector2D(ChipW, bCompact ? 36.0f : 40.0f));
+}
+
+int32 UChaosImpactCharacterSelect::GetMousePlayer() const
+{
+	const AChaosImpactPlayerController* Owner = Controller.Get();
+	const int32 Player = Owner ? Owner->GetLocalPlayerIndexForDevice(true, 0) : INDEX_NONE;
+	return Slots.IsValidIndex(Player) ? Player : Slots.Num() == 1 ? 0 : INDEX_NONE;
+}
+
 FBox2D UChaosImpactCharacterSelect::WindowRect(const int32 Player) const
 {
 	const float Height = SelectPanelBottom - SelectPanelTop;
@@ -347,10 +425,18 @@ void UChaosImpactCharacterSelect::MoveCursor(const int32 Player, const int32 Col
 	FSlot& Slot = Slots[Player];
 	if (Slot.Step == EStep::Colour)
 	{
-		// The colour row is worked with left and right; up and down go through the カスタムカラー presets.
+		// The colour row is worked with left and right; up and down go through the カスタムカラー presets. (Without colours
+		// to choose, the row is the カスタムカラー, so left and right go through them.)
 		if (Columns != 0)
 		{
-			ChangeColour(Player, Columns);
+			if (ChaosImpactRoster::Get(Slot.Character).bColourVariants)
+			{
+				ChangeColour(Player, Columns);
+			}
+			else
+			{
+				ChangePreset(Player, Columns);
+			}
 		}
 		else if (Rows != 0)
 		{
@@ -387,6 +473,12 @@ void UChaosImpactCharacterSelect::ChangeColour(const int32 Player, const int32 D
 	{
 		return;
 	}
+	if (!ChaosImpactRoster::Get(Slots[Player].Character).bColourVariants)
+	{
+		// LB / RB (Q / E): the カスタムカラー, the only colours there are.
+		ChangePreset(Player, Direction);
+		return;
+	}
 	FSlot& Slot = Slots[Player];
 	const int32 Step = Direction < 0 ? -1 : 1;
 	const int32 Next = FindFreeColour(Player, Slot.Character, Slot.Colour + Step, Step);
@@ -421,6 +513,46 @@ void UChaosImpactCharacterSelect::ChangePreset(const int32 Player, const int32 D
 	Slot.ChangedAt = FPlatformTime::Seconds();
 	RefreshPreview(Player);
 	Commit(Player);
+}
+
+void UChaosImpactCharacterSelect::SetPreset(const int32 Player, const int32 Preset)
+{
+	if (!bOpen || bStarting || !Slots.IsValidIndex(Player) || Slots[Player].Step != EStep::Colour)
+	{
+		return;
+	}
+	FSlot& Slot = Slots[Player];
+	const int32 Wanted = Preset >= 0 && Preset < PresetCount(Slot.Character) ? Preset : INDEX_NONE;
+	if (Wanted == Slot.Preset)
+	{
+		return;
+	}
+	Slot.LastDirection = Wanted > Slot.Preset ? 1 : -1;
+	Slot.Preset = Wanted;
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
+	Slot.ChangedAt = FPlatformTime::Seconds();
+	RefreshPreview(Player);
+	Commit(Player);
+}
+
+void UChaosImpactCharacterSelect::PointAt(const int32 Player, const int32 Tile)
+{
+	if (!bOpen || bStarting || !Slots.IsValidIndex(Player) || Slots[Player].Step != EStep::Character
+		|| Tile < 0 || Tile >= GetTileCount() || Tile == Slots[Player].Cursor)
+	{
+		return;
+	}
+	FSlot& Slot = Slots[Player];
+	Slot.Cursor = Tile;
+	Slot.MovedAt = FPlatformTime::Seconds();
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
+	// The window shows the character under the cursor straight away.
+	if (IsTileUnlocked(Tile) && Tile != Slot.Character)
+	{
+		Slot.Character = Tile;
+		Slot.Preset = INDEX_NONE;
+		RefreshPreview(Player);
+	}
 }
 
 void UChaosImpactCharacterSelect::PressConfirm(const int32 Player)
@@ -742,7 +874,8 @@ bool UChaosImpactCharacterSelect::HandleClick(const FVector2D& DesignPoint)
 	{
 		return false;
 	}
-	const int32 Player = Owner->GetLocalPlayerIndexForDevice(true, 0);
+	MousePoint = DesignPoint;
+	const int32 Player = GetMousePlayer();
 	if (!Slots.IsValidIndex(Player))
 	{
 		return false;
@@ -782,25 +915,71 @@ bool UChaosImpactCharacterSelect::HandleClick(const FVector2D& DesignPoint)
 		PressConfirm(Player);
 		return true;
 	}
-	FSlot& Slot = Slots[Player];
-	for (int32 Tile = 0; Tile < GetTileCount() && Slot.Step == EStep::Character; ++Tile)
+	if (bStarting)
 	{
-		const FVector2D Origin = TileOrigin(Tile);
-		if (DesignPoint.X >= Origin.X && DesignPoint.X <= Origin.X + IconSize
-			&& DesignPoint.Y >= Origin.Y && DesignPoint.Y <= Origin.Y + IconSize)
+		return true;
+	}
+	FSlot& Slot = Slots[Player];
+	// Their window's colour row: a chip wears that colour, the button is 決定.
+	for (int32 Choice = 0; Choice <= PresetCount(Slot.Character); ++Choice)
+	{
+		const FBox2D Chip = GetChipRect(Player, Choice);
+		if (Chip.bIsValid && Chip.IsInside(DesignPoint))
 		{
-			Slot.Cursor = Tile;
-			Slot.MovedAt = FPlatformTime::Seconds();
-			if (IsTileUnlocked(Tile))
-			{
-				Slot.Character = Tile;
-				RefreshPreview(Player);
-			}
-			PressConfirm(Player);
+			SetPreset(Player, Choice - 1);
 			return true;
 		}
 	}
+	if (const FBox2D Button = GetRowButtonRect(Player); Button.bIsValid && Button.IsInside(DesignPoint))
+	{
+		PressConfirm(Player);
+		return true;
+	}
+	for (int32 Tile = 0; Tile < GetTileCount(); ++Tile)
+	{
+		if (!GetTileRect(Tile).IsInside(DesignPoint))
+		{
+			continue;
+		}
+		if (Slot.Step != EStep::Character)
+		{
+			if (Tile == Slot.Character)
+			{
+				// The one already picked: as 決定 (a second click on it finishes its colour).
+				if (Slot.Step == EStep::Colour)
+				{
+					PressConfirm(Player);
+				}
+				return true;
+			}
+			// Another icon: that one is picked instead.
+			SetStep(Player, EStep::Character);
+		}
+		PointAt(Player, Tile);
+		Slot.Cursor = Tile;
+		PressConfirm(Player);
+		return true;
+	}
 	return false;
+}
+
+bool UChaosImpactCharacterSelect::HandleRightClick()
+{
+	if (!bOpen)
+	{
+		return false;
+	}
+	if (NameEntry.IsOpen())
+	{
+		return true;
+	}
+	if (NamePickerOwner != INDEX_NONE)
+	{
+		CloseNamePicker();
+		return true;
+	}
+	PressBack(GetMousePlayer());
+	return true;
 }
 
 int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
@@ -1028,24 +1207,34 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter KeyText{Design, Elements, Layer + 18, BarIn};
 		RoundBox(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
 		RoundFrame(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.14f, 0.3f, 0.62f, 0.45f), 2.0f);
-		struct FGuide { const TCHAR* Key; const TCHAR* Label; };
-		static const FGuide Guides[] = {{TEXT("十字 / WASD"), TEXT("いどう")}, {TEXT("A / Enter"), TEXT("けってい")},
-			{TEXT("B / Esc"), TEXT("もどる")}, {TEXT("Y / N"), TEXT("ニックネーム")}, {TEXT("← → / LB RB"), TEXT("カラー")}};
+		struct FGuide { FString Key; FString Label; };
+		TArray<FGuide> Guides = {{TEXT("十字 / WASD"), TEXT("いどう")}, {TEXT("A / Enter"), TEXT("けってい")},
+			{TEXT("B / Esc"), TEXT("もどる")}, {TEXT("Y / N"), TEXT("ニックネーム")}};
+		if (Slots.ContainsByPredicate([](const FSlot& S) { return S.Step == EStep::Colour; }))
+		{
+			Guides.Add({TEXT("← → / LB RB"), TEXT("カスタムカラー")});
+		}
+		if (GetMousePlayer() != INDEX_NONE)
+		{
+			Guides.Add({TEXT("マウス"), TEXT("クリックでえらぶ・右クリックでもどる")});
+		}
+		// Everything at one size that fits the bar.
+		constexpr float Gap = 40.0f;
+		float Total = -Gap;
+		for (const FGuide& Guide : Guides)
+		{
+			Total += Gap + HudMeasure(Guide.Key, 19.0f, TEXT("Black")) + 22.0f + 10.0f + HudMeasure(Guide.Label, 21.0f, TEXT("Black"));
+		}
+		const float Fit = FMath::Min(1.0f, (1488.0f - 60.0f) / FMath::Max(Total, 1.0f));
 		float X = 86.0f;
 		for (const FGuide& Guide : Guides)
 		{
-			if (FCString::Strcmp(Guide.Label,TEXT("カラー")) == 0
-				&& !Slots.ContainsByPredicate([](const FSlot& S) { return S.Step == EStep::Colour; })) { continue; }
-			float KeyWidth = 22.0f;
-			for (const TCHAR* Char = Guide.Key; *Char; ++Char)
-			{
-				KeyWidth += *Char > 0x2000 ? 22.0f : 12.5f;
-			}
+			const float KeyWidth = HudMeasure(Guide.Key, 19.0f * Fit, TEXT("Black")) + 22.0f * Fit;
 			RoundBox(BKeys, X, BarTop + 13.0f, KeyWidth, 38.0f, 11.0f, FLinearColor(0.1f, 0.24f, 0.55f, 0.95f));
 			RoundBox(BKeys, X + 2.0f, BarTop + 15.0f, KeyWidth - 4.0f, 34.0f, 9.0f, Paper);
-			KeyText.Text(Guide.Key, X + KeyWidth * 0.5f, BarTop + 16.0f, 19.0f, Ink, ETextAlign::Center, TEXT("Black"));
-			BKeys.Text(Guide.Label, X + KeyWidth + 10.0f, BarTop + 16.0f, 21.0f, Paper, ETextAlign::Left, TEXT("Black"));
-			X += KeyWidth + 132.0f;
+			KeyText.Text(Guide.Key, X + KeyWidth * 0.5f, BarTop + 32.0f - 19.0f * Fit * 0.66f, 19.0f * Fit, Ink, ETextAlign::Center, TEXT("Black"));
+			BKeys.Text(Guide.Label, X + KeyWidth + 10.0f * Fit, BarTop + 32.0f - 21.0f * Fit * 0.66f, 21.0f * Fit, Paper, ETextAlign::Left, TEXT("Black"));
+			X += KeyWidth + 10.0f * Fit + HudMeasure(Guide.Label, 21.0f * Fit, TEXT("Black")) + Gap * Fit;
 		}
 	}
 	return Layer + 20;
@@ -1148,11 +1337,14 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	const float NameX = bWide ? PictureX + PictureW + 26.0f : W * 0.5f;
 	const float NameY = bWide ? 68.0f : bBigWindow ? H - 202.0f : H - 110.0f - LongBioLift;
 	const ETextAlign NameAlign = bWide ? ETextAlign::Left : ETextAlign::Center;
-	const bool bHasDesc1 = !bOnLockedTile && Info.DescriptionLine1 && *Info.DescriptionLine1;
-	const bool bHasDesc2 = !bOnLockedTile && Info.DescriptionLine2 && *Info.DescriptionLine2;
+	// (A small window's カスタムカラー row takes the bio's place while it is open.)
+	const bool bRowOverBio = Slot.Step != EStep::Character && !Info.bColourVariants && PresetCount(Slot.Character) > 0
+		&& !bWide && !bBigWindow;
+	const bool bHasDesc1 = !bOnLockedTile && !bRowOverBio && Info.DescriptionLine1 && *Info.DescriptionLine1;
+	const bool bHasDesc2 = !bOnLockedTile && !bRowOverBio && Info.DescriptionLine2 && *Info.DescriptionLine2;
 	// A bio of more than two lines takes the room down to whatever is below it, all its lines at one size that fits.
 	TArray<FString> LongBio;
-	if (!bOnLockedTile && *Info.DescriptionLine3)
+	if (!bOnLockedTile && !bRowOverBio && *Info.DescriptionLine3)
 	{
 		for (const TCHAR* Line : {Info.DescriptionLine1, Info.DescriptionLine2, Info.DescriptionLine3, Info.DescriptionLine4, Info.DescriptionLine5})
 		{
@@ -1276,8 +1468,83 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		}
 	}
 
-	// カスタムカラー: the preset worn (up and down choose), over the colour row.
-	if (Slot.Step != EStep::Character && PresetCount(Slot.Character) > 0)
+	// No colours to choose, but カスタムカラー made in カラーエディット: they are the row (いつもの色 first). Left and right
+	// (LB / RB) or a click choose; the 決定 button at its end is for the mouse.
+	if (Slot.Step != EStep::Character && !Info.bColourVariants && PresetCount(Slot.Character) > 0)
+	{
+		const FBox2D RowBox = RowRect(Player);
+		const float RowX = static_cast<float>(RowBox.Min.X - Rect.Min.X);
+		const float RowY = static_cast<float>(RowBox.Min.Y - Rect.Min.Y);
+		const float RowW = static_cast<float>(RowBox.GetSize().X);
+		const float Changed = static_cast<float>(Now - Slot.ChangedAt);
+		const FPainter Row{Space, Elements, Layer + 3, In * (bDone ? 1.0f : EaseOut(StepAge / 0.2f))};
+		const FPainter RowTop{Space, Elements, Layer + 4, In * (bDone ? 1.0f : EaseOut(StepAge / 0.2f))};
+		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+		const TArray<FChaosImpactColourPreset>& Presets = Colours->GetPresets(Slot.Character);
+		const bool bWorn = Presets.IsValidIndex(Slot.Preset);
+		const bool bMouseHere = GetMousePlayer() == Player && !bStarting && NamePickerOwner == INDEX_NONE && !NameEntry.IsOpen();
+		const float RowH = static_cast<float>(RowBox.GetSize().Y);
+		const bool bCompact = RowH < 90.0f;
+		RoundBox(Row, RowX, RowY, RowW, RowH, bCompact ? 14.0f : 22.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.96f));
+		RoundFrame(Row, RowX, RowY, RowW, RowH, bCompact ? 14.0f : 22.0f, WithAlpha(bWorn ? Gold : Paper, bWorn ? 0.7f : 0.3f), 2.0f);
+		const FString Title = bWorn ? FString::Printf(TEXT("カスタム：%s"), *Presets[Slot.Preset].Name) : FString(TEXT("いつもの色"));
+		const float TitleSize = bCompact ? 15.0f : 18.0f;
+		Row.Text(Title, RowX + 14.0f, RowY + (bCompact ? 5.0f : 8.0f), HudFit(Title, TitleSize, RowW - (bDone ? 32.0f : 70.0f), TEXT("Black")), bWorn ? Gold : Paper,
+			ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
+		if (!bDone)
+		{
+			Row.Text(TEXT("← →"), RowX + RowW - 14.0f, RowY + (bCompact ? 6.0f : 10.0f), 14.0f, WithAlpha(Paper, 0.6f), ETextAlign::Right, TEXT("Black"));
+		}
+		for (int32 Choice = 0; Choice <= Presets.Num(); ++Choice)
+		{
+			const FBox2D ChipBox = GetChipRect(Player, Choice);
+			if (!ChipBox.bIsValid)
+			{
+				continue;
+			}
+			const float CX = static_cast<float>(ChipBox.Min.X - Rect.Min.X), CY = static_cast<float>(ChipBox.Min.Y - Rect.Min.Y);
+			const float CW = static_cast<float>(ChipBox.GetSize().X), CH = static_cast<float>(ChipBox.GetSize().Y);
+			const bool bChosen = Choice == Slot.Preset + 1;
+			const bool bHover = bMouseHere && !bDone && ChipBox.IsInside(MousePoint);
+			const float Pop = bChosen && Changed < 0.22f ? 3.0f * (1.0f - Changed / 0.22f) : 0.0f;
+			const float Dim = bDone && !bChosen ? 0.35f : 1.0f;
+			const FPainter Chip{Space, Elements, Layer + 3, Row.Alpha * Dim};
+			const FPainter ChipTop{Space, Elements, Layer + 4, Row.Alpha * Dim};
+			RoundBox(Chip, CX - Pop, CY - Pop, CW + Pop * 2.0f, CH + Pop * 2.0f, 9.0f,
+				bHover ? FLinearColor(0.14f, 0.25f, 0.5f, 1.0f) : FLinearColor(0.035f, 0.05f, 0.1f, 1.0f));
+			if (Choice == 0)
+			{
+				ChipTop.Text(TEXT("いつも"), CX + CW * 0.5f, CY + 10.0f, HudFit(TEXT("いつも"), 14.0f, CW - 8.0f, TEXT("Black")), Paper,
+					ETextAlign::Center, TEXT("Black"));
+			}
+			else
+			{
+				const int32 Stripes = FMath::Clamp(ChaosImpactCustomColour::GetPartCount(Slot.Character), 1, 4);
+				const float StripeW = (CW - 12.0f) / Stripes;
+				for (int32 Stripe = 0; Stripe < Stripes; ++Stripe)
+				{
+					FColor Colour;
+					const bool bOn = ChaosImpactCustomColour::GetPart(Presets[Choice - 1].Parts, Stripe, Colour);
+					ChipTop.Box(CX + 6.0f + Stripe * StripeW, CY + 7.0f, StripeW - 1.0f, CH - 14.0f,
+						bOn ? FLinearColor(Colour) : FLinearColor(0.25f, 0.27f, 0.33f, 1.0f));
+				}
+			}
+			const FPainter Ring{Space, Elements, Layer + 5, Row.Alpha * Dim};
+			RoundFrame(Ring, CX - Pop - (bChosen ? 3.0f : 0.0f), CY - Pop - (bChosen ? 3.0f : 0.0f), CW + (Pop + (bChosen ? 3.0f : 0.0f)) * 2.0f,
+				CH + (Pop + (bChosen ? 3.0f : 0.0f)) * 2.0f, 11.0f, bChosen ? Paper : WithAlpha(Paper, bHover ? 0.6f : 0.2f), bChosen ? 3.0f : 1.5f);
+		}
+		if (const FBox2D Button = GetRowButtonRect(Player); Button.bIsValid)
+		{
+			const float BX = static_cast<float>(Button.Min.X - Rect.Min.X), BY = static_cast<float>(Button.Min.Y - Rect.Min.Y);
+			const float BW = static_cast<float>(Button.GetSize().X), BH = static_cast<float>(Button.GetSize().Y);
+			const bool bHover = bMouseHere && Button.IsInside(MousePoint);
+			RoundBox(Row, BX, BY, BW, BH, 12.0f, FMath::Lerp(Accent, Paper, bHover ? 0.3f : 0.0f));
+			RowTop.Text(TEXT("決定"), BX + BW * 0.5f, BY + (BH - 22.0f * 1.32f) * 0.5f, 22.0f, Ink, ETextAlign::Center, TEXT("BlackItalic"));
+		}
+	}
+
+	// カスタムカラー: the preset worn (up and down choose), over the colour row (characters that come in colours).
+	if (Slot.Step != EStep::Character && Info.bColourVariants && PresetCount(Slot.Character) > 0)
 	{
 		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 		const TArray<FChaosImpactColourPreset>& Presets = Colours->GetPresets(Slot.Character);
@@ -1310,9 +1577,12 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	{
 		RoundFrame(C, 0.0f, 0.0f, W, H, 30.0f, Accent, 6.0f);
 		const float Stamp = 1.0f + 0.45f * FMath::Exp(-16.0f * StepAge);
-		const float StampX = bWide ? W - 230.0f : W * 0.5f - 110.0f;
-		const float StampY = bWide ? 36.0f : PictureY + PictureH * 0.30f;
-		const FGeometry StampSpace = MakeSkewed(Space, StampX, StampY, 220.0f, 100.0f, -0.18f, Stamp);
+		// Never over the face: low on the picture, over the legs (small windows: smaller, beside the feet).
+		const bool bSmall = !bWide && !bTall;
+		const float StampScale = bSmall ? 0.58f : bWide ? 0.78f : 1.0f;
+		const float StampCX = bSmall ? PictureX + PictureW + 12.0f : PictureX + PictureW * 0.5f;
+		const float StampCY = PictureY + PictureH - (bSmall ? 30.0f : bWide ? 42.0f : 56.0f);
+		const FGeometry StampSpace = MakeSkewed(Space, StampCX - 110.0f, StampCY - 50.0f, 220.0f, 100.0f, -0.18f, Stamp * StampScale);
 		const FPainter S{StampSpace, Elements, Layer + 4, In * FMath::Clamp(StepAge / 0.06f, 0.0f, 1.0f)};
 		RoundBox(S, -4.0f, 10.0f, 228.0f, 80.0f, 24.0f, WithAlpha(Ink, 0.85f));
 		RoundBox(S, 0.0f, 14.0f, 220.0f, 72.0f, 22.0f, Accent);
@@ -1424,16 +1694,31 @@ void UChaosImpactCharacterSelect::HandleMouseMove(const FVector2D& DesignPoint)
 	{
 		return;
 	}
+	MousePoint = DesignPoint;
 	if (NameEntry.IsOpen())
 	{
 		NameEntry.HandleMouseMove(DesignPoint);
 		return;
 	}
-	for (int32 Line = 0; Line < NamePickerLines() && NamePickerOwner != INDEX_NONE; ++Line)
+	if (NamePickerOwner != INDEX_NONE)
 	{
-		if (PickerLineRect(Line).IsInside(DesignPoint))
+		for (int32 Line = 0; Line < NamePickerLines(); ++Line)
 		{
-			NamePickerChoice = Line;
+			if (PickerLineRect(Line).IsInside(DesignPoint))
+			{
+				NamePickerChoice = Line;
+			}
+		}
+		return;
+	}
+	// Pointing at an icon shows that character in the mouse player's window.
+	const int32 Player = GetMousePlayer();
+	for (int32 Tile = 0; Tile < GetTileCount() && Slots.IsValidIndex(Player) && Slots[Player].Step == EStep::Character; ++Tile)
+	{
+		if (GetTileRect(Tile).IsInside(DesignPoint))
+		{
+			PointAt(Player, Tile);
+			return;
 		}
 	}
 }

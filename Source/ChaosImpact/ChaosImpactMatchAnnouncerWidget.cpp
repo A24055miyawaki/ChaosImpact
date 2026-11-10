@@ -1,4 +1,5 @@
 #include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ChaosImpactSettings.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
@@ -380,7 +381,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	{
 		return BaseLayer;
 	}
-	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f);
+	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 	const FGeometry Center = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.5f, S);
 	const FGeometry TopCenter = MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, S);
 	const double ServerNow = Match->GetServerWorldTimeSeconds();
@@ -516,7 +517,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			PaintingDuel = View.Duel;
 			PaintingViewer = View.Viewer;
 			const FVector2f ViewSize = View.Area.GetLocalSize();
-			const float ViewScale = FMath::Clamp(FMath::Min(ViewSize.X / 1600.0f, ViewSize.Y / 900.0f), 0.42f, 1.4f);
+			const float ViewScale = FMath::Clamp(FMath::Min(ViewSize.X / 1600.0f, ViewSize.Y / 900.0f), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 			const FGeometry ViewCenter = MakeAnchor(View.Area, ViewSize.X * 0.5f, ViewSize.Y * 0.5f, ViewScale);
 			const FGeometry ViewTop = MakeAnchor(View.Area, ViewSize.X * 0.5f, 0.0f, ViewScale);
 			const auto ViewCallout = [&](const FString& Word, const float TextSize, const float Scale, const float Alpha,
@@ -546,13 +547,13 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 				{
 					// One match at a time: which of the round's matches this is (準決勝 第1試合); all at once: the round only.
 					const FChaosImpactTournamentMatch& Played = Match->Tournament.Matches[Arena.Match];
-					RoundName = Match->Tournament.GetRoundName(Played.Round);
+					RoundName = Match->Tournament.GetMatchName(Arena.Match);
 					// (Counted among the round's matches really played: a bye is no match.)
 					int32 Number = 1;
 					int32 InRound = 0;
 					for (const FChaosImpactTournamentMatch& Other : Match->Tournament.Matches)
 					{
-						if (Other.Round == Played.Round && !Other.bBye)
+						if (Other.Round == Played.Round && Other.Group == Played.Group && !Other.bBye)
 						{
 							++InRound;
 							Number += Other.Slot < Played.Slot ? 1 : 0;
@@ -605,12 +606,14 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			ViewCallout(TEXT("FIGHT!"), 150.0f, FMath::Lerp(2.0f, 1.0f, EaseOut(Age / 0.18f)),
 				1.0f - FMath::Clamp((Age - 0.55f) / 0.35f, 0.0f, 1.0f), Paper, BaseLayer + 12);
 		}
-		else if (Duel.Step == EChaosImpactDuelStep::SuddenDeath && Age < 2.0f)
+		else if (Duel.Step == EChaosImpactDuelStep::SuddenDeath && Age < 2.6f)
 		{
-			const float Alpha = Fade(Age, 1.6f, 0.4f);
+			// What changes: the floor closes in (outside it loses), and the first hit takes the round.
+			const float Alpha = Fade(Age, 2.2f, 0.4f);
 			ViewCallout(TEXT("サドンデス！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age), Alpha, Paper, BaseLayer + 12);
-			FPainter{ViewCenter, OutDrawElements, BaseLayer + 16, Alpha}.Text(TEXT("先に当てたほうがラウンドを取る"), 0.0f, 86.0f, 30.0f, Gold,
-				ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+			const FPainter Lines{ViewCenter, OutDrawElements, BaseLayer + 16, Alpha};
+			Lines.Text(TEXT("エリアが狭まる！"), 0.0f, 84.0f, 36.0f, Fire, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+			Lines.Text(TEXT("外に出るか、先に当てられたら負け"), 0.0f, 132.0f, 24.0f, Gold, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 		}
 		else if (Duel.Step == EChaosImpactDuelStep::RoundOver)
 		{
@@ -843,7 +846,9 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 		// The name at the outer end, with YOU when it is this player alone at the screen.
 		const float NameX = Dir * (Outer - 24.0f);
 		const ETextAlign NameAlign = PlateIndex == 0 ? ETextAlign::Left : ETextAlign::Right;
-		Face.Text(GetAnnouncerName(Member), NameX, 14.0f, 22.0f, Paper, NameAlign, TEXT("Black"), 2.0f, Navy);
+		// (Up to the round pips by the clock.)
+		const FString PlateName = GetAnnouncerName(Member);
+		Face.Text(PlateName, NameX, 14.0f, HudFit(PlateName, 22.0f, (Outer - 24.0f) - (Inner + 26.0f + (ChaosImpactMatch::DuelRoundsToWin - 1) * 34.0f + 13.0f + 12.0f)), Paper, NameAlign, TEXT("Black"), 2.0f, Navy);
 		if (Side == OwnSide && !bShared)
 		{
 			const float TagX = PlateIndex == 0 ? NameX : NameX - 54.0f;

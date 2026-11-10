@@ -2,6 +2,7 @@
 
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactTackleComponent.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactTitleDemo.h"
@@ -11,6 +12,9 @@
 #include "ChaosImpactPaint.h"
 #include "MoviePlayer.h"
 #include "Containers/Ticker.h"
+#include "JoyShockBlueprintLibrary.h"
+#include "JoyShockTypes.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactTournamentWidget.h"
@@ -134,9 +138,9 @@ void AChaosImpactPlayerController::BeginPlay()
 	const int32 MachinePlayers = FMath::Max(
 		GetWorld() ? FCString::Atoi(GetWorld()->URL.GetOption(TEXT("CILocalPlayers="), TEXT("1"))) : 1,
 		OwningGameInstance ? OwningGameInstance->GetLocalPlayers().Num() : 1);
-	// A single player online follows whichever device was used last; a pair keeps its assigned devices apart.
-	bOnlineAnyInput = MachinePlayers <= 1
-		&& (IsOnlineRoom() || (GetWorld() && GetWorld()->URL.HasOption(TEXT("CIOnlineSearch=1"))));
+	// A single player on this machine (online or not: solo mode, training, a VS alone) follows whichever device was used
+	// last, keyboard and mouse or a controller; two or more keep their assigned devices apart.
+	bOnlineAnyInput = MachinePlayers <= 1;
 	ActiveKeyboardPlayerIndex = 0;
 	if (GetWorld())
 	{
@@ -147,6 +151,17 @@ void AChaosImpactPlayerController::BeginPlay()
 	}
 	bPrimaryUsesGamepad = ActiveKeyboardPlayerIndex != 0;
 	bRequestedPrimaryUsesGamepad = bPrimaryUsesGamepad;
+	// (Starting with the device chosen on the way in, if one was.)
+	if (bOnlineAnyInput)
+	{
+		bLastInputGamepad = bPrimaryUsesGamepad;
+		// Every controller plugged in is this lone player's too (a keyboard player owns none otherwise, and the viewport
+		// drops a controller nobody owns): now, and again every couple of seconds for one plugged in later.
+		if (IsLocalController())
+		{
+			GetWorldTimerManager().SetTimer(SolePadTimer, this, &AChaosImpactPlayerController::ClaimEveryPadForSolePlayer, 2.0f, true, 0.6f);
+		}
+	}
 	RequestedKeyboardPlayerIndex = ActiveKeyboardPlayerIndex;
 	ApplyLocalInputRouting();
 	// The viewport outlives levels. A training menu overlay or VS opening that held split screen off in the
@@ -303,6 +318,88 @@ void AChaosImpactPlayerController::BeginPlay()
 		GetWorldTimerManager().SetTimer(ClientAssignmentTimer, this,
 			&AChaosImpactPlayerController::ApplyClientControllerAssignments, 0.2f, true, 0.2f);
 	}
+#if !UE_BUILD_SHIPPING
+	// Development (-CIDevPadScript=<s>:<Button>;<s>:<Axis>=<value>;...): a controller's input played into this game as a
+	// real one would come (through Slate, as controller 0), for testing with no controller at hand. Buttons are pressed
+	// and let go; an axis holds its value (sent again every frame) until set again. Names: FGamepadKeyNames
+	// (FaceButtonBottom, LeftAnalogX, ...). Seconds count from this world's start.
+	static bool bDevPadScriptStarted = false;
+	FString DevPadScript;
+	if (!bDevPadScriptStarted && IsLocalController() && bPrimaryLocalPlayer && FSlateApplication::IsInitialized()
+		&& FParse::Value(FCommandLine::Get(), TEXT("CIDevPadScript="), DevPadScript, false))
+	{
+		bDevPadScriptStarted = true;
+		struct FPadStep { double At; FName Key; float Value; bool bAxis; };
+		TArray<FPadStep> Steps;
+		TArray<FString> Parts;
+		DevPadScript.ParseIntoArray(Parts, TEXT(";"));
+		for (const FString& Part : Parts)
+		{
+			FString When, What, Name, Value;
+			if (!Part.Split(TEXT(":"), &When, &What)) { continue; }
+			const bool bAxis = What.Split(TEXT("="), &Name, &Value);
+			Steps.Add({FCString::Atod(*When), FName(bAxis ? *Name : *What), bAxis ? FCString::Atof(*Value) : 1.0f, bAxis});
+		}
+		const double Start = FPlatformTime::Seconds();
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Steps, Start, Next = 0, Axes = TMap<FName, float>(),
+			Releases = TArray<TPair<double, FName>>()](float) mutable
+		{
+			if (!FSlateApplication::IsInitialized()) { return false; }
+			FPlatformUserId User = PLATFORMUSERID_NONE;
+			FInputDeviceId Device = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(0, User, Device);
+			// (Into the game's viewport as a controller's input arrives there, and so to whichever local player has it.)
+			UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr;
+			// (-CIDevPadDirect: straight into the first player, as though their controller were theirs, past the ownership check.)
+			APlayerController* Direct = nullptr;
+			if (FParse::Param(FCommandLine::Get(), TEXT("CIDevPadDirect")) && GEngine)
+			{
+				for (const FWorldContext& Context : GEngine->GetWorldContexts())
+				{
+					if (Context.World() && Context.World()->IsGameWorld() && Context.World()->GetFirstPlayerController())
+					{
+						Direct = Context.World()->GetFirstPlayerController();
+						break;
+					}
+				}
+			}
+			const auto Send = [Viewport, Direct, Device](const FName Key, const EInputEvent Event, const float Amount)
+			{
+				const FInputKeyEventArgs Args(Viewport ? Viewport->Viewport : nullptr, Device, FKey(Key), Event, Amount, false, FPlatformTime::Cycles64());
+				if (Direct) { Direct->InputKey(Args); } else if (Viewport) { Viewport->InputKey(Args); }
+			};
+			const double Now = FPlatformTime::Seconds() - Start;
+			while (Steps.IsValidIndex(Next) && Now >= Steps[Next].At)
+			{
+				const FPadStep& Step = Steps[Next++];
+				if (Step.bAxis)
+				{
+					Axes.Add(Step.Key, Step.Value);
+				}
+				else
+				{
+					Send(Step.Key, IE_Pressed, 1.0f);
+					Releases.Add({Now + 0.15, Step.Key});
+				}
+				UE_LOG(LogChaosImpact, Log, TEXT("DevPadScript: %s %s (to %s)"), *Step.Key.ToString(), Step.bAxis ? *FString::SanitizeFloat(Step.Value) : TEXT("pressed"),
+					Direct ? *Direct->GetName() : TEXT("the viewport"));
+			}
+			for (int32 Index = Releases.Num() - 1; Index >= 0; --Index)
+			{
+				if (Now >= Releases[Index].Key)
+				{
+					Send(Releases[Index].Value, IE_Released, 0.0f);
+					Releases.RemoveAt(Index);
+				}
+			}
+			for (const TPair<FName, float>& Axis : Axes)
+			{
+				Send(Axis.Key, IE_Axis, Axis.Value);
+			}
+			return Steps.IsValidIndex(Next) || !Releases.IsEmpty() || Axes.Num() > 0;
+		}));
+	}
+#endif
 	// After being disconnected from a room the engine lands on the title map;
 	// continue straight into this player's own training arena instead.
 	if (!bTrainingMode && IsLocalController() && bPrimaryLocalPlayer)
@@ -546,6 +643,8 @@ void AChaosImpactPlayerController::BeginPlay()
 					Data->Mode = Parts.IsValidIndex(2) && FCString::Atoi(*Parts[2]) == 1 ? EChaosImpactTournamentMode::Simultaneous
 						: EChaosImpactTournamentMode::OneAtATime;
 					Data->CPUs = Parts.IsValidIndex(1) ? FCString::Atoi(*Parts[1]) : 2;
+					// (A fourth part 1: with 順位決定戦.)
+					Data->bPlacementMatches = Parts.IsValidIndex(3) && FCString::Atoi(*Parts[3]) == 1;
 					const int32 People = Parts.IsValidIndex(0) ? FCString::Atoi(*Parts[0]) : 2;
 					for (int32 Index = 0; Index < People; ++Index)
 					{
@@ -699,7 +798,12 @@ void AChaosImpactPlayerController::HandleBoundKeyPressed(const FKey Key)
 	{
 		return;
 	}
-	if (IsActionKey(this, EChaosImpactAction::TrainingMenu, Key))
+	if (IsActionKey(this, EChaosImpactAction::OverviewMap, Key) && IsGameplayActive())
+	{
+		bOverviewMapOpen = !bOverviewMapOpen;
+		ChaosImpactSfx::Play2D(this, bOverviewMapOpen ? EChaosImpactSfx::UiSelect : EChaosImpactSfx::UiBack);
+	}
+	else if (IsActionKey(this, EChaosImpactAction::TrainingMenu, Key))
 	{
 		ToggleTrainingOverlay();
 	}
@@ -707,10 +811,11 @@ void AChaosImpactPlayerController::HandleBoundKeyPressed(const FKey Key)
 	{
 		ToggleReadyForMatch();
 	}
-	else if (IsActionKey(this, EChaosImpactAction::LobbySpectate, Key))
+	else if (IsActionKey(this, EChaosImpactAction::LobbyTeam, Key) && CanChangeLobbyTeam() && IsGameplayActive())
 	{
-		ToggleSpectating();
+		ServerChangeTeam(1);
 	}
+	// (Watching / playing switches on a held key: UpdateSpectateHold.)
 }
 
 void AChaosImpactPlayerController::SetupInputComponent()
@@ -762,6 +867,13 @@ void AChaosImpactPlayerController::SetupInputComponent()
 
 bool AChaosImpactPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+#if !UE_BUILD_SHIPPING
+	if (Params.Key.IsGamepadKey() && (Params.Event == IE_Pressed || FMath::Abs(Params.AmountDepressed) > 0.5f) && FParse::Param(FCommandLine::Get(), TEXT("CIDevPadLog")))
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("DevPadLog: %s %.2f reached P%d (any device %d, pad now %d)"), *Params.Key.ToString(), Params.AmountDepressed,
+			GetThisLocalPlayerIndex() + 1, bOnlineAnyInput, IsUsingGamepad());
+	}
+#endif
 	if (bOnlineAnyInput && IsLocalController())
 	{
 		const bool bMouseAxis = Params.Key == EKeys::MouseX || Params.Key == EKeys::MouseY;
@@ -943,6 +1055,27 @@ void AChaosImpactPlayerController::ResetControllerJoinSequence()
 	JoinedLegacyControllerIds.Reset();
 	RequestedKeyboardPlayerIndex = INDEX_NONE;
 	bRequestedPrimaryUsesGamepad = true;
+}
+
+void AChaosImpactPlayerController::ClaimEveryPadForSolePlayer()
+{
+	const ULocalPlayer* Local = GetLocalPlayer();
+	const UGameInstance* GameInstance = GetGameInstance();
+	if (!bOnlineAnyInput || !Local || !GameInstance || GameInstance->GetLocalPlayers().Num() > 1)
+	{
+		GetWorldTimerManager().ClearTimer(SolePadTimer);
+		return;
+	}
+	const IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	for (const FJSL4UControllerInfo& Info : UJoyShockLibrary::JSL4UGetAllConnectedControllers())
+	{
+		if (Info.InputDeviceId >= 0
+			&& DeviceMapper.GetUserForInputDevice(FInputDeviceId::CreateFromInternalId(Info.InputDeviceId)) != Local->GetPlatformUserId()
+			&& UJoyShockLibrary::JSL4UAssignControllerToPlayer(Info, this))
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Controller %d is now P1's too (one player here: keyboard and controller both)"), Info.InputDeviceId);
+		}
+	}
 }
 
 bool AChaosImpactPlayerController::RegisterControllerJoin(
@@ -1174,8 +1307,10 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	{
 		ExitTrainingOverlayPresentation();
 	}
-	// A pause screen is only reachable from an active play session (or back from a screen opened from it).
+	// A pause screen is only reachable from an active play session (or back from a screen opened from it: in a room,
+	// any of its own menus, as the character and name changes are).
 	if (NewScreen == EChaosImpactScreen::Pause && !IsGameplayActive()
+		&& !(IsOnlineRoom() && !bTravelPending && CurrentScreen != EChaosImpactScreen::Pause)
 		&& CurrentScreen != EChaosImpactScreen::TrainingSettings
 		&& !(CurrentScreen == EChaosImpactScreen::Settings && SettingsReturnScreen == EChaosImpactScreen::Pause)
 		&& !(CurrentScreen == EChaosImpactScreen::ColourEdit && ColourEditReturnScreen == EChaosImpactScreen::Pause))
@@ -1260,6 +1395,13 @@ void AChaosImpactPlayerController::CloseSettings()
 {
 	if (CurrentScreen == EChaosImpactScreen::Settings)
 	{
+		// From a room, back to its pause menu (or play): never out to the menus before it.
+		if (IsOnlineRoom() && SettingsReturnScreen != EChaosImpactScreen::Pause)
+		{
+			UE_LOG(LogChaosImpact, Warning, TEXT("Settings closed in a room with a way back out of it; back to play instead"));
+			EnterPlayingScreen();
+			return;
+		}
 		ShowMenuScreen(SettingsReturnScreen);
 	}
 }
@@ -1271,6 +1413,11 @@ void AChaosImpactPlayerController::TogglePauseMenu()
 	// Solo mode's title takes its own back button; in the demo any button goes back to the title.
 	if (bSoloTitle || bDemoPlay)
 	{
+		return;
+	}
+	if (MenuWidget && FPlatformTime::Seconds() - MenuWidget->GetScreenStartedAt() < 0.2)
+	{
+		UE_LOG(LogChaosImpact, Verbose, TEXT("Pause button right after a screen change: ignored"));
 		return;
 	}
 	if (!IsPrimaryLocalPlayerController())
@@ -1324,6 +1471,7 @@ void AChaosImpactPlayerController::ResumeGameplay()
 	{
 		return;
 	}
+	UE_LOG(LogChaosImpact, Verbose, TEXT("Pause closed (back to play)"));
 	CurrentScreen = EChaosImpactScreen::Playing;
 	MenuWidget->ShowScreen(CurrentScreen);
 	ApplyScreenInput();
@@ -1523,11 +1671,15 @@ void AChaosImpactPlayerController::CancelCharacterSelection()
 {
 	if (CurrentScreen == EChaosImpactScreen::CharacterSelect && !bTravelPending)
 	{
-		if (bRoomCharacterChange)
+		if (bRoomCharacterChange || IsOnlineRoom())
 		{
-			// Opened from the room's pause menu: back there, nothing changed.
+			// Opened from the room's pause menu: back there, nothing changed (never out to the menus before the room).
 			bRoomCharacterChange = false;
 			ShowMenuScreen(EChaosImpactScreen::Pause);
+			if (CurrentScreen == EChaosImpactScreen::CharacterSelect)
+			{
+				EnterPlayingScreen();
+			}
 			return;
 		}
 		ShowMenuScreen(EChaosImpactScreen::ControllerAssignment);
@@ -1996,8 +2148,9 @@ void AChaosImpactPlayerController::CancelRoomRename()
 bool AChaosImpactPlayerController::CanChangeLoadoutInRoom() const
 {
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	return IsOnlineRoom() && IsPrimaryLocalPlayerController() && !bTravelPending && Room
-		&& Room->Phase == EChaosImpactOnlinePhase::Lobby && !Room->IsMatchmade();
+	// (In the lobby, its countdown to the match included: the menu closes by itself when the countdown ends.)
+	return IsOnlineRoom() && IsPrimaryLocalPlayerController() && !bTravelPending && Room && !Room->IsMatchmade()
+		&& (Room->Phase == EChaosImpactOnlinePhase::Lobby || (Room->Phase == EChaosImpactOnlinePhase::Starting && !Room->bRoomMatchLevel));
 }
 
 void AChaosImpactPlayerController::BeginRoomCharacterChange()
@@ -2087,6 +2240,12 @@ bool AChaosImpactPlayerController::CanToggleReady() const
 	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
 	return IsOnlineRoom() && Room && Room->bRulesDecided && !Room->bVersusMatch
 		&& Room->Phase == EChaosImpactOnlinePhase::Lobby && !IsSpectating();
+}
+
+bool AChaosImpactPlayerController::CanChangeLobbyTeam() const
+{
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	return CanToggleReady() && Room->Rules.IsTeamBattle();
 }
 
 bool AChaosImpactPlayerController::CanToggleSpectating() const
@@ -2389,6 +2548,14 @@ void AChaosImpactPlayerController::ServerAnswerTournamentCPUMatch_Implementation
 	}
 }
 
+void AChaosImpactPlayerController::ServerSkipTournamentResults_Implementation()
+{
+	if (AChaosImpactGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		GameMode->SkipTournamentResults(this);
+	}
+}
+
 void AChaosImpactPlayerController::UpdateTournamentWidget()
 {
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
@@ -2469,6 +2636,35 @@ void AChaosImpactPlayerController::UpdateRecruitmentHold(const float DeltaSecond
 		RecruitmentHeldSeconds = 0.f;
 		bRecruitmentHoldNeedsRelease = true;
 		CloseRecruitment();
+	}
+}
+
+void AChaosImpactPlayerController::UpdateSpectateHold(const float DeltaSeconds)
+{
+	if (!IsLocalController()) { return; }
+	const bool bDown = ChaosImpactSettings::IsActionDown(this, EChaosImpactAction::LobbySpectate);
+	if (!bDown)
+	{
+		SpectateHeldSeconds = 0.f;
+		bSpectateHoldNeedsRelease = false;
+		return;
+	}
+	// Only in the lobby itself: never with a menu (characters, colours, rules) open, nor carried over from one, nor while
+	// the window is in the background.
+	const bool bFocused = !FSlateApplication::IsInitialized() || FSlateApplication::Get().IsActive();
+	if (!bFocused || !IsGameplayActive() || !CanToggleSpectating() || bTournamentPanelOpen)
+	{
+		SpectateHeldSeconds = 0.f;
+		bSpectateHoldNeedsRelease = true;
+		return;
+	}
+	if (bSpectateHoldNeedsRelease) { return; }
+	SpectateHeldSeconds += FMath::Clamp(DeltaSeconds, 0.f, .1f);
+	if (SpectateHeldSeconds >= SpectateHoldSeconds)
+	{
+		SpectateHeldSeconds = 0.f;
+		bSpectateHoldNeedsRelease = true;
+		ToggleSpectating();
 	}
 }
 
@@ -2713,13 +2909,13 @@ void AChaosImpactPlayerController::OpenTourneySeatsForMatch(const int32 MatchInd
 	int32 InRound = 0;
 	for (const FChaosImpactTournamentMatch& Other : Tournament.Matches)
 	{
-		if (Other.Round == Called.Round && !Other.bBye)
+		if (Other.Round == Called.Round && Other.Group == Called.Group && !Other.bBye)
 		{
 			++InRound;
 			Number += Other.Slot < Called.Slot ? 1 : 0;
 		}
 	}
-	TourneySeatTitle = Tournament.GetRoundName(Called.Round) + (InRound > 1 ? FString::Printf(TEXT(" 第%d試合"), Number) : FString());
+	TourneySeatTitle = Tournament.GetMatchName(MatchIndex) + (InRound > 1 ? FString::Printf(TEXT(" 第%d試合"), Number) : FString());
 	TourneySeatMatch = MatchIndex;
 	TourneySeatsFullAt = 0.0;
 	bTournamentPanelOpen = false;
@@ -3037,6 +3233,34 @@ void AChaosImpactPlayerController::OpenColourEdit(const EChaosImpactScreen Retur
 	ShowMenuScreen(EChaosImpactScreen::ColourEdit);
 }
 
+bool AChaosImpactPlayerController::IsColourEditApplyOffered() const
+{
+	return IsOnlineRoom() && ColourEditReturnScreen == EChaosImpactScreen::Pause && CanChangeLoadoutInRoom();
+}
+
+bool AChaosImpactPlayerController::ApplyRoomLoadout(const int32 LocalIndex, const int32 NewCharacter, const int32 Preset)
+{
+	UChaosImpactLoadoutSubsystem* Loadouts = UChaosImpactLoadoutSubsystem::Get(this);
+	const UGameInstance* GameInstance = GetGameInstance();
+	if (!CanChangeLoadoutInRoom() || !Loadouts || !GameInstance || !GameInstance->GetLocalPlayers().IsValidIndex(LocalIndex))
+	{
+		return false;
+	}
+	FChaosImpactLoadout Loadout = Loadouts->GetLoadout(LocalIndex);
+	Loadout.Character = ChaosImpactRoster::ClampIndex(NewCharacter);
+	Loadout.ColourPreset = Preset;
+	Loadouts->SetLoadout(LocalIndex, Loadout);
+	if (AChaosImpactPlayerController* Local = Cast<AChaosImpactPlayerController>(
+		GameInstance->GetLocalPlayers()[LocalIndex]->GetPlayerController(GetWorld())))
+	{
+		// Sent again on its next tick, as after a character change in the room.
+		Local->bLoadoutSent = false;
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Room: P%d plays as %s (preset %d) from カラーエディット"), LocalIndex + 1,
+		ChaosImpactRoster::Get(NewCharacter).Name, Preset);
+	return true;
+}
+
 void AChaosImpactPlayerController::CloseColourEdit()
 {
 	if (CurrentScreen != EChaosImpactScreen::ColourEdit)
@@ -3175,7 +3399,10 @@ void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FStr
 		{
 			for (const UChildConnection* Child : Connection->Children)
 			{
-				if (Child && Child->PlayerController && Child->PlayerController->PlayerState)
+				const AChaosImpactPlayerState* ChildState = Child && Child->PlayerController
+					? Child->PlayerController->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+				// (Not over a name the second player chose for themselves.)
+				if (Child && Child->PlayerController && Child->PlayerController->PlayerState && !(ChildState && ChildState->bOwnName))
 				{
 					Child->PlayerController->PlayerState->SetPlayerName(
 						AChaosImpactPlayerState::MakeSecondPlayerName(Trimmed));
@@ -3183,6 +3410,42 @@ void AChaosImpactPlayerController::ServerSetPlayerName_Implementation(const FStr
 			}
 		}
 		UE_LOG(LogChaosImpact, Log, TEXT("Player name set: %s"), *Trimmed);
+	}
+}
+
+void AChaosImpactPlayerController::ServerSetSecondPlayerName_Implementation(const FString& Name)
+{
+	AChaosImpactPlayerState* Member = GetPlayerState<AChaosImpactPlayerState>();
+	if (!Member || !Member->bSecondOfMachine)
+	{
+		return;
+	}
+	FString Chosen = Name.TrimStartAndEnd().Left(UChaosImpactSessionSubsystem::MaxNameLength);
+	Member->bOwnName = !Chosen.IsEmpty();
+	if (Chosen.IsEmpty())
+	{
+		// No name of their own: their machine's first player's, with (2).
+		FString First;
+		if (const UChildConnection* Child = Cast<UChildConnection>(GetNetConnection()))
+		{
+			const APlayerController* Parent = Child->Parent ? Child->Parent->PlayerController.Get() : nullptr;
+			First = Parent && Parent->PlayerState ? Parent->PlayerState->GetPlayerName() : FString();
+		}
+		else if (const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+		{
+			First = Sessions->GetPlayerName();
+		}
+		if (First.IsEmpty())
+		{
+			return;
+		}
+		Chosen = AChaosImpactPlayerState::MakeSecondPlayerName(First);
+	}
+	if (Member->GetPlayerName() != Chosen)
+	{
+		Member->SetPlayerName(Chosen);
+		Member->ForceNetUpdate();
+		UE_LOG(LogChaosImpact, Log, TEXT("Second player's name: %s"), *Chosen);
 	}
 }
 
@@ -3638,8 +3901,11 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 		FChaosImpactTournamentSettings& Tournament = Rules.Tournament;
 		if (Row == 0)
 		{
-			Tournament.Mode = Tournament.Mode == EChaosImpactTournamentMode::OneAtATime ? EChaosImpactTournamentMode::Simultaneous
-				: EChaosImpactTournamentMode::OneAtATime;
+			// Four ways round: one at a time / with 順位決定戦 / all at once / with 順位決定戦.
+			const int32 Way = (Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? 2 : 0) + (Tournament.bPlacementMatches ? 1 : 0);
+			const int32 NextWay = Wrap(Way + (Direction < 0 ? -1 : 1), 4);
+			Tournament.Mode = NextWay >= 2 ? EChaosImpactTournamentMode::Simultaneous : EChaosImpactTournamentMode::OneAtATime;
+			Tournament.bPlacementMatches = NextWay % 2 == 1;
 		}
 		else if (Row == 2)
 		{
@@ -4173,7 +4439,10 @@ void AChaosImpactPlayerController::UpdateVersusReveal()
 
 void AChaosImpactPlayerController::CancelMatchRules()
 {
-	if (MatchRulesReturnScreen == EChaosImpactScreen::Playing)
+	// (In a room the rules only go back to the room itself, whatever was left as the way back.)
+	const bool bInRoomScreen = MatchRulesReturnScreen == EChaosImpactScreen::Playing || MatchRulesReturnScreen == EChaosImpactScreen::Pause
+		|| MatchRulesReturnScreen == EChaosImpactScreen::TeamSelect;
+	if (MatchRulesReturnScreen == EChaosImpactScreen::Playing || (IsOnlineRoom() && !bInRoomScreen))
 	{
 		EnterPlayingScreen();
 	}
@@ -4186,6 +4455,19 @@ void AChaosImpactPlayerController::CancelMatchRules()
 void AChaosImpactPlayerController::ChangeOwnTeam(const int32 Direction)
 {
 	ServerChangeTeam(Direction);
+}
+
+void AChaosImpactPlayerController::SetOwnTeam(const int32 Team)
+{
+	ServerSetTeam(Team);
+}
+
+void AChaosImpactPlayerController::ServerSetTeam_Implementation(const int32 Team)
+{
+	if (AChaosImpactGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AChaosImpactGameMode>() : nullptr)
+	{
+		GameMode->SetMemberTeam(GetPlayerState<AChaosImpactPlayerState>(), Team);
+	}
 }
 
 void AChaosImpactPlayerController::ServerChangeTeam_Implementation(const int32 Direction)
@@ -4424,6 +4706,19 @@ void AChaosImpactPlayerController::PreClientTravel(const FString& PendingURL, co
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+	// Online, a machine's second player goes by the nickname they picked (or the first player's name with (2)).
+	if (IsLocalController() && IsOnlineRoom() && GetThisLocalPlayerIndex() > 0 && PlayerState && FPlatformTime::Seconds() >= NextSecondNameAt)
+	{
+		NextSecondNameAt = FPlatformTime::Seconds() + 1.0;
+		const int32 Profile = ChaosImpactSettings::GetPlayerProfile(this);
+		const FString Wanted = Profile > 0 ? ChaosImpactSettings::GetProfile(Profile).Name : FString();
+		if (!bSentSecondName || Wanted != SentSecondName)
+		{
+			bSentSecondName = true;
+			SentSecondName = Wanted;
+			ServerSetSecondPlayerName(Wanted);
+		}
+	}
 	// The title left alone a while (no key, button, stick or mouse): its demo play.
 	if (bTitleDemoWorld && CurrentScreen == EChaosImpactScreen::Title && !bTravelPending && IsPrimaryLocalPlayerController()
 		&& FSlateApplication::IsInitialized() && GetDemoIdleSeconds() > 0.0f)
@@ -4445,6 +4740,7 @@ void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 	UpdateDuelOfferScreen();
 	UpdateMatchScreens();
 	UpdateRecruitmentHold(DeltaTime);
+	UpdateSpectateHold(DeltaTime);
 	UpdateOnlineVersusCard(DeltaTime);
 	UpdateMatchIntroCamera();
 	UpdateNearCameraParts();
@@ -4535,6 +4831,20 @@ void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 		bDevWatchDone = true;
 		ServerSetSpectating(true);
 	}
+	// Development (-CIDevSimaePerch=<seconds>): a flock of simaenaga let loose on this player that long in, and again
+	// every 12 s (screenshots of the perched-bird card).
+	static const float DevPerchDelay = []()
+	{
+		float Value = -1.0f;
+		FParse::Value(FCommandLine::Get(), TEXT("CIDevSimaePerch="), Value);
+		return Value;
+	}();
+	if (DevPerchDelay >= 0.0f && HasAuthority() && IsLocalController() && IsPrimaryLocalPlayerController() && GetPawn() && GetWorld()
+		&& GetWorld()->GetTimeSeconds() >= DevPerchDelay + DevPerchCount * 12.0f)
+	{
+		++DevPerchCount;
+		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), GetPawn()->GetActorLocation() + GetPawn()->GetActorForwardVector() * 60.0f, nullptr, GetPawn());
+	}
 #endif
 }
 
@@ -4549,12 +4859,29 @@ void AChaosImpactPlayerController::UpdateMatchScreens()
 	{
 		return;
 	}
-	if ((bRoomCharacterChange || bRenamingPlayer) && Match->Phase != EChaosImpactOnlinePhase::Lobby)
+	// The room's own menus stay open through the countdown to a match; when it ends (the match, a tournament, or the
+	// lobby's own match begins), whatever is open closes and play goes on: nothing chosen there makes anyone watch or
+	// leave. (A pick not yet confirmed is simply not taken.)
+	const bool bLobbyNow = Match->Phase == EChaosImpactOnlinePhase::Lobby
+		|| (Match->Phase == EChaosImpactOnlinePhase::Starting && !Match->bRoomMatchLevel);
+	const bool bRoomMenu = CurrentScreen == EChaosImpactScreen::CharacterSelect || CurrentScreen == EChaosImpactScreen::OnlineName
+		|| CurrentScreen == EChaosImpactScreen::OnlineRoomName || CurrentScreen == EChaosImpactScreen::Settings
+		|| CurrentScreen == EChaosImpactScreen::ColourEdit || CurrentScreen == EChaosImpactScreen::Pause;
+	if (IsOnlineRoom() && !bLobbyNow && bSawRoomCountdown && bRoomMenu)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("The countdown ended with screen %d open: closing it for the match"), static_cast<int32>(CurrentScreen));
+		bRoomCharacterChange = false;
+		bRenamingPlayer = false;
+		bRenamingRoom = false;
+		EnterPlayingScreen();
+	}
+	else if ((bRoomCharacterChange || bRenamingPlayer) && !bLobbyNow)
 	{
 		bRoomCharacterChange = false;
 		bRenamingPlayer = false;
 		EnterPlayingScreen();
 	}
+	bSawRoomCountdown = Match->Phase == EChaosImpactOnlinePhase::Starting && !Match->bRoomMatchLevel;
 	// Spectators have no team to pick; they keep watching.
 	const bool bTeamSelect = Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::TeamSelect && !IsSpectating();
 	if (bTeamSelect && CurrentScreen == EChaosImpactScreen::Playing)

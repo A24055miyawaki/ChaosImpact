@@ -3126,7 +3126,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 		// 0: how long (a tournament: how it runs).
 		if (Rules.bTournament)
 		{
-			Row(0, TEXT("進め方"), Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? TEXT("同時進行") : TEXT("1試合ずつ"), Ice, false);
+			Row(0, TEXT("進め方"), FString(Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? TEXT("同時進行") : TEXT("1試合ずつ"))
+				+ (Rules.Tournament.bPlacementMatches ? TEXT("・順位決定戦あり") : TEXT("")), Ice, false);
 		}
 		else if (Rules.bDuel)
 		{
@@ -4196,79 +4197,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	else if (Screen == EChaosImpactScreen::TeamSelect)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("TEAM SELECT"), T);
-		const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-		if (Match && Match->IsTeamBattle())
-		{
-			const int32 Teams = Match->Rules.TeamCount;
-			const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);
-			const int32 Capacity = ChaosImpactMatch::GetTeamCapacity(Teams, Humans.Num() + Match->Rules.CPUCount);
-			// Players on this machine, in local player order, so their cards can be marked P1-P4.
-			TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
-			if (const UGameInstance* OwningGameInstance = GetGameInstance())
-			{
-				for (const ULocalPlayer* LocalPlayer : OwningGameInstance->GetLocalPlayers())
-				{
-					const APlayerController* LocalController = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
-					LocalStates.Add(LocalController ? LocalController->PlayerState.Get() : nullptr);
-				}
-			}
-			P.Text(FString::Printf(TEXT("＜ ＞ でチームを選ぶ（それぞれのコントローラーで）　CPU %d人は人数の少ないチームに入ります"),
-				Match->Rules.CPUCount), 800.0f, 196.0f, 24.0f, Muted, ETextAlign::Center);
-			constexpr float Gap = 28.0f;
-			const float Width = (1300.0f - Gap * (Teams - 1)) / Teams;
-			for (int32 Team = 0; Team < Teams; ++Team)
-			{
-				const float ColumnIn = EaseOut((T - 0.1f - 0.05f * Team) / 0.35f);
-				const FGeometry Column = MakeSkewed(DesignGeometry, 150.0f + Team * (Width + Gap) + (1.0f - ColumnIn) * 100.0f,
-					244.0f, Width, 440.0f, -0.06f);
-				const FMenuPainter C{Column, OutDrawElements, BaseLayer + 3, ColumnIn};
-				const FLinearColor TeamColor = ChaosImpactMatch::GetTeamColor(Team);
-				FLinearColor Deep = TeamColor * 0.3f;
-				Deep.A = 1.0f;
-				int32 Count = 0;
-				for (const AChaosImpactPlayerState* Member : Humans)
-				{
-					Count += Member->TeamIndex == Team ? 1 : 0;
-				}
-				C.Box(12.0f, 14.0f, Width, 440.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
-				C.Box(0.0f, 0.0f, Width, 440.0f, FLinearColor(0.02f, 0.026f, 0.045f, 0.96f));
-				C.Box(0.0f, 0.0f, Width, 74.0f, Deep);
-				C.Box(0.0f, 68.0f, Width, 6.0f, TeamColor);
-				C.Text(ChaosImpactMatch::GetTeamName(Team), 24.0f, 12.0f, 36.0f, Paper);
-				C.Text(FString::Printf(TEXT("%d/%d"), Count, Capacity), Width - 20.0f, 18.0f, 28.0f,
-					Count >= Capacity ? Fire : Gold, ETextAlign::Right);
-				if (Match->Rules.bCrashBall)
-				{
-					// クラッシュボール: the goal this team pushes the giant ball into, in the other team's colour.
-					const FLinearColor Target = ChaosImpactMatch::GetTeamColor(1 - Team);
-					C.Box(14.0f, 372.0f, Width - 28.0f, 52.0f, WithAlpha(Target, 0.18f));
-					C.Box(14.0f, 372.0f, 8.0f, 52.0f, Target);
-					C.Text(FString::Printf(TEXT("%sのゴールへ巨大球を押し込め！"), ChaosImpactMatch::GetTeamName(1 - Team)),
-						Width * 0.5f, 382.0f, 24.0f, Paper, ETextAlign::Center);
-				}
-				int32 Row = 0;
-				for (const AChaosImpactPlayerState* Member : Humans)
-				{
-					if (Member->TeamIndex != Team)
-					{
-						continue;
-					}
-					const float Y = 92.0f + Row++ * 62.0f;
-					const int32 LocalIndex = LocalStates.IndexOfByKey(Member);
-					const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Member->GetPawn());
-					const FString Name = Character ? Character->GetOverheadDisplayName() : Member->GetPlayerName();
-					C.Box(14.0f, Y, Width - 28.0f, 52.0f, LocalIndex >= 0
-						? WithAlpha(TeamColor, 0.4f) : FLinearColor(0.035f, 0.045f, 0.075f, 0.96f));
-					C.Text(Name, 30.0f, Y + 8.0f, 27.0f, Paper);
-					if (LocalIndex >= 0)
-					{
-						C.Text(FString::Printf(TEXT("P%d"), LocalIndex + 1), Width - 30.0f, Y + 9.0f, 26.0f,
-							PlayerAccents[LocalIndex % 4], ETextAlign::Right, TEXT("BlackItalic"));
-						C.Outline(14.0f, Y, Width - 28.0f, 52.0f, WithAlpha(Paper, 0.55f + 0.35f * FMath::Sin(T * 6.0f)), 2.0f);
-					}
-				}
-			}
-		}
+		PaintTeamCards(DesignGeometry, OutDrawElements, BaseLayer + 3, T);
 	}
 	else if (Screen == EChaosImpactScreen::TrainingSettings)
 	{
@@ -4580,29 +4509,39 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	{
 		NavigateResults(Key);
 	}
-	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() == 5)
+	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() >= 5)
 	{
-		// Solo/VS above; タイトルへ, 設定 and トレーニング along the bottom.
+		// Solo/VS above; along the bottom, left to right: タイトルへ (3), 設定 (4), カラーエディット (5), トレーニング (2).
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
 			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
+		TArray<int32> Bottom = {3, 4};
+		if (Entries.Num() >= 6) { Bottom.Add(5); }
+		Bottom.Add(2);
+		// (Which card a bottom button stands under: the left half under ソロ, the right half under VS.)
+		const auto Column = [&Bottom](const int32 Index) { return Bottom.IndexOfByKey(Index) < Bottom.Num() / 2 ? 0 : 1; };
+		const int32 At = Bottom.IndexOfByKey(SelectedIndex);
 		if (bHorizontal && SelectedIndex <= 1)
 		{
 			SelectedIndex = 1 - SelectedIndex;
 		}
-		else if (bHorizontal)
+		else if (bHorizontal && At != INDEX_NONE)
 		{
-			const int32 Bottom[] = {3, 4, 2};
-			int32 At = 0;
-			for (int32 Index = 0; Index < 3; ++Index)
-			{
-				At = Bottom[Index] == SelectedIndex ? Index : At;
-			}
-			SelectedIndex = Bottom[(At + (bRight ? 1 : 2)) % 3];
+			SelectedIndex = Bottom[(At + (bRight ? 1 : Bottom.Num() - 1)) % Bottom.Num()];
+		}
+		else if (SelectedIndex <= 1)
+		{
+			// Down to the button last used under this card (else its nearest one).
+			SelectedIndex = Bottom.Contains(LastModeBottom) && Column(LastModeBottom) == SelectedIndex ? LastModeBottom
+				: SelectedIndex == 0 ? Bottom[Bottom.Num() / 2 - 1] : Bottom[Bottom.Num() / 2];
+		}
+		else if (At != INDEX_NONE)
+		{
+			LastModeBottom = SelectedIndex;
+			SelectedIndex = Column(SelectedIndex);
 		}
 		else
 		{
-			const int32 Vertical[] = {3, 2, 1, 0, 0};
-			SelectedIndex = Vertical[SelectedIndex];
+			SelectedIndex = 0;
 		}
 	}
 	else if (Screen == EChaosImpactScreen::MultiReady && Key != EKeys::Tab && Entries.Num() == 9)
@@ -4912,6 +4851,11 @@ void UChaosImpactMenuWidget::GetPauseConfirmText(FString& OutQuestion, FString& 
 			OutQuestion = TEXT("本当に部屋から抜けてもよろしいですか？");
 			OutNote = Room && Room->IsTournament() ? TEXT("このあとの試合はすべて不戦敗になります") : TEXT("");
 		}
+	}
+	else if (PauseConfirm == TEXT("close_recruit"))
+	{
+		OutQuestion = TEXT("メンバーの募集を終了しますか？");
+		OutNote = TEXT("このあとルールを決めます（募集はあとで再開できます）");
 	}
 	else if (PauseConfirm == TEXT("surrender"))
 	{
@@ -5341,7 +5285,8 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			const FString Choice = Entries[SelectedIndex].Detail;
 			const bool bOnline = Controller->IsOnlineRoom() || Controller->IsSearchingForRoom()
 				|| Controller->GetPlayFlow() == EChaosImpactPlayFlow::VersusOnline;
-			if (Choice == TEXT("leave") || Choice == TEXT("surrender") || Choice == TEXT("stop_search")
+			// (Ending the room's recruitment too: the list moves under the cursor as members come and go.)
+			if (Choice == TEXT("leave") || Choice == TEXT("surrender") || Choice == TEXT("stop_search") || Choice == TEXT("close_recruit")
 				|| (Choice == TEXT("online_menu") && Controller->IsSearchingForRoom())
 				|| (bOnline && (Choice == TEXT("goto_title") || Choice == TEXT("goto_mode"))))
 			{
@@ -5528,6 +5473,14 @@ void UChaosImpactMenuWidget::GoBack()
 	{
 		return;
 	}
+	// The same for a back that closes something within the screen (a list in the rules, the training menu's pickers),
+	// where the screen itself does not change: the next back waits a moment, so one press never goes two steps.
+	if (FPlatformTime::Seconds() - LastBackAt < 0.2)
+	{
+		return;
+	}
+	LastBackAt = FPlatformTime::Seconds();
+	UE_LOG(LogChaosImpact, Verbose, TEXT("Menu back on screen %d"), static_cast<int32>(Screen));
 	// A 1v1 found is answered with its own buttons only (a stray back must not end the search).
 	if (Screen == EChaosImpactScreen::DuelFound)
 	{
@@ -5878,6 +5831,302 @@ FReply UChaosImpactMenuWidget::NativeOnMouseWheel(const FGeometry& InGeometry, c
 	return Super::NativeOnMouseWheel(InGeometry, InMouseEvent);
 }
 
+FSlateRect UChaosImpactMenuWidget::TeamCardRect(const int32 Team, const int32 Teams, const int32 Places, const bool bCrashBall)
+{
+	// As tall as its places need (the header, a row each, the line at its foot), in the middle of the room there is.
+	constexpr float Left = 110.0f, Right = 1490.0f, Top = 244.0f, Bottom = 700.0f, Gap = 60.0f;
+	const int32 Count = FMath::Max(Teams, 1);
+	const float Width = (Right - Left - Gap * (Count - 1)) / Count;
+	const float X = Left + Team * (Width + Gap);
+	const float Height = FMath::Clamp(122.0f + FMath::Max(Places, 1) * 68.0f + (bCrashBall ? 74.0f : 46.0f), 300.0f, Bottom - Top);
+	const float Y = Top + (Bottom - Top - Height) * 0.5f;
+	return FSlateRect(X, Y, X + Width, Y + Height);
+}
+
+FSlateRect UChaosImpactMenuWidget::TeamCardRectNow(const int32 Team) const
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Match || !Match->IsTeamBattle())
+	{
+		return FSlateRect();
+	}
+	const int32 Teams = Match->Rules.TeamCount;
+	const int32 Places = ChaosImpactMatch::GetTeamCapacity(Teams, Match->GetCompetitors(false).Num() + Match->Rules.CPUCount);
+	return TeamCardRect(Team, Teams, Places, Match->Rules.bCrashBall);
+}
+
+AChaosImpactPlayerController* UChaosImpactMenuWidget::GetTeamMouseController() const
+{
+	const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const UGameInstance* Instance = GetGameInstance();
+	const int32 Index = Owner ? Owner->GetLocalPlayerIndexForDevice(true, 0) : INDEX_NONE;
+	const ULocalPlayer* Local = Instance && Instance->GetLocalPlayers().IsValidIndex(Index) ? Instance->GetLocalPlayers()[Index] : nullptr;
+	return Local ? Cast<AChaosImpactPlayerController>(Local->GetPlayerController(GetWorld())) : nullptr;
+}
+
+int32 UChaosImpactMenuWidget::PaintTeamCards(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+	const float T) const
+{
+	namespace CP = ChaosImpactPaint;
+	using CP::ETextAlign;
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (!Match || !Match->IsTeamBattle())
+	{
+		return Layer;
+	}
+	const int32 Teams = Match->Rules.TeamCount;
+	const TArray<AChaosImpactPlayerState*> Humans = Match->GetCompetitors(false);
+	const int32 Capacity = ChaosImpactMatch::GetTeamCapacity(Teams, Humans.Num() + Match->Rules.CPUCount);
+	// Players on this machine, in local player order, so their rows can be marked P1-P4.
+	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
+	if (const UGameInstance* OwningGameInstance = GetGameInstance())
+	{
+		for (const ULocalPlayer* LocalPlayer : OwningGameInstance->GetLocalPlayers())
+		{
+			const APlayerController* LocalController = LocalPlayer ? LocalPlayer->GetPlayerController(GetWorld()) : nullptr;
+			LocalStates.Add(LocalController ? LocalController->PlayerState.Get() : nullptr);
+		}
+	}
+	// Where the CPUs will go: the smallest team first, as the game puts them once the teams are confirmed.
+	TArray<int32> Counts, Cpus;
+	Counts.Init(0, Teams);
+	Cpus.Init(0, Teams);
+	for (const AChaosImpactPlayerState* Member : Humans)
+	{
+		++Counts[FMath::Clamp(Member->TeamIndex, 0, Teams - 1)];
+	}
+	for (int32 Cpu = 0; Cpu < Match->Rules.CPUCount; ++Cpu)
+	{
+		int32 Smallest = 0;
+		for (int32 Team = 1; Team < Teams; ++Team)
+		{
+			Smallest = Counts[Team] + Cpus[Team] < Counts[Smallest] + Cpus[Smallest] ? Team : Smallest;
+		}
+		++Cpus[Smallest];
+	}
+	// Who changed team since the last frame (for the flash on the card they joined), and how long the frame was.
+	const double PaintNow = FPlatformTime::Seconds();
+	const float FrameSeconds = FMath::Clamp(static_cast<float>(PaintNow - TeamPaintedAt), 0.0f, 0.1f);
+	TeamPaintedAt = PaintNow;
+	TArray<double> JoinedAt;
+	JoinedAt.Init(-100.0, Teams);
+	for (const AChaosImpactPlayerState* Member : Humans)
+	{
+		const int32 Now = FMath::Clamp(Member->TeamIndex, 0, Teams - 1);
+		TPair<int32, double>* Last = TeamLastChange.Find(Member);
+		if (!Last)
+		{
+			TeamLastChange.Add(Member, TPair<int32, double>(Now, -100.0));
+		}
+		else if (Last->Key != Now)
+		{
+			*Last = TPair<int32, double>(Now, PaintNow);
+		}
+		const TPair<int32, double>& Change = TeamLastChange.FindChecked(Member);
+		JoinedAt[Now] = FMath::Max(JoinedAt[Now], Change.Value);
+	}
+	const AChaosImpactPlayerController* MouseController = GetTeamMouseController();
+	const APlayerState* MouseState = MouseController ? MouseController->PlayerState.Get() : nullptr;
+	const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const bool bMouse = MouseState && (!Owner || !Owner->IsPrimaryUsingGamepad() || LocalStates.Num() > 1);
+
+	// What to do, in one line under the heading.
+	{
+		const float In = CP::EaseOut((T - 0.05f) / 0.3f);
+		const CP::FPainter Strip{Design, Elements, Layer, In};
+		const CP::FPainter StripText{Design, Elements, Layer + 1, In};
+		const FString Line = FString::Printf(TEXT("◀ ▶ でチームをえらぶ（それぞれのコントローラーで）%s　・　CPU %d人は人数の少ないチームに入ります"),
+			bMouse ? TEXT("・クリックでも入れます") : TEXT(""), Match->Rules.CPUCount);
+		const float Size = CP::HudFit(Line, 21.0f, 1300.0f, TEXT("Bold"));
+		const float Width = CP::HudMeasure(Line, Size, TEXT("Bold")) + 60.0f;
+		CP::RoundedBox(Strip, 800.0f - Width * 0.5f, 190.0f, Width, 38.0f, 19.0f, CP::WithAlpha(CP::Ink, 0.8f));
+		StripText.Text(Line, 800.0f, 190.0f + (38.0f - Size * 1.32f) * 0.5f, Size, CP::WithAlpha(CP::Paper, 0.85f), ETextAlign::Center, TEXT("Bold"));
+	}
+
+	for (int32 Team = 0; Team < Teams; ++Team)
+	{
+		const float In = CP::EaseOut((T - 0.1f - 0.07f * Team) / 0.38f);
+		const FSlateRect Rect = TeamCardRect(Team, Teams, Capacity, Match->Rules.bCrashBall);
+		const float W = Rect.GetSize().X, H = Rect.GetSize().Y;
+		const FGeometry Card = CP::MakeSkewed(Design, Rect.Left, Rect.Top + (1.0f - In) * 90.0f, W, H, -0.05f);
+		const CP::FPainter Shadow{Card, Elements, Layer, In};
+		const CP::FPainter Body{Card, Elements, Layer + 1, In};
+		const CP::FPainter Mid{Card, Elements, Layer + 2, In};
+		const CP::FPainter Front{Card, Elements, Layer + 3, In};
+		const CP::FPainter Top{Card, Elements, Layer + 4, In};
+		const FLinearColor TeamColor = ChaosImpactMatch::GetTeamColor(Team);
+		FLinearColor Deep = TeamColor * 0.22f;
+		Deep.A = 1.0f;
+		const bool bHover = bMouse && Rect.ContainsPoint(TeamMousePoint);
+		const bool bMouseHere = MouseState && Humans.ContainsByPredicate([MouseState, Team](const AChaosImpactPlayerState* Member)
+			{ return Member == MouseState && Member->TeamIndex == Team; });
+		const float Glow = 0.5f + 0.5f * FMath::Sin(T * 2.4f + Team * 1.3f);
+
+		// The card: a soft shadow, dark body washed with the team's colour from the top, a frame that lights on hover.
+		CP::RoundedBox(Shadow, 12.0f, 16.0f, W, H, 24.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		CP::RoundedBox(Shadow, -4.0f, -4.0f, W + 8.0f, H + 8.0f, 27.0f, CP::WithAlpha(TeamColor, bHover ? 0.85f : 0.22f + 0.12f * Glow));
+		CP::RoundedBox(Body, 0.0f, 0.0f, W, H, 24.0f, FLinearColor(0.016f, 0.022f, 0.045f, 0.98f));
+		CP::HudTriangles(Mid, {FVector2D(0.0f, 100.0f), FVector2D(W, 100.0f), FVector2D(W, H * 0.72f), FVector2D(0.0f, H * 0.72f)},
+			{CP::WithAlpha(TeamColor, 0.26f), CP::WithAlpha(TeamColor, 0.26f), CP::WithAlpha(TeamColor, 0.0f), CP::WithAlpha(TeamColor, 0.0f)},
+			{0, 1, 2, 0, 2, 3});
+
+		// The header: the team's colour, deep on the left to bright on the right, slanted stripes, its name big.
+		CP::RoundedBox(Mid, 0.0f, 0.0f, W, 104.0f, 24.0f, FMath::Lerp(Deep, TeamColor, 0.45f));
+		CP::HudTriangles(Front, {FVector2D(0.0f, 22.0f), FVector2D(W, 22.0f), FVector2D(W, 104.0f), FVector2D(0.0f, 104.0f)},
+			{CP::WithAlpha(Deep, 0.0f), CP::WithAlpha(TeamColor, 0.55f), CP::WithAlpha(TeamColor, 0.3f), CP::WithAlpha(Deep, 0.4f)},
+			{0, 1, 2, 0, 2, 3});
+		CP::RoundedBox(Front, 8.0f, 7.0f, W - 16.0f, 34.0f, 16.0f, CP::WithAlpha(CP::Paper, 0.12f));
+		// Someone just joined: the header flashes white and the frame burns brighter for a moment.
+		const float Joined = FMath::Exp(-6.0f * static_cast<float>(PaintNow - JoinedAt[Team]));
+		if (Joined > 0.01f)
+		{
+			CP::RoundedBox(Top, 0.0f, 0.0f, W, 104.0f, 24.0f, CP::WithAlpha(CP::Paper, 0.55f * Joined));
+			CP::RoundedBox(Shadow, -8.0f * Joined - 4.0f, -8.0f * Joined - 4.0f, W + 16.0f * Joined + 8.0f, H + 16.0f * Joined + 8.0f, 28.0f,
+				CP::WithAlpha(TeamColor, 0.8f * Joined));
+		}
+		{
+			const FGeometry Stripes = CP::MakeSkewed(Card, W - 230.0f, 10.0f, 210.0f, 84.0f, -0.45f);
+			const CP::FPainter S{Stripes, Elements, Layer + 3, In};
+			for (int32 Stripe = 0; Stripe < 6; ++Stripe)
+			{
+				S.Box(30.0f + Stripe * 28.0f, 0.0f, 11.0f, 84.0f, CP::WithAlpha(CP::Paper, 0.06f + 0.05f * Glow));
+			}
+		}
+		Front.Box(0.0f, 100.0f, W, 5.0f, TeamColor);
+		const FString TeamName = ChaosImpactMatch::GetTeamName(Team);
+		Top.Text(FString::Printf(TEXT("TEAM %d"), Team + 1), 26.0f, 10.0f, 15.0f, CP::WithAlpha(CP::Paper, 0.8f), ETextAlign::Left, TEXT("BlackItalic"));
+		Top.Text(TeamName, 24.0f, 28.0f, CP::HudFit(TeamName, 46.0f, W - 170.0f, TEXT("BlackItalic")), CP::Paper, ETextAlign::Left, TEXT("BlackItalic"), 3.0f, CP::Ink);
+		// How many people are in it.
+		{
+			const FString Count = FString::Printf(TEXT("%d/%d"), Counts[Team], Capacity);
+			CP::RoundedBox(Front, W - 118.0f, 30.0f, 98.0f, 46.0f, 14.0f, CP::WithAlpha(CP::Ink, 0.6f));
+			const float CountPop = 1.0f + 0.45f * FMath::Exp(-9.0f * static_cast<float>(PaintNow - JoinedAt[Team]));
+			Top.Text(Count, W - 69.0f, 34.0f - 14.0f * (CountPop - 1.0f), 28.0f * CountPop, Counts[Team] >= Capacity ? CP::Fire : CP::Gold,
+				ETextAlign::Center, TEXT("BlackItalic"));
+		}
+
+		// Its places: the people in it, then the CPUs that will fill it, then any room left.
+		const bool bCrash = Match->Rules.bCrashBall;
+		const float RowTop = 122.0f;
+		const float Room = H - RowTop - (bCrash ? 74.0f : (bHover && !bMouseHere ? 46.0f : 16.0f));
+		const float RowGap = 8.0f;
+		const float RowH = FMath::Min(60.0f, (Room - RowGap * (Capacity - 1)) / FMath::Max(Capacity, 1));
+		TArray<const AChaosImpactPlayerState*> Members;
+		for (const AChaosImpactPlayerState* Member : Humans)
+		{
+			if (FMath::Clamp(Member->TeamIndex, 0, Teams - 1) == Team)
+			{
+				Members.Add(Member);
+			}
+		}
+		for (int32 Row = 0; Row < Capacity; ++Row)
+		{
+			const float Y = RowTop + Row * (RowH + RowGap);
+			const float RowIn = CP::EaseOut((T - 0.25f - 0.07f * Team - 0.05f * Row) / 0.3f);
+			const CP::FPainter RBack{Card, Elements, Layer + 2, In * RowIn};
+			const CP::FPainter RMid{Card, Elements, Layer + 3, In * RowIn};
+			const CP::FPainter RTop{Card, Elements, Layer + 4, In * RowIn};
+			const float X = 16.0f + (1.0f - RowIn) * 40.0f, RW = W - 32.0f;
+			if (Members.IsValidIndex(Row))
+			{
+				const AChaosImpactPlayerState* Member = Members[Row];
+				const FVector2D Target(Rect.Left + X, Rect.Top + Y);
+				FVector2D& Shown = TeamRowShown.FindOrAdd(Member, Target);
+				Shown = FMath::Lerp(Shown, Target, 1.0f - FMath::Exp(-13.0f * FrameSeconds));
+				const FVector2D Off = Shown - Target;
+				const bool bMoving = Off.SizeSquared() > 4.0f;
+				const float Since = static_cast<float>(PaintNow - TeamLastChange.FindChecked(Member).Value);
+				const FGeometry RowCard = CP::MakeSkewed(Design, Rect.Left + static_cast<float>(Off.X), Rect.Top + (1.0f - In) * 90.0f + static_cast<float>(Off.Y),
+					W, H, -0.05f);
+				const int32 RowLayer = bMoving ? Layer + 8 : Layer + 2;
+				const CP::FPainter HBack{RowCard, Elements, RowLayer, In * RowIn};
+				const CP::FPainter HMid{RowCard, Elements, RowLayer + 1, In * RowIn};
+				const CP::FPainter HTop{RowCard, Elements, RowLayer + 2, In * RowIn};
+				const int32 LocalIndex = LocalStates.IndexOfByKey(Member);
+				const bool bLocal = LocalIndex >= 0;
+				const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Member->GetPawn());
+				const FString Name = Character ? Character->GetOverheadDisplayName() : Member->GetPlayerName();
+				HBack.Box(X, Y, RW, RowH, bLocal ? CP::WithAlpha(FMath::Lerp(Deep, TeamColor, 0.55f), 0.95f) : FLinearColor(0.045f, 0.06f, 0.1f, 0.98f));
+				HMid.Box(X, Y, 7.0f, RowH, TeamColor);
+				CP::HudTriangles(HMid, {FVector2D(X + 7.0f, Y), FVector2D(X + RW * 0.6f, Y), FVector2D(X + RW * 0.6f, Y + RowH * 0.45f), FVector2D(X + 7.0f, Y + RowH * 0.45f)},
+					{CP::WithAlpha(CP::Paper, 0.12f), CP::WithAlpha(CP::Paper, 0.0f), CP::WithAlpha(CP::Paper, 0.0f), CP::WithAlpha(CP::Paper, 0.04f)}, {0, 1, 2, 0, 2, 3});
+				if (Since < 0.4f)
+				{
+					HTop.Box(X, Y, RW, RowH, CP::WithAlpha(CP::Paper, 0.45f * (1.0f - Since / 0.4f)));
+				}
+				float NameX = X + 22.0f;
+				if (bLocal)
+				{
+					const FLinearColor Accent = CP::PlayerAccents[LocalIndex % 4];
+					CP::RoundedBox(HMid, X + 18.0f, Y + (RowH - 30.0f) * 0.5f, 50.0f, 30.0f, 9.0f, Accent);
+					HTop.Text(FString::Printf(TEXT("P%d"), LocalIndex + 1), X + 43.0f, Y + (RowH - 30.0f) * 0.5f + 1.0f, 20.0f, CP::Ink,
+						ETextAlign::Center, TEXT("BlackItalic"));
+					HTop.Outline(X, Y, RW, RowH, CP::WithAlpha(CP::Paper, 0.45f + 0.4f * FMath::Sin(T * 6.0f + LocalIndex)), 2.0f);
+					// The arrows that move it, nudging the way it can go.
+					const float Nudge = 3.0f * FMath::Sin(T * 5.0f);
+					HTop.Text(TEXT("◀"), X - 14.0f - Nudge, Y + (RowH - 18.0f * 1.32f) * 0.5f, 18.0f, CP::Paper, ETextAlign::Center, TEXT("Black"));
+					HTop.Text(TEXT("▶"), X + RW + 14.0f + Nudge, Y + (RowH - 18.0f * 1.32f) * 0.5f, 18.0f, CP::Paper, ETextAlign::Center, TEXT("Black"));
+					NameX = X + 80.0f;
+				}
+				const FString Fighter = ChaosImpactRoster::Get(Member->CharacterIndex).Name;
+				const float FighterSize = CP::HudFit(Fighter, 15.0f, RW * 0.38f, TEXT("Bold"));
+				const float FighterW = CP::HudMeasure(Fighter, FighterSize, TEXT("Bold"));
+				const float NameSize = CP::HudFit(Name, FMath::Min(26.0f, RowH * 0.5f), X + RW - FighterW - 22.0f - NameX, TEXT("Black"));
+				HTop.Text(Name, NameX, Y + (RowH - NameSize * 1.32f) * 0.5f, NameSize, CP::Paper, ETextAlign::Left, TEXT("Black"), 1.0f, CP::Ink);
+				HTop.Text(Fighter, X + RW - 14.0f, Y + (RowH - FighterSize * 1.32f) * 0.5f, FighterSize, CP::WithAlpha(CP::Paper, 0.6f), ETextAlign::Right, TEXT("Bold"));
+			}
+			else if (Row < Members.Num() + Cpus[Team])
+			{
+				RBack.Box(X, Y, RW, RowH, FLinearColor(0.03f, 0.04f, 0.07f, 0.95f));
+				RMid.Box(X, Y, 7.0f, RowH, CP::WithAlpha(TeamColor, 0.45f));
+				RTop.Text(TEXT("CPU"), X + 22.0f, Y + (RowH - 22.0f * 1.32f) * 0.5f, FMath::Min(22.0f, RowH * 0.45f), CP::WithAlpha(CP::Paper, 0.7f),
+					ETextAlign::Left, TEXT("BlackItalic"));
+				const FString Auto = TEXT("自動で入ります");
+				RTop.Text(Auto, X + RW - 14.0f, Y + (RowH - 14.0f * 1.32f) * 0.5f, CP::HudFit(Auto, 14.0f, RW * 0.5f, TEXT("Bold")), CP::WithAlpha(CP::Muted, 0.9f),
+					ETextAlign::Right, TEXT("Bold"));
+			}
+			else
+			{
+				RBack.Box(X, Y, RW, RowH, FLinearColor(0.02f, 0.026f, 0.05f, 0.6f));
+				RMid.Outline(X, Y, RW, RowH, CP::WithAlpha(CP::Paper, 0.12f), 1.5f);
+				RTop.Text(TEXT("あき"), X + RW * 0.5f, Y + (RowH - 17.0f * 1.32f) * 0.5f, 17.0f, CP::WithAlpha(CP::Muted, 0.6f), ETextAlign::Center, TEXT("Bold"));
+			}
+		}
+
+		if (bCrash)
+		{
+			// クラッシュボール: the goal this team pushes the giant ball into, in the other team's colour.
+			const FLinearColor Target = ChaosImpactMatch::GetTeamColor(1 - Team);
+			Mid.Box(16.0f, H - 62.0f, W - 32.0f, 48.0f, CP::WithAlpha(Target, 0.2f));
+			Front.Box(16.0f, H - 62.0f, 8.0f, 48.0f, Target);
+			const FString Goal = FString::Printf(TEXT("%sのゴールへ巨大球を押し込め！"), ChaosImpactMatch::GetTeamName(1 - Team));
+			Top.Text(Goal, W * 0.5f, H - 62.0f + (48.0f - 21.0f * 1.32f) * 0.5f, CP::HudFit(Goal, 21.0f, W - 60.0f, TEXT("Bold")), CP::Paper, ETextAlign::Center, TEXT("Bold"));
+		}
+		else if (bHover && !bMouseHere)
+		{
+			const FString Join = Counts[Team] >= Capacity ? FString(TEXT("満員です")) : FString(TEXT("クリックでこのチームへ"));
+			Top.Text(Join, W * 0.5f, H - 38.0f, 18.0f, Counts[Team] >= Capacity ? CP::Fire : CP::Paper, ETextAlign::Center, TEXT("Black"));
+		}
+	}
+
+	// VS between the cards, on their headers.
+	for (int32 Team = 0; Team + 1 < Teams; ++Team)
+	{
+		const float In = CP::EaseOut((T - 0.3f - 0.07f * Team) / 0.3f);
+		const FSlateRect A = TeamCardRect(Team, Teams, Capacity, Match->Rules.bCrashBall);
+		const FSlateRect B = TeamCardRect(Team + 1, Teams, Capacity, Match->Rules.bCrashBall);
+		const FVector2D Centre((A.Right + B.Left) * 0.5f, A.Top + 52.0f);
+		const float Pop = 1.0f + 0.25f * FMath::Exp(-8.0f * FMath::Max(T - 0.3f, 0.0f));
+		const CP::FPainter V{Design, Elements, Layer + 5, In};
+		const CP::FPainter VText{Design, Elements, Layer + 6, In};
+		V.Disc(Centre + FVector2D(3.0f, 4.0f), 34.0f * Pop, CP::WithAlpha(FLinearColor::Black, 0.5f));
+		V.Disc(Centre, 34.0f * Pop, CP::Ink);
+		V.Ring(Centre, 34.0f * Pop, CP::Gold, 3.0f);
+		VText.Text(TEXT("VS"), Centre.X, Centre.Y - 18.0f * Pop, 27.0f * Pop, CP::Gold, ETextAlign::Center, TEXT("BlackItalic"));
+	}
+	return Layer + 11;
+}
+
 FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
 	if (SecretChoice != INDEX_NONE)
@@ -5894,6 +6143,10 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
 	{
 		CharacterSelect->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+	}
+	if (Screen == EChaosImpactScreen::TeamSelect)
+	{
+		TeamMousePoint = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
 	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen())
 	{
@@ -5960,10 +6213,31 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
 	{
+		if (InMouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+		{
+			CharacterSelect->HandleRightClick();
+			return FReply::Handled();
+		}
 		const float Scale = DesignScale(InGeometry);
 		const FVector2D Offset = (InGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
 		CharacterSelect->HandleClick((InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()) - Offset) / Scale);
 		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::TeamSelect && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		// A click on a team's card puts the mouse player in it.
+		const FVector2D At = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+		const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+		AChaosImpactPlayerController* Mouse = GetTeamMouseController();
+		for (int32 Team = 0; Match && Mouse && Match->IsTeamBattle() && Team < Match->Rules.TeamCount; ++Team)
+		{
+			if (TeamCardRectNow(Team).ContainsPoint(At))
+			{
+				Mouse->SetOwnTeam(Team);
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
+				return FReply::Handled();
+			}
+		}
 	}
 	if (Screen == EChaosImpactScreen::ControllerAssignment)
 	{

@@ -121,6 +121,10 @@ public:
 	/** Rumbles this character's controller when it is played on this machine (see AChaosImpactPlayerController::PlayRumble). */
 	void PlayControllerRumble(float Small, float Big, float Seconds, float DelaySeconds = 0.0f) const;
 	bool TryPickupBall(AChaosImpactBall* Ball);
+	/** Server: a ball someone else had just taken goes to this player, who touched it earlier (AChaosImpactBall::TakeOverPickup). */
+	bool GiveContestedPickup(EChaosImpactBallType Type);
+	/** Server: the ball just picked up (the last one in hand) goes to someone who touched it earlier. */
+	void TakeBackLastPickup();
 	/** Carried ball type per slot; slot 0 is the right hand and is thrown next. */
 	EChaosImpactBallType GetCarriedBallType(int32 Slot) const
 	{
@@ -656,6 +660,9 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldFireMaterial;
+	/** A normal ball in the hand: a soft pale grey of its own (the bare sphere went near black on the shadowed side). */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldNormalMaterial;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldIceMaterial;

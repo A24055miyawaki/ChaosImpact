@@ -85,6 +85,9 @@ struct FChaosImpactTournamentSettings
 	UPROPERTY() TArray<FChaosImpactTournamentCPU> CPUs;
 	/** One match at a time: matches between two CPUs are skipped (decided) instead of played. */
 	UPROPERTY() bool bSkipCPUMatches = false;
+	/** 順位決定戦: those who lose play on, among themselves, for every place (3rd, 5th, 7th...). Off: they share the place they
+	 * lost at (two 3rds, four 5ths...). */
+	UPROPERTY() bool bPlacementMatches = false;
 };
 
 USTRUCT()
@@ -126,6 +129,10 @@ struct FChaosImpactTournamentMatch
 	UPROPERTY() bool bDecided = false;
 	/** Server time it was called and decided. */
 	UPROPERTY() double CalledAt = 0.0;
+	/** Which part of the bracket it belongs to (0: the tournament itself; others: matches for the places below), and
+	 * its round within that part. Slot is its place in that round of that part. */
+	UPROPERTY() int32 Group = 0;
+	UPROPERTY() int32 GroupRound = 1;
 	UPROPERTY() double EndedAt = 0.0;
 
 	bool IsOver() const { return State == EChaosImpactTournamentMatchState::Done; }
@@ -136,6 +143,23 @@ struct FChaosImpactTournamentMatch
 };
 
 /** The whole tournament, replicated on the game state. */
+/**
+ * A part of the bracket, itself a knockout: the tournament (places 1 to BracketSize), or, with 順位決定戦, the losers of a
+ * round of another part playing for the places between (3rd place: the semi-finals' losers; 5th to 8th: the
+ * quarter-finals' losers, whose own losers then play for 7th...).
+ */
+USTRUCT()
+struct FChaosImpactTournamentGroup
+{
+	GENERATED_BODY()
+	/** The best place it decides, and how many places (a power of two). */
+	UPROPERTY() int32 TopPlace = 1;
+	UPROPERTY() int32 Size = 2;
+	/** The tournament's round its first round is played in, and its first match in Matches. */
+	UPROPERTY() int32 StartRound = 1;
+	UPROPERTY() int32 FirstMatch = 0;
+};
+
 USTRUCT()
 struct FChaosImpactTournamentState
 {
@@ -149,6 +173,8 @@ struct FChaosImpactTournamentState
 	UPROPERTY() TArray<FChaosImpactTournamentEntrant> Entrants;
 	/** Every match of the bracket, round 1 first (BracketSize - 1 of them). */
 	UPROPERTY() TArray<FChaosImpactTournamentMatch> Matches;
+	/** The parts of the bracket: [0] the tournament itself, then (順位決定戦) those for the places below. */
+	UPROPERTY() TArray<FChaosImpactTournamentGroup> Groups;
 	/** A power of two: the first round's places (empty places are byes). */
 	UPROPERTY() int32 BracketSize = 2;
 	UPROPERTY() int32 Rounds = 1;
@@ -173,6 +199,12 @@ struct FChaosImpactTournamentState
 	int32 FindEntrant(const APlayerState* Member) const;
 	/** The round's name as shown: 決勝, 準決勝, 準々決勝, else N回戦. */
 	FString GetRoundName(int32 InRound) const;
+	/** A match's name as shown: the round's (決勝, 準決勝...), or the places it is for (3位決定戦, 5〜8位 準決勝...). */
+	FString GetMatchName(int32 InMatch) const;
+	/** Index into Matches of a part's match (INDEX_NONE when there is none). */
+	int32 GroupMatchIndex(int32 InGroup, int32 InGroupRound, int32 Slot) const;
+	/** The part deciding these places (INDEX_NONE when there is none). */
+	int32 FindGroup(int32 TopPlace, int32 Size) const;
 	bool IsEntrantOut(int32 Entrant) const;
 };
 

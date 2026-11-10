@@ -189,6 +189,9 @@ public:
 	/** The configured Ready key also closes recruitment when held in the password-room lobby. */
 	static constexpr float RecruitmentHoldSeconds = 1.2f;
 	float GetRecruitmentHoldProgress() const { return FMath::Clamp(RecruitmentHeldSeconds / RecruitmentHoldSeconds, 0.f, 1.f); }
+	/** The room's lobby: watching and playing switch only on a held key, never on a press that was meant for something else. */
+	static constexpr float SpectateHoldSeconds = 0.8f;
+	float GetSpectateHoldProgress() const { return FMath::Clamp(SpectateHeldSeconds / SpectateHoldSeconds, 0.f, 1.f); }
 	void LeaveOnlineRoom();
 	void StopRoomSearch();
 	bool IsOnlineRoom() const { return GetNetMode() != NM_Standalone; }
@@ -280,6 +283,12 @@ public:
 	/** カラーエディット from any menu: it goes back to ReturnTo when it closes. */
 	void OpenColourEdit(EChaosImpactScreen ReturnTo);
 	void CloseColourEdit();
+	/** カラーエディット opened from a room's pause menu, while the room still lets players change: saving a preset there asks whether
+	 * to play as the character edited, in its colours (ApplyRoomLoadout). */
+	bool IsColourEditApplyOffered() const;
+	/** In a room: local player LocalIndex plays as NewCharacter in カスタムカラー Preset (INDEX_NONE: its usual colours), sent
+	 * to the room straight away. False when the room no longer lets anyone change. */
+	bool ApplyRoomLoadout(int32 LocalIndex, int32 NewCharacter, int32 Preset);
 	/** ランダムマッチ 1v1: the card of the opponent found comes up over the training, and goes when it is settled (the menu
 	 * calls it too: the training is paused under the card). */
 	void UpdateDuelOfferScreen();
@@ -304,6 +313,10 @@ public:
 	/** Lobby: this player's 準備OK for the decided rules (R / D-pad up); pressing again cancels it. */
 	void ToggleReadyForMatch();
 	bool CanToggleReady() const;
+	/** Online team rules decided, in the lobby: the team key moves this player to the next team with room. */
+	bool CanChangeLobbyTeam() const;
+	/** The whole-stage map over the screen (its key opens and closes it; only while playing). */
+	bool IsOverviewMapOpen() const { return bOverviewMapOpen && IsGameplayActive(); }
 	/** Online lobby: switch between playing and watching the next match (V / D-pad down). */
 	void ToggleSpectating();
 	bool CanToggleSpectating() const;
@@ -335,6 +348,8 @@ public:
 	void CancelStageSelect();
 	/** Team select: this player's own team. Other local players change theirs from their own devices. */
 	void ChangeOwnTeam(int32 Direction);
+	/** Team select: this player straight onto Team (a click on its card). */
+	void SetOwnTeam(int32 Team);
 	/** The local game or the room host decides when a team battle starts. */
 	bool CanStartVersusMatch() const;
 	void RequestStartTeamMatch();
@@ -346,6 +361,8 @@ public:
 	UFUNCTION(Server, Reliable)
 	void ServerChangeTeam(int32 Direction);
 	UFUNCTION(Server, Reliable)
+	void ServerSetTeam(int32 Team);
+	UFUNCTION(Server, Reliable)
 	void ServerStartTeamMatch();
 	/** This machine played the opening that started at IntroStartedAt (server time) to the end. */
 	UFUNCTION(Server, Reliable)
@@ -353,6 +370,12 @@ public:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetPlayerName(const FString& Name);
+	/** A machine's second player: the nickname they picked (empty: the first player's name with (2)). */
+	UFUNCTION(Server, Reliable)
+	void ServerSetSecondPlayerName(const FString& Name);
+	double NextSecondNameAt = 0.0;
+	FString SentSecondName;
+	bool bSentSecondName = false;
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetReadyForMatch(bool bReady);
@@ -384,6 +407,8 @@ public:
 	/** The host's answer for two CPUs next (one match at a time): 0 watch, 1 skip, 2 skip every one. */
 	UFUNCTION(Server, Reliable)
 	void ServerAnswerTournamentCPUMatch(int32 Choice);
+	UFUNCTION(Server, Reliable)
+	void ServerSkipTournamentResults();
 	class UChaosImpactTournamentWidget* GetTournamentWidget() const { return TournamentWidget; }
 
 	/** The character and colour this player picked on their own machine. */
@@ -502,6 +527,8 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Chaos Impact|Menu")
 	EChaosImpactScreen CurrentScreen = EChaosImpactScreen::Title;
 	EChaosImpactScreen SettingsReturnScreen = EChaosImpactScreen::ModeSelect;
+	/** The room's countdown to a match was on last frame (its end closes the room's menus: UpdateMatchScreens). */
+	bool bSawRoomCountdown = false;
 
 	/** The existing prototype map is the training level. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Menu", meta=(AllowedClasses="/Script/Engine.World"))
@@ -562,6 +589,10 @@ protected:
 	bool bOnlineAnyInput = false;
 	bool bLastInputGamepad = false;
 	void UpdateRecruitmentHold(float DeltaSeconds);
+	void UpdateSpectateHold(float DeltaSeconds);
+	float SpectateHeldSeconds = 0.f;
+	/** Held since before it could count (a menu was open, the window was in the background): it must be let go first. */
+	bool bSpectateHoldNeedsRelease = true;
 	float RecruitmentHeldSeconds = 0.f;
 	/** Do not carry a held button across menus, loss of focus, or the next lobby. */
 	bool bRecruitmentHoldNeedsRelease = false;
@@ -619,6 +650,12 @@ protected:
 	/** Each local player's own tournament panel (in their part of a split screen). */
 	UPROPERTY(Transient)
 	TObjectPtr<class UChaosImpactTournamentWidget> TournamentWidget;
+	bool bOverviewMapOpen = false;
+	/** One player on this machine: every connected controller is given to them too (see ClaimEveryPadForSolePlayer). */
+	FTimerHandle SolePadTimer;
+	void ClaimEveryPadForSolePlayer();
+	/** Development: flocks let loose so far (-CIDevSimaePerch). */
+	int32 DevPerchCount = 0;
 	bool bTournamentPanelOpen = false;
 	/** The public tournament being set up (a pointer: its type lives with the session). */
 	TSharedPtr<struct FChaosImpactTourneyNotice> PendingTourney;

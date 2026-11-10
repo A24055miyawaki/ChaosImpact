@@ -97,6 +97,8 @@ public:
 
 	bool WasThrownBy(const APawn* Pawn) const;
 	APawn* GetThrowingPawn() const { return ThrowingPawn.Get(); }
+	/** Who threw it, on any machine (a client knows it from the replicated thrower). */
+	APawn* GetShownThrower() const { return ThrowingPawn.IsValid() ? ThrowingPawn.Get() : ReplicatedThrower.Get(); }
 	/** How it is flying now (for predicting it): falling in an arc, or straight. */
 	bool IsArcFlight() const { return ActiveFlightMode == EChaosImpactBallFlightMode::Arc; }
 	/** How much of normal gravity pulls it down in an arc. */
@@ -117,6 +119,23 @@ public:
 	bool AcceptReportedHit(AChaosImpactCharacter* Victim, const FVector& HitLocation);
 	/** Server: gives this pickup to a player (overlap here, or a claim from their own screen). */
 	virtual bool ConsumePickup(AChaosImpactCharacter* Collector);
+	/**
+	 * Server, online: who touched it first is decided by when each touched it on their own screen (TouchTime, server
+	 * clock), not by whose word arrives first. A taken ball stays a moment, out of sight, for an earlier touch from a
+	 * screen further away; that touch wins it back (TakeOverPickup).
+	 */
+	bool ConsumePickupAt(AChaosImpactCharacter* Collector, double TouchTime);
+	/** Server: taken moments ago by someone else, who touched it later than TouchTime (and still has it untouched). */
+	bool CanTakeOverPickup(const AChaosImpactCharacter* Claimant, double TouchTime) const;
+	bool TakeOverPickup(AChaosImpactCharacter* Claimant, double TouchTime);
+	bool IsPickupTaken() const { return bPickupConsumed; }
+	/** How long a touch from a screen further away may reach back (and so how long a taken ball is kept). */
+	static constexpr double FairTouchReachSeconds = 0.1;
+	/**
+	 * Server, online: how much later than this machine the farthest player sees things (half their round trip, up to
+	 * FairTouchReachSeconds). The host and CPUs, who see a new pickup at once, may take it only after that long.
+	 */
+	static double GetFairSightDelay(const UWorld* World);
 	/** Client: the server refused this screen's pickup claim; show the ball again. */
 	void CancelLocalPickupClaim();
 	/** Set before BeginPlay on a client-only throw preview: no damage, pickups or replication. */
@@ -554,6 +573,18 @@ protected:
 	UPROPERTY(Replicated)
 	float PickupAvailableAtSeconds = 0.0f;
 	bool bPickupConsumed = false;
+	/** Server: who took it and when they touched it (ConsumePickupAt), and their hands right after, for a take-over. */
+	TWeakObjectPtr<AChaosImpactCharacter> TakenBy;
+	double TakenTouchTime = 0.0;
+	double TakenAt = 0.0;
+	int32 TakenCountAfter = 0;
+	uint8 TakenTypesAfter = 0;
+	/** Server: from when the host's and CPUs' characters may take it (see GetFairSightDelay). */
+	double LocalPickupFrom = 0.0;
+	/** Server: one of them is on it but was early (or it was locked out): looked at again each frame. */
+	bool bRetryLocalOverlap = false;
+	void ArmFairSight();
+	void RetryLocalOverlaps();
 	/** Server: swept up by a tornado (see CatchInWind). */
 	bool bCarriedByWind = false;
 	bool bLeftSpawnPoint = false;

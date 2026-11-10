@@ -77,6 +77,60 @@ FString FChaosImpactTournamentState::GetRoundName(const int32 InRound) const
 		: FString::Printf(TEXT("%d回戦"), InRound);
 }
 
+int32 FChaosImpactTournamentState::GroupMatchIndex(const int32 InGroup, const int32 InGroupRound, const int32 Slot) const
+{
+	if (!Groups.IsValidIndex(InGroup))
+	{
+		return InGroup == 0 ? MatchIndex(InGroupRound, Slot) : INDEX_NONE;
+	}
+	const FChaosImpactTournamentGroup& Part = Groups[InGroup];
+	const int32 PartRounds = static_cast<int32>(FMath::FloorLog2(FMath::Max(Part.Size, 2)));
+	if (InGroupRound < 1 || InGroupRound > PartRounds || Slot < 0 || Slot >= (Part.Size >> InGroupRound))
+	{
+		return INDEX_NONE;
+	}
+	int32 Index = Part.FirstMatch;
+	for (int32 Earlier = 1; Earlier < InGroupRound; ++Earlier)
+	{
+		Index += Part.Size >> Earlier;
+	}
+	Index += Slot;
+	return Matches.IsValidIndex(Index) ? Index : INDEX_NONE;
+}
+
+int32 FChaosImpactTournamentState::FindGroup(const int32 TopPlace, const int32 Size) const
+{
+	for (int32 Index = 0; Index < Groups.Num(); ++Index)
+	{
+		if (Groups[Index].TopPlace == TopPlace && Groups[Index].Size == Size)
+		{
+			return Index;
+		}
+	}
+	return INDEX_NONE;
+}
+
+FString FChaosImpactTournamentState::GetMatchName(const int32 InMatch) const
+{
+	if (!Matches.IsValidIndex(InMatch))
+	{
+		return FString();
+	}
+	const FChaosImpactTournamentMatch& Match = Matches[InMatch];
+	if (Match.Group <= 0 || !Groups.IsValidIndex(Match.Group))
+	{
+		return GetRoundName(Match.Round);
+	}
+	const FChaosImpactTournamentGroup& Part = Groups[Match.Group];
+	const int32 FromEnd = static_cast<int32>(FMath::FloorLog2(FMath::Max(Part.Size, 2))) - Match.GroupRound;
+	if (FromEnd <= 0)
+	{
+		return FString::Printf(TEXT("%d位決定戦"), Part.TopPlace);
+	}
+	return FString::Printf(TEXT("%d〜%d位 %s"), Part.TopPlace, Part.TopPlace + Part.Size - 1,
+		FromEnd == 1 ? TEXT("準決勝") : FromEnd == 2 ? TEXT("準々決勝") : *FString::Printf(TEXT("%d回戦"), Match.GroupRound));
+}
+
 bool FChaosImpactTournamentState::IsEntrantOut(const int32 Entrant) const
 {
 	return !Entrants.IsValidIndex(Entrant) || Entrants[Entrant].Place > 1 || Entrants[Entrant].bForfeited;
@@ -135,7 +189,53 @@ FChaosImpactTournamentState ChaosImpactTournament::Build(TArray<FChaosImpactTour
 			FChaosImpactTournamentMatch Match;
 			Match.Round = InRound;
 			Match.Slot = Slot;
+			Match.Group = 0;
+			Match.GroupRound = InRound;
 			State.Matches.Add(Match);
+		}
+	}
+	{
+		FChaosImpactTournamentGroup Main;
+		Main.TopPlace = 1;
+		Main.Size = State.BracketSize;
+		Main.StartRound = 1;
+		Main.FirstMatch = 0;
+		State.Groups.Add(Main);
+	}
+	// 順位決定戦: the losers of each round of each part play on for the places between, the round after, as a knockout
+	// of their own (whose losers do the same). Every part ends in the tournament's last round.
+	if (Settings.bPlacementMatches)
+	{
+		for (int32 Parent = 0; Parent < State.Groups.Num(); ++Parent)
+		{
+			const FChaosImpactTournamentGroup Part = State.Groups[Parent];
+			const int32 PartRounds = static_cast<int32>(FMath::FloorLog2(FMath::Max(Part.Size, 2)));
+			for (int32 PartRound = 1; PartRound <= PartRounds; ++PartRound)
+			{
+				const int32 Losers = Part.Size >> PartRound;
+				if (Losers < 2)
+				{
+					continue;
+				}
+				FChaosImpactTournamentGroup Below;
+				Below.TopPlace = Part.TopPlace + Losers;
+				Below.Size = Losers;
+				Below.StartRound = Part.StartRound + PartRound;
+				Below.FirstMatch = State.Matches.Num();
+				const int32 BelowIndex = State.Groups.Add(Below);
+				for (int32 BelowRound = 1; BelowRound <= static_cast<int32>(FMath::FloorLog2(Losers)); ++BelowRound)
+				{
+					for (int32 Slot = 0; Slot < (Losers >> BelowRound); ++Slot)
+					{
+						FChaosImpactTournamentMatch Match;
+						Match.Round = Below.StartRound + BelowRound - 1;
+						Match.Slot = Slot;
+						Match.Group = BelowIndex;
+						Match.GroupRound = BelowRound;
+						State.Matches.Add(Match);
+					}
+				}
+			}
 		}
 	}
 	// The first round from the seed order: seeds past the entrants are byes (each meets one of the top seeds).
@@ -164,38 +264,74 @@ bool ChaosImpactTournament::Advance(FChaosImpactTournamentState& State, const in
 	Match.Arena = INDEX_NONE;
 	Match.EndedAt = Now;
 	const int32 Loser = Match.LoserEntrant();
-	if (State.Entrants.IsValidIndex(Loser) && State.Entrants[Loser].Place == 0)
-	{
-		State.Entrants[Loser].Place = PlaceForLoss(State.Rounds, Match.Round);
-	}
 	const int32 Winner = Match.WinnerEntrant();
-	if (Match.Round >= State.Rounds)
+	FChaosImpactTournamentGroup Part;
+	Part.Size = State.BracketSize;
+	if (State.Groups.IsValidIndex(Match.Group))
 	{
-		State.Champion = Winner;
-		if (State.Entrants.IsValidIndex(Winner))
+		Part = State.Groups[Match.Group];
+	}
+	const int32 PartRounds = static_cast<int32>(FMath::FloorLog2(FMath::Max(Part.Size, 2)));
+	// Its two feeders (this match and its neighbour) both decided: the match they feed can be played (or, with nobody on
+	// one side, decided).
+	const auto MarkReady = [&State, &Match](FChaosImpactTournamentMatch& Into)
+	{
+		const int32 Feeder0 = State.GroupMatchIndex(Match.Group, Match.GroupRound, (Match.Slot / 2) * 2);
+		const int32 Feeder1 = State.GroupMatchIndex(Match.Group, Match.GroupRound, (Match.Slot / 2) * 2 + 1);
+		if (State.Matches.IsValidIndex(Feeder0) && State.Matches[Feeder0].IsOver() && State.Matches.IsValidIndex(Feeder1)
+			&& State.Matches[Feeder1].IsOver())
 		{
-			State.Entrants[Winner].Place = 1;
+			Into.State = EChaosImpactTournamentMatchState::Ready;
 		}
-		State.bFinished = true;
-		State.FinishedAt = Now;
-		return true;
-	}
-	const int32 NextIndex = State.MatchIndex(Match.Round + 1, Match.Slot / 2);
-	if (!State.Matches.IsValidIndex(NextIndex))
+	};
+	// The loser: on to the matches for the places below (順位決定戦), or the place lost at.
 	{
-		return false;
+		const int32 Losers = Part.Size >> Match.GroupRound;
+		const int32 Below = State.Settings.bPlacementMatches && Losers >= 2 ? State.FindGroup(Part.TopPlace + Losers, Losers) : INDEX_NONE;
+		const int32 Into = Below != INDEX_NONE ? State.GroupMatchIndex(Below, 1, Match.Slot / 2) : INDEX_NONE;
+		if (State.Matches.IsValidIndex(Into))
+		{
+			State.Matches[Into].Entrants[Match.Slot % 2] = Loser;
+			MarkReady(State.Matches[Into]);
+		}
+		else if (State.Entrants.IsValidIndex(Loser) && State.Entrants[Loser].Place == 0)
+		{
+			// (Without 順位決定戦 the same as PlaceForLoss: 2nd, 3rd, 5th, 9th...)
+			State.Entrants[Loser].Place = Part.TopPlace + Losers;
+		}
 	}
-	FChaosImpactTournamentMatch& Next = State.Matches[NextIndex];
-	Next.Entrants[Match.Slot % 2] = Winner;
-	// Both of its feeders decided: it can be played (or, with nobody on one side, decided).
-	const int32 Feeder0 = State.MatchIndex(Match.Round, (Match.Slot / 2) * 2);
-	const int32 Feeder1 = State.MatchIndex(Match.Round, (Match.Slot / 2) * 2 + 1);
-	if (State.Matches.IsValidIndex(Feeder0) && State.Matches[Feeder0].IsOver() && State.Matches.IsValidIndex(Feeder1)
-		&& State.Matches[Feeder1].IsOver())
+	// The winner: on to the part's next round, or, its last, the part's best place (the tournament's: the champion).
+	if (Match.GroupRound >= PartRounds)
 	{
-		Next.State = EChaosImpactTournamentMatchState::Ready;
+		if (State.Entrants.IsValidIndex(Winner) && (State.Entrants[Winner].Place == 0 || Match.Group == 0))
+		{
+			State.Entrants[Winner].Place = Part.TopPlace;
+		}
+		if (Match.Group == 0)
+		{
+			State.Champion = Winner;
+		}
 	}
-	return false;
+	else
+	{
+		const int32 NextIndex = State.GroupMatchIndex(Match.Group, Match.GroupRound + 1, Match.Slot / 2);
+		if (State.Matches.IsValidIndex(NextIndex))
+		{
+			State.Matches[NextIndex].Entrants[Match.Slot % 2] = Winner;
+			MarkReady(State.Matches[NextIndex]);
+		}
+	}
+	// Over once every match is (the final, and every place's).
+	for (const FChaosImpactTournamentMatch& Each : State.Matches)
+	{
+		if (!Each.IsOver())
+		{
+			return false;
+		}
+	}
+	State.bFinished = true;
+	State.FinishedAt = Now;
+	return true;
 }
 
 void ChaosImpactTournament::DecideCPUMatch(FChaosImpactTournamentState& State, const int32 MatchIndex, FRandomStream& Random)

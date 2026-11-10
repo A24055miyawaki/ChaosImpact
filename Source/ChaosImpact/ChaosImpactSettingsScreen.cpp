@@ -530,6 +530,10 @@ void UChaosImpactSettingsScreen::BuildOtherRows()
 	Rows.Add(MakeRow(ERowKind::Value, RowRumble, TEXT("コントローラーの振動"), OnOff(AChaosImpactPlayerController::IsRumbleEnabled())));
 	Rows.Add(MakeRow(ERowKind::Value, RowSwitchConfirm, TEXT("Switchの決定ボタン"),
 		IsSwitchConfirmRight() ? TEXT("A（右のボタン）") : TEXT("B（下のボタン）")));
+	static const TCHAR* const HudSizes[] = {TEXT("小さい"), TEXT("ふつう"), TEXT("大きい")};
+	Rows.Add(MakeRow(ERowKind::Value, RowHudSize, TEXT("UIの大きさ"), HudSizes[FMath::Clamp(GetHudSize(), 0, 2)]));
+	Rows.Add(MakeRow(ERowKind::Value, RowButtonHints, TEXT("ボタンヒント"), OnOff(IsButtonHintsOn())));
+	Rows.Add(MakeRow(ERowKind::Value, RowTutorial, TEXT("トレーニングのチュートリアル"), OnOff(IsTrainingTutorialOn())));
 	// Tucked away at the very end: the loading screens' little games, to play for as long as you like.
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("おまけ")));
 	Rows.Add(MakeRow(ERowKind::Button, RowMiniGames, TEXT("ミニゲーム")));
@@ -736,6 +740,18 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 	else if (Id == RowSwitchConfirm)
 	{
 		SetSwitchConfirmRight(!IsSwitchConfirmRight());
+	}
+	else if (Id == RowHudSize)
+	{
+		SetHudSize(FMath::Clamp(GetHudSize() + Step, 0, 2));
+	}
+	else if (Id == RowButtonHints)
+	{
+		SetButtonHintsOn(!IsButtonHintsOn());
+	}
+	else if (Id == RowTutorial)
+	{
+		SetTrainingTutorialOn(!IsTrainingTutorialOn());
 	}
 	BuildRows();
 }
@@ -1282,6 +1298,9 @@ FString UChaosImpactSettingsScreen::GetRowHelp(const int32 Id) const
 	case RowRumble: return TEXT("コントローラーを振動させるかどうかです");
 	case RowShake: return TEXT("当たったときなどに、画面がどれだけ揺れるかです");
 	case RowSwitchConfirm: return TEXT("Switchのコントローラーで「決定」に使うボタンです");
+	case RowHudSize: return TEXT("プレイ中の画面に出る表示（体力・ボール・順位・ヒントなど）の大きさです。全モード共通です");
+	case RowButtonHints: return TEXT("プレイ中、画面の左右にいま使える操作のボタンを出すかどうかです");
+	case RowTutorial: return TEXT("トレーニングに入るたびに、操作とはじめて持ったボールを教えます");
 	case RowMiniGames: return TEXT("ロード画面のミニゲームを、それだけで遊べます");
 	default: return FString();
 	}

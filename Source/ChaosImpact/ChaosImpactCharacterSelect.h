@@ -17,9 +17,10 @@ struct FKeyEvent;
  * The character select screen, between controller assignment and the game, laid out like a kart racer's:
  * the roster as a grid of character icons on the left, and on the right one window per local player (up to
  * four) showing the character under their cursor at full size. Each player works it with their own device at
- * the same time: move over the icons, 決定 a character, pick one of its colours from the row that opens in
- * their window, 決定 again. When everyone is done, any of them starts. Drawn by the menu widget in its
- * 1600 x 900 design space.
+ * the same time: move over the icons, 決定 a character, pick one of its カスタムカラー (made in カラーエディット) from
+ * the row that opens in their window if it has any, 決定 again. When everyone is done, any of them starts. The mouse
+ * works it too (for the player who has it): pointing at an icon shows it, a click picks it, the colour chips and the
+ * 決定 button in their window, a right click steps back. Drawn by the menu widget in its 1600 x 900 design space.
  */
 UCLASS()
 class UChaosImpactCharacterSelect : public UObject
@@ -49,6 +50,8 @@ public:
 	bool HandleAnalog(const FAnalogInputEvent& Event);
 	/** A click in design space, for the keyboard and mouse player: an icon, the start bar, or their nickname. */
 	bool HandleClick(const FVector2D& DesignPoint);
+	/** A right click: the mouse player steps back (as B / Esc), or the nickname list closes. */
+	bool HandleRightClick();
 	void HandleMouseMove(const FVector2D& DesignPoint);
 	/** Letters typed on a keyboard for a nickname being written. */
 	bool HandleCharacter(TCHAR Character);
@@ -72,6 +75,10 @@ public:
 	void ChangeColour(int32 Player, int32 Direction);
 	/** カスタムカラー: the next or previous of this machine's presets for the character (or none). */
 	void ChangePreset(int32 Player, int32 Direction);
+	/** カスタムカラー: a preset by its index (INDEX_NONE: none), as a click on its chip. */
+	void SetPreset(int32 Player, int32 Preset);
+	/** Puts a player's cursor on an icon (the mouse pointing at it). */
+	void PointAt(int32 Player, int32 Tile);
 	int32 GetPreset(int32 Player) const { return Slots.IsValidIndex(Player) ? Slots[Player].Preset : INDEX_NONE; }
 	void PressConfirm(int32 Player);
 	void PressBack(int32 Player);
@@ -87,6 +94,11 @@ public:
 	bool IsStarting() const { return bStarting; }
 	static int32 GetTileCount() { return GridColumns * GridRows; }
 	static bool IsTileUnlocked(int32 Tile);
+	/** Where an icon is, in design space. */
+	static FBox2D GetTileRect(int32 Tile);
+	/** The colour row's chip for Choice (0 いつもの色, 1.. the presets) and its 決定 button, in design space (invalid when not shown). */
+	FBox2D GetChipRect(int32 Player, int32 Choice) const;
+	FBox2D GetRowButtonRect(int32 Player) const;
 
 private:
 	struct FSlot
@@ -134,6 +146,11 @@ private:
 	void RefreshPreview(int32 Player);
 	void SetStep(int32 Player, EStep Step);
 	FVector2D TileOrigin(int32 Tile) const;
+	/** The colour row in a player's window (design space), and the chips it has room for (the first shown, how many). */
+	FBox2D RowRect(int32 Player) const;
+	void GetChipWindow(int32 Player, int32& OutFirst, int32& OutCount, float& OutChipWidth) const;
+	/** Which local player the mouse belongs to (the only one, when there is one). */
+	int32 GetMousePlayer() const;
 	/** This player's window on the right, in design space. */
 	FBox2D WindowRect(int32 Player) const;
 	void PaintWindow(int32 Player, const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, double Now) const;
@@ -160,6 +177,8 @@ private:
 	/** Icon faces made so far (a couple per frame after opening). */
 	int32 PortraitsMade = 0;
 
+	/** Where the mouse is (design space), for what it lights up; far away until it moves. */
+	FVector2D MousePoint = FVector2D(-1000.0, -1000.0);
 	double OpenedAt = 0.0;
 	double AllReadyAt = -100.0;
 	double StartAt = 0.0;

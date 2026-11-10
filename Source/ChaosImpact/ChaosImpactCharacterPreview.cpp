@@ -1,4 +1,5 @@
 #include "ChaosImpactCharacterPreview.h"
+#include "ChaosImpactVictoryMotion.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacterRoster.h"
@@ -216,6 +217,27 @@ void AChaosImpactCharacterPreview::PlayFigureAnimation(UAnimSequenceBase* Animat
 	Pose->SetPlayRate(1.0f);
 }
 
+void AChaosImpactCharacterPreview::SetVictoryMotion(const bool bOn)
+{
+	if (bOn == bVictoryMotion)
+	{
+		return;
+	}
+	bVictoryMotion = bOn;
+	VictoryStartedAge = Age;
+	NextVictoryAppeal = Age;
+	if (!bOn && Model)
+	{
+		// Back to the model as it was set up.
+		if (!Model->HasAuthoredAnimations())
+		{
+			Model->SetRelativeTransform(FTransform(FRotator::ZeroRotator, FVector::ZeroVector, FVector(PreviewModelScale)));
+		}
+		Model->SetArmsRaised(0.0f);
+		Model->SetDrivePose(0.0f, FVector::ZeroVector, 0.0f, FVector::ZeroVector);
+	}
+}
+
 void AChaosImpactCharacterPreview::SetFacing(const float Yaw, const float Sway)
 {
 	FacingYaw = Yaw;
@@ -394,6 +416,27 @@ void AChaosImpactCharacterPreview::Animate(const float DeltaSeconds)
 	// Evaluated here on the game thread, then copied onto the model.
 	Pose->TickAnimation(bHolding ? 0.0f : DeltaSeconds, false);
 	Pose->RefreshBoneTransforms();
+	if (Model && bVictoryMotion)
+	{
+		// The celebration: the body layer over the idle clip, arms up or a finger to the sky; a model with its own clips
+		// plays its appeal again and again instead (only lifted by the hop).
+		const FChaosImpactVictoryPose Motion = ChaosImpactVictoryMotion::Evaluate(ModelCharacter, Age - VictoryStartedAge);
+		if (Model->HasAuthoredAnimations())
+		{
+			Model->SetRelativeLocation(Motion.Offset);
+			if (Age >= NextVictoryAppeal)
+			{
+				Model->PlaySelectionAppeal();
+				NextVictoryAppeal = Age + ChaosImpactVictoryMotion::AppealEverySeconds;
+			}
+		}
+		else
+		{
+			Model->SetRelativeTransform(ChaosImpactVictoryMotion::BodyTransform(Motion, PreviewModelScale));
+		}
+		Model->SetArmsRaised(Motion.ArmsRaised);
+		Model->SetDrivePose(0.0f, FVector::ZeroVector, Motion.Point, GetActorLocation() + GetActorForwardVector() * 60.0f + FVector(0.0f, 0.0f, 320.0f));
+	}
 	if (Model)
 	{
 		Model->UpdatePose(true, DeltaSeconds);

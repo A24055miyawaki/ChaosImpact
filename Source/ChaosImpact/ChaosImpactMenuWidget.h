@@ -37,6 +37,7 @@ public:
 	bool HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent);
 	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
+	UChaosImpactColourEdit* GetColourEdit() const { return ColourEdit; }
 	UChaosImpactSettingsScreen* GetSettingsScreen() const { return SettingsScreen; }
 	void OpenTrainingBallPicker();
 	bool IsTrainingBallPickerOpen() const { return bTrainingBallPickerOpen; }
@@ -84,6 +85,8 @@ private:
 	bool bLevelHiddenByMenu = false;
 	/** Stage select: the card the cursor came down from (going back up returns to it). */
 	int32 LastStageCard = 0;
+	/** Mode select: the bottom button last left by going up, so going down comes back to it. */
+	int32 LastModeBottom = INDEX_NONE;
 	/** What the cursor was on last frame (a move to another entry clicks). */
 	EChaosImpactScreen SoundScreen = EChaosImpactScreen::Title;
 	int32 SoundSelectedIndex = INDEX_NONE;
@@ -95,6 +98,18 @@ private:
 	/** The rules screen's list of every kind of match (opened from its ルール row). */
 	bool bModePicker = false;
 	/** The title's hidden command, when the battle royale is installed: a card choosing it or the RPG (0 RPG, 1 battle royale; -1 closed). */
+	/** Team select: each team's card (design space), drawn by PaintTeamCards; a click on one moves the mouse player there. */
+	static FSlateRect TeamCardRect(int32 Team, int32 Teams, int32 Places, bool bCrashBall);
+	/** The same for the match now on (an empty rect when it is not a team battle). */
+	FSlateRect TeamCardRectNow(int32 Team) const;
+	int32 PaintTeamCards(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float T) const;
+	/** The local player the keyboard and mouse belong to (null when none does). */
+	class AChaosImpactPlayerController* GetTeamMouseController() const;
+	FVector2D TeamMousePoint = FVector2D(-1000.0, -1000.0);
+	/** Team select's motion: where each person's row is shown (it glides to where it belongs), their team, and when it changed. */
+	mutable TMap<const APlayerState*, FVector2D> TeamRowShown;
+	mutable TMap<const APlayerState*, TPair<int32, double>> TeamLastChange;
+	mutable double TeamPaintedAt = 0.0;
 	int32 SecretChoice = INDEX_NONE;
 	double SecretChoiceAt = 0.0;
 	void ConfirmSecretChoice();
@@ -114,6 +129,12 @@ private:
 	/** The results row the cursor was last on (it comes back there from the choices or the awards). */
 	int32 ResultsRowCursor = 0;
 	double ScreenStartedAt = 0.0;
+public:
+	/** When the screen shown now came up (a back or pause press right after is the same press arriving another way). */
+	double GetScreenStartedAt() const { return ScreenStartedAt; }
+private:
+	/** When the last back was taken: a second one right after (the same press by another way, or a double press) waits. */
+	double LastBackAt = -100.0;
 	float AnimationSeconds = 0.0f;
 	double LastAnalogNavigationAt = 0.0;
 	void BuildEntries();

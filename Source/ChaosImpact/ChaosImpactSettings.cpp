@@ -18,6 +18,8 @@
 #include "Widgets/SWindow.h"
 #include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 namespace
 {
@@ -33,6 +35,10 @@ namespace
 		int32 Shake = 2;
 		int32 Brightness = 5;
 		bool bSwitchConfirmRight = true;
+		bool bButtonHints = true;
+		int32 HudSize = 1;
+		bool bTrainingTutorial = true;
+		int32 TutorialRevision = 0;
 		/** Fullscreen uses a borderless window; old exclusive-mode preferences are migrated on load. */
 		int32 LastFullscreenMode = 1;
 		FIntPoint WindowedResolution = FIntPoint::ZeroValue;
@@ -54,7 +60,7 @@ namespace
 	{
 		static const TCHAR* const Tags[] = {TEXT("MoveUp"), TEXT("MoveDown"), TEXT("MoveLeft"), TEXT("MoveRight"),
 			TEXT("Throw"), TEXT("CancelThrow"), TEXT("Dash"), TEXT("Jump"), TEXT("SwapBall"), TEXT("DropBall"),
-			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle")};
+			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle"), TEXT("LobbyTeam"), TEXT("OverviewMap")};
 		static_assert(UE_ARRAY_COUNT(Tags) == FChaosImpactProfile::ActionCount, "One tag per action");
 		return Tags[FMath::Clamp(static_cast<int32>(Action), 0, FChaosImpactProfile::ActionCount - 1)];
 	}
@@ -128,6 +134,9 @@ namespace
 		GConfig->SetInt(SettingsSection, TEXT("CameraShake"), S.Shake, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
+		GConfig->SetBool(SettingsSection, TEXT("ButtonHints"), S.bButtonHints, GGameUserSettingsIni);
+		GConfig->SetInt(SettingsSection, TEXT("HudSize"), S.HudSize, GGameUserSettingsIni);
+		GConfig->SetBool(SettingsSection, TEXT("TrainingTutorial"), S.bTrainingTutorial, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("LastFullscreenMode"), S.LastFullscreenMode, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("WindowedResX"), S.WindowedResolution.X, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("WindowedResY"), S.WindowedResolution.Y, GGameUserSettingsIni);
@@ -166,6 +175,10 @@ namespace
 			GConfig->GetInt(SettingsSection, TEXT("CameraShake"), S.Shake, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
+			GConfig->GetBool(SettingsSection, TEXT("ButtonHints"), S.bButtonHints, GGameUserSettingsIni);
+			GConfig->GetInt(SettingsSection, TEXT("HudSize"), S.HudSize, GGameUserSettingsIni);
+			S.HudSize = FMath::Clamp(S.HudSize, 0, 2);
+			GConfig->GetBool(SettingsSection, TEXT("TrainingTutorial"), S.bTrainingTutorial, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("LastFullscreenMode"), S.LastFullscreenMode, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("WindowedResX"), S.WindowedResolution.X, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("WindowedResY"), S.WindowedResolution.Y, GGameUserSettingsIni);
@@ -502,6 +515,23 @@ void ChaosImpactSettings::SetControlScheme(const int32 Profile, const EChaosImpa
 
 EChaosImpactControlScheme ChaosImpactSettings::GetControlScheme(const int32 Profile, const EChaosImpactDevice Device)
 {
+#if !UE_BUILD_SHIPPING
+	// Development (-CIControlStyle=normal | simple | mouse | mousehold): the keyboard and mouse played in that style for
+	// this run, whatever the saved nicknames say (tests of each style without touching anyone's settings).
+	static const int32 Forced = []()
+	{
+		FString Style;
+		if (!FParse::Value(FCommandLine::Get(), TEXT("CIControlStyle="), Style)) { return -1; }
+		return Style == TEXT("simple") ? static_cast<int32>(EChaosImpactControlScheme::Simple)
+			: Style == TEXT("mouse") ? static_cast<int32>(EChaosImpactControlScheme::MouseOnly)
+			: Style == TEXT("mousehold") ? static_cast<int32>(EChaosImpactControlScheme::MouseHold)
+			: static_cast<int32>(EChaosImpactControlScheme::Normal);
+	}();
+	if (Forced >= 0 && Device == EDevice::KeyboardMouse)
+	{
+		return static_cast<EChaosImpactControlScheme>(Forced);
+	}
+#endif
 	return GetProfile(Profile).Schemes[FMath::Clamp(static_cast<int32>(Device), 0, FChaosImpactProfile::DeviceCount - 1)];
 }
 
@@ -553,6 +583,8 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 		case EChaosImpactAction::TrainingMenu: return bMouse ? FKey() : EKeys::T;
 		case EChaosImpactAction::LobbyReady: return GetKey(Profile, Device, Action, Slot);
 		case EChaosImpactAction::LobbySpectate: return GetKey(Profile, Device, Action, Slot);
+		case EChaosImpactAction::LobbyTeam: return GetKey(Profile, Device, Action, Slot);
+		case EChaosImpactAction::OverviewMap: return GetKey(Profile, Device, Action, Slot);
 		default: return FKey();
 		}
 	}
@@ -563,7 +595,9 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 	case EChaosImpactAction::SwapBall: return EKeys::Gamepad_FaceButton_Left;
 	case EChaosImpactAction::Pause: return EKeys::Gamepad_Special_Right;
 	case EChaosImpactAction::TrainingMenu: return EKeys::Gamepad_Special_Left;
-	case EChaosImpactAction::LobbyReady: case EChaosImpactAction::LobbySpectate: return GetKey(Profile, Device, Action, Slot);
+	case EChaosImpactAction::LobbyReady: case EChaosImpactAction::LobbySpectate: case EChaosImpactAction::LobbyTeam:
+	case EChaosImpactAction::OverviewMap:
+		return GetKey(Profile, Device, Action, Slot);
 	default: return FKey();
 	}
 }
@@ -657,6 +691,8 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 		case EAction::TrainingMenu: return Slot == 0 ? EKeys::T : EKeys::Hyphen;
 		case EAction::LobbyReady: return Slot == 0 ? EKeys::R : FKey();
 		case EAction::LobbySpectate: return Slot == 0 ? EKeys::V : FKey();
+		case EAction::LobbyTeam: return Slot == 0 ? EKeys::C : FKey();
+		case EAction::OverviewMap: return Slot == 0 ? EKeys::M : FKey();
 		default: return FKey();
 		}
 	}
@@ -679,6 +715,8 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 	case EAction::TrainingMenu: return Slot == 0 ? EKeys::Gamepad_Special_Left : FKey();
 	case EAction::LobbyReady: return Slot == 0 ? EKeys::Gamepad_DPad_Up : FKey();
 	case EAction::LobbySpectate: return Slot == 0 ? EKeys::Gamepad_DPad_Down : FKey();
+	case EAction::LobbyTeam: return Slot == 0 ? EKeys::Gamepad_DPad_Right : FKey();
+	case EAction::OverviewMap: return Slot == 0 ? EKeys::Gamepad_RightThumbstick : FKey();
 	default: return FKey();
 	}
 }
@@ -733,6 +771,8 @@ FString ChaosImpactSettings::GetActionName(const EChaosImpactAction Action)
 	case EAction::TrainingMenu: return TEXT("トレーニングメニュー");
 	case EAction::LobbyReady: return TEXT("準備OK（通信の部屋）");
 	case EAction::LobbySpectate: return TEXT("観戦する／やめる（部屋）");
+	case EAction::LobbyTeam: return TEXT("チームを変える（部屋）");
+	case EAction::OverviewMap: return TEXT("全体マップ");
 	default: return FString();
 	}
 }
@@ -1126,6 +1166,60 @@ void ChaosImpactSettings::SetSwitchConfirmRight(const bool bRight)
 {
 	Store().bSwitchConfirmRight = bRight;
 	SaveOptions();
+}
+
+bool ChaosImpactSettings::IsButtonHintsOn()
+{
+	return Store().bButtonHints;
+}
+
+void ChaosImpactSettings::SetButtonHintsOn(const bool bOn)
+{
+	Store().bButtonHints = bOn;
+	SaveOptions();
+}
+
+int32 ChaosImpactSettings::GetHudSize()
+{
+	return Store().HudSize;
+}
+
+void ChaosImpactSettings::SetHudSize(const int32 Size)
+{
+	Store().HudSize = FMath::Clamp(Size, 0, 2);
+	SaveOptions();
+}
+
+float ChaosImpactSettings::GetHudSizeFactor()
+{
+	static constexpr float Factors[] = {0.85f, 1.0f, 1.15f};
+#if !UE_BUILD_SHIPPING
+	// Development: -CIHudSize=0|1|2 (screenshots of each size).
+	static const int32 Forced = []() { int32 Value = -1; FParse::Value(FCommandLine::Get(), TEXT("CIHudSize="), Value); return Value; }();
+	if (Forced >= 0) { return Factors[FMath::Clamp(Forced, 0, 2)]; }
+#endif
+	return Factors[FMath::Clamp(Store().HudSize, 0, 2)];
+}
+
+bool ChaosImpactSettings::IsTrainingTutorialOn()
+{
+	return Store().bTrainingTutorial;
+}
+
+void ChaosImpactSettings::SetTrainingTutorialOn(const bool bOn)
+{
+	FSettingsStore& S = Store();
+	if (bOn && !S.bTrainingTutorial)
+	{
+		++S.TutorialRevision;
+	}
+	S.bTrainingTutorial = bOn;
+	SaveOptions();
+}
+
+int32 ChaosImpactSettings::GetTrainingTutorialRevision()
+{
+	return Store().TutorialRevision;
 }
 
 int32 ChaosImpactSettings::GetBrightness()

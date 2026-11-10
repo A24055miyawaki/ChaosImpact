@@ -132,10 +132,10 @@ public:
 	 * Nova: from landing to lying in pieces (its model's own animation: spinning, the ball of fire growing, holding,
 	 * shrinking, a shudder and falling apart). It hurts only while the ball of fire is out (see GetNovaFireRadius).
 	 */
-	static constexpr float NovaBlastSeconds = ChaosImpactNova::FireEnd - ChaosImpactNova::FireStart;
+	static constexpr float NovaBlastSeconds = ChaosImpactNova::GetFireAge(ChaosImpactNova::FireEnd);
 	/** Nova: seconds after landing that its ball of fire starts to grow / is gone again. */
-	static constexpr float NovaExplodeAfter = ChaosImpactNova::FireExplodeAt - ChaosImpactNova::FireStart;
-	static constexpr float NovaFireGoneAfter = ChaosImpactNova::FireGoneAt - ChaosImpactNova::FireStart;
+	static constexpr float NovaExplodeAfter = ChaosImpactNova::GetFireAge(ChaosImpactNova::FireExplodeAt);
+	static constexpr float NovaFireGoneAfter = ChaosImpactNova::GetFireAge(ChaosImpactNova::FireGoneAt);
 	static constexpr float FadeSeconds = 0.6f;
 	/** Flames and mist are allowed to die out after the zone stops. */
 	static constexpr float EffectTailSeconds = 2.0f;
@@ -153,7 +153,7 @@ protected:
 	/** Server: burns whoever stands within Radius, once every FireBurnInterval each. */
 	void TickBurning(float Radius);
 	/** Radius below zero means the zone's own (GetRadius). */
-	bool IsInside(const AActor* Actor, float Padding, float MaxHeight, float Radius = -1.0f) const;
+	bool IsInside(const AActor* Actor, float Padding, float MaxHeight, float Radius = -1.0f, float MinHeight = -80.0f) const;
 	AController* GetSourceController() const;
 
 	UFUNCTION(NetMulticast, Unreliable)

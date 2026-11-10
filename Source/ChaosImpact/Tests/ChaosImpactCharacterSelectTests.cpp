@@ -2,6 +2,7 @@
 
 #include "ChaosImpactCharacterSelect.h"
 #include "ChaosImpactCharacterRoster.h"
+#include "ChaosImpactCustomColour.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactMenuWidget.h"
@@ -44,6 +45,13 @@ namespace
 		const FInputDeviceId Device = FInputDeviceId::CreateFromInternalId(InputDeviceId);
 		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(Key, FModifierKeysState(), Device, false, 0, 0, TOptional<int32>(UserIndex)));
 		FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(Key, FModifierKeysState(), Device, false, 0, 0, TOptional<int32>(UserIndex)));
+	}
+
+	/** How many カスタムカラー this machine has for スマイリー (with any, a pick opens the colour row). */
+	int32 PresetsOnSmiley(const AChaosImpactPlayerController* PC)
+	{
+		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(PC);
+		return Colours ? Colours->GetPresets(0).Num() : 0;
 	}
 
 	void SelectShot(const TCHAR* Name)
@@ -116,79 +124,86 @@ namespace
 			case 2:
 			{
 				using EStep = UChaosImpactCharacterSelect::EStep;
+				// スマイリー (everyone's saved pick) has no colours now: there is a colour step only for カスタムカラー.
+				const bool bColourStep = PresetsOnSmiley(PC) > 0;
 				// 3P's cursor goes onto a COMING SOON icon: nothing can be picked there.
 				SelectPadKey(EKeys::Gamepad_DPad_Right, 202, 2);
 				Test->TestEqual(TEXT("The D-pad moves 3P's cursor"), Select->GetCursorTile(2), 1);
 				const int32 LockedTile = ChaosImpactRoster::Num();
-				while (Select->GetCursorTile(2) % Select->GridColumns != LockedTile % Select->GridColumns)
+				if (LockedTile < Select->GetTileCount())
 				{
-					SelectPadKey(Select->GetCursorTile(2) % Select->GridColumns < LockedTile % Select->GridColumns
-						? EKeys::Gamepad_DPad_Right : EKeys::Gamepad_DPad_Left,202,2);
+					while (Select->GetCursorTile(2) % Select->GridColumns != LockedTile % Select->GridColumns)
+					{
+						SelectPadKey(Select->GetCursorTile(2) % Select->GridColumns < LockedTile % Select->GridColumns
+							? EKeys::Gamepad_DPad_Right : EKeys::Gamepad_DPad_Left, 202, 2);
+					}
+					while (Select->GetCursorTile(2) / Select->GridColumns < LockedTile / Select->GridColumns)
+					{
+						SelectPadKey(EKeys::Gamepad_DPad_Down, 202, 2);
+					}
+					Test->TestEqual(TEXT("3P's cursor reaches the first locked icon"), Select->GetCursorTile(2), LockedTile);
+					SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
+					Test->TestTrue(TEXT("A locked icon cannot be picked"), Select->GetStep(2) == EStep::Character);
 				}
-				while (Select->GetCursorTile(2) / Select->GridColumns < LockedTile / Select->GridColumns)
-				{
-					SelectPadKey(EKeys::Gamepad_DPad_Down,202,2);
-				}
-				Test->TestEqual(TEXT("3P's cursor reaches the first locked icon"), Select->GetCursorTile(2), LockedTile);
 				Test->TestEqual(TEXT("Other cursors stay"), Select->GetCursorTile(0), 0);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
-				Test->TestTrue(TEXT("A locked icon cannot be picked"), Select->GetStep(2) == EStep::Character);
-				SelectPadKey(EKeys::Gamepad_DPad_Down, 202, 2);
-				Test->TestEqual(TEXT("The cursor moves between rows"), Select->GetCursorTile(2), ChaosImpactRoster::Num() + 4);
-				SelectPadKey(EKeys::Gamepad_DPad_Up, 202, 2);
-				for (int32 Row = 0; Row < Select->GridRows; ++Row) { SelectPadKey(EKeys::Gamepad_DPad_Up,202,2); }
-				for (int32 Step = 0; Step <= ChaosImpactRoster::Num(); ++Step)
-				{
-					SelectPadKey(EKeys::Gamepad_DPad_Left, 202, 2);
-				}
+				for (int32 Row = 0; Row < Select->GridRows; ++Row) { SelectPadKey(EKeys::Gamepad_DPad_Up, 202, 2); }
+				for (int32 Step = 0; Step <= Select->GridColumns; ++Step) { SelectPadKey(EKeys::Gamepad_DPad_Left, 202, 2); }
 				Test->TestEqual(TEXT("The cursor stops at the grid's edge"), Select->GetCursorTile(2), 0);
 
-				// 1P picks the character; the colour row opens and Q/E change the colour.
-				SelectKey(EKeys::Enter);
-				Test->TestTrue(TEXT("Enter picks 1P's character"), Select->GetStep(0) == EStep::Colour);
-				const int32 P1Colour = Select->GetColour(0);
-				SelectKey(EKeys::E);
-				Test->TestNotEqual(TEXT("E changes 1P's colour"), Select->GetColour(0), P1Colour);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
-				const int32 P3Colour = Select->GetColour(2);
-				SelectPadKey(EKeys::Gamepad_DPad_Right, 202, 2);
-				Test->TestNotEqual(TEXT("On the colour row the D-pad changes 3P's colour"), Select->GetColour(2), P3Colour);
-				Test->TestTrue(TEXT("Colour choices never collide"), Distinct(Select));
-				const int32 Before[] = {Select->GetColour(0), Select->GetColour(1), Select->GetColour(2)};
-				SelectPadKey(EKeys::Gamepad_RightShoulder, 999, 3);
-				Test->TestTrue(TEXT("A device nobody holds changes nothing"), Select->GetColour(0) == Before[0]
-					&& Select->GetColour(1) == Before[1] && Select->GetColour(2) == Before[2]);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
-				for (int32 Turn = 0; Turn < 6; ++Turn)
+				// The mouse (1P's): pointing at an icon shows it, a click picks it, a second click on it finishes the colour.
+				Select->HandleMouseMove(UChaosImpactCharacterSelect::GetTileRect(3).GetCenter());
+				Test->TestEqual(TEXT("Pointing moves the mouse player's cursor"), Select->GetCursorTile(0), 3);
+				Test->TestEqual(TEXT("Pointing shows that character"), Select->GetCharacter(0), 3);
+				Test->TestTrue(TEXT("A click picks 1P's character"), Select->HandleClick(UChaosImpactCharacterSelect::GetTileRect(0).GetCenter()));
+				Test->TestTrue(TEXT("The click picked the icon under it"), Select->GetCharacter(0) == 0
+					&& Select->GetStep(0) == (bColourStep ? EStep::Colour : EStep::Done));
+				if (bColourStep)
 				{
-					SelectPadKey(EKeys::Gamepad_LeftShoulder, 201, 1);
-					Test->TestTrue(TEXT("Cycling colours skips the ones in use"), Distinct(Select));
+					// The カスタムカラー row: a chip is clicked, then the icon again for 決定.
+					const FBox2D Chip = Select->GetChipRect(0, 1);
+					Test->TestTrue(TEXT("The row shows the カスタムカラー"), Chip.bIsValid);
+					Select->HandleClick(Chip.GetCenter());
+					Test->TestEqual(TEXT("A click on a chip wears it"), Select->GetPreset(0), 0);
+					Select->HandleClick(UChaosImpactCharacterSelect::GetTileRect(0).GetCenter());
 				}
+				Test->TestTrue(TEXT("1P is done by mouse alone"), Select->IsReady(0));
+				const EStep Before[] = {Select->GetStep(0), Select->GetStep(1), Select->GetStep(2)};
+				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 999, 3);
+				Test->TestTrue(TEXT("A device nobody holds changes nothing"), Select->GetStep(0) == Before[0]
+					&& Select->GetStep(1) == Before[1] && Select->GetStep(2) == Before[2]);
 				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
+				if (bColourStep)
+				{
+					const int32 Worn = Select->GetPreset(1);
+					SelectPadKey(EKeys::Gamepad_RightShoulder, 201, 1);
+					Test->TestNotEqual(TEXT("RB goes through the カスタムカラー"), Select->GetPreset(1), Worn);
+					SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
+				}
 				Test->TestTrue(TEXT("Pad 201 finishes 2P"), Select->IsReady(1));
-				Test->TestFalse(TEXT("2P's button does not finish 1P"), Select->IsReady(0));
+				SelectKey(EKeys::Enter);
+				Test->TestFalse(TEXT("It cannot start while 3P is choosing"), Select->IsStarting());
+				Test->TestTrue(TEXT("HUD colours never collide"), Distinct(Select));
 				SelectShot(TEXT("CS-02-Choosing.png"));
 				return Next(1.0);
 			}
 			case 3:
 			{
 				using EStep = UChaosImpactCharacterSelect::EStep;
-				const int32 Locked = Select->GetColour(1);
-				SelectPadKey(EKeys::Gamepad_RightShoulder, 201, 1);
-				Test->TestEqual(TEXT("A finished player's colour is locked"), Select->GetColour(1), Locked);
+				const bool bColourStep = PresetsOnSmiley(PC) > 0;
 				SelectPadKey(EKeys::Gamepad_FaceButton_Right, 201, 1);
-				Test->TestTrue(TEXT("B takes 2P back to the colour row"), Select->GetStep(1) == EStep::Colour);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Right, 201, 1);
-				Test->TestTrue(TEXT("B again takes 2P back to the icons"), Select->GetStep(1) == EStep::Character);
+				if (bColourStep)
+				{
+					Test->TestTrue(TEXT("B takes 2P back to the colour row"), Select->GetStep(1) == EStep::Colour);
+					SelectPadKey(EKeys::Gamepad_FaceButton_Right, 201, 1);
+				}
+				Test->TestTrue(TEXT("B takes 2P back to the icons"), Select->GetStep(1) == EStep::Character);
 				SelectPadKey(EKeys::Gamepad_FaceButton_Right, 201, 1);
 				Test->TestTrue(TEXT("Only 1P can back out of the screen"), Screen(EChaosImpactScreen::CharacterSelect));
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
-				SelectKey(EKeys::Enter);
-				Test->TestTrue(TEXT("Enter finishes 1P"), Select->IsReady(0));
-				SelectKey(EKeys::Enter);
-				Test->TestFalse(TEXT("It cannot start while 3P is choosing"), Select->IsStarting());
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
+				for (int32 Press = 0; Press < (bColourStep ? 2 : 1); ++Press)
+				{
+					SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
+					SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
+				}
 				Test->TestTrue(TEXT("Everyone is ready"), Select->AreAllReady());
 				Test->TestTrue(TEXT("Final colours are all different"), Distinct(Select));
 				SelectShot(TEXT("CS-03-AllReady.png"));
@@ -198,29 +213,34 @@ namespace
 				Picks[0] = Select->GetColour(0);
 				Picks[1] = Select->GetColour(1);
 				Picks[2] = Select->GetColour(2);
-				// Backing out one step at a time: done, colour row, icons, then the assignment screen.
-				SelectKey(EKeys::Escape);
-				Test->TestFalse(TEXT("Esc undoes 1P's OK first"), Select->IsReady(0));
-				SelectKey(EKeys::Escape);
-				SelectKey(EKeys::Escape);
+				// Backing out one step at a time: a right click undoes 1P's OK, then Esc back to the assignment screen.
+				Select->HandleRightClick();
+				Test->TestFalse(TEXT("A right click undoes 1P's OK"), Select->IsReady(0));
+				for (int32 Press = 0; Press < 3 && Screen(EChaosImpactScreen::CharacterSelect); ++Press)
+				{
+					SelectKey(EKeys::Escape);
+				}
 				Test->TestTrue(TEXT("1P backs out to assignment"), Screen(EChaosImpactScreen::ControllerAssignment));
 				return Next(0.6);
 			case 5:
+			{
+				const bool bColourStep = PresetsOnSmiley(PC) > 0;
 				PC->ConfirmControllerAssignments();
 				Test->TestTrue(TEXT("Character select opens again"), Screen(EChaosImpactScreen::CharacterSelect));
 				Test->TestTrue(TEXT("The picks are remembered"), Select->GetColour(0) == Picks[0]
 					&& Select->GetColour(1) == Picks[1] && Select->GetColour(2) == Picks[2]);
 				Test->TestFalse(TEXT("Nobody is ready on a fresh visit"), Select->IsReady(0) || Select->IsReady(1) || Select->IsReady(2));
-				SelectKey(EKeys::SpaceBar);
-				SelectKey(EKeys::SpaceBar);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
-				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
+				for (int32 Press = 0; Press < (bColourStep ? 2 : 1); ++Press)
+				{
+					SelectKey(EKeys::SpaceBar);
+					SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 201, 1);
+					SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
+				}
 				Test->TestTrue(TEXT("Everyone is ready again"), Select->AreAllReady());
 				Test->TestTrue(TEXT("Keeping the same picks keeps the same colours"), Select->GetColour(0) == Picks[0]
 					&& Select->GetColour(1) == Picks[1] && Select->GetColour(2) == Picks[2]);
 				return Next(0.5);
+			}
 			case 6:
 				SelectPadKey(EKeys::Gamepad_FaceButton_Bottom, 202, 2);
 				Test->TestTrue(TEXT("Any player can start once everyone is ready"), Select->IsStarting());

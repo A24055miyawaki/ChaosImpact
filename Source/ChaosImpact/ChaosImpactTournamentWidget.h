@@ -33,6 +33,8 @@ public:
 	enum class EPanel : uint8 { None, Menu, Watch, Bracket };
 
 	EPanel GetPanel() const { return Panel; }
+	/** True while one of its screens (a panel, the call to one's match, a question) lies over the play (button hints stay off then). */
+	bool CoversPlay() const;
 	void OpenPanel(EPanel InPanel);
 	void ClosePanel();
 
@@ -121,6 +123,9 @@ private:
 	double SeenStartedAt = -1.0;
 	/** The champion's moment was opened for (once). */
 	bool bChampionShown = false;
+	/** The champion's screen put away (Enter / A) on this screen. */
+	bool bChampionDismissed = false;
+	void PaintPlacementStrip(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Alpha) const;
 	int32 SeenCalledMatch = INDEX_NONE;
 	double NextStickAt = 0.0;
 	bool bStickHeld = false;

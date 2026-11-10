@@ -47,6 +47,8 @@ public class ChaosImpact : ModuleRules
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.
 		RuntimeDependencies.Add("$(ProjectDir)/Content/UI/TitleLogoTransparent.png", StagedFileType.UFS);
+		// The stage select's pictures, read as loose files too.
+		RuntimeDependencies.Add("$(ProjectDir)/Content/UI/StageSelect/*.png", StagedFileType.UFS);
 		// Recorded tutorials are loose movies so Windows Media Foundation can open them.
 		RuntimeDependencies.Add("$(ProjectDir)/Content/Movies/Controls/*.mp4", StagedFileType.NonUFS);
 

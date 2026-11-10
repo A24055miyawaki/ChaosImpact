@@ -8,6 +8,8 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactPuppetComponent.h"
+#include "EngineUtils.h"
+#include "Components/CapsuleComponent.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSfx.h"
 #include "Components/CapsuleComponent.h"
@@ -143,6 +145,7 @@ void UChaosImpactTackleComponent::ApplyContact(AChaosImpactCharacter* Victim)
     Other->InterruptAndDrop();
     Kick(Victim,FVector(State.Direction)*KnockbackSpeed+FVector(0,0,KnockbackUpwardSpeed));
     P->OnTackledSomeone(Victim);
+    UE_LOG(LogChaosImpact,Log,TEXT("Tackle hit: %s on %s"),*P->GetName(),*Victim->GetName());
     Victim->ForceNetUpdate();
     MulticastImpact((P->GetActorLocation()+Victim->GetActorLocation())*.5,State.Direction);
 }
@@ -163,7 +166,33 @@ void UChaosImpactTackleComponent::CheckContact()
         FHitResult Wall;
         // A trace *channel* named WorldStatic can still hit pawn capsules; restrict object types for walls.
         if(GetWorld()->LineTraceSingleByObjectType(Wall,Here,Victim->GetActorLocation(),FCollisionObjectQueryParams(ECC_WorldStatic),Q)) { continue; }
-        ApplyContact(Victim); break;
+        ApplyContact(Victim); PreviousLocation=Here; return;
+    }
+    // A remote player's tackle on a CPU: where their screen showed the CPU (as their throws are, CheckRewoundCpuHits),
+    // so the host's own players gain nothing from seeing CPUs first.
+    const float ViewDelay=AChaosImpactCharacter::GetRemoteViewDelay(P);
+    if(ViewDelay>0.f)
+    {
+        const FVector To=Here+FVector(State.Direction)*60;
+        for(TActorIterator<AChaosImpactCharacter> It(GetWorld());It;++It)
+        {
+            AChaosImpactCharacter* Cpu=*It;
+            if(Cpu==P || Cpu->IsPlayerControlled() || Cpu->IsEliminated() || Cpu->IsDashing() || Cpu->GetBallForm()->IsCaptured()
+                || Cpu->IsTrainingMenuFrozen() || AChaosImpactGameState::AreTeammates(GetWorld(),P,Cpu)) { continue; }
+            const float Reach=60.f+Cpu->GetCapsuleComponent()->GetScaledCapsuleRadius();
+            for(const float Ago:{ViewDelay,ViewDelay*.5f})
+            {
+                const FVector Seen=Cpu->GetPastLocation(Ago);
+                const FVector Close=FMath::ClosestPointOnSegment(Seen,PreviousLocation,To);
+                FHitResult Wall;
+                if(FVector::DistSquared2D(Close,Seen)<=FMath::Square(Reach) && FMath::Abs(Close.Z-Seen.Z)<=150.f
+                    && !GetWorld()->LineTraceSingleByObjectType(Wall,Here,Seen,FCollisionObjectQueryParams(ECC_WorldStatic),Q))
+                {
+                    UE_LOG(LogChaosImpact,Log,TEXT("Rewound CPU tackle: %s where it was %.2f s ago"),*Cpu->GetName(),Ago);
+                    ApplyContact(Cpu); PreviousLocation=Here; return;
+                }
+            }
+        }
     }
     PreviousLocation=Here;
 }

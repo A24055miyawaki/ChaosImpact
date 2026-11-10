@@ -224,7 +224,10 @@ private:
 	/** Where an arm goes in the drive poses (bRight: the guiding arm). */
 	void DriveArm(bool bRight, const FVector& Shoulder, const FVector& Outward, float Reach, FVector& InOutTarget,
 		FVector& InOutPole) const;
+	/** The colour that stands for this model (its team's on the HUD). */
 	int32 ColourIndex = INDEX_NONE;
+	/** The colour the model is drawn in (the same, unless it always wears its first: ChaosImpactRoster::WearsFirstColour). */
+	int32 LookIndex = INDEX_NONE;
 	int32 CharacterIndex = 0;
 	/** A single rigid mesh with no limbs (see EChaosImpactModelKind). */
 	bool bRigid = false;

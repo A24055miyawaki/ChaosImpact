@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "ChaosImpactCombatHealth.h"
+#include "ChaosImpactTutorial.h"
 #include "ChaosImpactChargeWidget.generated.h"
 
 class APlayerState;
@@ -193,6 +194,51 @@ private:
 	double BallGainedAt = -100.0;
 	int32 BallGainedSlot = INDEX_NONE;
 	double BallSwappedAt = -100.0;
+	/** Training's tutorial for this player (and the button hints it draws). */
+	FChaosImpactTutorial Tutorial;
+
+	/**
+	 * The HUD's own areas this frame, in this widget's pixels (each mode's pieces register what they draw). Off-screen
+	 * arrows, painted first, keep clear of the last frame's.
+	 */
+	mutable TArray<FBox2D> HudBoxes;
+	mutable TArray<FBox2D> HudBoxesLast;
+	mutable FGeometry HudPaintGeometry;
+	/**
+	 * The whole-stage map (its key): the stage from straight above, filmed into MapTarget all the while it is open (so
+	 * what moves on the stage moves on it too), shown over the whole screen with everyone and the balls on it.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<class UTextureRenderTarget2D> MapTarget;
+	/** The camera filming it, kept while the map is open. */
+	UPROPERTY(Transient)
+	TObjectPtr<class ASceneCapture2D> MapCamera;
+	double MapShotAt = -100.0;
+	double MapHiddenAt = -100.0;
+	/** Where the map's middle is shown (it glides after a moving area, as the ground round this player). */
+	FVector MapGlideCenter = FVector::ZeroVector;
+	FSlateBrush MapBrush;
+	FVector MapCenter = FVector::ZeroVector;
+	float MapHalf = 0.0f;
+	float MapYaw = 0.0f;
+	bool bMapTaken = false;
+	double MapOpenedAt = -100.0;
+	bool bMapWasOpen = false;
+	/** The square the map covers: this player's tournament arena, the match's stage, or the stage in the level. */
+	bool FindMapArea(FVector& OutCenter, float& OutHalf) const;
+	void TakeMapPicture(const FVector& Center, float Half, float Yaw);
+	void PaintOverviewMap(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 Layer) const;
+	/** Balls already announced as coming at this player from off screen (its sound plays once each). */
+	mutable TSet<TWeakObjectPtr<class AChaosImpactBall>> WarnedBalls;
+	/** The perched-bird card's own area (left out when it looks for room under the top HUD). */
+	mutable FBox2D SimaeCardBox = FBox2D(ForceInit);
+	/** Sudden death: since when this player has stood outside the closing circle (its card's gauge), and its card's area. */
+	mutable double ZoneOutSince = -1.0;
+	mutable FBox2D ZoneCardBox = FBox2D(ForceInit);
+	/** A rectangle of Space's own units (any anchor or slant) registered as taken. */
+	void Occupy(const FGeometry& Space, float X, float Y, float W, float H) const;
+	/** The same for what is drawn once over the whole window (the online room's panels): taken in every player's view. */
+	void OccupyShared(const FGeometry& Space, float X, float Y, float W, float H) const;
 
 	bool bRespawnVisible = false;
 	double RespawnShownAt = -100.0;

@@ -109,6 +109,11 @@ bool UChaosImpactBallFormComponent::IsAvailable() const
 	{
 		return false;
 	}
+	// A tournament plays the duel's rules, in its practice areas too: no ball form.
+	if (Match && (Match->IsTournament() || Match->bPublicTournament))
+	{
+		return false;
+	}
 	// The replicated match/team rules are also available on remote clients.
 	if (Match && Match->bVersusMatch)
 	{

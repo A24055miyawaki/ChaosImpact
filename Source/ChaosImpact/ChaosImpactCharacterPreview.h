@@ -69,6 +69,8 @@ public:
 	void PlayFigureAnimation(UAnimSequenceBase* Animation, bool bLoop, float HoldAt = -1.0f);
 	/** Which way the model faces (0: toward +Y) and how far it sways about that. */
 	void SetFacing(float Yaw, float Sway);
+	/** The winner's celebration on the podium (ChaosImpactVictoryMotion), from now on (or stopped). */
+	void SetVictoryMotion(bool bOn);
 	/** The model as it is now (to hide or tint). */
 	class UChaosImpactPuppetComponent* GetModel() const { return Model; }
 
@@ -142,6 +144,9 @@ private:
 	float AnimationStartedAge = 0.0f;
 	bool bHolding = false;
 	float Age = 0.0f;
+	bool bVictoryMotion = false;
+	float VictoryStartedAge = 0.0f;
+	float NextVictoryAppeal = 0.0f;
 	float Spin = 0.0f;
 	float SpinKick = 0.0f;
 };

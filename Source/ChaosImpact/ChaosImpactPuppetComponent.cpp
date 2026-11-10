@@ -186,6 +186,7 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 	bHandstand = Kind == EChaosImpactModelKind::Handstand;
 	bSkinned = Kind == EChaosImpactModelKind::Skinned || bHandstand;
 	ColourIndex = INDEX_NONE;
+	LookIndex = INDEX_NONE;
 	if (Kind == EChaosImpactModelKind::Authored)
 	{
 		USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *AssetPath(CharacterIndex, TEXT("SK"), TEXT("")));
@@ -389,18 +390,21 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 {
 	const int32 Clamped = FMath::Clamp(Index, 0, ChaosImpactRoster::ColourCount - 1);
-	if (!ChaosImpactRoster::Get(CharacterIndex).bColourVariants)
+	// The team's HUD colour is independent of how the model looks unless it comes in the colours.
+	ColourIndex = Clamped;
+	const bool bVariants = ChaosImpactRoster::Get(CharacterIndex).bColourVariants;
+	if (!bVariants && !ChaosImpactRoster::WearsFirstColour(CharacterIndex))
 	{
-		// The team's HUD colour is independent of this character's original, fixed texture.
-		ColourIndex = Clamped;
+		// Its original, fixed texture.
 		return;
 	}
+	const int32 Look = bVariants ? Clamped : 0;
 	if (bRigid || bSkinned)
 	{
-		if (Clamped != ColourIndex && Material)
+		if (Look != LookIndex && Material)
 		{
-			ColourIndex = Clamped;
-			const FLinearColor Swatch = ChaosImpactRoster::GetColourSwatch(Clamped);
+			LookIndex = Look;
+			const FLinearColor Swatch = ChaosImpactRoster::GetColourSwatch(Look);
 			Material->SetVectorParameterValue(TEXT("BodyColor"), Swatch);
 			for (UMaterialInstanceDynamic* SlotMaterial : SlotMaterials)
 			{
@@ -412,18 +416,18 @@ void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 		}
 		return;
 	}
-	if (Clamped == ColourIndex || !Material || !ColourTextures.IsValidIndex(Clamped) || !ColourTextures[Clamped])
+	if (Look == LookIndex || !Material || !ColourTextures.IsValidIndex(Look) || !ColourTextures[Look])
 	{
 		return;
 	}
-	ColourIndex = Clamped;
+	LookIndex = Look;
 	if (HasCustomColours())
 	{
 		return;
 	}
-	Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[Clamped]);
-	UE_LOG(LogChaosImpact, Verbose, TEXT("Character model colour %d (%s) on %s"), Clamped,
-		*GetNameSafe(ColourTextures[Clamped]), *GetNameSafe(GetOwner()));
+	Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[Look]);
+	UE_LOG(LogChaosImpact, Verbose, TEXT("Character model colour %d (%s) on %s"), Look,
+		*GetNameSafe(ColourTextures[Look]), *GetNameSafe(GetOwner()));
 }
 
 void UChaosImpactPuppetComponent::SetPartsVisible(const bool bShow)
@@ -639,9 +643,9 @@ void UChaosImpactPuppetComponent::ApplyCustomColours()
 	{
 		Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[0]);
 	}
-	else if (!HasCustomColours() && Material && ColourTextures.IsValidIndex(ColourIndex) && ColourTextures[ColourIndex])
+	else if (!HasCustomColours() && Material && ColourTextures.IsValidIndex(LookIndex) && ColourTextures[LookIndex])
 	{
-		Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[ColourIndex]);
+		Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[LookIndex]);
 	}
 }
 

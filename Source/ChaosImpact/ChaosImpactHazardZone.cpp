@@ -1032,7 +1032,7 @@ AController* AChaosImpactHazardZone::GetSourceController() const
 	return SourcePawn ? SourcePawn->GetController() : nullptr;
 }
 
-bool AChaosImpactHazardZone::IsInside(const AActor* Actor, const float Padding, const float MaxHeight, const float Radius) const
+bool AChaosImpactHazardZone::IsInside(const AActor* Actor, const float Padding, const float MaxHeight, const float Radius, const float MinHeight) const
 {
 	if (!IsValid(Actor))
 	{
@@ -1040,7 +1040,7 @@ bool AChaosImpactHazardZone::IsInside(const AActor* Actor, const float Padding, 
 	}
 	const FVector Delta = Actor->GetActorLocation() - GetActorLocation();
 	return FVector(Delta.X, Delta.Y, 0.0f).SizeSquared() <= FMath::Square((Radius >= 0.0f ? Radius : GetRadius()) + Padding)
-		&& Delta.Z >= -80.0f && Delta.Z <= MaxHeight;
+		&& Delta.Z >= MinHeight && Delta.Z <= MaxHeight;
 }
 
 void AChaosImpactHazardZone::ApplyDetonationEffects()
@@ -1806,7 +1806,7 @@ float AChaosImpactHazardZone::GetNovaFireRadius() const
 	{
 		return 0.0f;
 	}
-	return GetRadius() * ChaosImpactNova::GetExplosionSize(ChaosImpactNova::FireStart + GetAge());
+	return GetRadius() * ChaosImpactNova::GetExplosionSize(ChaosImpactNova::GetFireAnimTime(GetAge()));
 }
 
 void AChaosImpactHazardZone::TickNova(const float Age)
@@ -1817,19 +1817,20 @@ void AChaosImpactHazardZone::TickNova(const float Age)
 	{
 		return;
 	}
-	// The ball of fire is a dome as tall as it is wide: whoever it reaches as it grows (or walks into it) is knocked out.
+	// The ball of fire reaches as far up and down as it does across (landed on something high, it still catches whoever is
+	// under it): whoever it reaches as it grows (or walks into it) is knocked out.
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
 		AChaosImpactCharacter* Character = *It;
 		if (Character != SourcePawn && !Character->IsEliminated() && !Affected.Contains(Character)
-			&& IsInside(Character, Character->GetCapsuleComponent()->GetScaledCapsuleRadius(), Reach, Reach))
+			&& IsInside(Character, Character->GetCapsuleComponent()->GetScaledCapsuleRadius(), Reach, Reach, -Reach))
 		{
 			TryApplyLateHit(Character);
 		}
 	}
 	for (TActorIterator<AChaosImpactTrainingTarget> It(World); It; ++It)
 	{
-		if (!It->IsDefeated() && !Affected.Contains(*It) && IsInside(*It, 50.0f, Reach, Reach))
+		if (!It->IsDefeated() && !Affected.Contains(*It) && IsInside(*It, 50.0f, Reach, Reach, -Reach))
 		{
 			Affected.Add(*It);
 			UGameplayStatics::ApplyDamage(*It, ChaosImpactBallTypes::GetNovaDamage(BurstScale), GetSourceController(), this, nullptr);
@@ -1839,7 +1840,7 @@ void AChaosImpactHazardZone::TickNova(const float Age)
 	{
 		AChaosImpactCrashBall* CrashBall = *It;
 		if (IsValid(CrashBall) && !Affected.Contains(CrashBall)
-			&& IsInside(CrashBall, CrashBall->GetBallRadius(), Reach + CrashBall->GetBallRadius(), Reach))
+			&& IsInside(CrashBall, CrashBall->GetBallRadius(), Reach + CrashBall->GetBallRadius(), Reach, -Reach - CrashBall->GetBallRadius()))
 		{
 			Affected.Add(CrashBall);
 			CrashBall->ApplySpecialEffectPush(this, SourcePawn, GetActorLocation(), FVector::ZeroVector, 1.35f, false);
@@ -1993,7 +1994,7 @@ void AChaosImpactHazardZone::PlayNovaKit(const FVector& Center)
 void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 {
 	using namespace ChaosImpactBallTypes;
-	const float AnimTime = ChaosImpactNova::FireStart + Age;
+	const float AnimTime = ChaosImpactNova::GetFireAnimTime(Age);
 	const float Blast = GetRadius();
 	const FVector Base = GetActorLocation();
 	const float ModelScale = NovaModelRadius / ChaosImpactNova::ModelRadius;
@@ -2001,7 +2002,7 @@ void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 
 	// The model: its own animation, but its gears and rings spin up as soon as it lands (until the spinning set takes
 	// over as the ball of fire shrinks).
-	const float Spin = Age < ChaosImpactNova::FireShrinkAt - ChaosImpactNova::FireStart
+	const float Spin = Age < ChaosImpactNova::GetFireAge(ChaosImpactNova::FireShrinkAt)
 		? -720.0f * (Age - 0.4f * (1.0f - FMath::Exp(-Age / 0.4f))) : 0.0f;
 	NovaRig.SetExtraRotation(NovaRig.FindNode(TEXT("polySurface25")), FVector3f(0.0f, Spin, 0.0f));
 	NovaRig.SetExtraRotation(NovaRig.FindNode(TEXT("polySurface29")), FVector3f(0.0f, 0.0f, Spin * 0.8f));

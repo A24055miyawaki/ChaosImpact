@@ -25,6 +25,8 @@ enum class EChaosImpactAction : uint8
 	LobbyReady,
 	LobbySpectate,
 	Tackle, // Append only: profile/action IDs must remain stable.
+	LobbyTeam,
+	OverviewMap,
 	Count
 };
 
@@ -176,6 +178,17 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API float GetCameraShakeScale();
 	CHAOSIMPACT_API bool IsSwitchConfirmRight();
 	CHAOSIMPACT_API void SetSwitchConfirmRight(bool bRight);
+	/** The button hints down the side of the screen in play. */
+	CHAOSIMPACT_API bool IsButtonHintsOn();
+	CHAOSIMPACT_API void SetButtonHintsOn(bool bOn);
+	/** The size of the in-play HUD in every mode: 0 small, 1 normal, 2 large; GetHudSizeFactor is what it multiplies by. */
+	CHAOSIMPACT_API int32 GetHudSize();
+	CHAOSIMPACT_API void SetHudSize(int32 Size);
+	CHAOSIMPACT_API float GetHudSizeFactor();
+	/** Training's tutorial (it turns itself off once done; turning it on again starts it over: the revision goes up). */
+	CHAOSIMPACT_API bool IsTrainingTutorialOn();
+	CHAOSIMPACT_API void SetTrainingTutorialOn(bool bOn);
+	CHAOSIMPACT_API int32 GetTrainingTutorialRevision();
 	/** 1-10, 5 is the standard picture. */
 	CHAOSIMPACT_API int32 GetBrightness();
 	CHAOSIMPACT_API void SetBrightness(int32 Level);

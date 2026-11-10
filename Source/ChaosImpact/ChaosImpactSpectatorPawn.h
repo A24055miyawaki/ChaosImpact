@@ -43,7 +43,8 @@ public:
 	bool IsTimeStopped() const;
 
 	/** How far past the stage's edge, and how high, the free camera may go. */
-	static constexpr float BoundsMargin = 600.0f;
+	/** How far past the stage's edge the free camera may go (none: it stays over the stage). */
+	static constexpr float BoundsMargin = 0.0f;
 	static constexpr float MinHeight = 60.0f;
 	static constexpr float MaxHeight = 3200.0f;
 
@@ -62,6 +63,8 @@ private:
 	void EnsureHud(APlayerController* Viewer);
 	TArray<AChaosImpactCharacter*> GetFollowTargets() const;
 	FVector ClampToStage(const FVector& Location) const;
+	/** A tournament: the arena this spectator watches (INDEX_NONE when it is not one, or not yet known). */
+	int32 GetWatchedArena() const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactChargeWidget> Hud;

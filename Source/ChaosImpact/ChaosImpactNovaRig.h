@@ -74,6 +74,8 @@ namespace ChaosImpactNova
 	constexpr float FireStart = 21.6667f;
 	/** The ball of fire starts to grow. */
 	constexpr float FireExplodeAt = 24.1667f;
+	/** The game plays the spin before the blast this much faster than its source: it goes off sooner after landing. */
+	constexpr float FireLeadSpeed = 1.5f;
 	/** Fully grown (it holds a while). */
 	constexpr float FireFullAt = 26.25f;
 	/** It starts to shrink; the whole nova is swapped for its spinning set. */
@@ -87,6 +89,19 @@ namespace ChaosImpactNova
 	constexpr float PartLoopSeconds = 4.1667f;
 	/** The finished nova's size in its source: its rings are this far across (centimetres). */
 	constexpr float ModelRadius = 87.0f;
+
+	/** The source animation's time Age seconds after landing (the spin before the blast sped up, the rest as made). */
+	constexpr float GetFireAnimTime(const float Age)
+	{
+		return Age * FireLeadSpeed < FireExplodeAt - FireStart ? FireStart + Age * FireLeadSpeed
+			: FireExplodeAt + (Age - (FireExplodeAt - FireStart) / FireLeadSpeed);
+	}
+	/** Seconds after landing at which the source animation reaches AnimTime. */
+	constexpr float GetFireAge(const float AnimTime)
+	{
+		return AnimTime < FireExplodeAt ? (AnimTime - FireStart) / FireLeadSpeed
+			: (FireExplodeAt - FireStart) / FireLeadSpeed + (AnimTime - FireExplodeAt);
+	}
 
 	/** The ball of fire's size (0-1 of its largest) at a time of the source animation. */
 	CHAOSIMPACT_API float GetExplosionSize(float AnimTime);

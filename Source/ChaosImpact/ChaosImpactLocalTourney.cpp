@@ -217,6 +217,7 @@ FChaosImpactTournamentSettings UChaosImpactLocalTourneySubsystem::MakeSettings()
 	using namespace ChaosImpactLtDetail;
 	FChaosImpactTournamentSettings Settings;
 	Settings.Mode = Mode;
+	Settings.bPlacementMatches = bPlacementMatches;
 	const int32 Count = FMath::Clamp(CPUs, 0, ChaosImpactTournament::MaxEntrants - People.Num());
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
@@ -503,7 +504,11 @@ void UChaosImpactTourneyEntry::ChangeSetting(const int32 Row, const int32 Direct
 	}
 	if (Row == 0)
 	{
-		Data->Mode = Data->IsAllAtOnce() ? EChaosImpactTournamentMode::OneAtATime : EChaosImpactTournamentMode::Simultaneous;
+		// Four ways round: one at a time / with 順位決定戦 / all at once / with 順位決定戦.
+		const int32 Way = (Data->IsAllAtOnce() ? 2 : 0) + (Data->bPlacementMatches ? 1 : 0);
+		const int32 NextWay = ((Way + (Direction < 0 ? -1 : 1)) % 4 + 4) % 4;
+		Data->Mode = NextWay >= 2 ? EChaosImpactTournamentMode::Simultaneous : EChaosImpactTournamentMode::OneAtATime;
+		Data->bPlacementMatches = NextWay % 2 == 1;
 		if (Data->IsAllAtOnce() && Data->People.Num() > UChaosImpactLocalTourneySubsystem::MaxPeopleAllAtOnce)
 		{
 			Notify(FString::Printf(TEXT("同時進行は%d人まで：参加者を減らすか1試合ずつにしてください"), UChaosImpactLocalTourneySubsystem::MaxPeopleAllAtOnce));
@@ -1062,7 +1067,8 @@ int32 UChaosImpactTourneyEntry::Paint(const FGeometry& Design, FSlateWindowEleme
 
 	// ---- How it runs.
 	const FString SettingNames[LtSettings] = {TEXT("進め方"), TEXT("CPU"), TEXT("CPUの強さ")};
-	const FString SettingValues[LtSettings] = {Data->IsAllAtOnce() ? TEXT("同時進行（4人まで）") : TEXT("1試合ずつ（32人まで）"),
+	const FString SettingValues[LtSettings] = {FString(Data->IsAllAtOnce() ? TEXT("同時進行（4人まで）") : TEXT("1試合ずつ（32人まで）"))
+		+ (Data->bPlacementMatches ? TEXT("・順位決定戦あり") : TEXT("")),
 		FString::Printf(TEXT("%d人"), Data->CPUs), Data->CPUs > 0 ? UChaosImpactLocalTourneySubsystem::DescribeCPULevel(Data->CPULevel) : FString(TEXT("CPUなし"))};
 	for (int32 Row = 0; Row < LtSettings; ++Row)
 	{

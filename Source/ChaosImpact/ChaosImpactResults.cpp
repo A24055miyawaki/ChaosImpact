@@ -468,10 +468,11 @@ void AChaosImpactPodiumStage::Destroyed()
 	Super::Destroyed();
 }
 
-void AChaosImpactPodiumStage::AddPedestal(const FVector& Base, const float Radius, const float Height, const FLinearColor& Neon,
-	const int32 Place)
+void AChaosImpactPodiumStage::AddPedestal(const float Radius, const float Height)
 {
-	// A round pedestal: a satin body on a recessed foot, a rounded top edge, and thin rims of light in its medal colour.
+	// A round pedestal: a satin body on a recessed foot, a rounded top edge, and thin gold rims of light.
+	const FVector Base = FVector::ZeroVector;
+	const FLinearColor Neon = PlaceColors[0];
 	ChaosImpactIceMeshes::FMeshBuffers Body;
 	AppendRoundSide(Body, Base, Radius - 5.0f, 0.0f, 5.0f);
 	AppendRoundSide(Body, Base, Radius, 5.0f, Height - 4.0f);
@@ -483,50 +484,27 @@ void AChaosImpactPodiumStage::AddPedestal(const FVector& Base, const float Radiu
 	ChaosImpactIceMeshes::FMeshBuffers Rim;
 	AppendRoundSide(Rim, Base, Radius + 0.4f, Height - 11.0f, Height - 8.0f);
 	AppendRoundSide(Rim, Base, Radius + 0.4f, 9.0f, 10.5f);
-	UMaterialInstanceDynamic* RimMaterial = ChaosImpactBallTypes::MakeEmissive(this, Neon, 0.0f);
-	ChaosImpactIceMeshes::CreateComponent(this, Root, Rim, RimMaterial);
-	NeonMaterials.SetNum(FMath::Max(NeonMaterials.Num(), Place + 1));
-	NeonMaterials[Place] = RimMaterial;
-	PedestalBases.SetNum(FMath::Max(PedestalBases.Num(), Place + 1));
-	PedestalRadii.SetNum(FMath::Max(PedestalRadii.Num(), Place + 1));
-	PedestalHeights.SetNum(FMath::Max(PedestalHeights.Num(), Place + 1));
-	PedestalBases[Place] = Base;
-	PedestalRadii[Place] = Radius;
-	PedestalHeights[Place] = Height;
+	NeonMaterial = ChaosImpactBallTypes::MakeEmissive(this, Neon, 0.0f);
+	ChaosImpactIceMeshes::CreateComponent(this, Root, Rim, NeonMaterial);
 
-	// Its spotlight from high above (the winner's is WinnerSpot), off until the place appears.
-	USpotLightComponent* Spot = WinnerSpot;
-	if (Place > 0)
-	{
-		Spot = NewObject<USpotLightComponent>(this);
-		Spot->SetupAttachment(Root);
-		Spot->SetInnerConeAngle(10.0f);
-		Spot->SetOuterConeAngle(19.0f);
-		Spot->SetAttenuationRadius(1600.0f);
-		// (Only the winner's casts a shadow: the cut to the podium stays light.)
-		Spot->SetCastShadows(false);
-		Spot->SetLightColor(FLinearColor(1.0f, 0.95f, 0.88f));
-		Spot->SetIntensity(0.0f);
-		Spot->RegisterComponent();
-	}
-	// From above and a little in front, so the faces are lit and the shadow falls behind.
+	// The spotlight from high above, a little in front, so the faces are lit and the shadow falls behind; wide enough
+	// for a whole team on the pedestal.
 	const FVector SpotAt = Base + FVector(0.0f, 260.0f, 820.0f);
-	Spot->SetRelativeLocation(SpotAt);
-	Spot->SetRelativeRotation((Base + FVector(0.0f, 0.0f, Height + 60.0f) - SpotAt).Rotation());
-	PlaceSpots.SetNum(FMath::Max(PlaceSpots.Num(), Place + 1));
-	PlaceSpots[Place] = Spot;
+	WinnerSpot->SetRelativeLocation(SpotAt);
+	WinnerSpot->SetRelativeRotation((Base + FVector(0.0f, 0.0f, Height + 60.0f) - SpotAt).Rotation());
+	const float Cone = FMath::RadiansToDegrees(FMath::Atan2(Radius + 60.0f, 820.0f));
+	WinnerSpot->SetInnerConeAngle(FMath::Max(12.0f, Cone * 0.7f));
+	WinnerSpot->SetOuterConeAngle(FMath::Max(22.0f, Cone + 6.0f));
 
-	// A soft rim light behind it, so the figure stands off the wall.
-	UPointLightComponent* Back = NewObject<UPointLightComponent>(this);
-	Back->SetupAttachment(Root);
-	Back->SetRelativeLocation(Base + FVector(0.0f, -170.0f, Height + 230.0f));
-	Back->SetLightColor(FMath::Lerp(Neon, FLinearColor::White, 0.5f));
-	Back->SetIntensity(0.0f);
-	Back->SetAttenuationRadius(600.0f);
-	Back->SetCastShadows(false);
-	Back->RegisterComponent();
-	RimLights.SetNum(FMath::Max(RimLights.Num(), Place + 1));
-	RimLights[Place] = Back;
+	// A soft rim light behind them, so the figures stand off the wall.
+	RimLight = NewObject<UPointLightComponent>(this);
+	RimLight->SetupAttachment(Root);
+	RimLight->SetRelativeLocation(Base + FVector(0.0f, -170.0f, Height + 230.0f));
+	RimLight->SetLightColor(FMath::Lerp(Neon, FLinearColor::White, 0.5f));
+	RimLight->SetIntensity(0.0f);
+	RimLight->SetAttenuationRadius(600.0f + Radius);
+	RimLight->SetCastShadows(false);
+	RimLight->RegisterComponent();
 }
 
 void AChaosImpactPodiumStage::Build(const FChaosImpactResultsData& Data)
@@ -550,7 +528,6 @@ void AChaosImpactPodiumStage::BeginBuild(const FChaosImpactResultsData& Data)
 	Figures.Reset();
 	BuildData = Data;
 	BuildStage = 0;
-	BuildPlace = 0;
 	BuildMember = 0;
 }
 
@@ -569,8 +546,8 @@ bool AChaosImpactPodiumStage::BuildStep()
 	}
 	if (BuildStage == 1)
 	{
-		// One figure (and its pedestal, with the first of its place) a step.
-		if (BuildPlace < Places.Num())
+		// One figure (and the pedestal, with the first) a step.
+		if (BuildMember < FMath::Max(Winners.Num(), 1))
 		{
 			BuildNextFigure();
 			return false;
@@ -600,10 +577,8 @@ void AChaosImpactPodiumStage::BuildArena()
 	BackGlowLight->SetLightColor(FMath::Lerp(WinnerColor, FLinearColor::White, 0.4f));
 
 	IdleAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
-	KneelAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Death/MM_Death_Front_01.MM_Death_Front_01"));
 	FallAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Fall_Loop.MM_Fall_Loop"));
 	LandAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Jump/MM_Land.MM_Land"));
-	CheerAnimation = LoadObject<UAnimSequenceBase>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_ChargedAttack.MM_ChargedAttack"));
 
 	// The floor: dark and glossy, with the round stage on it (a soft line of light along its edge).
 	ChaosImpactIceMeshes::FMeshBuffers Floor;
@@ -697,69 +672,56 @@ void AChaosImpactPodiumStage::BuildArena()
 		Confetti.Add(ChaosImpactLightning::CreateComponent(this, Root, ResultsLitMaterial(this, Paper, 0.55f)));
 	}
 
-	// Who stands where: the winner (or winning team) in front, the next two behind on either side.
-	Places.Reset();
-	if (Data.bDuel || Data.bBattleRoyale)
+	// Who stands on it: the winner, the winning team, or everyone tied for first (no one else; the rest are on the
+	// numbers page).
+	Winners.Reset();
+	for (int32 Entry = 0; Entry < Data.Entries.Num() && Winners.Num() < MaxFigures; ++Entry)
 	{
-		for (int32 Rank = 1; Rank <= 3; ++Rank)
+		const FChaosImpactResultEntry& Item = Data.Entries[Entry];
+		bool bWinner = Item.Rank == 1;
+		if (Data.bTeams && !Data.TeamTotals.IsEmpty())
 		{
-			TArray<int32> Members;
-			for (int32 I = 0; I < Data.Entries.Num(); ++I) { if (Data.Entries[I].Rank == Rank) { Members.Add(I); } }
-			Places.Add(Members);
-		}
-	}
-	else if (Data.bTeams)
-	{
-		for (int32 Rank = 0; Rank < FMath::Min(Data.TeamTotals.Num(), 3); ++Rank)
-		{
-			TArray<int32> Members;
-			for (int32 Entry = 0; Entry < Data.Entries.Num(); ++Entry)
+			bWinner = false;
+			for (const TPair<int32, int32>& Team : Data.TeamTotals)
 			{
-				if (Data.Entries[Entry].Team == Data.TeamTotals[Rank].Key)
-				{
-					Members.Add(Entry);
-				}
+				bWinner |= Team.Value == Data.TeamTotals[0].Value && Team.Key == Item.Team;
 			}
-			Places.Add(Members);
 		}
-	}
-	else
-	{
-		for (int32 Entry = 0; Entry < FMath::Min(Data.Entries.Num(), 3); ++Entry)
+		if (bWinner)
 		{
-			Places.Add({Entry});
+			Winners.Add(Entry);
 		}
 	}
+	if (Winners.IsEmpty() && !Data.Entries.IsEmpty())
+	{
+		Winners.Add(0);
+	}
+}
+
+float AChaosImpactPodiumStage::GetRowHalfWidth() const
+{
+	return 66.0f * (FMath::Max(Winners.Num(), 1) - 1) + 110.0f;
 }
 
 void AChaosImpactPodiumStage::BuildNextFigure()
 {
 	const FChaosImpactResultsData& Data = BuildData;
 	UWorld* World = GetWorld();
-	static const float Heights[] = {72.0f, 34.0f, 20.0f};
-	static const FVector Bases[] = {FVector(0.0f, 0.0f, 0.0f), FVector(-290.0f, -360.0f, 0.0f), FVector(290.0f, -360.0f, 0.0f)};
-	const int32 Place = BuildPlace;
-	const int32 Count = FMath::Max(Places[Place].Num(), 1);
-	const float Spacing = Place == 0 ? 96.0f : 82.0f;
-	// Gold, silver and bronze rims (a team's colour shows on its name plate).
-	const FLinearColor Neon = PlaceColors[FMath::Clamp(Place, 0, 2)];
+	constexpr float Height = 72.0f;
+	constexpr float Spacing = 132.0f;
+	const int32 Count = FMath::Max(Winners.Num(), 1);
 	if (BuildMember == 0)
 	{
-		const float Radius = (Place == 0 ? 92.0f : 74.0f) + Spacing * 0.5f * (Count - 1);
-		AddPedestal(Bases[Place], Radius, Heights[Place], Neon, Place);
-		if (Place == 0)
-		{
-			WinnerTopZ = Heights[0];
-		}
+		// Room for each figure (arms and all), whatever the team's size.
+		AddPedestal(92.0f + Spacing * 0.5f * (Count - 1), Height);
+		WinnerTopZ = Height;
 	}
-	if (Places[Place].IsValidIndex(BuildMember) && World)
+	if (Winners.IsValidIndex(BuildMember) && World)
 	{
 		const int32 Member = BuildMember;
 		FFigure Figure;
-		Figure.Entry = Places[Place][Member];
-		Figure.Place = Place;
-		Figure.Spot = Bases[Place] + FVector((Member - (Count - 1) * 0.5f) * Spacing, 0.0f, Heights[Place]);
-		Figure.AppearAt = Place == 0 ? DropAt : Place == 1 ? SecondAt : ThirdAt;
+		Figure.Entry = Winners[Member];
+		Figure.Spot = FVector((Member - (Count - 1) * 0.5f) * Spacing, 0.0f, Height);
 		const FChaosImpactResultEntry& Entry = Data.Entries[Figure.Entry];
 		FActorSpawnParameters Parameters;
 		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -767,11 +729,11 @@ void AChaosImpactPodiumStage::BuildNextFigure()
 		if (AChaosImpactCharacterPreview* Actor = World->SpawnActor<AChaosImpactCharacterPreview>(
 			AChaosImpactCharacterPreview::StaticClass(), GetActorLocation() + Figure.Spot, FRotator::ZeroRotator, Parameters))
 		{
-			Actor->ShowLoadout(Entry.Character, Entry.Colour, Neon);
+			Actor->ShowLoadout(Entry.Character, Entry.Colour, PlaceColors[0]);
 			Actor->ShowCustomColours(Entry.CustomColours);
 			Actor->UseAsFigure();
-			// The winner faces the camera square; the others are turned a little in toward the winner.
-			Actor->SetFacing(Place == 0 ? 0.0f : Place == 1 ? 18.0f : -18.0f, Place == 0 ? 7.0f : 0.0f);
+			// Turned a touch toward the camera, which films from the left (the open side, where the headline goes).
+			Actor->SetFacing(8.0f, 7.0f);
 			Actor->Animate(0.0f);
 			Camera->ShowOnlyActors.Add(Actor);
 			FigureActors.Add(Actor);
@@ -779,11 +741,6 @@ void AChaosImpactPodiumStage::BuildNextFigure()
 		}
 	}
 	++BuildMember;
-	if (BuildMember >= Count)
-	{
-		BuildMember = 0;
-		++BuildPlace;
-	}
 }
 
 void AChaosImpactPodiumStage::SetCamera(const FVector& Location, const FVector& LookAt, const float Fov)
@@ -803,13 +760,22 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 	ShowSeconds = FMath::Max(Seconds, 0.0f);
 	const float S = bWarming ? LandAt + 0.1f : Seconds;
 
-	// ---- Camera: wide on the losers' entrance, low on the winner's landing, then back to take in the podium ----
-	const FVector Wide(0.0f, 1150.0f - 140.0f * FMath::Clamp(S / BlackoutAt, 0.0f, 1.0f), 190.0f);
-	const FVector WideLook(0.0f, -260.0f, 110.0f);
-	const FVector Low(120.0f, 300.0f, 34.0f);
+	// ---- Camera: wide on the empty stage, low on the winner's landing, then settled with the winner on the right ----
+	// The settled shot: the winner (the whole row of them) in the right part of the picture, head to pedestal top, and
+	// the left open for the headline. A wider row stands the camera further back.
+	constexpr float FinalFov = 30.0f;
+	const float TanHalf = FMath::Tan(FMath::DegreesToRadians(FinalFov * 0.5f));
+	const float RowHalf = GetRowHalfWidth();
+	const float Distance = FMath::Max(1050.0f, RowHalf / (0.25f * 2.0f * TanHalf));
+	// (The row's middle at 0.7 of the picture's width, so it stays clear of the text down to 0.45.)
+	const float Shift = 0.2f * 2.0f * TanHalf * Distance;
+	const FVector Final(-Shift, Distance, 150.0f);
+	const FVector FinalLook(-Shift, 0.0f, 205.0f);
+	const float Open = FMath::Clamp(S / BlackoutAt, 0.0f, 1.0f);
+	const FVector Wide(-Shift * 0.5f, Distance * 1.3f - 160.0f * Open, 250.0f);
+	const FVector WideLook(0.0f, -260.0f, 150.0f);
+	const FVector Low(120.0f, 300.0f + (RowHalf - 110.0f), 34.0f);
 	const FVector LowLook(0.0f, 0.0f, WinnerTopZ + 120.0f);
-	const FVector Final(0.0f, 900.0f, 155.0f);
-	const FVector FinalLook(0.0f, -90.0f, 128.0f);
 	FVector Location;
 	FVector Look;
 	float Fov;
@@ -827,16 +793,18 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 	}
 	else
 	{
-		const float Pull = ResultsEaseInOut((S - LandAt - 0.6f) / 1.6f);
+		const float Pull = ResultsEaseInOut((S - LandAt - 0.6f) / 1.5f);
 		Location = FMath::Lerp(Low, Final, Pull);
 		Look = FMath::Lerp(LowLook, FinalLook, Pull);
-		Fov = FMath::Lerp(46.0f, 33.0f, Pull);
-		// Settled, it drifts a little so the picture stays alive.
-		const float Drift = S - LandAt - 2.2f;
+		Fov = FMath::Lerp(46.0f, FinalFov, Pull);
+		// Settled, it drifts a little so the picture stays alive (sideways, and a slow breath in and out).
+		const float Drift = S - LandAt - 2.1f;
 		if (Drift > 0.0f)
 		{
 			const float In = FMath::Min(Drift / 1.5f, 1.0f);
-			Location += FVector(FMath::Sin(Drift * 0.35f) * 60.0f, 0.0f, FMath::Sin(Drift * 0.27f) * 14.0f) * In;
+			const FVector Sway(FMath::Sin(Drift * 0.35f) * 36.0f, -FMath::Sin(Drift * 0.22f) * 70.0f, FMath::Sin(Drift * 0.27f) * 12.0f);
+			Location += Sway * In;
+			Look += FVector(Sway.X * 0.4f, 0.0f, 0.0f) * In;
 		}
 	}
 	// The landing shakes it.
@@ -848,24 +816,12 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 	}
 	SetCamera(Location, Look, Fov);
 
-	// ---- Lights: each place's spotlight snaps on as it appears; the wall glows up when the winner lands ----
-	for (int32 Place = 0; Place < NeonMaterials.Num(); ++Place)
+	// ---- Lights: dark until the winner lands, then the spotlight crashes on and the wall glows up ----
+	ResultsSetIntensity(NeonMaterial, SinceLand < 0.0f ? (S < BlackoutAt ? 0.6f : 0.0f) : 2.2f + 9.0f * FMath::Exp(-7.0f * SinceLand));
+	if (RimLight)
 	{
-		const float At = Place == 0 ? LandAt : Place == 1 ? SecondAt : ThirdAt;
-		const float Since = S - At;
-		const float Rim = Since < 0.0f ? 0.0f : 2.2f + 9.0f * FMath::Exp(-7.0f * Since);
-		ResultsSetIntensity(NeonMaterials[Place], Rim);
-		if (RimLights.IsValidIndex(Place) && RimLights[Place])
-		{
-			RimLights[Place]->SetIntensity(Since < 0.0f ? 0.0f : Place == 0 ? 16000.0f : 9000.0f);
-		}
-		if (Place > 0 && PlaceSpots.IsValidIndex(Place) && PlaceSpots[Place])
-		{
-			PlaceSpots[Place]->SetIntensity(Since < 0.0f ? 0.0f : (SinceLand < 0.0f && S >= BlackoutAt ? 9000.0f : 30000.0f)
-				+ 40000.0f * FMath::Exp(-9.0f * Since));
-		}
+		RimLight->SetIntensity(SinceLand < 0.0f ? 0.0f : 16000.0f);
 	}
-	// Dark until the winner lands, then the spotlight crashes on.
 	WinnerSpot->SetIntensity(SinceLand < 0.0f ? 0.0f : 42000.0f + 80000.0f * FMath::Exp(-5.0f * SinceLand));
 	KeyLight->SetIntensity(S < BlackoutAt ? 16000.0f : SinceLand < 0.0f ? 4000.0f : 20000.0f);
 	BackGlowLight->SetIntensity(SinceLand < 0.0f ? (S < BlackoutAt ? 5000.0f : 1500.0f) : 9000.0f);
@@ -920,7 +876,7 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 			Actor->Animate(DeltaSeconds);
 			continue;
 		}
-		if (S < Figure.AppearAt)
+		if (S < DropAt)
 		{
 			Actor->SetActorHiddenInGame(true);
 			continue;
@@ -929,40 +885,24 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 		{
 			Figure.bShown = true;
 			Actor->SetActorHiddenInGame(false);
-			if (Figure.Place == 0)
-			{
-				Actor->PlayFigureAnimation(FallAnimation, true);
-			}
-			else
-			{
-				// Down on one knee, and held there.
-				Actor->PlayFigureAnimation(KneelAnimation, false, 0.62f);
-			}
+			Actor->PlayFigureAnimation(FallAnimation, true);
 		}
+		// The winner drops in from high above, faster and faster, and lands on the pedestal.
 		FVector Spot = Figure.Spot;
-		if (Figure.Place == 0)
+		const float T = FMath::Clamp((S - DropAt) / (LandAt - DropAt), 0.0f, 1.0f);
+		Spot.Z += 760.0f * (1.0f - T * T);
+		if (T >= 1.0f && !Figure.bLanded)
 		{
-			// The winner drops in from high above, faster and faster, and lands on the pedestal.
-			const float T = FMath::Clamp((S - DropAt) / (LandAt - DropAt), 0.0f, 1.0f);
-			Spot.Z += 760.0f * (1.0f - T * T);
-			if (T >= 1.0f && !Figure.bLanded)
-			{
-				Figure.bLanded = true;
-				Actor->PlayFigureAnimation(LandAnimation, false);
-				Figure.NextCheerAt = S + 0.45f;
-			}
-			if (Figure.bLanded && S >= Figure.NextCheerAt)
-			{
-				// A victory punch, then idling, again every few seconds.
-				Actor->PlayFigureAnimation(CheerAnimation, false);
-				Figure.NextCheerAt = S + 7.0f;
-				Figure.IdleAt = S + 2.2f;
-			}
-			else if (Figure.IdleAt > 0.0f && S >= Figure.IdleAt)
-			{
-				Actor->PlayFigureAnimation(IdleAnimation, true);
-				Figure.IdleAt = -1.0f;
-			}
+			Figure.bLanded = true;
+			Actor->PlayFigureAnimation(LandAnimation, false);
+			Figure.NextCheerAt = S + 0.45f;
+		}
+		if (Figure.bLanded && Figure.NextCheerAt > 0.0f && S >= Figure.NextCheerAt)
+		{
+			// Landed: the celebration (ChaosImpactVictoryMotion) over the idle clip.
+			Actor->PlayFigureAnimation(IdleAnimation, true);
+			Actor->SetVictoryMotion(true);
+			Figure.NextCheerAt = -1.0f;
 		}
 		Actor->SetActorLocation(GetActorLocation() + Spot);
 		Actor->Animate(DeltaSeconds);
@@ -1012,20 +952,6 @@ void AChaosImpactPodiumStage::UpdateConfetti(const float Seconds)
 	}
 }
 
-bool AChaosImpactPodiumStage::GetPlaceAnchor(const int32 Place, FVector& OutWorld, float* OutAppearAt) const
-{
-	if (!PedestalBases.IsValidIndex(Place) || !PedestalRadii.IsValidIndex(Place))
-	{
-		return false;
-	}
-	OutWorld = GetActorLocation() + PedestalBases[Place] + FVector(0.0f, PedestalRadii[Place], 0.0f);
-	if (OutAppearAt)
-	{
-		*OutAppearAt = Place == 0 ? DropAt : Place == 1 ? SecondAt : ThirdAt;
-	}
-	return true;
-}
-
 bool AChaosImpactPodiumStage::Project(const FVector& WorldPoint, FVector2D& OutPicture) const
 {
 	const FVector Eye = GetActorLocation() + CameraLocation;
@@ -1046,10 +972,10 @@ bool AChaosImpactPodiumStage::GetFigureHead(const int32 EntryIndex, FVector& Out
 	{
 		if (Figures[Index].Entry == EntryIndex && Figures[Index].bShown && IsValid(FigureActors[Index]))
 		{
-			OutWorld = FigureActors[Index]->GetActorLocation() + FVector(0.0f, 0.0f, Figures[Index].Place == 0 ? 250.0f : 175.0f);
+			OutWorld = FigureActors[Index]->GetActorLocation() + FVector(0.0f, 0.0f, 250.0f);
 			if (OutAppearAt)
 			{
-				*OutAppearAt = Figures[Index].AppearAt;
+				*OutAppearAt = DropAt;
 			}
 			return true;
 		}
@@ -1290,112 +1216,50 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		Full.Box(0.0f, Size.Y - BarHeight, Size.X, BarHeight, FLinearColor::Black);
 	}
 
-	const ResultsPaint::FPainter P{Design, Elements, Layer + 1};
-	// Second and third (and their teams): a name plate at the foot of each pedestal as it appears.
-	if (Podium && Page == 0)
+	// Only the winner is in the picture (on the right); the left is theirs too: a shade so the words read, the headline,
+	// their name on a band, and the score. Everyone else's numbers are on the next page.
+	if (SinceLand > 0.0f)
 	{
-		const float Cover = FMath::Max(Size.X / AChaosImpactPodiumStage::PictureWidth, Size.Y / AChaosImpactPodiumStage::PictureHeight);
-		const float Fit = FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f);
-		for (int32 Place = 1; Place < Podium->GetPlaceCount(); ++Place)
-		{
-			const TArray<int32>& Members = Podium->GetPlaceEntries(Place);
-			FVector Anchor;
-			FVector2D Spot;
-			float AppearAt = 0.0f;
-			if (Members.IsEmpty() || !Data.Entries.IsValidIndex(Members[0]) || !Podium->GetPlaceAnchor(Place, Anchor, &AppearAt)
-				|| !Podium->Project(Anchor, Spot))
-			{
-				continue;
-			}
-			const FChaosImpactResultEntry& Item = Data.Entries[Members[0]];
-			const float TagAt = Data.bBattleRoyale || Data.bDuel ? FMath::Max(AppearAt + 0.3f, Stage::SettledAt) : AppearAt + 0.3f;
-			// Away while the camera is down on the winner's landing (the plates would jump with it), back once it settles.
-			const float Away = S < Stage::BlackoutAt ? 1.0f : FMath::Max(1.0f - (S - Stage::BlackoutAt) / 0.15f,
-				ResultsPaint::EaseOut((S - Stage::SettledAt + 0.4f) / 0.35f));
-			const float TagIn = ResultsPaint::EaseOut((S - TagAt) / 0.35f) * FMath::Clamp(Away, 0.0f, 1.0f);
-			if (TagIn <= 0.0f)
-			{
-				continue;
-			}
-			// Picture position to design space: the picture covers the screen, design space is fitted inside it.
-			const FVector2D Pixel(Size.X * 0.5f + (Spot.X - 0.5f) * AChaosImpactPodiumStage::PictureWidth * Cover,
-				Size.Y * 0.5f + (Spot.Y - 0.5f) * AChaosImpactPodiumStage::PictureHeight * Cover);
-			const float X = FMath::Clamp(static_cast<float>((Pixel.X - Size.X * 0.5f) / Fit + 800.0f), 150.0f, 1450.0f);
-			const float Y = FMath::Clamp(static_cast<float>((Pixel.Y - Size.Y * 0.5f) / Fit + 450.0f) + 14.0f, 120.0f, 780.0f);
-			const bool bGroup = Members.Num() > 1;
-			const FString Name = bGroup && Data.bTeams ? FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Item.Team))
-				: bGroup ? FString::Printf(TEXT("%s ほか%d人"), *Item.Name, Members.Num() - 1) : Item.Name;
-			const FString Score = Data.bTeams && !Data.bBattleRoyale && Data.TeamTotals.IsValidIndex(Place)
-				? FString::Printf(TEXT("%d pt"), Data.TeamTotals[Place].Value) : Data.ScoreText(Item);
-			const FLinearColor Medal = Place == 1 ? FLinearColor(0.78f, 0.84f, 0.95f) : FLinearColor(0.95f, 0.6f, 0.35f);
-			const FLinearColor Side = Data.bTeams ? ChaosImpactMatch::GetTeamColor(Item.Team) : Item.Color;
-			// A plain plate: a round medal with the place, the name, the score; a thin line in the player's colour.
-			const float W = 250.0f, H = 60.0f;
-			const float Left = X - W * 0.5f, Top = Y + (1.0f - TagIn) * 16.0f;
-			const ResultsPaint::FPainter Tag{Design, Elements, Layer + 2, TagIn};
-			ResultsPaint::RoundedBox(Tag, Left, Top, W, H, 12.0f, ResultsPaint::WithAlpha(FLinearColor(0.012f, 0.014f, 0.022f), 0.9f));
-			Tag.Box(Left + 14.0f, Top + H - 3.0f, W - 28.0f, 2.0f, ResultsPaint::WithAlpha(Side, 0.9f));
-			Tag.Disc(FVector2D(Left + 32.0f, Top + H * 0.5f), 19.0f, Medal);
-			Tag.Text(FString::FromInt(Item.Rank > 0 ? Item.Rank : Place + 1), Left + 32.0f, Top + H * 0.5f - 15.0f, 22.0f,
-				FLinearColor(0.02f, 0.02f, 0.03f), ResultsPaint::ETextAlign::Center, TEXT("Black"));
-			Tag.Text(Name, Left + 62.0f, Top + 8.0f, Name.Len() > 9 ? 17.0f : 21.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
-			Tag.Text(Score, Left + 62.0f, Top + 34.0f, 15.0f, ResultsPaint::WithAlpha(ResultsPaint::Paper, 0.7f), ResultsPaint::ETextAlign::Left,
-				TEXT("Bold"));
-		}
+		const float Dim = Page == 1 ? 0.0f : 1.0f;
+		const float ShadeIn = ResultsPaint::EaseOut(SinceLand / 0.6f) * Dim;
+		const ResultsPaint::FPainter Shade{Allotted, Elements, Layer + 1, ShadeIn};
+		const float Edge = Size.X * 0.6f;
+		const FLinearColor Deep = ResultsPaint::WithAlpha(FLinearColor(0.004f, 0.006f, 0.012f), 0.8f);
+		const FLinearColor Clear = ResultsPaint::WithAlpha(Deep, 0.0f);
+		ResultsPaint::HudTriangles(Shade, {FVector2D(0.0f, 0.0f), FVector2D(Edge, 0.0f), FVector2D(Edge, Size.Y), FVector2D(0.0f, Size.Y)},
+			{Deep, Clear, Clear, Deep}, {0, 1, 2, 0, 2, 3});
+		// A slash of the winner's colour from the top left corner, behind the words.
+		const FGeometry Slash = ResultsPaint::MakeSkewed(Design, -120.0f, 0.0f, 1000.0f, 250.0f, -0.42f);
+		const ResultsPaint::FPainter Sl{Slash, Elements, Layer + 1, ShadeIn};
+		const float SlashIn = ResultsPaint::EaseOut(SinceLand / 0.4f);
+		Sl.Box(0.0f, 0.0f, 860.0f * SlashIn, 250.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.16f));
+		Sl.Box(0.0f, 244.0f, 940.0f * SlashIn, 6.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.9f));
 	}
 
-	// Fourth place and below: a column at the top right.
-	if (Page == 0)
-	{
-		int32 Row = 0;
-		TArray<int32> ListedTeams;
-		for (int32 Entry = Data.bBattleRoyale ? 0 : Data.bTeams ? Data.Entries.Num() : 3; Entry < Data.Entries.Num(); ++Entry)
-		{
-			const FChaosImpactResultEntry& Item = Data.Entries[Entry];
-			if (Data.bBattleRoyale)
-			{
-				if (Item.Rank <= 3 || (Data.bTeams && ListedTeams.Contains(Item.Team))) { continue; }
-				if (Data.bTeams) { ListedTeams.Add(Item.Team); }
-			}
-			const float RowIn = ResultsPaint::EaseOut((S - Stage::SecondAt - 0.6f - Row * 0.08f) / 0.3f);
-			if (RowIn <= 0.0f)
-			{
-				continue;
-			}
-			const float Y = 86.0f + Row * 40.0f;
-			const ResultsPaint::FPainter R{Design, Elements, Layer + 2, RowIn};
-			R.Box(1200.0f + (1.0f - RowIn) * 40.0f, Y, 360.0f, 34.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.72f));
-			R.Box(1200.0f + (1.0f - RowIn) * 40.0f, Y, 4.0f, 34.0f, Item.Color);
-			R.Text(FString::FromInt(Item.Rank), 1226.0f, Y + 4.0f, 20.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Center, TEXT("BlackItalic"));
-			R.Text(Data.bBattleRoyale && Data.bTeams ? FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Item.Team)) : Item.Name,
-				1250.0f, Y + 5.0f, 18.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
-			R.Text(Data.ScoreText(Item), 1548.0f, Y + 6.0f, 17.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
-			++Row;
-		}
-	}
-
-	// WINNER: slammed in over a slash of the winner's colour, the name on a band below.
+	// WINNER: slammed in over the left, the name on a band below it, the score under that.
 	if (SinceLand > 0.12f)
 	{
 		const float T = SinceLand - 0.12f;
 		const float BandIn = ResultsPaint::EaseOut(T / 0.28f);
 		const float Dim = Page == 1 ? 0.0f : 1.0f;
-		const FGeometry Band = ResultsPaint::MakeSkewed(Design, -60.0f, 590.0f, 1700.0f, 120.0f, -0.32f);
+		// (Nothing goes right of here: the winner stands there.)
+		constexpr float TextRight = 700.0f;
+		const FGeometry Band = ResultsPaint::MakeSkewed(Design, -60.0f, 470.0f, 1700.0f, 120.0f, -0.32f);
 		const ResultsPaint::FPainter B{Band, Elements, Layer + 3, Dim};
-		B.Box(-200.0f, 8.0f, 1200.0f * BandIn, 92.0f, ResultsPaint::WithAlpha(FLinearColor(0.012f, 0.014f, 0.022f), 0.82f));
-		B.Box(-200.0f, 8.0f, 1200.0f * BandIn, 4.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.95f));
-		B.Box(-200.0f, 102.0f, 1000.0f * BandIn, 3.0f, ResultsPaint::WithAlpha(ResultsPaint::Gold, 0.85f));
+		B.Box(-200.0f, 8.0f, 980.0f * BandIn, 92.0f, ResultsPaint::WithAlpha(FLinearColor(0.012f, 0.014f, 0.022f), 0.86f));
+		B.Box(-200.0f, 8.0f, 980.0f * BandIn, 4.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.95f));
+		B.Box(-200.0f, 102.0f, 860.0f * BandIn, 3.0f, ResultsPaint::WithAlpha(ResultsPaint::Gold, 0.85f));
 		const float NameIn = ResultsPaint::EaseOut((T - 0.15f) / 0.3f);
 		const ResultsPaint::FPainter N{Band, Elements, Layer + 4, NameIn * Dim};
 		FString Names = Data.WinnerName;
 		if (Data.bTie)
 		{
 			TArray<FString> Tied;
-			if (Data.bBattleRoyale && Data.bTeams)
+			if (Data.bTeams)
 			{
 				for (const auto& Team : Data.TeamTotals)
 				{
-					if (Team.Value == 1) { Tied.Add(FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Team.Key))); }
+					if (Team.Value == Data.TeamTotals[0].Value) { Tied.Add(FString::Printf(TEXT("%sチーム"), ChaosImpactMatch::GetTeamName(Team.Key))); }
 				}
 			}
 			else
@@ -1403,43 +1267,48 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 				for (const FChaosImpactResultEntry& Item : Data.Entries) { if (Item.Rank == 1) { Tied.Add(Item.Name); } }
 			}
 			Names = FString::Join(Tied, TEXT(" ・ "));
-			if (Data.bBattleRoyale && !Data.bTeams && Tied.Num() > 3) { Names = FString::Printf(TEXT("%d人が同率1位"), Tied.Num()); }
+			if (Tied.Num() > 3) { Names = FString::Printf(TEXT("%d%sが同率1位"), Tied.Num(), Data.bTeams ? TEXT("チーム") : TEXT("人")); }
 		}
-		const float NameSize = Data.bBattleRoyale && Data.bTie ? FMath::Clamp(940.f / FMath::Max(Names.Len() * .9f, 1.f), 24.f, 62.f) : 62.f;
-		N.Text(Names, 120.0f + (1.0f - NameIn) * 120.0f, 16.0f, NameSize, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 4.0f, ResultsPaint::Ink);
+		const float NameX = 120.0f + (1.0f - NameIn) * 120.0f;
+		N.Text(Names, NameX, 16.0f, ResultsPaint::HudFit(Names, 62.0f, TextRight - 120.0f, TEXT("BlackItalic")), ResultsPaint::Paper,
+			ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 4.0f, ResultsPaint::Ink);
 		if (!Data.Entries.IsEmpty())
 		{
 			const int32 Points = Data.bTeams && !Data.TeamTotals.IsEmpty() ? Data.TeamTotals[0].Value : Data.Entries[0].Points;
-			const FString Line = Data.bBattleRoyale ? FString(TEXT("BATTLE ROYALE  ・  生存順位"))
+			const FString Line = Data.bBattleRoyale ? FString(TEXT("BATTLE ROYALE  ・  1位"))
 				: Data.bDuel ? FString::Printf(TEXT("ROUND  %d - %d"), Data.Entries[0].RoundsWon, Data.Entries.Num() > 1 ? Data.Entries[1].RoundsWon : 0)
-				: Data.bCrashBall ? FString::Printf(TEXT("%s  %d : %d"), Data.bCrashKnockout ? TEXT("KNOCKOUT") : TEXT("カウント"),
+				: Data.bCrashBall && Data.TeamTotals.Num() > 1 ? FString::Printf(TEXT("%s  %d : %d"), Data.bCrashKnockout ? TEXT("KNOCKOUT") : TEXT("カウント"),
 				100 - Data.TeamTotals[0].Value, 100 - Data.TeamTotals[1].Value) : Data.bTeams ? FString::Printf(TEXT("TEAM %d pt"), Points)
 				: FString::Printf(TEXT("%d pt   KO %d"), Points, Data.Entries[0].Knockouts);
-			N.Text(Line, 140.0f, 124.0f, 24.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 2.0f, ResultsPaint::Ink);
+			N.Text(Line, 140.0f, 124.0f, ResultsPaint::HudFit(Line, 26.0f, TextRight - 180.0f, TEXT("BlackItalic")), ResultsPaint::Paper,
+				ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 2.0f, ResultsPaint::Ink);
 		}
 		// The headline lands big and settles, shaking a little.
 		const float Slam = 1.0f + 0.7f * FMath::Exp(-11.0f * T);
 		const float Shake = T < 0.3f ? FMath::Sin(T * 95.0f) * (0.3f - T) * 30.0f : 0.0f;
-		const FGeometry Head = ResultsPaint::MakeSkewed(Design, 40.0f + Shake, 430.0f, 1000.0f, 170.0f, -0.18f, Slam);
+		const FGeometry Head = ResultsPaint::MakeSkewed(Design, 40.0f + Shake, 300.0f, 1000.0f, 170.0f, -0.18f, Slam);
 		const ResultsPaint::FPainter H{Head, Elements, Layer + 5, ResultsPaint::EaseOut(T / 0.12f) * Dim};
-		H.Text(Data.Headline, 30.0f, 0.0f, 132.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 7.0f, Data.WinnerColor);
+		H.Text(Data.Headline, 30.0f, 0.0f, ResultsPaint::HudFit(Data.Headline, 132.0f, TextRight - 90.0f, TEXT("BlackItalic")), ResultsPaint::Paper,
+			ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 7.0f, Data.WinnerColor);
 		if (Data.bTeams && !Data.bTie && !Data.bBattleRoyale)
 		{
-			H.Text(FString::Printf(TEXT("%sの勝ち！"), *Data.WinnerName), 600.0f, 118.0f, 30.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left,
-				TEXT("Black"), 3.0f, ResultsPaint::Ink);
+			// Above the headline, small.
+			const FString WinLine = FString::Printf(TEXT("%sの勝ち！"), *Data.WinnerName);
+			H.Text(WinLine, 44.0f, -42.0f, ResultsPaint::HudFit(WinLine, 30.0f, TextRight - 100.0f), ResultsPaint::Paper,
+				ResultsPaint::ETextAlign::Left, TEXT("Black"), 3.0f, ResultsPaint::Ink);
 		}
 
-		// Settled: which button goes on.
+		// Settled: which button goes on (under the words, on the left).
 		if (Page == 0 && S >= RevealSeconds)
 		{
 			const float Blink = 0.55f + 0.45f * FMath::Cos((S - RevealSeconds) * 4.0f);
 			const ResultsPaint::FPainter Prompt{Design, Elements, Layer + 6, EaseOutPrompt(S - RevealSeconds) * Blink};
-			Prompt.Box(560.0f, 806.0f, 480.0f, 50.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.75f));
-			Prompt.Box(560.0f, 806.0f, 480.0f, 3.0f, Data.WinnerColor);
-			Prompt.Text(TEXT("ボタンを押して 成績へ ▶"), 800.0f, 815.0f, 24.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Center,
-				TEXT("BlackItalic"));
+			const FString Go = TEXT("ボタンを押して 成績へ ▶");
+			Prompt.Box(96.0f, 700.0f, 440.0f, 50.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.75f));
+			Prompt.Box(96.0f, 700.0f, 440.0f, 3.0f, Data.WinnerColor);
+			Prompt.Text(Go, 316.0f, 709.0f, ResultsPaint::HudFit(Go, 24.0f, 410.0f, TEXT("BlackItalic")), ResultsPaint::Paper,
+				ResultsPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-
 	}
 	return Layer + 7;
 }
@@ -1546,7 +1415,9 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 				ResultsPaint::PlayerAccents[Item.LocalIndex % 4], ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
 			NameX += 34.0f;
 		}
-		RT.Text(Item.Name, NameX + Slide, TextY, 20.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Black"));
+		// (Up to the first number column.)
+		RT.Text(Item.Name, NameX + Slide, TextY, ResultsPaint::HudFit(Item.Name, 20.0f, Columns[0].X - 44.0f - NameX), ResultsPaint::Paper,
+			ResultsPaint::ETextAlign::Left, TEXT("Black"));
 		// Burns of a fire zone count as hits too, so a few throws can make many: shown up to 100%.
 		const int32 Accuracy = Item.Throws > 0 ? FMath::Min(100, FMath::RoundToInt(100.0f * Item.Hits / Item.Throws)) : 0;
 		const FString Values[] = {Data.bBattleRoyale ? FString() : FString::FromInt(Data.bDuel ? Item.RoundsWon : Item.Points), FString::FromInt(Item.Knockouts), FString::FromInt(Item.Throws),
@@ -1589,7 +1460,9 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	{
 		const FChaosImpactResultEntry& Item = Data.Entries[GraphFocus];
 		G.Box(1056.0f + Slide, 140.0f, 6.0f, 30.0f, Item.Color);
-		G.Text(FString::Printf(TEXT("%s  %s"), *Item.Name, *Data.ScoreText(Item)), 1072.0f + Slide, 142.0f, 20.0f, Item.Color,
+		const FString GraphName = FString::Printf(TEXT("%s  %s"), *Item.Name, *Data.ScoreText(Item));
+		const float GraphRoom = GraphRight - ResultsPaint::HudMeasure(TEXT("もう一度えらぶと全員"), 15.0f, TEXT("Bold")) - 20.0f - (1072.0f + Slide);
+		G.Text(GraphName, 1072.0f + Slide, 142.0f, ResultsPaint::HudFit(GraphName, 20.0f, FMath::Max(80.0f, GraphRoom)), Item.Color,
 			ResultsPaint::ETextAlign::Left, TEXT("Black"));
 		G.Text(TEXT("もう一度えらぶと全員"), GraphRight, 146.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
 	}
@@ -1705,7 +1578,8 @@ int32 UChaosImpactResultsView::PaintAwardsTab(const FGeometry& Design, FSlateWin
 		CT.Text(Item.AwardNote, TextLeft + 2.0f, Mid + 4.0f, Big * 0.68f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
 		CT.Text(FString::Printf(TEXT("%d位"), Item.Rank), CardWidth - 20.0f, Mid - Big * 1.25f, Big * 0.62f, Item.Rank == 1 ? ResultsPaint::Gold : ResultsPaint::Muted,
 			ResultsPaint::ETextAlign::Right, TEXT("BlackItalic"));
-		CT.Text(Item.Name, CardWidth - 20.0f, Mid - Big * 0.4f, Big * 0.75f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Right, TEXT("Black"));
+		CT.Text(Item.Name, CardWidth - 20.0f, Mid - Big * 0.4f, ResultsPaint::HudFit(Item.Name, Big * 0.75f, CardWidth * 0.34f), ResultsPaint::Paper,
+			ResultsPaint::ETextAlign::Right, TEXT("Black"));
 	}
 	return Layer + 3;
 }

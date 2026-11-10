@@ -141,6 +141,9 @@ public:
 		RowRumble,
 		RowShake,
 		RowSwitchConfirm,
+		RowButtonHints,
+		RowHudSize,
+		RowTutorial,
 		RowMiniGames,
 		RowBinding = 1000
 	};

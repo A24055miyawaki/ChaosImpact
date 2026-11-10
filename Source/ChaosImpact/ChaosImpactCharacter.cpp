@@ -3176,17 +3176,24 @@ void AChaosImpactCharacter::ServerClaimPickup_Implementation(AChaosImpactBall* B
 	// has rolled on meanwhile.
 	const float MaxClaimDistance = IsValid(Ball) ? FMath::Min(320.0f + static_cast<float>(Ball->GetVelocity().Size2D())
 		* (GetNetworkRoundTripSeconds() + 0.1f), 900.0f) : 320.0f;
+	// When this player touched it on their own screen: the claim left at once, half a round trip ago (reaching back
+	// no further than AChaosImpactBall::FairTouchReachSeconds).
+	const double TouchTime = GetSharedServerTime()
+		- FMath::Min(static_cast<double>(GetNetworkRoundTripSeconds()) * 0.5, AChaosImpactBall::FairTouchReachSeconds);
+	const bool bTakeOver = IsValid(Ball) && Ball->CanTakeOverPickup(this, TouchTime);
 	const TCHAR* RejectReason = !IsValid(Ball) ? TEXT("ball gone")
 		: bEliminated ? TEXT("eliminated")
 		: CarriedBallCount >= MaximumCarriedBalls ? TEXT("hands full")
-		: !Ball->IsPickupAvailable() ? TEXT("not available yet")
+		: !bTakeOver && Ball->IsPickupTaken() ? TEXT("someone touched it first")
+		: !bTakeOver && !Ball->IsPickupAvailable() ? TEXT("not available yet")
 		: FVector::Dist2D(Ball->GetActorLocation(), GetActorLocation()) > MaxClaimDistance ? TEXT("too far")
 		: nullptr;
-	const bool bAccepted = !RejectReason && Ball->ConsumePickup(this);
+	const bool bAccepted = !RejectReason && (bTakeOver ? Ball->TakeOverPickup(this, TouchTime) : Ball->ConsumePickupAt(this, TouchTime));
 	UE_LOG(LogChaosImpact, Log, TEXT("Pickup claim %s for %s (balls=%d%s%s)"),
 		bAccepted ? TEXT("accepted") : TEXT("rejected"), *GetName(), CarriedBallCount,
 		RejectReason ? TEXT(", ") : TEXT(""), RejectReason ? RejectReason : TEXT(""));
-	ClientPickupResolved(bAccepted, CarriedBallCount, CarriedBallTypes, bAccepted ? nullptr : Ball);
+	// (A ball someone else has taken is not shown again on this screen: it is going.)
+	ClientPickupResolved(bAccepted, CarriedBallCount, CarriedBallTypes, bAccepted || !IsValid(Ball) || Ball->IsPickupTaken() ? nullptr : Ball);
 }
 
 void AChaosImpactCharacter::ClientPickupResolved_Implementation(const bool bAccepted,
@@ -3432,6 +3439,12 @@ void AChaosImpactCharacter::TickDevAutoInput()
 		StartChargingThrow();
 		DevReleaseAt = Now + 0.45;
 		DevNextThrowAt = Now + 1.4;
+	}
+	else if (!bIsChargingThrow && Opponent && OpponentDistance < 330.0f && Now >= DevNextThrowAt)
+	{
+		// Close: a tackle.
+		Tackle->Request();
+		DevNextThrowAt = Now + 1.2;
 	}
 	if (Now >= DevNextDashAt && CanDashNow())
 	{
@@ -3967,6 +3980,38 @@ bool AChaosImpactCharacter::TryPickupBall(AChaosImpactBall* Ball)
 	return true;
 }
 
+bool AChaosImpactCharacter::GiveContestedPickup(const EChaosImpactBallType Type)
+{
+	if (!bCanCollectBalls || !HasAuthority() || Tackle->IsBusy() || IsInBallForm() || bEliminated
+		|| CarriedBallCount >= MaximumCarriedBalls)
+	{
+		return false;
+	}
+	PushCarriedBall(Type);
+	UpdateBallPresentation();
+	ForceNetUpdate();
+	return true;
+}
+
+void AChaosImpactCharacter::TakeBackLastPickup()
+{
+	if (!HasAuthority() || CarriedBallCount <= 0)
+	{
+		return;
+	}
+	const int32 Slot = CarriedBallCount - 1;
+	CarriedBallTypes = ChaosImpactBallTypes::SetPackedSlot(CarriedBallTypes, Slot, static_cast<EChaosImpactBallType>(0));
+	SetSlotSnowGrowth(Slot, 0.0f);
+	--CarriedBallCount;
+	UpdateBallPresentation();
+	ForceNetUpdate();
+	// A player on another machine: their screen had it in hand already.
+	if (IsRemotePlayerOnServer())
+	{
+		ClientBallCountReset(CarriedBallCount, CarriedBallTypes);
+	}
+}
+
 bool AChaosImpactCharacter::HasVisibleHeldBall() const
 {
 	return (HeldBallMesh && HeldBallMesh->IsVisible())
@@ -4260,7 +4305,15 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		Material = HeldPrisonMaterial;
 		break;
 	default:
-		// No override for a normal ball: the mesh's own material.
+		// A normal ball: pale and evenly lit, so a hand on its shadowed side never looks black.
+		if (Type == EChaosImpactBallType::Normal)
+		{
+			if (!HeldNormalMaterial)
+			{
+				HeldNormalMaterial = MakeEmissive(this, FLinearColor(0.8f, 0.84f, 0.9f), 0.62f);
+			}
+			Material = HeldNormalMaterial;
+		}
 		break;
 	}
 	HandBall->SetMaterial(0, Material);

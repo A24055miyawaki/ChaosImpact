@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
 #include "ChaosImpactMatchTypes.h"
+#include "ChaosImpactBallTypes.h"
 #include "ChaosImpactGameMode.generated.h"
 
 class AChaosImpactBallSpawner;
@@ -58,8 +59,13 @@ public:
 	TArray<FVector> GetCrashTeamSpawnPoints(int32 Team) const;
 	/** Team select: moves a human to the next team in Direction that still has room. */
 	void ChangeMemberTeam(AChaosImpactPlayerState* Member, int32 Direction);
+	/** Team select: moves a human straight to Team (a click on its card), if it has room. */
+	void SetMemberTeam(AChaosImpactPlayerState* Member, int32 Team);
 	/** Team select is over: CPUs fill the smallest teams and the opening starts. */
 	void ConfirmTeamsAndStart();
+	/** Online rooms pick teams in the lobby once team rules are decided: every player gets one (their own pick kept while
+	 * it fits, the rest to the smallest team), watchers and rooms without team rules none. */
+	void FitLobbyTeams();
 	/** A player's machine has played the opening to the end; Ready? starts once every human's has. */
 	void ReportIntroFinished(APlayerState* Member, double IntroStartedAt);
 	/** Server: points for hitting or knocking out an opponent. Ignored outside the match phase. */
@@ -117,6 +123,8 @@ public:
 	void AnswerTournamentCPUMatch(APlayerController* Member, int32 Choice);
 	/** The tournament is over (or given up by the host): everyone back to the lobby. */
 	void EndTournament();
+	/** The champion's screen cut short (Enter / A on it). */
+	void SkipTournamentResults(APlayerController* Member);
 	/** A public tournament room: its start (server time); it starts then with two people or more. */
 	void ScheduleTournament(double StartsAt);
 
@@ -339,6 +347,31 @@ private:
 	int32 AcquireTournamentArena();
 	void ClearArenaBalls(int32 Arena);
 	void ApplyArenaBallChances(int32 Arena, bool bWithPicks);
+
+	// ---- Sudden death (a duel's, or a tournament arena's; Arena INDEX_NONE: the duel) ----
+	// The floor closes in as a circle (AChaosImpactSuddenDeathZone): outside it for a moment loses the round. Special
+	// balls of three kinds picked at its start keep appearing on the floor still in play. At the bell, the one nearer
+	// the middle wins (no draw).
+	struct FSuddenDeath
+	{
+		TWeakObjectPtr<class AChaosImpactSuddenDeathZone> Zone;
+		TArray<EChaosImpactBallType> Kinds;
+		TArray<TWeakObjectPtr<class AChaosImpactBall>> Balls;
+		FVector Center = FVector::ZeroVector;
+		float HalfExtent = 1000.0f;
+		double NextBallAt = 0.0;
+		float OutSeconds[2] = {0.0f, 0.0f};
+	};
+	TMap<int32, FSuddenDeath> SuddenDeaths;
+	FTimerHandle SuddenDeathTimer;
+	void BeginSuddenDeath(int32 Arena, const FVector& Center, float HalfExtent);
+	void EndSuddenDeath(int32 Arena);
+	void UpdateSuddenDeaths();
+	/** The side nearer the middle at the bell (INDEX_NONE: level to the centimetre, or nobody standing). */
+	int32 JudgeSuddenDeathByMiddle(int32 Arena) const;
+	APawn* GetSuddenDeathPawn(int32 Arena, int32 Side) const;
+	static constexpr float SuddenDeathBallEvery = 0.9f;
+	static constexpr int32 SuddenDeathMaxBalls = 8;
 	APawn* GetArenaPawn(int32 Arena, int32 Side) const;
 	/** An entrant's pawn for their match: a person's own character (made if they were watching), a new CPU. */
 	APawn* BringEntrantToArena(int32 Entrant, int32 Arena, int32 Side);
@@ -348,6 +381,8 @@ private:
 	void PlaceAsTournamentSpectator(APlayerController* Member, int32 Arena);
 	/** The practice area of a member's machine (made the first time). */
 	FVector GetPracticeCenter(const AChaosImpactPlayerState* Member);
+	/** A 合言葉 room's tournament shares one practice room among everyone; other tournaments give each machine its own. */
+	bool IsPracticeShared() const;
 	/** The arena a spectator should look at: the match they asked for if it is being played, else any being played. */
 	int32 PickArenaToWatch(int32 WantedMatch) const;
 	/** An entrant left the room (or lost the connection): their match being played and all still to come are lost. */

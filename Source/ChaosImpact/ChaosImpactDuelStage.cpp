@@ -8,6 +8,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/DirectionalLight.h"
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
@@ -214,7 +215,22 @@ void AChaosImpactDuelStage::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	const auto* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
-	UpdateArenaLighting(Match && Match->IsDuel());
+	bool bDuelLight = Match && Match->IsDuel();
+	if (Match && Match->IsTournament())
+	{
+		// The world has one sun for all its arenas: the first arena looks after it, for as long as someone on this machine
+		// plays or watches a match in any of them.
+		bool bFirst = false;
+		for (TActorIterator<AChaosImpactDuelStage> It(GetWorld()); It; ++It) { bFirst = *It == this; break; }
+		bool bInArena = false;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); bFirst && It; ++It)
+		{
+			const APlayerController* Viewer = It->Get();
+			bInArena |= Viewer && Viewer->IsLocalController() && Match->FindDuelFor(Viewer->PlayerState) != nullptr;
+		}
+		bDuelLight = bFirst && bInArena;
+	}
+	UpdateArenaLighting(bDuelLight);
 }
 
 void AChaosImpactDuelStage::EndPlay(const EEndPlayReason::Type EndPlayReason)

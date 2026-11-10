@@ -54,7 +54,7 @@ void InteractionPrompt(const FGeometry& Design,FSlateWindowElementList& Elements
     RPGPrototypeUI::Keycap(C,0,Key,X+26,Y+12,30);
     RPGPrototypeUI::Label(C,0,Label,X+26+KeyW+14,Y+12,22,RPGPrototypeUI::TextMain);
 }
-float BattleScale(FVector2D Size,bool Split) { return FMath::Min(Size.X/(Split?960.0f:1280.0f),Size.Y/(Split?600.0f:720.0f)); }
+float BattleScale(FVector2D Size,bool Split) { return FMath::Min(Size.X/(Split?960.0f:1280.0f),Size.Y/(Split?600.0f:720.0f))*ChaosImpactSettings::GetHudSizeFactor(); }
 }
 
 void URPGPrototypeHUD::NativeOnInitialized()

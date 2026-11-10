@@ -1,4 +1,5 @@
 #include "ChaosImpactStageBase.h"
+#include "ChaosImpact.h"
 
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -283,6 +284,37 @@ void AChaosImpactStageBase::MakeWallsSeeThrough(const TArray<FString>& Prefixes,
 			continue;
 		}
 		Block->SetMaterial(0, GlowSource && Source == GlowSource ? WallFadeGlowMaterial.Get() : WallFadeMaterial.Get());
+	}
+	// Which side of the arena each block is on (its outward direction from the stage's middle, square to a side, or
+	// diagonal at a corner): the material fades only the blocks on the camera's side.
+	int32 Sided = 0;
+	for (UStaticMeshComponent* Block : Blocks)
+	{
+		const UMaterialInterface* Current = Block->GetMaterial(0);
+		const UMaterialInstanceDynamic* Instance = Cast<UMaterialInstanceDynamic>(Current);
+		const UMaterialInterface* Source = Instance ? Instance->Parent.Get() : Current;
+		if (Source != WallFadeMaterial && Source != WallFadeGlowMaterial)
+		{
+			continue;
+		}
+		const FVector Centre = Block->GetStaticMesh() ? Block->CalcBounds(Block->GetComponentTransform()).Origin : Block->GetComponentLocation();
+		const FVector Local = GetActorTransform().InverseTransformPositionNoScale(Centre);
+		const float AX = FMath::Abs(static_cast<float>(Local.X)), AY = FMath::Abs(static_cast<float>(Local.Y));
+		FVector2D Out(AX >= AY ? FMath::Sign(Local.X) : 0.0, AY >= AX ? FMath::Sign(Local.Y) : 0.0);
+		if (FMath::Min(AX, AY) > FMath::Max(AX, AY) * 0.8f)
+		{
+			// A corner: both ways.
+			Out = FVector2D(FMath::Sign(Local.X), FMath::Sign(Local.Y)).GetSafeNormal();
+		}
+		const FVector World = GetActorTransform().TransformVectorNoScale(FVector(Out.X, Out.Y, 0.0));
+		Block->SetCustomPrimitiveDataFloat(0, static_cast<float>(World.X));
+		Block->SetCustomPrimitiveDataFloat(1, static_cast<float>(World.Y));
+		++Sided;
+		UE_LOG(LogChaosImpact, Verbose, TEXT("See-through wall %s: local %s, outward %s"), *Block->GetName(), *Local.ToString(), *World.ToString());
+	}
+	if (HasActorBegunPlay() || (GetWorld() && GetWorld()->IsGameWorld()))
+	{
+		UE_LOG(LogChaosImpact, Verbose, TEXT("See-through walls on %s: %d blocks know their side"), *GetName(), Sided);
 	}
 }
 

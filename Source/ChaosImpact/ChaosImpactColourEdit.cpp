@@ -184,6 +184,8 @@ void UChaosImpactColourEdit::Open(AChaosImpactPlayerController* InController)
 	}
 	bOpen = true;
 	OpenedAt = FPlatformTime::Seconds();
+	bOfferApply = InController->IsColourEditApplyOffered();
+	bApplyAsk = false;
 	FActorSpawnParameters Parameters;
 	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	Parameters.ObjectFlags |= RF_Transient;
@@ -599,6 +601,13 @@ void UChaosImpactColourEdit::SavePreset(const bool bAsNew, const FString& Name)
 	bLeaveArmed = false;
 	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiReady);
 	Notify(FString::Printf(TEXT("「%s」に保存しました"), *Saved.Name));
+	if (bOfferApply && Controller.IsValid() && Controller->IsColourEditApplyOffered())
+	{
+		// From a room's pause menu: play as this character in the colours just saved?
+		bApplyAsk = true;
+		ApplyChoice = 0;
+		ApplyAskAt = FPlatformTime::Seconds();
+	}
 }
 
 void UChaosImpactColourEdit::ShiftPreset(const int32 Direction)
@@ -872,6 +881,31 @@ bool UChaosImpactColourEdit::HandleKeyDown(const FKeyEvent& Event)
 		FinishNaming();
 		return true;
 	}
+	if (bApplyAsk)
+	{
+		const int32 Choices = ApplyPlayers() + 1;
+		if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Left, EKeys::Left, EKeys::A, EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W}))
+		{
+			ApplyChoice = (ApplyChoice + Choices - 1) % Choices;
+			ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
+		}
+		else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Right, EKeys::Right, EKeys::D, EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S}))
+		{
+			ApplyChoice = (ApplyChoice + 1) % Choices;
+			ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
+		}
+		else if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_FaceButton_Bottom, EKeys::Enter, EKeys::SpaceBar}))
+		{
+			ChooseApply(ApplyChoice);
+		}
+		else if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_FaceButton_Right, EKeys::Escape, EKeys::BackSpace}))
+		{
+			// しない (still in カラーエディット).
+			bApplyAsk = false;
+			ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
+		}
+		return true;
+	}
 	if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_Special_Left, EKeys::N})) { OpenNaming(); return true; }
 	if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W})) { Move(0, -1); }
 	else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S})) { Move(0, 1); }
@@ -1002,6 +1036,14 @@ void UChaosImpactColourEdit::HandleMouseMove(const FVector2D& Point, const bool 
 	{
 		return;
 	}
+	if (bApplyAsk)
+	{
+		for (int32 Choice = 0; Choice <= ApplyPlayers(); ++Choice)
+		{
+			if (ApplyButtonRect(Choice).IsInside(Point)) { ApplyChoice = Choice; }
+		}
+		return;
+	}
 	if (Naming.IsOpen())
 	{
 		Naming.HandleMouseMove(Point);
@@ -1052,6 +1094,18 @@ bool UChaosImpactColourEdit::HandleClick(const FVector2D& Point)
 	{
 		Naming.HandleClick(Point);
 		FinishNaming();
+		return true;
+	}
+	if (bApplyAsk)
+	{
+		for (int32 Choice = 0; Choice <= ApplyPlayers(); ++Choice)
+		{
+			if (ApplyButtonRect(Choice).IsInside(Point))
+			{
+				ChooseApply(Choice);
+				return true;
+			}
+		}
 		return true;
 	}
 	LastMouse = Point;
@@ -1504,5 +1558,96 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	{
 		return Naming.Paint(Design, Elements, Layer + 6);
 	}
+	if (bApplyAsk)
+	{
+		PaintApplyAsk(Design, Elements, Layer + 6, Now);
+		return Layer + 10;
+	}
 	return Layer + 4;
+}
+
+int32 UChaosImpactColourEdit::ApplyPlayers() const
+{
+	const UGameInstance* GameInstance = Controller.IsValid() ? Controller->GetGameInstance() : nullptr;
+	const int32 Players = GameInstance ? GameInstance->GetNumLocalPlayers() : 1;
+	// One player: one choice (このキャラにする); a split screen: one per player.
+	return FMath::Clamp(Players, 1, 4);
+}
+
+FBox2D UChaosImpactColourEdit::ApplyButtonRect(const int32 Choice) const
+{
+	const int32 Count = ApplyPlayers() + 1;
+	const float W = Count > 2 ? 170.0f : 230.0f;
+	constexpr float H = 58.0f, Gap = 16.0f;
+	const float Left = 800.0f - (Count * W + (Count - 1) * Gap) * 0.5f;
+	const FVector2D Min(Left + Choice * (W + Gap), 464.0f);
+	return FBox2D(Min, Min + FVector2D(W, H));
+}
+
+void UChaosImpactColourEdit::ChooseApply(const int32 Choice)
+{
+	AChaosImpactPlayerController* Owner = Controller.Get();
+	bApplyAsk = false;
+	if (!Owner)
+	{
+		return;
+	}
+	if (Choice < ApplyPlayers())
+	{
+		if (Owner->ApplyRoomLoadout(Choice, Character, Preset))
+		{
+			ChaosImpactSfx::Play2D(Owner, EChaosImpactSfx::UiReady);
+			Notify(ApplyPlayers() > 1 ? FString::Printf(TEXT("%dPをこのキャラにしました"), Choice + 1) : FString(TEXT("このキャラにしました")));
+		}
+		else
+		{
+			ChaosImpactSfx::Play2D(Owner, EChaosImpactSfx::UiDeny);
+			Notify(TEXT("いまはキャラを変えられません"));
+		}
+	}
+	else
+	{
+		ChaosImpactSfx::Play2D(Owner, EChaosImpactSfx::UiBack);
+	}
+	// (Still in カラーエディット: leaving it is up to the player.)
+}
+
+void UChaosImpactColourEdit::PaintApplyAsk(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
+	const double Now) const
+{
+	const float In = EaseOut(static_cast<float>(Now - ApplyAskAt) / 0.2f);
+	const FPainter Shade{Design, Elements, Layer, In};
+	Shade.Box(-1400.0f, -200.0f, 4400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
+	const FPainter Panel{Design, Elements, Layer + 1, In};
+	const FPainter Words{Design, Elements, Layer + 3, In};
+	constexpr float PX = 440.0f, PY = 318.0f, PW = 720.0f, PH = 260.0f;
+	RoundedBox(Panel, PX, PY + (1.0f - In) * 24.0f, PW, PH, 26.0f, FLinearColor(0.02f, 0.03f, 0.07f, 0.98f));
+	Panel.Box(PX + 40.0f, PY + 8.0f, PW - 80.0f, 5.0f, Gold);
+	Words.Text(TEXT("このキャラにしますか？"), 800.0f, PY + 30.0f, 34.0f, Paper, ETextAlign::Center, TEXT("Black"));
+	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+	const TArray<FChaosImpactColourPreset>* Presets = Colours ? &Colours->GetPresets(Character) : nullptr;
+	const FString ColourName = Presets && Presets->IsValidIndex(Preset) ? FString::Printf(TEXT("カスタム：%s"), *(*Presets)[Preset].Name)
+		: FString(TEXT("いつもの色"));
+	const FString What = FString::Printf(TEXT("%s　（%s）"), ChaosImpactRoster::Get(Character).Name, *ColourName);
+	Words.Text(What, 800.0f, PY + 92.0f, HudFit(What, 22.0f, PW - 60.0f, TEXT("Bold")), Gold, ETextAlign::Center, TEXT("Bold"));
+	const int32 Players = ApplyPlayers();
+	for (int32 Choice = 0; Choice <= Players; ++Choice)
+	{
+		const FBox2D Rect = ApplyButtonRect(Choice);
+		const float BX = static_cast<float>(Rect.Min.X), BY = static_cast<float>(Rect.Min.Y);
+		const float BW = static_cast<float>(Rect.GetSize().X), BH = static_cast<float>(Rect.GetSize().Y);
+		const bool bChosen = Choice == ApplyChoice;
+		const bool bNo = Choice == Players;
+		const FLinearColor Accent = bNo ? Muted : Players > 1 ? PlayerAccents[Choice % 4] : Gold;
+		RoundedBox(Panel, BX, BY, BW, BH, 14.0f, bChosen ? Accent : FLinearColor(0.05f, 0.07f, 0.13f, 1.0f));
+		if (!bChosen)
+		{
+			Panel.Outline(BX, BY, BW, BH, WithAlpha(Accent, 0.6f), 2.0f);
+		}
+		const FString Label = bNo ? FString(TEXT("しない")) : Players > 1 ? FString::Printf(TEXT("%dPにする"), Choice + 1) : FString(TEXT("このキャラにする"));
+		Words.Text(Label, BX + BW * 0.5f, BY + (BH - 24.0f * 1.32f) * 0.5f, HudFit(Label, 24.0f, BW - 20.0f, TEXT("Black")),
+			bChosen ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+	}
+	const FString Guide = TEXT("決定：A / Enter ・ B / Esc：しない");
+	Words.Text(Guide, 800.0f, PY + PH - 34.0f, HudFit(Guide, 15.0f, PW - 60.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
 }

@@ -356,7 +356,19 @@ void AChaosImpactGameMode::ScheduleTournamentMatches()
 			return;
 		}
 	}
+	// The places' matches first, the lowest places first; the tournament's own match last (the final after 3位決定戦).
+	TArray<int32> Order;
 	for (int32 Index = 0; Index < Tournament.Matches.Num(); ++Index)
+	{
+		Order.Add(Index);
+	}
+	Order.StableSort([&Tournament](const int32 A, const int32 B)
+	{
+		const int32 TopA = Tournament.Groups.IsValidIndex(Tournament.Matches[A].Group) ? Tournament.Groups[Tournament.Matches[A].Group].TopPlace : 1;
+		const int32 TopB = Tournament.Groups.IsValidIndex(Tournament.Matches[B].Group) ? Tournament.Groups[Tournament.Matches[B].Group].TopPlace : 1;
+		return TopA > TopB;
+	});
+	for (const int32 Index : Order)
 	{
 		FChaosImpactTournamentMatch& Each = Tournament.Matches[Index];
 		if (Each.Round != Tournament.Round || Each.State != EChaosImpactTournamentMatchState::Ready)
@@ -425,12 +437,12 @@ void AChaosImpactGameMode::DecideTournamentMatch(const int32 MatchIndex, const i
 	}
 	const double Now = Match->GetServerWorldTimeSeconds();
 	const bool bChampion = ChaosImpactTournament::Advance(Tournament, MatchIndex, Now);
-	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: %s match %d decided%s%s: %s"), *Tournament.GetRoundName(Decided.Round), Decided.Slot + 1,
+	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: %s match %d decided%s%s: %s"), *Tournament.GetMatchName(MatchIndex), Decided.Slot + 1,
 		bForfeit ? TEXT(" (walk-over)") : TEXT(""), bBye ? TEXT(" (bye)") : TEXT(""),
 		Tournament.Entrants.IsValidIndex(Decided.WinnerEntrant()) ? *Tournament.Entrants[Decided.WinnerEntrant()].Name : TEXT("nobody"));
 	if (bChampion)
 	{
-		UE_LOG(LogChaosImpact, Log, TEXT("Tournament: champion %s"),
+		UE_LOG(LogChaosImpact, Log, TEXT("Tournament over: champion %s"),
 			Tournament.Entrants.IsValidIndex(Tournament.Champion) ? *Tournament.Entrants[Tournament.Champion].Name : TEXT("nobody"));
 		// Everyone sees the champion: off the practice floors and out of the arenas, onto the bracket.
 		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
@@ -503,7 +515,7 @@ void AChaosImpactGameMode::CallTournamentMatch(const int32 MatchIndex)
 	Called.Arena = Arena;
 	Called.CalledAt = Match->GetServerWorldTimeSeconds();
 	Match->ForceNetUpdate();
-	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: %s match %d called to arena %d"), *Match->Tournament.GetRoundName(Called.Round),
+	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: %s (slot %d) called to arena %d"), *Match->Tournament.GetMatchName(MatchIndex),
 		Called.Slot + 1, Arena);
 }
 
@@ -671,7 +683,7 @@ void AChaosImpactGameMode::BeginTournamentMatch(const int32 MatchIndex)
 			PlaceAsTournamentSpectator(Viewer, Arena);
 		}
 	}
-	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: %s match %d begins in arena %d: %s vs %s"), *Match->Tournament.GetRoundName(Begun.Round),
+	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: %s (slot %d) begins in arena %d: %s vs %s"), *Match->Tournament.GetMatchName(MatchIndex),
 		Begun.Slot + 1, Arena, *Duel.Sides[0]->GetPlayerName(), *Duel.Sides[1]->GetPlayerName());
 }
 
@@ -789,12 +801,17 @@ void AChaosImpactGameMode::UpdateTournamentArena(const int32 Arena)
 		else
 		{
 			SetArenaStep(Arena, EChaosImpactDuelStep::SuddenDeath, ChaosImpactMatch::DuelSuddenDeathSeconds);
+			BeginSuddenDeath(Arena, Match->TournamentArenas[Arena].Center, Match->TournamentArenas[Arena].HalfExtent);
 		}
 		break;
 	}
 	case EChaosImpactDuelStep::SuddenDeath:
-		EndArenaRound(Arena, INDEX_NONE, EChaosImpactDuelEnd::Draw);
+	{
+		// The bell: the one nearer the middle.
+		const int32 Winner = JudgeSuddenDeathByMiddle(Arena);
+		EndArenaRound(Arena, Winner, Winner == INDEX_NONE ? EChaosImpactDuelEnd::Draw : EChaosImpactDuelEnd::SuddenDeath);
 		break;
+	}
 	case EChaosImpactDuelStep::RoundOver:
 	{
 		FChaosImpactDuelState& Over = Match->TournamentArenas[Arena].Duel;
@@ -823,6 +840,7 @@ void AChaosImpactGameMode::EndArenaRound(const int32 Arena, const int32 WinnerSi
 	{
 		return;
 	}
+	EndSuddenDeath(Arena);
 	FChaosImpactDuelState& Duel = Match->TournamentArenas[Arena].Duel;
 	Duel.RoundWinner = WinnerSide == 0 || WinnerSide == 1 ? WinnerSide : INDEX_NONE;
 	Duel.RoundEnd = How;
@@ -1081,9 +1099,18 @@ void AChaosImpactGameMode::PlaceTournamentMember(APlayerController* Member)
 	PlaceInPractice(Member);
 }
 
+bool AChaosImpactGameMode::IsPracticeShared() const
+{
+	// A 合言葉 room's tournament: everyone waiting practises together in one room. A public tournament (and a local
+	// one): each machine its own.
+	const AChaosImpactGameState* Room = GetGameState<AChaosImpactGameState>();
+	return Room && IsOnlineRoom() && !Room->bLocalTournament && !Room->IsMatchmade() && !Room->RoomPassword.IsEmpty()
+		&& Room->RoomPassword != ChaosImpactTourney::Password;
+}
+
 FVector AChaosImpactGameMode::GetPracticeCenter(const AChaosImpactPlayerState* Member)
 {
-	const FString Key = TnMachineKey(Member);
+	const FString Key = IsPracticeShared() ? FString(TEXT("#shared")) : TnMachineKey(Member);
 	if (const TWeakObjectPtr<AChaosImpactTrainingArena>* Known = TournamentPractice.Find(Key); Known && Known->IsValid())
 	{
 		return (*Known)->GetCenter();
@@ -1135,9 +1162,17 @@ void AChaosImpactGameMode::PlaceInPractice(APlayerController* Member)
 	State->ForceNetUpdate();
 	if (AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(Member->GetPawn()))
 	{
-		// A machine's second player beside the first.
-		const FVector Location = Center + FVector(-300.0f, State->bSecondOfMachine ? 260.0f : -260.0f,
-			Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 4.0f);
+		// A machine's second player beside the first; in a shared room, everyone round the middle in join order (so no
+		// two arrive on the same spot).
+		FVector Spot(-300.0f, State->bSecondOfMachine ? 260.0f : -260.0f, 0.0f);
+		if (IsPracticeShared())
+		{
+			const int32 Seat = FMath::Max(State->JoinOrder, 0) * 2 + (State->bSecondOfMachine ? 1 : 0);
+			const float Angle = Seat * 2.39996f;
+			const float Radius = 380.0f + 90.0f * (Seat % 7);
+			Spot = FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, 0.0f);
+		}
+		const FVector Location = Center + Spot + FVector(0.0f, 0.0f, Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 4.0f);
 		const FRotator Facing(0.0f, 0.0f, 0.0f);
 		Character->SetTrainingStartTransform(Location, Facing);
 		Character->ResetForOnlineMatch(Location, Facing);
@@ -1279,6 +1314,21 @@ void AChaosImpactGameMode::ClearTournamentWorld()
 	TournamentPractice.Reset();
 }
 
+void AChaosImpactGameMode::SkipTournamentResults(APlayerController* Member)
+{
+	const AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
+	const AChaosImpactPlayerState* State = Member ? Member->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	// The room's host (or anyone at a local tournament), once the champion has been seen a moment.
+	if (!Match || !Match->IsTournament() || !Match->Tournament.bFinished || !State
+		|| !(State->bRoomHost || Match->bLocalTournament || Member->IsLocalController())
+		|| Match->GetServerWorldTimeSeconds() < Match->Tournament.FinishedAt + 1.5)
+	{
+		return;
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Tournament: the results skipped"));
+	EndTournament();
+}
+
 void AChaosImpactGameMode::EndTournament()
 {
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
@@ -1336,8 +1386,9 @@ void AChaosImpactGameMode::EndTournament()
 		UE_LOG(LogChaosImpact, Log, TEXT("Local tournament over: back to its registration"));
 		return;
 	}
-	ReopenRecruitment();
+	// (Back in the lobby first: recruitment only reopens there.)
 	SetMatchPhase(EChaosImpactOnlinePhase::Lobby, 0.0f);
+	ReopenRecruitment();
 	Match->ForceNetUpdate();
 	UE_LOG(LogChaosImpact, Log, TEXT("Tournament over: back to the lobby"));
 }

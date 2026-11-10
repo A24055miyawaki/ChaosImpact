@@ -330,8 +330,8 @@ namespace ChaosImpactMatch
 	{
 		if (Rules.bTournament)
 		{
-			return Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? FString(TEXT("トーナメント  同時進行"))
-				: FString(TEXT("トーナメント  1試合ずつ"));
+			return (Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? FString(TEXT("トーナメント  同時進行"))
+				: FString(TEXT("トーナメント  1試合ずつ"))) + (Rules.Tournament.bPlacementMatches ? TEXT("・順位決定戦") : TEXT(""));
 		}
 		if (Rules.bBattleRoyale)
 		{

@@ -116,9 +116,26 @@ void AChaosImpactSpectatorPawn::UpdatePlacement(APlayerController* Viewer)
 		*Viewer->GetControlRotation().ToCompactString(), Match ? *FVector(Match->StageCenter).ToCompactString() : TEXT("-"));
 }
 
+int32 AChaosImpactSpectatorPawn::GetWatchedArena() const
+{
+	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	const AChaosImpactPlayerState* Watcher = GetController() ? GetController()->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+	return Match && Match->IsTournament() && Watcher && Match->TournamentArenas.IsValidIndex(Watcher->TournamentArena)
+		? Watcher->TournamentArena : INDEX_NONE;
+}
+
 FVector AChaosImpactSpectatorPawn::ClampToStage(const FVector& Location) const
 {
 	const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	// A tournament: over the arena being watched (never out to the others or the practice rooms).
+	if (const int32 Arena = GetWatchedArena(); Match && Arena != INDEX_NONE)
+	{
+		const FVector Center = Match->TournamentArenas[Arena].Center;
+		const float Reach = Match->TournamentArenas[Arena].HalfExtent + BoundsMargin;
+		return FVector(FMath::Clamp(Location.X, Center.X - Reach, Center.X + Reach),
+			FMath::Clamp(Location.Y, Center.Y - Reach, Center.Y + Reach),
+			FMath::Clamp(Location.Z, Center.Z + MinHeight, Center.Z + MaxHeight));
+	}
 	if (!Match || !Match->bVersusMatch)
 	{
 		return Location;
@@ -145,6 +162,18 @@ TArray<AChaosImpactCharacter*> AChaosImpactSpectatorPawn::GetFollowTargets() con
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
 		const int32 Order = Competitors.IndexOfByKey(It->GetPlayerState<AChaosImpactPlayerState>());
+		// A tournament: only those playing the match being watched (never someone in a practice room, another arena's
+		// match, or anywhere while it is not yet known which match this is).
+		if (Match->IsTournament())
+		{
+			const int32 Arena = GetWatchedArena();
+			const AChaosImpactPlayerState* Player = It->GetPlayerState<AChaosImpactPlayerState>();
+			if (Arena == INDEX_NONE || !Player || Player->TournamentRole != EChaosImpactTournamentRole::Competitor
+				|| Player->TournamentArena != Arena || Match->GetTournamentArenaAt(It->GetActorLocation()) != Arena)
+			{
+				continue;
+			}
+		}
 		if (Order != INDEX_NONE && !It->IsEliminated())
 		{
 			const auto* ViewerState = GetController() ? GetController()->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
@@ -386,6 +415,20 @@ void AChaosImpactSpectatorPawn::Tick(const float DeltaSeconds)
 		if (!IsValid(Target))
 		{
 			StopFollowing();
+			return;
+		}
+		// A tournament player whose match is over (off to practice, or to another arena): the view stays on the arena.
+		if (const int32 Arena = GetWatchedArena(); Arena != INDEX_NONE && !GetFollowTargets().Contains(Target))
+		{
+			Followed = nullptr;
+			FlyVelocity = FVector::ZeroVector;
+			const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+			// (Over the arena as the camera first was; its placement is left as it is.)
+			const FVector Centre = Match->TournamentArenas[Arena].Center;
+			const FVector Eye = ClampToStage(Centre + FVector(0.0f, -2600.0f, 2000.0f));
+			SetActorLocation(Eye);
+			Viewer->SetControlRotation((Centre - Eye).Rotation());
+			Viewer->SetViewTargetWithBlend(this, IsTimeStopped() ? 0.0f : 0.25f);
 			return;
 		}
 		// Kept with the followed camera, so going back to free flight starts from there.

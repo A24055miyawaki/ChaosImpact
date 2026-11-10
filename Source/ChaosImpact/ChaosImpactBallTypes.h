@@ -169,7 +169,7 @@ namespace ChaosImpactBallTypes
 		return FMath::Lerp(NovaMinScale, NovaMaxScale, FMath::Pow(FMath::Clamp(Charge, 0.0f, 1.0f), 1.6f));
 	}
 	/** How far the blast reaches for a ball this big (about 17 m at its biggest). */
-	inline float GetNovaBlastRadius(const float Scale) { return 180.0f + 46.0f * Scale; }
+	inline float GetNovaBlastRadius(const float Scale) { return 180.0f + 59.0f * Scale; }
 	/** Anyone caught by a nova is knocked out regardless of their remaining health. */
 	inline float GetNovaDamage(const float /*Scale*/) { return 1000000.0f; }
 

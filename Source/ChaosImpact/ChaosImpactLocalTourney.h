@@ -48,6 +48,8 @@ public:
 
 	UPROPERTY() TArray<FChaosImpactLocalTourneyPerson> People;
 	UPROPERTY() EChaosImpactTournamentMode Mode = EChaosImpactTournamentMode::OneAtATime;
+	/** 順位決定戦: those who lose play on for every place. */
+	UPROPERTY() bool bPlacementMatches = false;
 	UPROPERTY() int32 CPUs = 0;
 	/** INDEX_NONE: おまかせ (each CPU at random). */
 	UPROPERTY() int32 CPULevel = INDEX_NONE;

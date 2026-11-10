@@ -58,9 +58,9 @@ namespace ChaosImpactRoster
 	/** Characters that can be chosen, in menu order. Add new characters here. */
 	inline const FChaosImpactCharacterInfo Characters[] =
 	{
-		{TEXT("スマイリー"), TEXT("/Game/ChaosImpact/Character"), TEXT("Player"), EChaosImpactModelKind::Limbs, true,
+		{TEXT("スマイリー"), TEXT("/Game/ChaosImpact/Character"), TEXT("Player"), EChaosImpactModelKind::Limbs, false,
 			TEXT("「笑顔」から生まれた存在"), TEXT("笑顔以外を知らない。家族も。")},
-		{TEXT("シマエナガ"), TEXT("/Game/ChaosImpact/Simae"), TEXT("Simae"), EChaosImpactModelKind::Skinned, true,
+		{TEXT("シマエナガ"), TEXT("/Game/ChaosImpact/Simae"), TEXT("Simae"), EChaosImpactModelKind::Skinned, false,
 			TEXT("「シマエナガ」から生まれた存在。"), TEXT("実は小さなシマエナガの集合体。")},
 		{TEXT("ドッジ妖精"), TEXT("/Game/ChaosImpact/Fairy"), TEXT("Fairy"), EChaosImpactModelKind::Skinned, false,
 			TEXT("「ドッチボール」から生まれた存在。"), TEXT("シマエナガとは従妹。")},
@@ -89,6 +89,8 @@ namespace ChaosImpactRoster
 		{TEXT("バードストライカー"), TEXT("/Game/ChaosImpact/Kawaii"), TEXT("Kawaii"), EChaosImpactModelKind::Authored, false,
 			TEXT("かつて名を馳せたが、ドッチ・ボール大統領に"), TEXT("クチバシを縮められ引退を決意。油淋鶏が好き。")},
 	};
+	inline constexpr int32 SmileyIndex = 0;
+	inline constexpr int32 SimaeIndex = 1;
 	inline constexpr int32 HeroIndex = 6;
 	inline constexpr int32 RoboIndex = 7;
 	inline constexpr int32 EmojiIndex = 8;
@@ -114,6 +116,16 @@ namespace ChaosImpactRoster
 	inline const FChaosImpactCharacterInfo& Get(const int32 Index)
 	{
 		return Characters[ClampIndex(Index)];
+	}
+
+	/**
+	 * スマイリー and シマエナガ once came in the four team colours; now (with カスタムカラー for the rest) they always wear
+	 * the first, red, whatever colour stands for them on the HUD. Their models are still coloured by the game (a texture
+	 * per colour, or the material's BodyColor), so they are given red rather than left as their assets are.
+	 */
+	inline bool WearsFirstColour(const int32 Index)
+	{
+		return Index == SmileyIndex || Index == SimaeIndex;
 	}
 
 	inline FLinearColor GetColourSwatch(const int32 Colour)

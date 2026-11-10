@@ -85,12 +85,12 @@ struct FChaosImpactResultsData
 };
 
 /**
- * The podium the results are filmed on, far outside the level, built like an awards stage: a round stage on a glossy
- * floor, three round pedestals with gold, silver and bronze rims (the winner's tall one in front, second and third
- * kneeling on lower ones behind), a curved wall of panels behind washed from below by lights in the winner's colour
- * with slim LED bars between them. Each place's spotlight snaps on as it appears; the winner lands with a shockwave and
- * paper confetti falls and settles on the floor. Its camera moves through the show (low on the winner, then pulling
- * back to the whole podium) into a texture the results draw full screen.
+ * The stage the winner is filmed on, far outside the level, built like an awards stage: a round stage on a glossy floor,
+ * one tall round pedestal with a gold rim, a curved wall of panels behind washed from below by lights in the winner's
+ * colour with slim LED bars between them. Only the winner (the winning team, or everyone tied for first) stands on it:
+ * they drop in out of the dark, land with a shockwave and paper confetti, and celebrate. The camera starts wide on the
+ * empty stage, goes low for the landing, then settles with the winner on the right of the picture and the left open for
+ * the headline. It films into a texture the results draw full screen.
  */
 UCLASS(NotPlaceable, Transient)
 class AChaosImpactPodiumStage : public AActor
@@ -102,13 +102,13 @@ public:
 	static constexpr int32 PictureWidth = 1920;
 	static constexpr int32 PictureHeight = 1080;
 
-	// The show, in seconds from the cut to the podium.
-	static constexpr float ThirdAt = 0.45f;
-	static constexpr float SecondAt = 1.05f;
-	static constexpr float BlackoutAt = 1.75f;
-	static constexpr float DropAt = 2.05f;
-	static constexpr float LandAt = 2.4f;
-	static constexpr float SettledAt = 4.6f;
+	// The show, in seconds from the cut to the stage.
+	static constexpr float BlackoutAt = 0.7f;
+	static constexpr float DropAt = 0.95f;
+	static constexpr float LandAt = 1.3f;
+	static constexpr float SettledAt = 3.5f;
+	/** At most this many stand on the pedestal (a big tie for first shows the first of them). */
+	static constexpr int32 MaxFigures = 8;
 
 	void Build(const FChaosImpactResultsData& Data);
 	/** The same a little at a time (one figure a step), so building it never holds a frame up. */
@@ -123,38 +123,32 @@ public:
 	bool Project(const FVector& WorldPoint, FVector2D& OutPicture) const;
 	/** Above the head of the figure for results entry EntryIndex (false when they have none, or not yet); when it appeared. */
 	bool GetFigureHead(int32 EntryIndex, FVector& OutWorld, float* OutAppearAt = nullptr) const;
-	/** Places on the podium (0 the winner or winning team) and the results entries standing on each. */
-	int32 GetPlaceCount() const { return Places.Num(); }
-	const TArray<int32>& GetPlaceEntries(int32 Place) const { static const TArray<int32> None; return Places.IsValidIndex(Place) ? Places[Place] : None; }
-	/** The foot of a place's pedestal, toward the camera (its name plate goes there); when it appears. */
-	bool GetPlaceAnchor(int32 Place, FVector& OutWorld, float* OutAppearAt = nullptr) const;
+	/** The results entries standing on the pedestal. */
+	const TArray<int32>& GetWinnerEntries() const { return Winners; }
 	virtual void Destroyed() override;
 
 private:
 	struct FFigure
 	{
 		int32 Entry = INDEX_NONE;
-		/** 0 a winner, 1 second, 2 third. */
-		int32 Place = 0;
 		FVector Spot = FVector::ZeroVector;
-		float AppearAt = 0.0f;
 		bool bShown = false;
 		bool bLanded = false;
 		float NextCheerAt = 0.0f;
-		float IdleAt = -1.0f;
 	};
 
-	void AddPedestal(const FVector& Base, float Radius, float Height, const FLinearColor& Neon, int32 Place);
+	void AddPedestal(float Radius, float Height);
 	void BuildArena();
 	/** Paper confetti: where each piece is at Seconds since it began (falling, fluttering, then lying on the floor). */
 	void UpdateConfetti(float Seconds);
 	void BuildNextFigure();
+	/** Half the width of the row of winners (arms and all), in centimetres. */
+	float GetRowHalfWidth() const;
 	FChaosImpactResultsData BuildData;
-	/** Entries per place (0 the winner or winning team, 1 and 2 behind). */
-	TArray<TArray<int32>> Places;
+	/** The results entries on the pedestal, in finishing order. */
+	TArray<int32> Winners;
 	/** 0 nothing yet, 1 the figures, -1 done. */
 	int32 BuildStage = 0;
-	int32 BuildPlace = 0;
 	int32 BuildMember = 0;
 	void SetCamera(const FVector& Location, const FVector& LookAt, float Fov);
 
@@ -174,17 +168,14 @@ private:
 	TObjectPtr<UPointLightComponent> BackGlowLight;
 
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UPointLightComponent>> RimLights;
-
-	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> Picture;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactCharacterPreview>> FigureActors;
 
-	/** Each place's spotlight from above (0 is the winner's, WinnerSpot), on as the place appears. */
+	/** The soft light behind the winner, so they stand off the wall. */
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<USpotLightComponent>> PlaceSpots;
+	TObjectPtr<UPointLightComponent> RimLight;
 
 	/** Lights at the foot of the back wall, washing it upward. */
 	UPROPERTY(Transient)
@@ -201,9 +192,9 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UProceduralMeshComponent>> Confetti;
 
-	/** Pedestal rims per place (0-2), lit as each one appears. */
+	/** The pedestal's gold rims, lit as the winner lands. */
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInstanceDynamic>> NeonMaterials;
+	TObjectPtr<UMaterialInstanceDynamic> NeonMaterial;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UProceduralMeshComponent> Shockwave;
@@ -215,23 +206,13 @@ private:
 	TObjectPtr<UAnimSequenceBase> IdleAnimation;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UAnimSequenceBase> KneelAnimation;
-
-	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequenceBase> FallAnimation;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequenceBase> LandAnimation;
 
-	UPROPERTY(Transient)
-	TObjectPtr<UAnimSequenceBase> CheerAnimation;
-
 	TArray<FFigure> Figures;
 	TArray<float> LedPhases;
-	/** Each place's pedestal: where it stands, how wide and how tall. */
-	TArray<FVector> PedestalBases;
-	TArray<float> PedestalRadii;
-	TArray<float> PedestalHeights;
 	FLinearColor WinnerColor = FLinearColor::White;
 	float ShowSeconds = 0.0f;
 	float WinnerTopZ = 0.0f;
@@ -284,7 +265,7 @@ public:
 	void Stop();
 
 	/** Seconds into the show when it has settled and asks for a button to go on. */
-	static constexpr float RevealSeconds = 5.0f;
+	static constexpr float RevealSeconds = 3.9f;
 
 private:
 	void Start(const AChaosImpactGameState* Match, APlayerController* Owner);

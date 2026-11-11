@@ -417,6 +417,22 @@ public:
 	/** The character and colour this player picked on their own machine. */
 	UFUNCTION(Server, Reliable)
 	void ServerSetLoadout(int32 InCharacterIndex, int32 InColour, const TArray<uint8>& InCustomColours);
+
+	/**
+	 * ペイント over the network, a piece at a time (each piece asked for once the last has come): this player's own
+	 * pictures up to the host (offered by key; sent only when the host does not have them yet), and anyone's down
+	 * from the host to a machine that shows them.
+	 */
+	UFUNCTION(Server, Reliable)
+	void ServerOfferPaint(int32 Key, int32 Total);
+	UFUNCTION(Client, Reliable)
+	void ClientSendPaintFrom(int32 Key, int32 Offset);
+	UFUNCTION(Server, Reliable)
+	void ServerPaintPiece(int32 Key, int32 Offset, int32 Total, const TArray<uint8>& Bytes);
+	UFUNCTION(Server, Reliable)
+	void ServerWantPaint(int32 Key, int32 Offset);
+	UFUNCTION(Client, Reliable)
+	void ClientPaintPiece(int32 Key, int32 Offset, int32 Total, const TArray<uint8>& Bytes);
 	
 	/** ソロモード中かどうか */
 	UFUNCTION(BlueprintCallable, Category = "Chaos Impact|Solo")
@@ -639,6 +655,10 @@ protected:
 	/** Hands this player's character select pick to their player state once it exists. */
 	void SendLoadout();
 	bool bLoadoutSent = false;
+	/** This player's ペイント (its key on the player state; to the host first when this is not it). */
+	void SendPaint(int32 PaintCharacter, int32 Preset);
+	/** The pictures this machine is fetching from the host now (0: none). */
+	int32 FetchingPaint = 0;
 	/** Follows the match phase: team select screen, and for a local match the rematch menu after the results. */
 	void UpdateMatchScreens();
 	/** Opening camera: flies over the stage, then dives into this player's own view. */

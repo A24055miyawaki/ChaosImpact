@@ -184,6 +184,16 @@ int32 UChaosImpactColourSubsystem::SetPreset(const int32 Character, const int32 
 	FChaosImpactColourPreset Cleaned;
 	Cleaned.Name = Preset.Name.Left(ChaosImpactCustomColour::MaxNameLength);
 	Cleaned.Parts = ChaosImpactCustomColour::Clean(Character, Preset.Parts);
+	// ペイント: each layer once, and no more than may be sent to everyone online.
+	for (const FChaosImpactPaintLayerData& Layer : Preset.Paint)
+	{
+		if (Layer.Layer >= 0 && Layer.Layer < ChaosImpactBodyPaint::MaxLayers && !Layer.Png.IsEmpty()
+			&& !Cleaned.Paint.ContainsByPredicate([&Layer](const FChaosImpactPaintLayerData& Kept) { return Kept.Layer == Layer.Layer; })
+			&& ChaosImpactBodyPaint::WeightOf(Cleaned.Paint) + Layer.Png.Num() <= ChaosImpactBodyPaint::MaxBytes)
+		{
+			Cleaned.Paint.Add(Layer);
+		}
+	}
 	int32 Index = Slot;
 	if (Presets.IsValidIndex(Slot))
 	{
@@ -216,11 +226,28 @@ TArray<uint8> UChaosImpactColourSubsystem::GetPresetParts(const int32 Character,
 	return Presets.IsValidIndex(Slot) ? ChaosImpactCustomColour::Clean(Character, Presets[Slot].Parts) : TArray<uint8>();
 }
 
+TArray<FChaosImpactPaintLayerData> UChaosImpactColourSubsystem::GetPresetPaint(const int32 Character, const int32 Slot) const
+{
+	const TArray<FChaosImpactColourPreset>& Presets = GetPresets(Character);
+	return Presets.IsValidIndex(Slot) ? Presets[Slot].Paint : TArray<FChaosImpactPaintLayerData>();
+}
+
 const TArray<FColor>& UChaosImpactColourSubsystem::GetRecent() const
 {
 	static const TArray<FColor> None;
 	return Data ? Data->Recent : None;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UChaosImpactColourSubsystem::SetRecentForTests(const TArray<FColor>& Colours)
+{
+	if (Data)
+	{
+		Data->Recent = Colours;
+		Save();
+	}
+}
+#endif
 
 void UChaosImpactColourSubsystem::AddRecent(const FColor& Colour)
 {

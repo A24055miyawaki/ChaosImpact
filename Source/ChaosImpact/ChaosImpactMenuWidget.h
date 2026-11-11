@@ -35,6 +35,7 @@ public:
 	bool TryJoinControllerFromAnyUser(const FKeyEvent& InKeyEvent);
 	/** Every device's key and stick events, before Slate focus decides who gets them. True when consumed. */
 	bool HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent);
+	bool HandleAnyUserKeyUp(const FKeyEvent& InKeyEvent);
 	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
 	UChaosImpactColourEdit* GetColourEdit() const { return ColourEdit; }

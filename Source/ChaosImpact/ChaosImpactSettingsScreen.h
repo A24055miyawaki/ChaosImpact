@@ -142,6 +142,7 @@ public:
 		RowShake,
 		RowSwitchConfirm,
 		RowButtonHints,
+		RowOthersPaint,
 		RowHudSize,
 		RowTutorial,
 		RowMiniGames,

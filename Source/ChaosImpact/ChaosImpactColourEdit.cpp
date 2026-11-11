@@ -2,8 +2,11 @@
 
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
+#include "ChaosImpactBodyPaint.h"
 #include "ChaosImpactCustomColour.h"
 #include "ChaosImpactPaint.h"
+#include "ChaosImpactPaintStudio.h"
+#include "ChaosImpactPuppetComponent.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactScreen.h"
 #include "ChaosImpactSettings.h"
@@ -217,6 +220,11 @@ void UChaosImpactColourEdit::Open(AChaosImpactPlayerController* InController)
 
 void UChaosImpactColourEdit::Close()
 {
+	if (Studio && Studio->IsOpen())
+	{
+		Studio->Finish(true);
+		Studio->ConsumeResult();
+	}
 	if (IsValid(Preview))
 	{
 		Preview->Destroy();
@@ -306,6 +314,7 @@ void UChaosImpactColourEdit::LoadPreset(const int32 Slot)
 	const TArray<uint8> Parts = Colours ? Colours->GetPresetParts(Character, Slot) : TArray<uint8>();
 	Preset = Parts.IsEmpty() ? INDEX_NONE : Slot;
 	Working = Clean(Character, Parts);
+	LoadPaint(Colours && Preset != INDEX_NONE ? Colours->GetPresetPaint(Character, Preset) : TArray<FChaosImpactPaintLayerData>());
 	ChipCursor = Preset == INDEX_NONE ? PresetChips() - 1 : Preset;
 	bDirty = false;
 	bLeaveArmed = false;
@@ -520,6 +529,119 @@ void UChaosImpactColourEdit::RefreshPreview()
 	}
 }
 
+void UChaosImpactColourEdit::EnsurePaintLayers()
+{
+	const UChaosImpactPuppetComponent* Model = Preview ? Preview->GetModel() : nullptr;
+	const int32 Count = FMath::Clamp(Model ? Model->GetPaintLayerCount() : 1, 1, ChaosImpactBodyPaint::MaxLayers);
+	while (PaintLayers.Num() < Count)
+	{
+		UChaosImpactPaintLayer* Layer = NewObject<UChaosImpactPaintLayer>(this);
+		Layer->Init();
+		PaintLayers.Add(Layer);
+	}
+	if (PaintLayers.Num() > Count)
+	{
+		PaintLayers.SetNum(Count);
+	}
+}
+
+void UChaosImpactColourEdit::LoadPaint(const TArray<FChaosImpactPaintLayerData>& Paint)
+{
+	EnsurePaintLayers();
+	for (UChaosImpactPaintLayer* Layer : PaintLayers)
+	{
+		if (Layer && !Layer->IsBlank())
+		{
+			Layer->Clear();
+		}
+	}
+	for (const FChaosImpactPaintLayerData& Data : Paint)
+	{
+		if (PaintLayers.IsValidIndex(Data.Layer) && PaintLayers[Data.Layer])
+		{
+			PaintLayers[Data.Layer]->FromPng(Data.Png);
+		}
+	}
+	ShowPaintOnPreview();
+}
+
+TArray<FChaosImpactPaintLayerData> UChaosImpactColourEdit::MakePaintData() const
+{
+	TArray<FChaosImpactPaintLayerData> Out;
+	for (int32 Index = 0; Index < PaintLayers.Num(); ++Index)
+	{
+		if (PaintLayers[Index] && !PaintLayers[Index]->IsBlank())
+		{
+			FChaosImpactPaintLayerData& Data = Out.AddDefaulted_GetRef();
+			Data.Layer = Index;
+			Data.Png = PaintLayers[Index]->ToPng();
+		}
+	}
+	return Out;
+}
+
+bool UChaosImpactColourEdit::HasPaint() const
+{
+	for (const UChaosImpactPaintLayer* Layer : PaintLayers)
+	{
+		if (Layer && !Layer->IsBlank())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void UChaosImpactColourEdit::ShowPaintOnPreview()
+{
+	if (!Preview)
+	{
+		return;
+	}
+	TArray<UTexture*> Textures;
+	for (UChaosImpactPaintLayer* Layer : PaintLayers)
+	{
+		Textures.Add(Layer ? Layer->GetTexture() : nullptr);
+	}
+	Preview->ShowPaint(Textures);
+}
+
+bool UChaosImpactColourEdit::IsPainting() const
+{
+	return Studio && Studio->IsOpen();
+}
+
+void UChaosImpactColourEdit::OpenPaint()
+{
+	if (!Preview || !Preview->GetModel())
+	{
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiDeny);
+		return;
+	}
+	if (!Studio)
+	{
+		Studio = NewObject<UChaosImpactPaintStudio>(this);
+	}
+	EnsurePaintLayers();
+	ShowPaintOnPreview();
+	TArray<UChaosImpactPaintLayer*> Layers;
+	for (UChaosImpactPaintLayer* Layer : PaintLayers)
+	{
+		Layers.Add(Layer);
+	}
+	Dragging = INDEX_NONE;
+	StickTurn = 0.0f;
+	bool bOn = false;
+	const FColor PartNow = PartColour(PartCursor, &bOn);
+	const FColor Start = bOn ? PartNow : RecentCount() > 0 ? RecentColour(0) : FColor(255, 70, 90);
+	Studio->Open(Controller.Get(), Preview, Layers, Start, ViewYaw);
+}
+
+FBox2D UChaosImpactColourEdit::PaintButtonRect() const
+{
+	return FBox2D(FVector2D(PreviewLeft, ButtonsTop + 64.0f), FVector2D(PreviewLeft + PreviewWidth, ButtonsTop + 122.0f));
+}
+
 void UChaosImpactColourEdit::Notify(const FString& Text)
 {
 	NoticeText = Text;
@@ -587,6 +709,14 @@ void UChaosImpactColourEdit::SavePreset(const bool bAsNew, const FString& Name)
 	const bool bNew = bAsNew || !Presets.IsValidIndex(Preset);
 	FChaosImpactColourPreset Saved;
 	Saved.Parts = Working;
+	Saved.Paint = MakePaintData();
+	if (ChaosImpactBodyPaint::WeightOf(Saved.Paint) > ChaosImpactBodyPaint::MaxBytes)
+	{
+		// (Everyone online is sent the pictures: they are kept small enough for that.)
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiDeny);
+		Notify(TEXT("ペイントがこまかすぎて保存できません。少しけしてください"));
+		return;
+	}
 	Saved.Name = !Name.IsEmpty() ? Name : bNew ? FString::Printf(TEXT("カラー%d"), Presets.Num() + 1) : Presets[Preset].Name;
 	const int32 Stored = Colours->SetPreset(Character, bNew ? INDEX_NONE : Preset, Saved);
 	if (Stored == INDEX_NONE)
@@ -749,7 +879,14 @@ void UChaosImpactColourEdit::Move(const int32 Columns, const int32 Rows)
 		}
 		break;
 	case EArea::Buttons:
-		if (Rows < 0) { EnterPicker(EArea::Recent); }
+		// The row of buttons, and ペイント under it.
+		if (ButtonCursor == Buttons)
+		{
+			if (Rows < 0) { ButtonCursor = Buttons / 2; }
+			else { return; }
+		}
+		else if (Rows < 0) { EnterPicker(EArea::Recent); }
+		else if (Rows > 0) { ButtonCursor = Buttons; }
 		else { ButtonCursor = FMath::Clamp(ButtonCursor + Columns, 0, Buttons - 1); }
 		break;
 	}
@@ -794,6 +931,11 @@ void UChaosImpactColourEdit::Confirm()
 		break;
 	}
 	case EArea::Buttons:
+		if (ButtonCursor == Buttons)
+		{
+			OpenPaint();
+			return;
+		}
 		if (ButtonCursor == 0 || ButtonCursor == 1)
 		{
 			SavePreset(ButtonCursor == 1);
@@ -872,6 +1014,10 @@ bool UChaosImpactColourEdit::HandleKeyDown(const FKeyEvent& Event)
 	{
 		return false;
 	}
+	if (IsPainting())
+	{
+		return Studio->HandleKeyDown(Event);
+	}
 	const FKey MenuKey = ChaosImpactSettings::ToMenuKey(Key, Event.GetInputDeviceId().GetId());
 	const bool bRepeat = Event.IsRepeat();
 	if (Naming.IsOpen())
@@ -907,6 +1053,7 @@ bool UChaosImpactColourEdit::HandleKeyDown(const FKeyEvent& Event)
 		return true;
 	}
 	if (!bRepeat && CeIsAny(MenuKey, {EKeys::Gamepad_Special_Left, EKeys::N})) { OpenNaming(); return true; }
+	if (!bRepeat && MenuKey == EKeys::P) { OpenPaint(); return true; }
 	if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W})) { Move(0, -1); }
 	else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S})) { Move(0, 1); }
 	else if (CeIsAny(MenuKey, {EKeys::Gamepad_DPad_Left, EKeys::Left, EKeys::A})) { Move(-1, 0); }
@@ -940,6 +1087,10 @@ bool UChaosImpactColourEdit::HandleAnalog(const FAnalogInputEvent& Event)
 	if (!bOpen)
 	{
 		return false;
+	}
+	if (IsPainting())
+	{
+		return Studio->HandleAnalog(Event);
 	}
 	if (Naming.IsOpen())
 	{
@@ -1036,6 +1187,11 @@ void UChaosImpactColourEdit::HandleMouseMove(const FVector2D& Point, const bool 
 	{
 		return;
 	}
+	if (IsPainting())
+	{
+		Studio->HandleMouseMove(Point);
+		return;
+	}
 	if (bApplyAsk)
 	{
 		for (int32 Choice = 0; Choice <= ApplyPlayers(); ++Choice)
@@ -1082,6 +1238,46 @@ void UChaosImpactColourEdit::HandleMouseMove(const FVector2D& Point, const bool 
 	{
 		if (ButtonRect(Button).IsInside(Point)) { ButtonCursor = Button; Area = EArea::Buttons; return; }
 	}
+	if (PaintButtonRect().IsInside(Point)) { ButtonCursor = Buttons; Area = EArea::Buttons; }
+}
+
+bool UChaosImpactColourEdit::HandleMouseDown(const FVector2D& Point, const FKey& Button, const bool bAlt)
+{
+	if (!bOpen)
+	{
+		return false;
+	}
+	if (IsPainting())
+	{
+		Studio->HandleMouseDown(Point, Button, bAlt);
+		return true;
+	}
+	return HandleClick(Point);
+}
+
+bool UChaosImpactColourEdit::HandleMouseUp(const FVector2D& Point, const FKey& Button)
+{
+	if (!bOpen || !IsPainting())
+	{
+		return false;
+	}
+	Studio->HandleMouseUp(Point, Button);
+	return true;
+}
+
+bool UChaosImpactColourEdit::HandleWheel(const FVector2D& Point, const float Delta, const bool bCtrl)
+{
+	if (!bOpen || !IsPainting())
+	{
+		return false;
+	}
+	Studio->HandleWheel(Point, Delta, bCtrl);
+	return true;
+}
+
+bool UChaosImpactColourEdit::HandleKeyUp(const FKeyEvent& Event)
+{
+	return bOpen && IsPainting() && Studio->HandleKeyUp(Event);
 }
 
 bool UChaosImpactColourEdit::HandleClick(const FVector2D& Point)
@@ -1199,6 +1395,7 @@ bool UChaosImpactColourEdit::HandleClick(const FVector2D& Point)
 	{
 		if (ButtonRect(Button).IsInside(Point)) { ButtonCursor = Button; Area = EArea::Buttons; Confirm(); return true; }
 	}
+	if (PaintButtonRect().IsInside(Point)) { ButtonCursor = Buttons; Area = EArea::Buttons; Confirm(); return true; }
 	return true;
 }
 
@@ -1210,6 +1407,25 @@ void UChaosImpactColourEdit::Tick(const float DeltaSeconds)
 	}
 	const float Step = FMath::Min(DeltaSeconds, 0.1f);
 	++Frame;
+	if (Studio)
+	{
+		if (Studio->IsOpen())
+		{
+			Studio->Tick(Step);
+			return;
+		}
+		const UChaosImpactPaintStudio::EResult Painted = Studio->ConsumeResult();
+		if (Painted == UChaosImpactPaintStudio::EResult::Done && Studio->HasChanges())
+		{
+			bDirty = true;
+			bLeaveArmed = false;
+			Notify(TEXT("ペイントしました。保存ボタンで保存できます"));
+		}
+		if (Painted != UChaosImpactPaintStudio::EResult::None && Preview)
+		{
+			Preview->SetFacing(ViewYaw, 0.0f);
+		}
+	}
 	if (StickTurn != 0.0f)
 	{
 		ViewYaw -= StickTurn * 200.0f * Step;
@@ -1257,6 +1473,10 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	if (!bOpen)
 	{
 		return Layer;
+	}
+	if (IsPainting())
+	{
+		return Studio->Paint(Design, Elements, Layer);
 	}
 	const double Now = FPlatformTime::Seconds();
 	const float Pulse = 0.65f + 0.35f * FMath::Sin(static_cast<float>(Now - OpenedAt) * 6.0f);
@@ -1322,6 +1542,25 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 		RoundBox(Back, R, 8.0f, bCursor ? Accent : Card);
 		P.Box(R.Min.X + 8.0f, R.Max.Y - 6.0f, R.GetSize().X - 16.0f, 3.0f, Accent);
 		P.Text(ButtonNames[Button], R.GetCenter().X, R.Min.Y + 16.0f, 16.0f, bCursor ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+	}
+	{
+		// ペイント: under the buttons.
+		const FBox2D R = PaintButtonRect();
+		const bool bCursor = Area == EArea::Buttons && ButtonCursor == Buttons;
+		const FLinearColor Accent(1.0f, 0.42f, 0.72f, 1.0f);
+		RoundBox(Back, R, 10.0f, bCursor ? Accent : Card);
+		P.Box(R.Min.X + 10.0f, R.Max.Y - 7.0f, R.GetSize().X - 20.0f, 3.0f, Accent);
+		const FLinearColor Line = bCursor ? Ink : Paper;
+		const FVector2D Pen(R.Min.X + 40.0f, R.GetCenter().Y - 2.0f);
+		P.Line(Pen + FVector2D(-12.0, 12.0), Pen + FVector2D(10.0, -10.0), Line, 6.0f);
+		P.Disc(Pen + FVector2D(-12.0, 12.0), 4.0f, bCursor ? Ink : Accent);
+		const FString Label = HasPaint() ? TEXT("ペイント（描いた絵あり）") : TEXT("ペイント　キャラに自由に描く");
+		P.Text(Label, R.Min.X + 66.0f, R.Min.Y + 15.0f, HudFit(Label, 19.0f, R.GetSize().X - 120.0f), Line, ETextAlign::Left, TEXT("Black"));
+		P.Text(TEXT("P"), R.Max.X - 16.0f, R.Min.Y + 19.0f, 13.0f, bCursor ? Ink : Muted, ETextAlign::Right, TEXT("Bold"));
+		if (bCursor)
+		{
+			DrawFrame(Top, Grow(R, 2.0f), WithAlpha(Gold, Pulse), 3.0f);
+		}
 	}
 
 	// Presets.
@@ -1544,7 +1783,8 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 		: Area == EArea::Recent ? TEXT("←→：最近の色・元の色　　A / Enter：決定　　↑：もどる　　B / Esc：やめる")
 		: Area == EArea::Parts ? TEXT("↑↓：部位　　←→：色相　　A / Enter：色をえらぶ　　R：元の色　　X / F：保存　　View / N：名前")
 		: Area == EArea::Presets ? TEXT("←→：プリセット　　A / Enter：よびだす　　B / Esc：キャラへ")
-		: TEXT("←→：ボタン　　A / Enter：決定　　↑：最近の色へ　　View / N：名前");
+		: ButtonCursor == Buttons ? TEXT("A / Enter：ペイントをひらく（キャラに直接描く）　　↑：ボタンへ　　P：ペイント")
+		: TEXT("←→：ボタン　　A / Enter：決定　　↑：最近の色へ　　↓：ペイント　　View / N：名前");
 	// (The name entry shows its own keys.)
 	if (!Naming.IsOpen()) P.Text(Guide, 800.0f, CeBarTop + 15.0f, 18.0f, Paper, ETextAlign::Center, TEXT("Bold"));
 	if (Now - NoticeAt < 2.5)

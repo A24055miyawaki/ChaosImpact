@@ -667,9 +667,9 @@ void AChaosImpactPodiumStage::BuildArena()
 	// Paper confetti, one mesh per colour (filled in as it falls).
 	const FLinearColor Papers[] = {FLinearColor(1.0f, 0.78f, 0.25f), FLinearColor(0.95f, 0.95f, 0.97f), WinnerColor,
 		FLinearColor(0.35f, 0.7f, 1.0f), FLinearColor(1.0f, 0.35f, 0.45f)};
-	for (const FLinearColor& Paper : Papers)
+	for (const FLinearColor& Tint : Papers)
 	{
-		Confetti.Add(ChaosImpactLightning::CreateComponent(this, Root, ResultsLitMaterial(this, Paper, 0.55f)));
+		Confetti.Add(ChaosImpactLightning::CreateComponent(this, Root, ResultsLitMaterial(this, Tint, 0.55f)));
 	}
 
 	// Who stands on it: the winner, the winning team, or everyone tied for first (no one else; the rest are on the

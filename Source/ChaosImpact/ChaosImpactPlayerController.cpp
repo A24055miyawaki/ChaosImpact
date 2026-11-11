@@ -2,6 +2,9 @@
 
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactBodyPaint.h"
+#include "ChaosImpactPaintCache.h"
+#include "ChaosImpactPuppetComponent.h"
 #include "ChaosImpactBallSwitch.h"
 #include "ChaosImpactDojo.h"
 #include "ChaosImpactSimaeBird.h"
@@ -4158,6 +4161,15 @@ void AChaosImpactPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
 	}
 	VersusCard.Reset();
 	VersusReveal.Reset();
+	if (FetchingPaint != 0)
+	{
+		// (Fetched again by the next level's controller.)
+		if (UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this))
+		{
+			Cache->FinishFetch(FetchingPaint, true);
+		}
+		FetchingPaint = 0;
+	}
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -4232,6 +4244,7 @@ void AChaosImpactPlayerController::PlayVersusCardThenOpen()
 			{
 				Preview->ShowCustomColours(Colours->GetPresetParts(Loadout.Character, Loadout.ColourPreset));
 			}
+			Preview->ShowPresetPaint(Loadout.Character, Loadout.ColourPreset);
 			Entrant.Picture = Preview->GetPicture();
 			VersusCardPreviews.Add(Preview);
 		}
@@ -4369,6 +4382,12 @@ void AChaosImpactPlayerController::UpdateOnlineVersusCard(const float DeltaSecon
 				if (!Member->IsABot())
 				{
 					Preview->ShowCustomColours(Member->CustomColours);
+					// (Someone else's pictures only when the settings show them.)
+					const bool bOwn = Member->GetPlayerController() && Member->GetPlayerController()->IsLocalController();
+					if (Preview->GetModel() && Member->CharacterIndex == Preview->GetModel()->GetCharacterIndex() && (bOwn || ChaosImpactSettings::IsOthersPaintShown()))
+					{
+						Preview->ShowPaintKey(Member->PaintKey);
+					}
 				}
 				Entrant.Picture = Preview->GetPicture();
 				VersusCardPreviews.Add(Preview);
@@ -4576,6 +4595,138 @@ void AChaosImpactPlayerController::SendLoadout()
 	{
 		ServerSetLoadout(Loadout.Character, Loadout.Colour, Custom);
 	}
+	SendPaint(Loadout.Character, Custom.IsEmpty() ? INDEX_NONE : Loadout.ColourPreset);
+}
+
+void AChaosImpactPlayerController::SendPaint(const int32 PaintCharacter, const int32 Preset)
+{
+	UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	int32 Key = Cache && Preset >= 0 ? Cache->RegisterPreset(PaintCharacter, Preset) : 0;
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevPaint=<n> wears a striped picture of its own (n picks the colour), whatever the preset (online checks).
+	if (int32 DevPaint = 0; Cache && FParse::Value(FCommandLine::Get(), TEXT("CIDevPaint="), DevPaint) && DevPaint > 0)
+	{
+		UChaosImpactPaintLayer* Layer = NewObject<UChaosImpactPaintLayer>(this);
+		Layer->Init();
+		const FColor Stripe = FLinearColor::MakeFromHSV8(static_cast<uint8>(DevPaint * 70), 230, 255).ToFColor(true);
+		TArray<FColor>& Pixels = Layer->GetPixels();
+		for (int32 Y = 0; Y < ChaosImpactBodyPaint::Size; ++Y)
+		{
+			for (int32 X = 0; X < ChaosImpactBodyPaint::Size; ++X)
+			{
+				if (((Y / 24) % 3) == 0)
+				{
+					Pixels[Y * ChaosImpactBodyPaint::Size + X] = Stripe;
+				}
+			}
+		}
+		TArray<FChaosImpactPaintLayerData> DevLayers;
+		DevLayers.Add({0, Layer->ToPng()});
+		Key = Cache->Register(DevLayers);
+		UE_LOG(LogChaosImpact, Log, TEXT("Dev paint %d: key %d"), DevPaint, Key);
+	}
+#endif
+	if (HasAuthority())
+	{
+		if (AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>())
+		{
+			State->PaintKey = Key;
+			State->ForceNetUpdate();
+		}
+		return;
+	}
+	const TArray<uint8>* Bytes = Cache ? Cache->GetPacked(Key) : nullptr;
+	ServerOfferPaint(Key, Bytes ? Bytes->Num() : 0);
+}
+
+void AChaosImpactPlayerController::ServerOfferPaint_Implementation(const int32 Key, const int32 Total)
+{
+	AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>();
+	UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	if (!State || !Cache)
+	{
+		return;
+	}
+	if (Key == 0 || Cache->Has(Key) || Total <= 0 || Total > UChaosImpactPaintCache::MostBytes)
+	{
+		State->PaintKey = Key != 0 && Cache->Has(Key) ? Key : 0;
+		State->ForceNetUpdate();
+		return;
+	}
+	// Not here yet: none shown until it has all come.
+	State->PaintKey = 0;
+	ClientSendPaintFrom(Key, 0);
+}
+
+void AChaosImpactPlayerController::ClientSendPaintFrom_Implementation(const int32 Key, const int32 Offset)
+{
+	const UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	const TArray<uint8>* Bytes = Cache ? Cache->GetPacked(Key) : nullptr;
+	if (Bytes && Offset >= 0 && Offset < Bytes->Num())
+	{
+		ServerPaintPiece(Key, Offset, Bytes->Num(), Cache->GetPiece(Key, Offset));
+	}
+}
+
+void AChaosImpactPlayerController::ServerPaintPiece_Implementation(const int32 Key, const int32 Offset, const int32 Total,
+	const TArray<uint8>& Bytes)
+{
+	AChaosImpactPlayerState* State = GetPlayerState<AChaosImpactPlayerState>();
+	UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	if (!State || !Cache || Bytes.Num() > UChaosImpactPaintCache::PieceBytes)
+	{
+		return;
+	}
+	int32 Next = INDEX_NONE;
+	if (Cache->Receive(Key, Offset, Total, Bytes, Next))
+	{
+		State->PaintKey = Key;
+		State->ForceNetUpdate();
+		UE_LOG(LogChaosImpact, Log, TEXT("Paint %d came from %s (%d bytes)"), Key, *State->GetPlayerName(), Total);
+	}
+	else if (Next != INDEX_NONE)
+	{
+		ClientSendPaintFrom(Key, Next);
+	}
+}
+
+void AChaosImpactPlayerController::ServerWantPaint_Implementation(const int32 Key, const int32 Offset)
+{
+	const UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	const TArray<uint8>* Bytes = Cache ? Cache->GetPacked(Key) : nullptr;
+	if (!Bytes || Offset < 0 || Offset >= Bytes->Num())
+	{
+		ClientPaintPiece(Key, Offset, 0, TArray<uint8>());
+		return;
+	}
+	ClientPaintPiece(Key, Offset, Bytes->Num(), Cache->GetPiece(Key, Offset));
+}
+
+void AChaosImpactPlayerController::ClientPaintPiece_Implementation(const int32 Key, const int32 Offset, const int32 Total,
+	const TArray<uint8>& Bytes)
+{
+	UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	if (!Cache || Key != FetchingPaint)
+	{
+		return;
+	}
+	int32 Next = INDEX_NONE;
+	if (Total > 0 && Bytes.Num() <= UChaosImpactPaintCache::PieceBytes && Cache->Receive(Key, Offset, Total, Bytes, Next))
+	{
+		Cache->FinishFetch(Key, false);
+		FetchingPaint = 0;
+		UE_LOG(LogChaosImpact, Log, TEXT("Paint %d fetched from the host (%d bytes)"), Key, Total);
+	}
+	else if (Total > 0 && Next != INDEX_NONE)
+	{
+		ServerWantPaint(Key, Next);
+	}
+	else
+	{
+		// The host has none of it (yet), or it came wrong: asked again a little later.
+		Cache->FinishFetch(Key, true);
+		FetchingPaint = 0;
+	}
 }
 
 void AChaosImpactPlayerController::ServerSetLoadout_Implementation(const int32 InCharacterIndex, const int32 InColour,
@@ -4720,6 +4871,18 @@ void AChaosImpactPlayerController::PreClientTravel(const FString& PendingURL, co
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+	// ペイント someone here is shown with but this machine does not have: fetched from the host, one set at a time.
+	if (FetchingPaint == 0 && !HasAuthority() && IsLocalController() && IsPrimaryLocalPlayerController())
+	{
+		if (UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this))
+		{
+			FetchingPaint = Cache->TakeWanted();
+			if (FetchingPaint != 0)
+			{
+				ServerWantPaint(FetchingPaint, 0);
+			}
+		}
+	}
 	// Online, a machine's second player goes by the nickname they picked (or the first player's name with (2)).
 	if (IsLocalController() && IsOnlineRoom() && GetThisLocalPlayerIndex() > 0 && PlayerState && FPlatformTime::Seconds() >= NextSecondNameAt)
 	{

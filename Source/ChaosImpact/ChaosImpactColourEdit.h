@@ -8,6 +8,9 @@
 
 class AChaosImpactCharacterPreview;
 class AChaosImpactPlayerController;
+class UChaosImpactPaintLayer;
+class UChaosImpactPaintStudio;
+struct FChaosImpactPaintLayerData;
 class FSlateWindowElementList;
 struct FAnalogInputEvent;
 struct FGeometry;
@@ -39,6 +42,11 @@ public:
 	bool HandleKeyDown(const FKeyEvent& Event);
 	bool HandleAnalog(const FAnalogInputEvent& Event);
 	bool HandleClick(const FVector2D& DesignPoint);
+	/** Any mouse button (ペイント uses them all; the rest of the screen, as a click). */
+	bool HandleMouseDown(const FVector2D& DesignPoint, const FKey& Button, bool bAlt);
+	bool HandleMouseUp(const FVector2D& DesignPoint, const FKey& Button);
+	bool HandleWheel(const FVector2D& DesignPoint, float Delta, bool bCtrl);
+	bool HandleKeyUp(const FKeyEvent& Event);
 	/** bDragging: the left button held (the ring, the square and the sliders follow it). */
 	void HandleMouseMove(const FVector2D& DesignPoint, bool bDragging = false);
 	/** Letters typed on a keyboard, for a preset's name being written. */
@@ -61,9 +69,22 @@ public:
 	/** Opens the name entry for the preset (a new one is saved under the name written). */
 	void OpenNaming();
 	bool IsNaming() const { return Naming.IsOpen(); }
+	/** ペイント: drawing freely on the model (its own screen over this one). */
+	void OpenPaint();
+	bool IsPainting() const;
+	UChaosImpactPaintStudio* GetStudio() const { return Studio; }
+	/** The pictures being made for the preset (one per layer of the model). */
+	const TArray<TObjectPtr<UChaosImpactPaintLayer>>& GetPaintLayers() const { return PaintLayers; }
+	bool HasPaint() const;
 
 private:
 	void LoadPreset(int32 Slot);
+	/** As many pictures as the model has layers (made blank when new). */
+	void EnsurePaintLayers();
+	void LoadPaint(const TArray<FChaosImpactPaintLayerData>& Paint);
+	TArray<FChaosImpactPaintLayerData> MakePaintData() const;
+	void ShowPaintOnPreview();
+	FBox2D PaintButtonRect() const;
 	/** bOn false: the part as it is. */
 	void SetPart(int32 Part, bool bOn, const FColor& Colour = FColor::White);
 	/** The part's colour, or (as it is) a neutral start. */
@@ -159,6 +180,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AChaosImpactCharacterPreview> Preview;
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactPaintStudio> Studio;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UChaosImpactPaintLayer>> PaintLayers;
 	FSlateBrush PreviewBrush;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AChaosImpactCharacterPreview>> Portraits;

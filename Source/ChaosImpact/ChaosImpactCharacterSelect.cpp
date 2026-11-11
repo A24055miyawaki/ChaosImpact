@@ -388,6 +388,7 @@ void UChaosImpactCharacterSelect::RefreshPreview(const int32 Player)
 		Previews[Player]->ShowLoadout(Slot.Character, Slot.Colour, SlotAccent(Player));
 		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 		Previews[Player]->ShowCustomColours(Colours ? Colours->GetPresetParts(Slot.Character, Slot.Preset) : TArray<uint8>());
+		Previews[Player]->ShowPresetPaint(Slot.Character, Slot.Preset);
 	}
 }
 

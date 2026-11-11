@@ -1227,6 +1227,9 @@ protected:
 	TArray<TPair<double, FVector>> PastLocations;
 	/** カスタムカラー now on the model (the player state's, unless a CPU or a team battle). */
 	TArray<uint8> ShownCustomColours;
+	/** ペイント now on the model (the player state's key, unless hidden by the settings) and the model it is on. */
+	int32 ShownPaintKey = 0;
+	TWeakObjectPtr<UChaosImpactPuppetComponent> ShownPaintOn;
 	static constexpr float MaxPresentationLeadDistance = 260.0f;
 	static constexpr float PresentationLeadBlendSpeed = 9.0f;
 	/** The fastest the lead may swing round (cm per second). */

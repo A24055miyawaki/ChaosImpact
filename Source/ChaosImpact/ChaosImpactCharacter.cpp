@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactPaintCache.h"
 #include "ChaosImpactHook.h"
 #include "ChaosImpactEase.h"
 #include "ChaosImpactFxKit.h"
@@ -5041,6 +5042,27 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 		{
 			ShownCustomColours = Wanted;
 			ToonCharacter->SetCustomColours(ChaosImpactCustomColour::ToPartColours(ToonCharacter->GetCharacterIndex(), Wanted));
+		}
+		// ペイント: the pictures they drew on it (for the character they drew them on; others' hidden if the settings say so).
+		int32 PaintKey = State && !State->IsABot() && State->CharacterIndex == ToonCharacter->GetCharacterIndex() ? State->PaintKey : 0;
+		if (PaintKey != 0 && !IsLocallyControlled() && !ChaosImpactSettings::IsOthersPaintShown())
+		{
+			PaintKey = 0;
+		}
+		if (PaintKey != ShownPaintKey || ShownPaintOn.Get() != ToonCharacter)
+		{
+			UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+			TArray<UTexture*> Pictures;
+			if (Cache && Cache->GetTextures(PaintKey, Pictures))
+			{
+				ToonCharacter->SetPaintLayers(Pictures);
+				ShownPaintKey = PaintKey;
+				ShownPaintOn = ToonCharacter;
+			}
+			else if (Cache)
+			{
+				Cache->Want(PaintKey);
+			}
 		}
 	}
 	// From the throw until just after release the thrown ball is in the mannequin's hand, so the model's hand is

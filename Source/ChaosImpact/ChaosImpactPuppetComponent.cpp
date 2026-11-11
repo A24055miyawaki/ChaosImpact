@@ -578,6 +578,128 @@ void UChaosImpactPuppetComponent::TickComponent(const float DeltaTime, const ELe
 	UpdatePose(false, DeltaTime);
 }
 
+void UChaosImpactPuppetComponent::GetPaintPieces(TArray<FPaintPiece>& Out) const
+{
+	Out.Reset();
+	const auto Whole = [&Out](const UMeshComponent* Mesh, const bool bOneLayer)
+	{
+		if (!Mesh)
+		{
+			return;
+		}
+		FPaintPiece& Piece = Out.AddDefaulted_GetRef();
+		Piece.Mesh = Mesh;
+		for (int32 Slot = 0; Slot < Mesh->GetNumMaterials(); ++Slot)
+		{
+			Piece.SlotLayers.Add(bOneLayer ? 0 : Slot);
+		}
+	};
+	if (AuthoredMesh)
+	{
+		Whole(AuthoredMesh, false);
+	}
+	else if (Skin)
+	{
+		Whole(Skin, false);
+	}
+	else if (bRigid)
+	{
+		Whole(Body, false);
+	}
+	else
+	{
+		// The limbs' model: the body and the four limbs share one material, one picture.
+		for (const UMeshComponent* Piece : {static_cast<const UMeshComponent*>(Body.Get()), static_cast<const UMeshComponent*>(ArmL.Get()),
+			static_cast<const UMeshComponent*>(ArmR.Get()), static_cast<const UMeshComponent*>(LegL.Get()), static_cast<const UMeshComponent*>(LegR.Get())})
+		{
+			Whole(Piece, true);
+		}
+	}
+}
+
+int32 UChaosImpactPuppetComponent::GetPaintLayerCount() const
+{
+	const UMeshComponent* Mesh = AuthoredMesh ? static_cast<const UMeshComponent*>(AuthoredMesh.Get())
+		: Skin ? static_cast<const UMeshComponent*>(Skin.Get()) : bRigid ? static_cast<const UMeshComponent*>(Body.Get()) : nullptr;
+	return Mesh ? FMath::Max(Mesh->GetNumMaterials(), 1) : 1;
+}
+
+TArray<UMaterialInstanceDynamic*> UChaosImpactPuppetComponent::PaintLooks()
+{
+	TArray<UMaterialInstanceDynamic*> Looks;
+	if (AuthoredMesh)
+	{
+		if (AuthoredMaterials.IsEmpty())
+		{
+			for (int32 Slot = 0; Slot < AuthoredMesh->GetNumMaterials(); ++Slot)
+			{
+				if (UMaterialInterface* Own = AuthoredMesh->GetMaterial(Slot))
+				{
+					AuthoredMaterials.Add(AuthoredMesh->CreateDynamicMaterialInstance(Slot, Own));
+				}
+			}
+		}
+		for (UMaterialInstanceDynamic* Look : AuthoredMaterials)
+		{
+			Looks.Add(Look);
+		}
+	}
+	else if (Skin || bRigid)
+	{
+		for (UMaterialInstanceDynamic* Look : SlotMaterials)
+		{
+			Looks.Add(Look);
+		}
+	}
+	else
+	{
+		Looks.Add(Material);
+	}
+	return Looks;
+}
+
+void UChaosImpactPuppetComponent::SetPaintLayers(const TArray<UTexture*>& Layers)
+{
+	PaintTextures.Reset();
+	for (UTexture* Layer : Layers)
+	{
+		PaintTextures.Add(Layer);
+	}
+	if (bReady)
+	{
+		ApplyPaint();
+	}
+	else
+	{
+		bCustomColoursDirty = true;
+	}
+}
+
+void UChaosImpactPuppetComponent::ApplyPaint()
+{
+	static UTexture* Blank = nullptr;
+	if (!Blank)
+	{
+		Blank = LoadObject<UTexture>(nullptr, TEXT("/Game/ChaosImpact/Paint/T_CI_PaintNone.T_CI_PaintNone"));
+		if (Blank)
+		{
+			Blank->AddToRoot();
+		}
+	}
+	const TArray<UMaterialInstanceDynamic*> Looks = PaintLooks();
+	for (int32 Layer = 0; Layer < Looks.Num(); ++Layer)
+	{
+		if (UMaterialInstanceDynamic* Look = Looks[Layer])
+		{
+			UTexture* Picture = PaintTextures.IsValidIndex(Layer) && PaintTextures[Layer] ? PaintTextures[Layer].Get() : Blank;
+			if (Picture)
+			{
+				Look->SetTextureParameterValue(TEXT("PaintLayer"), Picture);
+			}
+		}
+	}
+}
+
 void UChaosImpactPuppetComponent::SetCustomColours(const TArray<FLinearColor>& InPartColours)
 {
 	CustomColours = InPartColours;
@@ -647,6 +769,7 @@ void UChaosImpactPuppetComponent::ApplyCustomColours()
 	{
 		Material->SetTextureParameterValue(TEXT("BodyTexture"), ColourTextures[LookIndex]);
 	}
+	ApplyPaint();
 }
 
 void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow, const float AnimationDeltaSeconds)

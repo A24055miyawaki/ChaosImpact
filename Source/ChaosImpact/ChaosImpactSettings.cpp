@@ -36,6 +36,7 @@ namespace
 		int32 Brightness = 5;
 		bool bSwitchConfirmRight = true;
 		bool bButtonHints = true;
+		bool bOthersPaint = true;
 		int32 HudSize = 1;
 		bool bTrainingTutorial = true;
 		int32 TutorialRevision = 0;
@@ -135,6 +136,7 @@ namespace
 		GConfig->SetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("ButtonHints"), S.bButtonHints, GGameUserSettingsIni);
+		GConfig->SetBool(SettingsSection, TEXT("OthersPaint"), S.bOthersPaint, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("HudSize"), S.HudSize, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("TrainingTutorial"), S.bTrainingTutorial, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("LastFullscreenMode"), S.LastFullscreenMode, GGameUserSettingsIni);
@@ -176,6 +178,7 @@ namespace
 			GConfig->GetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("ButtonHints"), S.bButtonHints, GGameUserSettingsIni);
+			GConfig->GetBool(SettingsSection, TEXT("OthersPaint"), S.bOthersPaint, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("HudSize"), S.HudSize, GGameUserSettingsIni);
 			S.HudSize = FMath::Clamp(S.HudSize, 0, 2);
 			GConfig->GetBool(SettingsSection, TEXT("TrainingTutorial"), S.bTrainingTutorial, GGameUserSettingsIni);
@@ -1176,6 +1179,17 @@ bool ChaosImpactSettings::IsButtonHintsOn()
 void ChaosImpactSettings::SetButtonHintsOn(const bool bOn)
 {
 	Store().bButtonHints = bOn;
+	SaveOptions();
+}
+
+bool ChaosImpactSettings::IsOthersPaintShown()
+{
+	return Store().bOthersPaint;
+}
+
+void ChaosImpactSettings::SetOthersPaintShown(const bool bOn)
+{
+	Store().bOthersPaint = bOn;
 	SaveOptions();
 }
 

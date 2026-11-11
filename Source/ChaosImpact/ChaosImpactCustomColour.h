@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"
+#include "ChaosImpactBodyPaint.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "ChaosImpactCustomColour.generated.h"
 
@@ -49,6 +50,10 @@ struct FChaosImpactColourPreset
 	/** BytesPerPart per part (see above). */
 	UPROPERTY()
 	TArray<uint8> Parts;
+
+	/** ペイント: the pictures drawn on the body, one per layer drawn on (none: nothing drawn). */
+	UPROPERTY()
+	TArray<FChaosImpactPaintLayerData> Paint;
 };
 
 USTRUCT()
@@ -90,9 +95,15 @@ public:
 	void RemovePreset(int32 Character, int32 Slot);
 	/** A preset's parts, or empty (no such preset: the ordinary colours). */
 	TArray<uint8> GetPresetParts(int32 Character, int32 Slot) const;
+	/** A preset's pictures (ペイント), or none. */
+	TArray<FChaosImpactPaintLayerData> GetPresetPaint(int32 Character, int32 Slot) const;
 	/** The editor's 最近使った色, the newest first (MaxRecent at most). */
 	const TArray<FColor>& GetRecent() const;
 	void AddRecent(const FColor& Colour);
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Tests: the recent colours put back as they were before the test. */
+	void SetRecentForTests(const TArray<FColor>& Colours);
+#endif
 
 private:
 	void Save() const;

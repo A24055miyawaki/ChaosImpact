@@ -100,6 +100,12 @@ namespace
 			return Menu && Menu->HandleAnyUserAnalog(InAnalogInputEvent);
 		}
 
+		virtual bool HandleKeyUpEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+		{
+			UChaosImpactMenuWidget* Menu = Widget.Get();
+			return Menu && Menu->HandleAnyUserKeyUp(InKeyEvent);
+		}
+
 		virtual const TCHAR* GetDebugName() const override { return TEXT("ChaosImpactControllerJoin"); }
 
 	private:
@@ -1475,6 +1481,13 @@ void UChaosImpactMenuWidget::GoOnFromPodium()
 	}
 }
 
+bool UChaosImpactMenuWidget::HandleAnyUserKeyUp(const FKeyEvent& InKeyEvent)
+{
+	// (ペイント draws while a controller's button is held: it hears the button let go.)
+	return Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen() && GetVisibility() != ESlateVisibility::Collapsed
+		&& ColourEdit->HandleKeyUp(InKeyEvent);
+}
+
 bool UChaosImpactMenuWidget::IsSettingsActive() const
 {
 	return Screen == EChaosImpactScreen::Settings && SettingsScreen && SettingsScreen->IsOpen()
@@ -1943,6 +1956,7 @@ void UChaosImpactMenuWidget::UpdateDuelPreviews(const float DeltaSeconds)
 				{
 					Preview->ShowCustomColours(Colours->GetPresetParts(Own.Character, Own.ColourPreset));
 				}
+				Preview->ShowPresetPaint(Own.Character, Own.ColourPreset);
 			}
 			else
 			{
@@ -6329,6 +6343,12 @@ FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, cons
 
 FReply UChaosImpactMenuWidget::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit
+		&& ColourEdit->HandleWheel(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetWheelDelta(),
+			InMouseEvent.IsControlDown()))
+	{
+		return FReply::Handled();
+	}
 	if (IsSettingsActive())
 	{
 		SettingsScreen->HandleWheel(InMouseEvent.GetWheelDelta());
@@ -6722,8 +6742,9 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
 	{
-		ColourEdit->HandleClick(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
-		return FReply::Handled();
+		ColourEdit->HandleMouseDown(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton(),
+			InMouseEvent.IsAltDown());
+		return ColourEdit->IsPainting() ? FReply::Handled().CaptureMouse(TakeWidget()) : FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu)
 	{
@@ -6826,6 +6847,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsPainting())
+	{
+		ColourEdit->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());
+		return InMouseEvent.GetPressedButtons().Num() == 0 ? FReply::Handled().ReleaseMouseCapture() : FReply::Handled();
+	}
 	// (The invitation took the press: the tiles under it do not.)
 	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
 	{

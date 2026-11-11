@@ -5,6 +5,7 @@
 #include "ChaosImpactPuppetComponent.generated.h"
 
 class UMaterialInstanceDynamic;
+class UMeshComponent;
 class UMaterialInterface;
 class UPoseableMeshComponent;
 class USkeletalMeshComponent;
@@ -66,6 +67,17 @@ public:
 	 */
 	void SetCustomColours(const TArray<FLinearColor>& PartColours);
 	bool HasCustomColours() const;
+	/** ペイント: the model's meshes drawn on, each with its material slots' layers (-1: not drawn on). */
+	struct FPaintPiece
+	{
+		const UMeshComponent* Mesh = nullptr;
+		TArray<int32> SlotLayers;
+	};
+	void GetPaintPieces(TArray<FPaintPiece>& Out) const;
+	/** How many pictures the model has (one per material it is drawn with; the limbs' model, one for all). */
+	int32 GetPaintLayerCount() const;
+	/** The pictures over the model's colours, one per layer (null: nothing drawn there). */
+	void SetPaintLayers(const TArray<UTexture*>& Layers);
 	int32 GetColourIndex() const { return ColourIndex; }
 	/** How strictly the right hand goes to the source skeleton's own hand (1 while a thrown ball is still held). */
 	void SetRightHandExactWeight(float Weight) { RightHandExactWeight = FMath::Clamp(Weight, 0.0f, 1.0f); }
@@ -195,6 +207,11 @@ private:
 
 	/** カスタムカラー (SetCustomColours): put into every material of the model once it is built. */
 	TArray<FLinearColor> CustomColours;
+	/** ペイント (SetPaintLayers), and the materials that show each layer. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture>> PaintTextures;
+	TArray<UMaterialInstanceDynamic*> PaintLooks();
+	void ApplyPaint();
 	bool bCustomColoursDirty = false;
 	/** An authored model's own slot materials, made adjustable for the custom colours. */
 	UPROPERTY(Transient)

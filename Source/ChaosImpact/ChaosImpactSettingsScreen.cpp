@@ -533,6 +533,7 @@ void UChaosImpactSettingsScreen::BuildOtherRows()
 	static const TCHAR* const HudSizes[] = {TEXT("小さい"), TEXT("ふつう"), TEXT("大きい")};
 	Rows.Add(MakeRow(ERowKind::Value, RowHudSize, TEXT("UIの大きさ"), HudSizes[FMath::Clamp(GetHudSize(), 0, 2)]));
 	Rows.Add(MakeRow(ERowKind::Value, RowButtonHints, TEXT("ボタンヒント"), OnOff(IsButtonHintsOn())));
+	Rows.Add(MakeRow(ERowKind::Value, RowOthersPaint, TEXT("ほかの人のペイント"), IsOthersPaintShown() ? TEXT("表示する") : TEXT("表示しない")));
 	// (トレーニングのチュートリアル: retired with 訓練場; its row is gone.)
 	// Tucked away at the very end: the loading screens' little games, to play for as long as you like.
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("おまけ")));
@@ -748,6 +749,10 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 	else if (Id == RowButtonHints)
 	{
 		SetButtonHintsOn(!IsButtonHintsOn());
+	}
+	else if (Id == RowOthersPaint)
+	{
+		SetOthersPaintShown(!IsOthersPaintShown());
 	}
 	else if (Id == RowTutorial)
 	{
@@ -1300,6 +1305,7 @@ FString UChaosImpactSettingsScreen::GetRowHelp(const int32 Id) const
 	case RowSwitchConfirm: return TEXT("Switchのコントローラーで「決定」に使うボタンです");
 	case RowHudSize: return TEXT("プレイ中の画面に出る表示（体力・ボール・順位・ヒントなど）の大きさです。全モード共通です");
 	case RowButtonHints: return TEXT("プレイ中、画面の左右にいま使える操作のボタンを出すかどうかです");
+	case RowOthersPaint: return TEXT("ほかの人がカラーエディットでキャラに描いた絵を表示するかどうかです（自分の絵はいつも表示）");
 	case RowTutorial: return TEXT("トレーニングに入るたびに、操作とはじめて持ったボールを教えます");
 	case RowMiniGames: return TEXT("ロード画面のミニゲームを、それだけで遊べます");
 	default: return FString();

@@ -74,6 +74,27 @@ public:
 	/** The model as it is now (to hide or tint). */
 	class UChaosImpactPuppetComponent* GetModel() const { return Model; }
 
+	/** ペイント over the model's colours (one picture per layer, UChaosImpactPuppetComponent::SetPaintLayers; empty: none). */
+	void ShowPaint(const TArray<UTexture*>& Pictures);
+	/** This machine's preset's ペイント (UChaosImpactPaintCache), or the pictures of a key (none while they are not here). */
+	void ShowPresetPaint(int32 Character, int32 Preset);
+	void ShowPaintKey(int32 Key);
+	/**
+	 * ペイント's view: the model held still in its pose (facing +Y), filmed into a picture Width x Height by a camera that
+	 * goes round it (SetPaintView). The stage is put away and the lights go round with the camera. EndPaintView puts it all back.
+	 */
+	void BeginPaintView(int32 Width, int32 Height);
+	void EndPaintView();
+	bool IsPaintView() const { return bPaintView; }
+	/** Yaw and pitch in degrees (yaw 90: in front), Zoom 1 the whole model, Pan in world units across and up the picture. */
+	void SetPaintView(float Yaw, float Pitch, float Zoom, const FVector2D& Pan);
+	/** Where the camera turns about (the middle of what it films). */
+	void SetPaintFocus(const FVector& Centre, float Radius);
+	/** The ray from the camera through a point of the picture (0..1 across and down). */
+	void GetPictureRay(const FVector2D& PictureUV, FVector& OutOrigin, FVector& OutDirection) const;
+	/** Where a world point is on the picture (0..1 across and down); false behind the camera. */
+	bool ProjectToPicture(const FVector& World, FVector2D& OutPictureUV) const;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -149,4 +170,19 @@ private:
 	float NextVictoryAppeal = 0.0f;
 	float Spin = 0.0f;
 	float SpinKick = 0.0f;
+
+	// ペイント's view.
+	bool bPaintView = false;
+	FVector PaintFocus = FVector::ZeroVector;
+	float PaintRadius = 100.0f;
+	FVector SavedCameraLocation = FVector::ZeroVector;
+	FRotator SavedCameraRotation = FRotator::ZeroRotator;
+	float SavedFOV = 30.0f;
+	float SavedFacing = -22.0f;
+	FVector SavedBackdropLocation = FVector::ZeroVector;
+	FRotator SavedBackdropRotation = FRotator::ZeroRotator;
+	FVector SavedBackdropScale = FVector::OneVector;
+	FVector SavedLights[3];
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture>> PaintLayers;
 };

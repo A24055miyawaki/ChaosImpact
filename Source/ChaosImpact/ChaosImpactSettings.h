@@ -181,6 +181,9 @@ namespace ChaosImpactSettings
 	/** The button hints down the side of the screen in play. */
 	CHAOSIMPACT_API bool IsButtonHintsOn();
 	CHAOSIMPACT_API void SetButtonHintsOn(bool bOn);
+	/** ペイント: other players' pictures on their characters shown (off: only this machine's own). */
+	CHAOSIMPACT_API bool IsOthersPaintShown();
+	CHAOSIMPACT_API void SetOthersPaintShown(bool bOn);
 	/** The size of the in-play HUD in every mode: 0 small, 1 normal, 2 large; GetHudSizeFactor is what it multiplies by. */
 	CHAOSIMPACT_API int32 GetHudSize();
 	CHAOSIMPACT_API void SetHudSize(int32 Size);

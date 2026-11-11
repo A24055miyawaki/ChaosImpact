@@ -6,6 +6,7 @@
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPuppetComponent.h"
 #include "ChaosImpactCustomColour.h"
+#include "ChaosImpactPaintCache.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -240,6 +241,10 @@ void AChaosImpactCharacterPreview::SetVictoryMotion(const bool bOn)
 
 void AChaosImpactCharacterPreview::SetFacing(const float Yaw, const float Sway)
 {
+	if (bPaintView)
+	{
+		return;
+	}
 	FacingYaw = Yaw;
 	SwayAmount = Sway;
 }
@@ -279,6 +284,8 @@ void AChaosImpactCharacterPreview::RebuildModel(const int32 CharacterIndex)
 		Model = nullptr;
 	}
 	ModelCharacter = CharacterIndex;
+	// (A new character's pictures are its own: the old ones do not fit it.)
+	PaintLayers.Reset();
 	if (Model && Model->HasAuthoredAnimations())
 	{
 		Model->SetRelativeRotation(FRotator(0.0f, 65.0f, 0.0f));
@@ -327,6 +334,182 @@ void AChaosImpactCharacterPreview::ShowCustomColours(const TArray<uint8>& Parts)
 	{
 		Model->SetCustomColours(ChaosImpactCustomColour::ToPartColours(ModelCharacter, Parts));
 	}
+}
+
+void AChaosImpactCharacterPreview::ShowPaint(const TArray<UTexture*>& Pictures)
+{
+	PaintLayers.Reset();
+	for (UTexture* Layer : Pictures)
+	{
+		PaintLayers.Add(Layer);
+	}
+	if (Model)
+	{
+		Model->SetPaintLayers(Pictures);
+	}
+}
+
+void AChaosImpactCharacterPreview::ShowPresetPaint(const int32 Character, const int32 Preset)
+{
+	UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	ShowPaint(Cache && Preset >= 0 ? Cache->GetPresetTextures(Character, Preset) : TArray<UTexture*>());
+}
+
+void AChaosImpactCharacterPreview::ShowPaintKey(const int32 Key)
+{
+	UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(this);
+	TArray<UTexture*> Pictures;
+	if (Cache && !Cache->GetTextures(Key, Pictures))
+	{
+		Cache->Want(Key);
+	}
+	ShowPaint(Pictures);
+}
+
+void AChaosImpactCharacterPreview::BeginPaintView(const int32 Width, const int32 Height)
+{
+	if (bPaintView || !Camera)
+	{
+		return;
+	}
+	bPaintView = true;
+	SavedCameraLocation = Camera->GetRelativeLocation();
+	SavedCameraRotation = Camera->GetComponentRotation();
+	SavedFOV = Camera->FOVAngle;
+	SavedFacing = FacingYaw;
+	SavedLights[0] = KeyLight->GetRelativeLocation();
+	SavedLights[1] = FillLight->GetRelativeLocation();
+	SavedLights[2] = RimLight->GetRelativeLocation();
+	if (Picture && (Picture->SizeX != Width || Picture->SizeY != Height))
+	{
+		Picture->ResizeTarget(Width, Height);
+	}
+	Floor->SetVisibility(false);
+	FloorRing->SetVisibility(false);
+	SavedBackdropLocation = Backdrop->GetRelativeLocation();
+	SavedBackdropRotation = Backdrop->GetComponentRotation();
+	SavedBackdropScale = Backdrop->GetRelativeScale3D();
+	Camera->FOVAngle = 30.0f;
+	// Held still, square to the camera's start.
+	FacingYaw = 0.0f;
+	SpinKick = 0.0f;
+	Pose->SetRelativeRotation(FRotator::ZeroRotator);
+	Pose->TickAnimation(0.0f, false);
+	Pose->RefreshBoneTransforms();
+	FBox Box(ForceInit);
+	if (Model)
+	{
+		Model->UpdatePose(true, 0.0f);
+		TArray<USceneComponent*> Parts;
+		Model->GetChildrenComponents(true, Parts);
+		for (USceneComponent* Part : Parts)
+		{
+			if (const UPrimitiveComponent* Shape = Cast<UPrimitiveComponent>(Part); Shape && Shape->IsVisible())
+			{
+				Box += Shape->Bounds.GetBox();
+			}
+		}
+	}
+	if (Box.IsValid)
+	{
+		SetPaintFocus(Box.GetCenter(), static_cast<float>(Box.GetExtent().Size()) * 0.82f);
+	}
+	else
+	{
+		SetPaintFocus(GetActorLocation() + FVector(0.0f, 0.0f, 100.0f), 100.0f);
+	}
+	SetPaintView(90.0f, 8.0f, 1.0f, FVector2D::ZeroVector);
+}
+
+void AChaosImpactCharacterPreview::EndPaintView()
+{
+	if (!bPaintView)
+	{
+		return;
+	}
+	bPaintView = false;
+	if (Picture && (Picture->SizeX != PictureWidth || Picture->SizeY != PictureHeight))
+	{
+		Picture->ResizeTarget(PictureWidth, PictureHeight);
+	}
+	Floor->SetVisibility(true);
+	FloorRing->SetVisibility(true);
+	Backdrop->SetRelativeLocation(SavedBackdropLocation);
+	Backdrop->SetWorldRotation(SavedBackdropRotation);
+	Backdrop->SetRelativeScale3D(SavedBackdropScale);
+	Camera->SetRelativeLocation(SavedCameraLocation);
+	Camera->SetWorldRotation(SavedCameraRotation);
+	Camera->FOVAngle = SavedFOV;
+	KeyLight->SetRelativeLocation(SavedLights[0]);
+	FillLight->SetRelativeLocation(SavedLights[1]);
+	RimLight->SetRelativeLocation(SavedLights[2]);
+	FacingYaw = SavedFacing;
+}
+
+void AChaosImpactCharacterPreview::SetPaintFocus(const FVector& Centre, const float Radius)
+{
+	PaintFocus = Centre;
+	PaintRadius = FMath::Max(Radius, 10.0f);
+}
+
+void AChaosImpactCharacterPreview::SetPaintView(const float Yaw, const float Pitch, const float Zoom, const FVector2D& Pan)
+{
+	if (!bPaintView || !Camera)
+	{
+		return;
+	}
+	const FVector Out = FRotator(FMath::Clamp(Pitch, -85.0f, 85.0f), Yaw, 0.0f).Vector();
+	const FRotator Look = (-Out).Rotation();
+	const FRotationMatrix Axes(Look);
+	const FVector Right = Axes.GetUnitAxis(EAxis::Y);
+	const FVector Up = Axes.GetUnitAxis(EAxis::Z);
+	// Zoom 1: the whole model fits the picture (with a little room round it).
+	const float HalfWidth = FMath::Tan(FMath::DegreesToRadians(Camera->FOVAngle * 0.5f));
+	const float Aspect = Picture ? static_cast<float>(Picture->SizeX) / FMath::Max(Picture->SizeY, 1) : 1.0f;
+	const float HalfShort = FMath::Min(HalfWidth, HalfWidth / FMath::Max(Aspect, 0.1f));
+	const float Distance = PaintRadius * 1.05f / FMath::Max(HalfShort, 0.05f) / FMath::Clamp(Zoom, 0.2f, 20.0f);
+	const FVector Centre = PaintFocus + Right * Pan.X + Up * Pan.Y;
+	Camera->SetWorldLocation(Centre + Out * FMath::Max(Distance, 8.0f));
+	Camera->SetWorldRotation(Look);
+	// The backdrop stays behind the model, square to the camera and wider than it sees.
+	const float Behind = PaintRadius * 2.2f;
+	const float Seen = 2.0f * (Distance + Behind) * HalfWidth * 1.3f / 100.0f;
+	Backdrop->SetWorldLocation(PaintFocus - Out * Behind);
+	Backdrop->SetWorldRotation(FRotationMatrix::MakeFromYZ(Out, FVector::UpVector).Rotator());
+	Backdrop->SetRelativeScale3D(FVector(FMath::Max(Seen, 4.0f), 0.05f, FMath::Max(Seen, 4.0f)));
+	// The lights go round with the camera (the side being painted is always lit).
+	const FRotator Turn(0.0f, Yaw - 90.0f, 0.0f);
+	KeyLight->SetRelativeLocation(Turn.RotateVector(SavedLights[0]));
+	FillLight->SetRelativeLocation(Turn.RotateVector(SavedLights[1]));
+	RimLight->SetRelativeLocation(Turn.RotateVector(SavedLights[2]));
+}
+
+void AChaosImpactCharacterPreview::GetPictureRay(const FVector2D& PictureUV, FVector& OutOrigin, FVector& OutDirection) const
+{
+	OutOrigin = Camera->GetComponentLocation();
+	const FRotationMatrix Axes(Camera->GetComponentRotation());
+	const float Aspect = Picture ? static_cast<float>(Picture->SizeX) / FMath::Max(Picture->SizeY, 1) : 0.75f;
+	const float HalfWidth = FMath::Tan(FMath::DegreesToRadians(Camera->FOVAngle * 0.5f));
+	const float X = static_cast<float>(PictureUV.X * 2.0 - 1.0) * HalfWidth;
+	const float Y = static_cast<float>(1.0 - PictureUV.Y * 2.0) * HalfWidth / Aspect;
+	OutDirection = (Axes.GetUnitAxis(EAxis::X) + Axes.GetUnitAxis(EAxis::Y) * X + Axes.GetUnitAxis(EAxis::Z) * Y).GetSafeNormal();
+}
+
+bool AChaosImpactCharacterPreview::ProjectToPicture(const FVector& World, FVector2D& OutPictureUV) const
+{
+	const FRotationMatrix Axes(Camera->GetComponentRotation());
+	const FVector Local = World - Camera->GetComponentLocation();
+	const double Ahead = FVector::DotProduct(Local, Axes.GetUnitAxis(EAxis::X));
+	if (Ahead <= 0.1)
+	{
+		return false;
+	}
+	const double Aspect = Picture ? static_cast<double>(Picture->SizeX) / FMath::Max(Picture->SizeY, 1) : 0.75;
+	const double HalfWidth = FMath::Tan(FMath::DegreesToRadians(Camera->FOVAngle * 0.5));
+	const double X = FVector::DotProduct(Local, Axes.GetUnitAxis(EAxis::Y)) / Ahead / HalfWidth;
+	const double Y = FVector::DotProduct(Local, Axes.GetUnitAxis(EAxis::Z)) / Ahead / (HalfWidth / Aspect);
+	OutPictureUV = FVector2D((X + 1.0) * 0.5, (1.0 - Y) * 0.5);
+	return true;
 }
 
 void AChaosImpactCharacterPreview::ShowLoadout(const int32 CharacterIndex, const int32 Colour, const FLinearColor& Accent)
@@ -397,6 +580,16 @@ void AChaosImpactCharacterPreview::ReturnToIdle()
 
 void AChaosImpactCharacterPreview::Animate(const float DeltaSeconds)
 {
+	if (bPaintView)
+	{
+		// Held still while it is painted (the surface drawn on is the pose as it stands).
+		Pose->SetRelativeRotation(FRotator::ZeroRotator);
+		if (Model)
+		{
+			Model->UpdatePose(true, 0.0f);
+		}
+		return;
+	}
 	Age += DeltaSeconds;
 	if (ReadyEndsAt > 0.0 && Age >= ReadyEndsAt)
 	{

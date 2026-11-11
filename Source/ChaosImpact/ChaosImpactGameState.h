@@ -161,6 +161,10 @@ public:
 	UPROPERTY(Replicated)
 	TArray<uint8> CustomColours;
 
+	/** ペイント: the key of the pictures drawn on the character (UChaosImpactPaintCache; 0: none, or not here yet). */
+	UPROPERTY(Replicated)
+	int32 PaintKey = 0;
+
 	/** 0 for the host, then 1, 2, ... in the order members entered the room. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	int32 JoinOrder = 0;

@@ -39,6 +39,8 @@ public class ChaosImpact : ModuleRules
 			"Json",
 			"MoviePlayer",
 			"MediaAssets",
+			// ペイント: the pictures kept as PNG.
+			"ImageCore",
 			// The exploration map's terrain builder (OpenWorld/).
 			"MeshDescription",
 			"StaticMeshDescription",

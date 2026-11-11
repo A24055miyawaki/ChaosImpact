@@ -33,6 +33,8 @@ public:
 	bool IsInPlay() const { return bInPlay; }
 	/** Server: a nova part out on this pad now, in place of its ball; no ball comes out until it is taken. */
 	bool PutOutNovaPart(EChaosImpactNovaPart Part);
+	/** Server: a ball out on this pad now if it has none (a new round starting), its usual wait starting over. */
+	void SpawnNow();
 	AChaosImpactNovaPart* GetNovaPart() const { return ActiveNovaPart.Get(); }
 
 	/** How likely (0-1) a new ball from this pad is of this kind, from the weights. */
@@ -117,6 +119,10 @@ protected:
 	float DriveBallChance = 0.04f;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Prison (プリズン・VS/トレーニング限定)"))
 	float PrisonBallChance = 0.06f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Hook (フック)"))
+	float HookBallChance = 0.06f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Anchor (アンカー)"))
+	float AnchorBallChance = 0.05f;
 
 	/** What the weights come to, in percent (follows them as they change). */
 	UPROPERTY(VisibleAnywhere, Transient, Category="Chaos Impact|Ball Chances", meta=(DisplayName="確率の内訳 (%)", MultiLine="true"))

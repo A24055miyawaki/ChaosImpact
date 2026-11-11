@@ -3,6 +3,8 @@
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactSuddenDeathZone.h"
 #include "ChaosImpactTutorial.h"
+#include "ChaosImpactNovaParts.h"
+#include "ChaosImpactDojo.h"
 #include "ChaosImpactTournamentWidget.h"
 #include "ChaosImpactPlayerMarkerLayout.h"
 #include "ChaosImpactGameViewportClient.h"
@@ -957,6 +959,14 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(1.0f, 0.9f, 0.55f), FLinearColor(0.24f, 0.11f, 0.0f, 0.97f),
 				FLinearColor(1.0f, 0.62f, 0.12f), FLinearColor(0.55f, 0.27f, 0.0f, 0.95f),
 				FLinearColor(1.0f, 0.95f, 0.7f), FLinearColor(1.0f, 0.88f, 0.6f)};
+		case EChaosImpactBallType::Hook:
+			return {FLinearColor(0.8f, 1.0f, 0.96f), FLinearColor(0.0f, 0.14f, 0.12f, 0.97f),
+				FLinearColor(0.08f, 0.95f, 0.78f), FLinearColor(0.02f, 0.36f, 0.3f, 0.95f),
+				FLinearColor(0.85f, 1.0f, 0.96f), FLinearColor(0.78f, 0.98f, 0.92f)};
+		case EChaosImpactBallType::Anchor:
+			return {FLinearColor(0.93f, 1.0f, 0.78f), FLinearColor(0.1f, 0.14f, 0.0f, 0.97f),
+				FLinearColor(0.66f, 1.0f, 0.06f), FLinearColor(0.26f, 0.4f, 0.0f, 0.95f),
+				FLinearColor(0.95f, 1.0f, 0.82f), FLinearColor(0.9f, 1.0f, 0.75f)};
 		case EChaosImpactBallType::Simae:
 			return {FLinearColor(0.98f, 0.99f, 1.0f), FLinearColor(0.12f, 0.14f, 0.18f, 0.97f),
 				FLinearColor(0.92f, 0.96f, 1.0f), FLinearColor(0.03f, 0.035f, 0.045f, 1.0f),
@@ -1296,8 +1306,13 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 				&& (Own->CanToggleReady() || Own->CanToggleSpectating());
 			const float KnockoutFade = 1.0f - 0.8f * FMath::Clamp(1.0f - static_cast<float>(FPlatformTime::Seconds() - KnockoutAt) / 2.2f, 0.0f, 1.0f);
 			Tutorial.Paint(AllottedGeometry, OutDrawElements, HudLayer + 20, Own, HintScale, bCornerColumn ? 236.0f : 74.0f, KnockoutFade, &HudBoxes);
+			// 訓練場: the lesson's slides, task and count (the first player's view only).
+			if (const AChaosImpactDojo* Dojo = Own->IsPrimaryLocalPlayerController() ? AChaosImpactDojo::Find(GetWorld()) : nullptr)
+			{
+				Dojo->PaintHud(AllottedGeometry, OutDrawElements, HudLayer + 40, Own, HintScale);
+			}
 			// The button hints down the left side (not while the tutorial is teaching them).
-			if (ChaosImpactSettings::IsButtonHintsOn() && !Tutorial.IsShowing() && Own->IsGameplayActive()
+			if (ChaosImpactSettings::IsButtonHintsOn() && !Tutorial.IsShowing() && Own->IsGameplayActive() && !AChaosImpactDojo::IsRecordingRun()
 				&& !(Own->GetTournamentWidget() && Own->GetTournamentWidget()->CoversPlay()))
 			{
 				FChaosImpactTutorial::PaintHints(AllottedGeometry, OutDrawElements, HudLayer + 14, Own, HintScale, &HudBoxes);
@@ -1937,6 +1952,29 @@ void UChaosImpactChargeWidget::PaintOverviewMap(const FGeometry& AllottedGeometr
 		HudAbove(Marks, 2).Text(Name, static_cast<float>(At.X), static_cast<float>(At.Y) - 30.0f * S, HudFit(Name, 13.0f * S, 120.0f * S, TEXT("Bold")),
 			Color, ETextAlign::Center, TEXT("Bold"), 2.0f * S, Ink);
 	}
+	// In smoke the map is clouded over too (as thick as the view is): its picture and everyone on it hidden.
+	if (const float Thick = GetSmokeCover(); Thick > 0.0f)
+	{
+		OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry.ToPaintGeometry(FVector2f(Side, Side), FSlateLayoutTransform(FVector2f(Origin)))));
+		const FPainter Fog{AllottedGeometry, OutDrawElements, Layer + 10, Thick * In};
+		Fog.Box(static_cast<float>(Origin.X), static_cast<float>(Origin.Y), Side, Side, FLinearColor(0.3f, 0.29f, 0.34f, 0.9f));
+		const FPainter Clouds = HudAbove(Fog, 1);
+		const float Time = static_cast<float>(FMath::Fmod(Clock, 1000.0));
+		for (int32 Index = 0; Index < 10; ++Index)
+		{
+			const float Seed = Index * 12.9898f;
+			const float BaseX = FMath::Frac(FMath::Sin(Seed) * 43758.55f);
+			const float BaseY = FMath::Frac(FMath::Sin(Seed + 3.1f) * 24634.63f);
+			const FVector2D Center = Origin + FVector2D(BaseX + 0.07f * FMath::Sin(Time * 0.3f + Index), BaseY + 0.06f * FMath::Cos(Time * 0.25f + Index * 1.7f)) * Side;
+			const float Radius = Side * (0.2f + 0.12f * FMath::Frac(FMath::Sin(Seed + 7.7f) * 9123.1f));
+			const FLinearColor Tone = Index % 3 == 0 ? FLinearColor(0.2f, 0.19f, 0.23f) : FLinearColor(0.55f, 0.53f, 0.6f);
+			for (int32 Ring = 0; Ring < 3; ++Ring)
+			{
+				Clouds.Disc(Center, Radius * (1.0f - Ring * 0.25f), FLinearColor(Tone.R, Tone.G, Tone.B, 0.2f));
+			}
+		}
+		OutDrawElements.PopClip();
+	}
 }
 
 void UChaosImpactChargeWidget::PaintSoloClear(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
@@ -2053,7 +2091,7 @@ int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
 	if (Size.X < 1 || Size.Y < 1 || !FBox2D(FVector2D::ZeroVector, Size).IsInside(Pointer)) { return 0; }
 	for (int32 Hit = 1; Hit <= 6; ++Hit)
 	{
-		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this))) { continue; }
+		if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this) || PC->IsDojo())) { continue; }
 		if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 		if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
 		if (Hit == 6 && (!Character || Character->GetBallForm()->IsCaptured() || !Character->GetBallForm()->IsAvailable())) { continue; }
@@ -2123,11 +2161,12 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 	const int32 Hover = GetGameplayPointerHit();
 	// The pointer and its marks above the buttons (each a three-layer shard with its label on it).
 	const FPainter Paint{Geometry, Elements, Layer + 5};
-	if (bEasy)
+	// (Not in 訓練場's filmed clips: the picture keeps to the game itself.)
+	if (bEasy && !AChaosImpactDojo::IsRecordingRun())
 	{
 		for (int32 Hit = 1; Hit <= 6; ++Hit)
 		{
-			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this))) { continue; }
+			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this) || PC->IsDojo())) { continue; }
 			if (Hit == 4 && !PC->CanToggleReady()) { continue; }
 			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
 			if (Hit == 6 && (!ShoulderCharacter || ShoulderCharacter->GetBallForm()->IsCaptured() || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
@@ -2220,6 +2259,8 @@ void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& P
 	case EChaosImpactBallType::Simae: Body = FLinearColor(0.95f, 0.97f, 1.0f, 1.0f); break;
 	case EChaosImpactBallType::Drive: Body = FLinearColor(1.0f, 0.56f, 0.1f, 1.0f); break;
 	case EChaosImpactBallType::Prison: Body = FLinearColor(.22f,.035f,.018f,1.f); break;
+	case EChaosImpactBallType::Hook: Body = FLinearColor(0.1f, 0.42f, 0.4f, 1.0f); break;
+	case EChaosImpactBallType::Anchor: Body = FLinearColor(0.34f, 0.5f, 0.04f, 1.0f); break;
 	default: break;
 	}
 	const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -2275,6 +2316,47 @@ void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& P
 			const float Start = Swirl + Gust * 120.0f;
 			Paint.Arc(Center, Radius * (0.28f + 0.16f * Gust), Start, Start + 150.0f,
 				FLinearColor(0.88f, 1.0f, 0.84f, 0.95f - 0.15f * Gust), 2.5f);
+		}
+		break;
+	}
+	case EChaosImpactBallType::Hook:
+	{
+		// A hook hanging from two chain links, swinging a little.
+		const float Swing = 0.18f * FMath::Sin(Time * 3.0f);
+		const FVector2D Down(FMath::Sin(Swing), FMath::Cos(Swing));
+		const FVector2D Across(Down.Y, -Down.X);
+		const FLinearColor Steel(0.88f, 0.98f, 0.96f, 1.0f);
+		const FVector2D Top = Center - Down * Radius * 0.62f;
+		Paint.Ring(Top, Radius * 0.13f, Steel, 2.0f);
+		Paint.Ring(Top + Down * Radius * 0.24f, Radius * 0.13f, Glow, 2.0f);
+		const FVector2D Shank = Top + Down * Radius * 0.37f;
+		const FVector2D Bend = Center + Down * Radius * 0.3f;
+		Paint.Line(Shank, Bend, Steel, 3.0f);
+		// The curve up to the point, and its barb.
+		const FVector2D Bowl = Bend - Across * Radius * 0.24f;
+		const float Base = FMath::RadiansToDegrees(FMath::Atan2(Down.Y, Down.X));
+		Paint.Arc(Bowl, Radius * 0.24f, Base - 90.0f - 180.0f, Base - 90.0f + 10.0f, Steel, 3.0f);
+		const FVector2D Point = Bowl - Across * Radius * 0.24f - Down * Radius * 0.22f;
+		Paint.Line(Bowl - Across * Radius * 0.24f, Point, Steel, 3.0f);
+		Paint.Line(Point, Point + Across * Radius * 0.14f + Down * Radius * 0.1f, Glow, 2.0f);
+		break;
+	}
+	case EChaosImpactBallType::Anchor:
+	{
+		// An anchor: a ring on top, the shank with its stock, and the two curved flukes, bobbing a little.
+		const FVector2D Bob(0.0f, Radius * 0.05f * FMath::Sin(Time * 4.0f));
+		const FLinearColor Steel(0.95f, 1.0f, 0.86f, 1.0f);
+		const FVector2D Top = Center + Bob - FVector2D(0.0f, Radius * 0.6f);
+		const FVector2D Bottom = Center + Bob + FVector2D(0.0f, Radius * 0.55f);
+		Paint.Ring(Top, Radius * 0.13f, Glow, 2.0f);
+		Paint.Line(Top + FVector2D(0.0f, Radius * 0.13f), Bottom, Steel, 3.0f);
+		Paint.Line(Top + FVector2D(-Radius * 0.3f, Radius * 0.32f), Top + FVector2D(Radius * 0.3f, Radius * 0.32f), Steel, 2.5f);
+		Paint.Arc(Bottom - FVector2D(0.0f, Radius * 0.42f), Radius * 0.48f, 30.0f, 150.0f, Steel, 3.0f);
+		for (const float Side : {-1.0f, 1.0f})
+		{
+			const FVector2D Tip = Bottom - FVector2D(0.0f, Radius * 0.42f)
+				+ FVector2D(FMath::Cos(FMath::DegreesToRadians(Side > 0.0f ? 30.0f : 150.0f)), FMath::Sin(FMath::DegreesToRadians(30.0f))) * Radius * 0.48f;
+			Paint.Line(Tip, Tip + FVector2D(Side * Radius * 0.06f, -Radius * 0.16f), Glow, 2.5f);
 		}
 		break;
 	}
@@ -3008,6 +3090,35 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 				Gauge.Arc(GaugeCenter, Radius, -90.0f, 270.0f, WithAlpha(Color, 0.25f), 3.5f * S);
 				Gauge.Arc(GaugeCenter, Radius, -90.0f, -90.0f + 360.0f * WarpCharge,
 					FMath::Lerp(Color, FLinearColor::White, Pulse * 0.7f), 3.5f * S);
+			}
+			// Carrying nova parts: the three of them over the name, the ones held lit (everyone can see who is near a nova).
+			if (const uint8 Parts = Character->GetNovaParts(); Parts != 0
+				&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(
+					PlayerController, Body + FVector(0.0f, 0.0f, HalfHeight + 40.0f), HeadScreen, true))
+			{
+				const float Now = static_cast<float>(World->GetTimeSeconds());
+				const FLinearColor NovaColor = ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Nova);
+				const FVector2D Mid(HeadScreen.X, HeadScreen.Y - 60.0f * S + FMath::Sin(Now * 3.0f) * 2.0f * S);
+				const float Step = 20.0f * S;
+				const FPainter Back{AllottedGeometry, OutDrawElements, BaseLayer + 1, Shown};
+				RoundedBox(Back, Mid.X - Step * 1.5f - 4.0f * S, Mid.Y - 11.0f * S, Step * 3.0f + 8.0f * S, 22.0f * S, 11.0f * S, WithAlpha(Ink, 0.7f));
+				const FPainter Pip = HudAbove(Back, 1);
+				for (int32 Index = 0; Index < 3; ++Index)
+				{
+					const FVector2D At(Mid.X + (Index - 1) * Step, Mid.Y);
+					const bool bHeld = (Parts & ChaosImpactNovaParts::Bit(static_cast<EChaosImpactNovaPart>(Index))) != 0;
+					if (bHeld)
+					{
+						const float Glow = 0.5f + 0.5f * FMath::Sin(Now * 5.0f + Index);
+						Pip.Disc(At, 9.0f * S, WithAlpha(NovaColor, 0.3f + 0.25f * Glow));
+						HudAbove(Pip, 1).Disc(At, 6.5f * S, NovaColor);
+						HudAbove(Pip, 2).Disc(At + FVector2D(-2.0f * S, -2.0f * S), 2.0f * S, WithAlpha(FLinearColor::White, 0.85f));
+					}
+					else
+					{
+						Pip.Ring(At, 5.5f * S, WithAlpha(Paper, 0.35f), 1.5f * S);
+					}
+				}
 			}
 			continue;
 		}

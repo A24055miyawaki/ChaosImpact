@@ -119,7 +119,8 @@ bool UChaosImpactBallFormComponent::IsAvailable() const
 	{
 		return Match->IsTeamBattle() && Match->Phase == EChaosImpactOnlinePhase::Match;
 	}
-	return PC && PC->IsTrainingMode() && PC->ShowsTrainingPauseEntries();
+	// (訓練場 too: its lesson teaches it.)
+	return PC && PC->IsTrainingMode() && (PC->ShowsTrainingPauseEntries() || (PC->IsDojo() && !PC->IsVersusMatchWorld()));
 }
 
 bool UChaosImpactBallFormComponent::CanCollect(const AChaosImpactCharacter* Passenger) const

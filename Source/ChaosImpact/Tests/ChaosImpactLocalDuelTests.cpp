@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS
+#include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactDuelStage.h"
@@ -217,6 +218,14 @@ namespace
 				return false;
 			case 6:
 				Shot(TEXT("5_RoundWin.png"));
+				// The pads' balls taken just as the round ended (the next round must still start with every pad full).
+				for (TActorIterator<AChaosImpactBallSpawner> It(World); It; ++It)
+				{
+					if (AChaosImpactBall* Taken = It->GetActiveBall())
+					{
+						Taken->Destroy();
+					}
+				}
 				++Step;
 				return false;
 			case 7:
@@ -224,6 +233,20 @@ namespace
 				if (Duel.Round != 2 || Duel.Step != EChaosImpactDuelStep::Fight)
 				{
 					return false;
+				}
+				{
+					int32 Pads = 0;
+					int32 Full = 0;
+					for (TActorIterator<AChaosImpactBallSpawner> It(World); It; ++It)
+					{
+						if (It->IsInPlay())
+						{
+							++Pads;
+							Full += It->GetActiveBall() ? 1 : 0;
+						}
+					}
+					UE_LOG(LogTemp, Log, TEXT("Duel round 2 starts with %d of %d pads holding a ball"), Full, Pads);
+					Test->TestTrue(TEXT("Round 2 starts with a ball on every pad"), Pads > 0 && Full == Pads);
 				}
 				Test->TestTrue(TEXT("Both back at full health for round 2"), FMath::IsNearlyEqual(Me->GetHealth(), Me->GetMaxHealth())
 					&& Cpu && !Cpu->IsEliminated() && FMath::IsNearlyEqual(Cpu->GetHealth(), Cpu->GetMaxHealth()));

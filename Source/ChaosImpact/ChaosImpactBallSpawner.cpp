@@ -1,4 +1,5 @@
 #include "ChaosImpactBallSpawner.h"
+#include "ChaosImpactBallSwitch.h"
 
 #include "ChaosImpactBall.h"
 #include "ChaosImpact.h"
@@ -64,6 +65,8 @@ float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Simae: return &SimaeBallChance;
 	case EChaosImpactBallType::Drive: return &DriveBallChance;
 	case EChaosImpactBallType::Prison: return &PrisonBallChance;
+	case EChaosImpactBallType::Hook: return &HookBallChance;
+	case EChaosImpactBallType::Anchor: return &AnchorBallChance;
 	default: return nullptr;
 	}
 }
@@ -72,10 +75,13 @@ float AChaosImpactBallSpawner::GetChance(const EChaosImpactBallType Type) const
 {
 	const bool bAllowPrison = !GetWorld() || !GetWorld()->IsGameWorld() || ChaosImpactBallTypes::IsPrisonMode(GetWorld());
 	if (Type==EChaosImpactBallType::Prison && !bAllowPrison) { return 0.f; }
+	// ボールスイッチ: a kind the host switched off never comes out.
+	if (ChaosImpactBallSwitch::IsOff(GetWorld(), Type)) { return 0.f; }
 	float Total = 0.0f;
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
 	{
 		if (Index==static_cast<int32>(EChaosImpactBallType::Prison) && !bAllowPrison) { continue; }
+		if (ChaosImpactBallSwitch::IsOff(GetWorld(), static_cast<EChaosImpactBallType>(Index))) { continue; }
 		const float* Weight = WeightFor(static_cast<EChaosImpactBallType>(Index));
 		Total += Weight ? FMath::Max(0.0f, *Weight) : 0.0f;
 	}
@@ -146,6 +152,16 @@ EChaosImpactBallType AChaosImpactBallSpawner::RollBallType() const
 		}
 	}
 	return EChaosImpactBallType::Normal;
+}
+
+void AChaosImpactBallSpawner::SpawnNow()
+{
+	if (!bInPlay || !HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+	TrySpawnBall();
+	GetWorldTimerManager().SetTimer(SpawnTimer, this, &AChaosImpactBallSpawner::TrySpawnBall, RespawnInterval, true);
 }
 
 void AChaosImpactBallSpawner::TrySpawnBall()

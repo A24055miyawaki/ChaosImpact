@@ -50,12 +50,23 @@ enum class EChaosImpactBallType : uint8
 	 */
 	Drive UMETA(DisplayName="Drive"),
 	/** VS/training only: traps an opponent in a throwable shell, without initial damage. */
-	Prison UMETA(DisplayName="Prison")
+	Prison UMETA(DisplayName="Prison"),
+	/**
+	 * Never flies: the throw sends out a hook on a chain (AChaosImpactHook). An opponent it catches takes one hit and
+	 * is reeled in to the thrower (a dash breaks free); a ball lying on the floor is reeled in to the thrower's hand.
+	 */
+	Hook UMETA(DisplayName="Hook"),
+	/**
+	 * Never flies: the throw shoots an anchor on a chain (AChaosImpactHook in its anchor form). It sticks in the first
+	 * wall on its way, or in the floor at its full reach, and the thrower is whisked there through the air on the chain
+	 * (a dash stops it). It goes through characters and balls: it is for getting about, not for hitting.
+	 */
+	Anchor UMETA(DisplayName="Anchor")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 13;
+	constexpr int32 Count = 15;
 	constexpr float PrisonSeconds = 5.0f;
 	constexpr float PrisonImmunitySeconds = 3.0f;
 	constexpr float PrisonReleaseProtection = 0.65f;
@@ -198,6 +209,8 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Simae: return FLinearColor(0.96f, 0.97f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Drive: return FLinearColor(1.0f, 0.62f, 0.12f, 1.0f);
 		case EChaosImpactBallType::Prison: return FLinearColor(1.0f, 0.25f, 0.07f, 1.0f);
+		case EChaosImpactBallType::Hook: return FLinearColor(0.08f, 0.95f, 0.78f, 1.0f);
+		case EChaosImpactBallType::Anchor: return FLinearColor(0.66f, 1.0f, 0.06f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -218,6 +231,8 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Simae: return TEXT("シマエナガ");
 		case EChaosImpactBallType::Drive: return TEXT("ドライブ");
 		case EChaosImpactBallType::Prison: return TEXT("プリズン");
+		case EChaosImpactBallType::Hook: return TEXT("フック");
+		case EChaosImpactBallType::Anchor: return TEXT("アンカー");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -239,6 +254,8 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Simae: return TEXT("Simae");
 		case EChaosImpactBallType::Drive: return TEXT("Drive");
 		case EChaosImpactBallType::Prison: return TEXT("Prison");
+		case EChaosImpactBallType::Hook: return TEXT("Hook");
+		case EChaosImpactBallType::Anchor: return TEXT("Anchor");
 		default: return TEXT("Normal");
 		}
 	}

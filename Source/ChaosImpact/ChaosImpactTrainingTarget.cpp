@@ -242,7 +242,8 @@ void AChaosImpactTrainingTarget::Tick(const float DeltaSeconds)
 		const float Burst = ChaosImpactEase::Out(EffectAlpha);
 		ShockCore->SetRelativeLocation(ImpactLocalLocation);
 		ShockCore->SetRelativeScale3D(FVector(FMath::Lerp(0.1f, 2.2f, Burst)));
-		ShockCore->SetHiddenInGame(EffectAlpha >= 0.42f);
+		// (No round shock spreading out on a hit: the user asked for it gone; the pieces and the fall show the hit.)
+		ShockCore->SetHiddenInGame(true);
 		HitLight->SetIntensity(FMath::Lerp(22000.0f, 0.0f,
 			FMath::Clamp(DefeatTime / 0.36f, 0.0f, 1.0f)));
 
@@ -341,7 +342,7 @@ void AChaosImpactTrainingTarget::Defeat(const FVector& ImpactPoint)
 	ImpactLocalLocation.Z = FMath::Clamp(ImpactLocalLocation.Z, 70.0f, 190.0f);
 	SetCanBeDamaged(false);
 	BagMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	ShockCore->SetHiddenInGame(false);
+	ShockCore->SetHiddenInGame(true);
 	HitLight->SetIntensity(22000.0f);
 
 	for (UStaticMeshComponent* Piece : BurstPieces)

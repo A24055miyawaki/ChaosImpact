@@ -66,7 +66,9 @@ enum class EChaosImpactScreen : uint8
 	/** VS: the local tournament's registration (people, their characters, how it runs). */
 	TourneyEntry,
 	/** Local tournament: the players of a match (or of the whole tournament) take a controller each. */
-	TourneySeat
+	TourneySeat,
+	/** The dojo's lesson list (UChaosImpactDojoMenu). */
+	DojoSelect,
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

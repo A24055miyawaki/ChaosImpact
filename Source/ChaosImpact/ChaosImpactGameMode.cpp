@@ -1,6 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactGameMode.h"
+#include "ChaosImpactBallSwitch.h"
+
+#include "ChaosImpactDojo.h"
+#include "ChaosImpactHook.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
@@ -60,6 +64,13 @@ AChaosImpactGameMode::AChaosImpactGameMode()
 void AChaosImpactGameMode::BeginPlay()
 {
 	Super::BeginPlay();
+	// 訓練場: its lessons run here (offline only).
+	if (AChaosImpactDojo::IsDojoWorld(GetWorld()) && GetNetMode() == NM_Standalone && !AChaosImpactDojo::Find(GetWorld()))
+	{
+		FActorSpawnParameters DojoParameters;
+		DojoParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		GetWorld()->SpawnActor<AChaosImpactDojo>(AChaosImpactDojo::StaticClass(), FTransform::Identity, DojoParameters);
+	}
 #if !UE_BUILD_SHIPPING
 	// Development: -CIDevBlackHole=<seconds> opens the host player's black hole beside every remote player,
 	// to check online that a black hole thrown by the host draws the other machines' players in.
@@ -297,6 +308,14 @@ void AChaosImpactGameMode::BeginPlay()
 			}
 		}
 	}
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevOffBalls=<bits> plays the automatic matches / lobbies with those special balls switched off (ボールスイッチ).
+	if (int32 DevOffBalls = 0; FParse::Value(FCommandLine::Get(), TEXT("CIDevOffBalls="), DevOffBalls))
+	{
+		DevAutoVersusRules.OffBalls = DevOffBalls;
+		DevAutoLobbyRules.OffBalls = DevOffBalls;
+	}
+#endif
 	float OverrideSeconds = 0.0f;
 	if (FParse::Value(FCommandLine::Get(), TEXT("CIMatchSeconds="), OverrideSeconds) && OverrideSeconds > 1.0f)
 	{
@@ -1556,21 +1575,10 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 			Match->Duel.Sides[Side] = Duellists[Side];
 		}
 		// The special balls of this match, drawn now and shown by the ball slot before the first round. Every kind
-		// but the nova and the prison (decisive one against one) may come up; three different ones.
-		TArray<uint8> Pool;
-		for (int32 Type = 1; Type < ChaosImpactBallTypes::Count; ++Type)
-		{
-			const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(Type);
-			if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison)
-			{
-				Pool.Add(static_cast<uint8>(Type));
-			}
-		}
-		for (int32 Pick = 0; Pick < ChaosImpactMatch::DuelBallPicks && !Pool.IsEmpty(); ++Pick)
-		{
-			Match->Duel.BallPicks.Add(Pool[FMath::RandRange(0, Pool.Num() - 1)]);
-			Pool.Remove(Match->Duel.BallPicks.Last());
-		}
+		// on (ボールスイッチ) but the nova and the prison (decisive one against one) may come up; three different ones,
+		// the hook and the anchor not together (see ChaosImpactBallSwitch::DrawDuelBalls).
+		Match->Duel.BallPicks = ChaosImpactBallSwitch::DrawDuelBalls(Rules, ChaosImpactMatch::DuelBallPicks,
+			[](const int32 Min, const int32 Max) { return FMath::RandRange(Min, Max); });
 		UE_LOG(LogChaosImpact, Log, TEXT("Duel balls drawn: %s, %s, %s"),
 			Match->Duel.BallPicks.IsValidIndex(0) ? ChaosImpactBallTypes::GetInternalName(static_cast<EChaosImpactBallType>(Match->Duel.BallPicks[0])) : TEXT("-"),
 			Match->Duel.BallPicks.IsValidIndex(1) ? ChaosImpactBallTypes::GetInternalName(static_cast<EChaosImpactBallType>(Match->Duel.BallPicks[1])) : TEXT("-"),
@@ -2130,6 +2138,10 @@ void AChaosImpactGameMode::ClearMatchBalls()
 		It->Destroy();
 	}
 	for (TActorIterator<AChaosImpactTornado> It(GetWorld()); It; ++It)
+	{
+		It->Destroy();
+	}
+	for (TActorIterator<AChaosImpactHook> It(GetWorld()); It; ++It)
 	{
 		It->Destroy();
 	}
@@ -2694,6 +2706,47 @@ void AChaosImpactGameMode::SpawnTrainingCPU(
 	}
 }
 
+AChaosImpactCharacter* AChaosImpactGameMode::SpawnDojoCPU(const FVector& Location, const FRotator& Rotation, const int32 Number)
+{
+	if (!GetWorld())
+	{
+		return nullptr;
+	}
+	FActorSpawnParameters ControllerParameters;
+	ControllerParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AChaosImpactCPUController* CPUController = GetWorld()->SpawnActor<AChaosImpactCPUController>(AChaosImpactCPUController::StaticClass(),
+		Location, Rotation, ControllerParameters);
+	if (!CPUController)
+	{
+		return nullptr;
+	}
+	const FRotator Facing(0.0f, Rotation.Yaw, 0.0f);
+	APawn* CPUPawn = SpawnDefaultPawnAtTransform(CPUController, FTransform(Facing, Location));
+	if (!CPUPawn)
+	{
+		CPUController->Destroy();
+		return nullptr;
+	}
+	CPUController->Possess(CPUPawn);
+	AChaosImpactCharacter* CPUCharacter = Cast<AChaosImpactCharacter>(CPUPawn);
+	if (CPUCharacter)
+	{
+		CPUCharacter->SetTrainingStartTransform(Location, Facing);
+		CPUCharacter->SetRespawnPoint(Location, Facing);
+		CPUCharacter->SetCPUNumber(Number);
+	}
+	if (APlayerState* CPUState = CPUController->PlayerState)
+	{
+		CPUState->SetPlayerName(FString::Printf(TEXT("CPU%d"), Number));
+		if (AChaosImpactPlayerState* CPULoadout = Cast<AChaosImpactPlayerState>(CPUState))
+		{
+			CPULoadout->CharacterIndex = PickCPUCharacter(CPUState);
+			CPULoadout->ForceNetUpdate();
+		}
+	}
+	return CPUCharacter;
+}
+
 int32 AChaosImpactGameMode::PickCPUCharacter(const APlayerState* NewCPU) const
 {
 	// Counted over everyone already here, so CPUs spread over the roster (and a roster that grows needs no change).
@@ -2899,9 +2952,14 @@ void AChaosImpactGameMode::StartDuelRound(const int32 Round)
 	Match->Duel.RoundEnd = EChaosImpactDuelEnd::None;
 	if (Round > 1)
 	{
-		// Every round starts the same: the field cleared, both back at their starts with full health and no balls.
+		// Every round starts the same: the field cleared, both back at their starts with full health and no balls,
+		// and a fresh ball on every pad (none missing because one was taken just before the last round ended).
 		ClearMatchBalls();
 		PlaceDuelists();
+		for (TActorIterator<AChaosImpactBallSpawner> It(GetWorld()); It; ++It)
+		{
+			It->SpawnNow();
+		}
 	}
 	SetDuelStep(EChaosImpactDuelStep::RoundIntro, ChaosImpactMatch::DuelRoundIntroSeconds);
 	GetWorldTimerManager().SetTimer(DuelTimer, this, &AChaosImpactGameMode::BeginDuelFight, ChaosImpactMatch::DuelRoundIntroSeconds, false);

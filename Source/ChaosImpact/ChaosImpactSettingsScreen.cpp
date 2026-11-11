@@ -533,7 +533,7 @@ void UChaosImpactSettingsScreen::BuildOtherRows()
 	static const TCHAR* const HudSizes[] = {TEXT("小さい"), TEXT("ふつう"), TEXT("大きい")};
 	Rows.Add(MakeRow(ERowKind::Value, RowHudSize, TEXT("UIの大きさ"), HudSizes[FMath::Clamp(GetHudSize(), 0, 2)]));
 	Rows.Add(MakeRow(ERowKind::Value, RowButtonHints, TEXT("ボタンヒント"), OnOff(IsButtonHintsOn())));
-	Rows.Add(MakeRow(ERowKind::Value, RowTutorial, TEXT("トレーニングのチュートリアル"), OnOff(IsTrainingTutorialOn())));
+	// (トレーニングのチュートリアル: retired with 訓練場; its row is gone.)
 	// Tucked away at the very end: the loading screens' little games, to play for as long as you like.
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("おまけ")));
 	Rows.Add(MakeRow(ERowKind::Button, RowMiniGames, TEXT("ミニゲーム")));

@@ -2,6 +2,8 @@
 
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactBallSwitch.h"
+#include "ChaosImpactDojo.h"
 #include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactTackleComponent.h"
 #include "ChaosImpactCharacter.h"
@@ -1510,7 +1512,7 @@ void AChaosImpactPlayerController::ToggleTrainingOverlay()
 {
 	// Unlike pause, this menu belongs only to P1. Its widget also spans the complete
 	// viewport, so it remains a single global prompt/menu during local multiplayer.
-	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || IsOnlineRoom() || IsVersusMatchWorld())
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || IsOnlineRoom() || IsVersusMatchWorld() || IsDojo())
 	{
 		return;
 	}
@@ -1526,7 +1528,7 @@ void AChaosImpactPlayerController::ToggleTrainingOverlay()
 
 void AChaosImpactPlayerController::OpenTrainingOverlay()
 {
-	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget || IsOnlineRoom()
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget || IsOnlineRoom() || IsDojo()
 		|| (CurrentScreen != EChaosImpactScreen::Playing
 			&& CurrentScreen != EChaosImpactScreen::ControllerAssignment))
 	{
@@ -3545,7 +3547,8 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bOnlineSearch, c
 
 void AChaosImpactPlayerController::EnsureTrainingArena()
 {
-	if (GetWorld() && (GetWorld()->URL.HasOption(TEXT("CIMatch=1")) || GetWorld()->URL.HasOption(TEXT("CIRoomMatch=1"))))
+	// (Not in a match, and never in 訓練場: it is held on the VS stage / duel arena themselves, nothing laid over them.)
+	if (GetWorld() && (GetWorld()->URL.HasOption(TEXT("CIMatch=1")) || GetWorld()->URL.HasOption(TEXT("CIRoomMatch=1")) || IsDojo()))
 	{
 		return;
 	}
@@ -3583,7 +3586,7 @@ void AChaosImpactPlayerController::EnsureTrainingArena()
 
 void AChaosImpactPlayerController::EnsureTrainingBallSpawners()
 {
-	if (GetWorld() && (GetWorld()->URL.HasOption(TEXT("CIMatch=1")) || GetWorld()->URL.HasOption(TEXT("CIRoomMatch=1"))))
+	if (GetWorld() && (GetWorld()->URL.HasOption(TEXT("CIMatch=1")) || GetWorld()->URL.HasOption(TEXT("CIRoomMatch=1")) || IsDojo()))
 	{
 		return;
 	}
@@ -3636,7 +3639,8 @@ void AChaosImpactPlayerController::EnsureTrainingBallSpawners()
 
 void AChaosImpactPlayerController::EnsureTrainingWarpPads()
 {
-	if (GetWorld() && (GetWorld()->URL.HasOption(TEXT("CIMatch=1")) || GetWorld()->URL.HasOption(TEXT("CIRoomMatch=1"))))
+	// (Not in 訓練場 either: its stages stay as they are in a match, with only the warp pads the level itself has.)
+	if (GetWorld() && (GetWorld()->URL.HasOption(TEXT("CIMatch=1")) || GetWorld()->URL.HasOption(TEXT("CIRoomMatch=1")) || IsDojo()))
 	{
 		return;
 	}
@@ -4083,6 +4087,16 @@ void AChaosImpactPlayerController::CancelStageSelect()
 {
 	// Back to the rules as they were left; where the rules return to is unchanged.
 	ShowMenuScreen(EChaosImpactScreen::MatchRules);
+}
+
+void AChaosImpactPlayerController::SetBallSwitchOn(const EChaosImpactBallType Type, const bool bOn)
+{
+	ChaosImpactBallSwitch::SetOn(PendingMatchRules, Type, bOn);
+}
+
+void AChaosImpactPlayerController::SetAllBallsOn()
+{
+	PendingMatchRules.OffBalls = 0;
 }
 
 void AChaosImpactPlayerController::ConfirmMatchRules()
@@ -5029,6 +5043,71 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 }
 
 // --- 【2. ソロモード用レベル遷移関数の追加】 ---
+
+bool AChaosImpactPlayerController::IsDojo() const
+{
+	return AChaosImpactDojo::IsDojoWorld(GetWorld());
+}
+
+void AChaosImpactPlayerController::OpenDojo(const FString& Level, const FString& Lesson, const FString& Focus)
+{
+	if (bTravelPending)
+	{
+		return;
+	}
+	// One player, on the first VS stage's own level; the dojo sets everything else out itself, all through its own options
+	// (training's settings, its CPUs, targets and players, are left as they were).
+	RequestedLocalPlayerCount = 1;
+	BuildFallbackControllerAssignments();
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+	FString Options = FString::Printf(TEXT("CITraining=1?CIDojo=1?CITargets=0?CICPUCount=0?%s"), *BuildLocalSetupOptions());
+	if (!Lesson.IsEmpty())
+	{
+		Options += FString::Printf(TEXT("?CIDojoLesson=%s"), *Lesson);
+	}
+	if (!Focus.IsEmpty())
+	{
+		Options += FString::Printf(TEXT("?CIDojoFocus=%s"), *Focus);
+	}
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+	if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::Training);
+	}
+	UGameplayStatics::OpenLevel(this, FName(Level.IsEmpty() ? *ChaosImpactMatch::GetStageLevel(0) : *Level), true, Options);
+}
+
+void AChaosImpactPlayerController::OpenDojoMatch(const FChaosImpactMatchRules& Rules, const FString& Lesson)
+{
+	if (bTravelPending)
+	{
+		return;
+	}
+	// Opened as a local VS match is (the stage's own level, its rules in the options), with the dojo along.
+	RequestedLocalPlayerCount = 1;
+	BuildFallbackControllerAssignments();
+	bTravelPending = true;
+	ExitTrainingOverlayPresentation();
+	SetPause(false);
+	const FString Options = FString::Printf(TEXT("CITraining=1?%s?CIVersus=1?CITargets=0?%s?CIDojo=1?CIDojoLesson=%s"),
+		*BuildLocalSetupOptions(), *ChaosImpactMatch::ToOptions(Rules), *Lesson);
+	bIntroFullScreen = false;
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->SetForceDisableSplitscreen(false);
+	}
+	if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
+	{
+		Loading->BeginTravel(EChaosImpactLoadingKind::Training);
+	}
+	UGameplayStatics::OpenLevel(this, FName(*ChaosImpactMatch::GetMatchLevel(Rules)), true, Options);
+}
 
 void AChaosImpactPlayerController::OpenSoloLevel(const int32 StageIndex)
 {

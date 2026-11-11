@@ -18,7 +18,7 @@ namespace
 	const EChaosImpactBallType SuddenDeathKinds[] = {
 		EChaosImpactBallType::Fire, EChaosImpactBallType::Ice, EChaosImpactBallType::Thunder, EChaosImpactBallType::Black,
 		EChaosImpactBallType::Wind, EChaosImpactBallType::Beam, EChaosImpactBallType::Snow, EChaosImpactBallType::Simae,
-		EChaosImpactBallType::Drive};
+		EChaosImpactBallType::Drive, EChaosImpactBallType::Hook};
 }
 
 APawn* AChaosImpactGameMode::GetSuddenDeathPawn(const int32 Arena, const int32 Side) const

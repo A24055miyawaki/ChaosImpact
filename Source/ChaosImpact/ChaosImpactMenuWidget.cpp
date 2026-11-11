@@ -15,6 +15,13 @@
 #include "ChaosImpactCharacterSelect.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactColourEdit.h"
+#include "ChaosImpactDojoMenu.h"
+#include "ChaosImpactModeMenu.h"
+#include "ChaosImpactDojoLessons.h"
+#include "ChaosImpactDojoVideo.h"
+#include "ChaosImpactBallSwitch.h"
+#include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactDojo.h"
 #include "ChaosImpactLocalTourney.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactCustomColour.h"
@@ -1314,6 +1321,7 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 
 	CharacterSelect = NewObject<UChaosImpactCharacterSelect>(this);
 	ColourEdit = NewObject<UChaosImpactColourEdit>(this);
+	DojoMenu = NewObject<UChaosImpactDojoMenu>(this);
 	TourneyEntry = NewObject<UChaosImpactTourneyEntry>(this);
 	SettingsScreen = NewObject<UChaosImpactSettingsScreen>(this);
 
@@ -1364,6 +1372,10 @@ void UChaosImpactMenuWidget::NativeDestruct()
 	{
 		ColourEdit->Close();
 	}
+	if (DojoMenu)
+	{
+		DojoMenu->Close();
+	}
 	if (TourneyEntry)
 	{
 		TourneyEntry->Close();
@@ -1402,6 +1414,15 @@ bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
 		return ColourEdit->HandleKeyDown(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite && GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return HandleDojoInviteKey(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu && DojoMenu->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return DojoMenu->HandleKeyDown(InKeyEvent);
 	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()
 		&& GetVisibility() != ESlateVisibility::Collapsed)
@@ -1472,6 +1493,16 @@ bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnal
 	{
 		return ColourEdit->HandleAnalog(InAnalogEvent);
 	}
+	// (The 訓練場 invitation over the mode select: the stick moves nothing under it.)
+	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
+	{
+		return true;
+	}
+	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu && DojoMenu->IsOpen()
+		&& GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return DojoMenu->HandleAnalog(InAnalogEvent);
+	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
@@ -1516,6 +1547,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	if (ColourEdit && NewScreen != EChaosImpactScreen::ColourEdit)
 	{
 		ColourEdit->Close();
+	}
+	if (DojoMenu && NewScreen != EChaosImpactScreen::DojoSelect)
+	{
+		DojoMenu->Close();
 	}
 	if (TourneyEntry && NewScreen != EChaosImpactScreen::TourneyEntry)
 	{
@@ -1564,6 +1599,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		ColourEdit->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
 	}
+	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu && !DojoMenu->IsOpen())
+	{
+		DojoMenu->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
+	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && !TourneyEntry->IsOpen())
 	{
 		TourneyEntry->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
@@ -1573,12 +1612,50 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	ArmedIndex = INDEX_NONE;
 	PauseConfirm.Reset();
 	bModePicker = false;
+	bBallSwitch = false;
 	ScreenStartedAt = FPlatformTime::Seconds();
 	AnimationSeconds = 0.0f;
 	BuildEntries();
 	SelectBlend.Init(0.0f, Entries.Num());
 
 	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	// 「訓練場」で あそんでみよう！: the first mode select of a run, while some lesson is still not cleared.
+	{
+		static bool bInvitedThisRun = false;
+		bDojoInvite = false;
+		if (Screen == EChaosImpactScreen::ModeSelect && !bInvitedThisRun && Controller && !Controller->IsOnlineRoom()
+			&& !FParse::Param(FCommandLine::Get(), TEXT("CINoDojoInvite")))
+		{
+			int32 Lessons = 0;
+			int32 Cleared = 0;
+			const TArray<FChaosImpactDojoCategory>& Groups = ChaosImpactDojo::GetCategories();
+			for (int32 Group = 0; Group < Groups.Num(); ++Group)
+			{
+				Lessons += Groups[Group].Lessons.Num();
+				Cleared += ChaosImpactDojo::CountCleared(Group);
+			}
+			if (Cleared < Lessons)
+			{
+				bInvitedThisRun = true;
+				bDojoInvite = true;
+				DojoInviteAt = FPlatformTime::Seconds();
+				DojoInviteChoice = 0;
+				if (!DojoInviteVideo)
+				{
+					DojoInviteVideo = NewObject<UChaosImpactDojoVideo>(this);
+				}
+				if (!DojoInviteMenu)
+				{
+					DojoInviteMenu = NewObject<UChaosImpactDojoMenu>(this);
+				}
+				DojoInviteMenu->SetDemo(DojoInviteVideo);
+				DojoInviteMenu->Open(const_cast<AChaosImpactPlayerController*>(Controller));
+				DojoInviteMenu->SetTab(0);
+				DojoInviteStepAt = FPlatformTime::Seconds() + 1.6;
+				DojoInviteSteps = 0;
+			}
+		}
+	}
 	if (Screen == EChaosImpactScreen::StageSelect && Controller)
 	{
 		// The stage chosen last time is picked again by just pressing 決定.
@@ -2613,12 +2690,16 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(520, 700, 1080, 800), TEXT("PRESS START"), TEXT(""), TEXT(""), Gold});
 		break;
 	case EChaosImpactScreen::ModeSelect:
-		Entries.Add({FSlateRect(150, 236, 770, 652), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
-		Entries.Add({FSlateRect(830, 236, 1450, 652), TEXT("VSモード"), TEXT(""), TEXT("VS"), Fire});
-		Entries.Add({FSlateRect(1170, 714, 1450, 798), TEXT("トレーニング"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(150, 724, 410, 788), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
-		Entries.Add({FSlateRect(450, 720, 770, 792), TEXT("設定"), TEXT("settings"), TEXT(""), Violet});
-		Entries.Add({FSlateRect(810, 720, 1130, 792), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT(""), Fire});
+		// The online menu's mosaic: ソロ / VS / 訓練場 across the top; トレーニング / カラーエディット / 設定 under them;
+		// タイトルへ and the bar saying what the chosen one is along the bottom. (The indices stay as they were: 0 ソロ,
+		// 1 VS, 2 トレーニング, 3 タイトルへ, 4 設定, 5 カラーエディット, 6 訓練場.)
+		Entries.Add({FSlateRect(110, 190, 600, 490), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
+		Entries.Add({FSlateRect(630, 190, 1120, 490), TEXT("VSモード"), TEXT(""), TEXT("VERSUS"), Fire});
+		Entries.Add({FSlateRect(110, 515, 700, 680), TEXT("トレーニング"), TEXT(""), TEXT("TRAINING"), Gold});
+		Entries.Add({FSlateRect(110, 718, 400, 790), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(1130, 515, 1490, 680), TEXT("設定"), TEXT("settings"), TEXT("SETTINGS"), FLinearColor(0.42f, 0.6f, 0.95f, 1.0f)});
+		Entries.Add({FSlateRect(730, 515, 1100, 680), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT("COLOR EDIT"), Violet});
+		Entries.Add({FSlateRect(1150, 190, 1490, 490), TEXT("訓練場"), TEXT("dojo"), TEXT("DOJO"), FLinearColor(0.08f, 0.86f, 0.78f, 1.0f)});
 		break;
 	case EChaosImpactScreen::TrainingSetup:
 	{
@@ -2642,11 +2723,11 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::VSSelect:
-		Entries.Add({FSlateRect(130, 236, 560, 652), TEXT("ローカル"), TEXT(""), TEXT("LOCAL"), Ice});
-		Entries.Add({FSlateRect(590, 236, 1020, 652), TEXT("通信"), TEXT(""), TEXT("ONLINE"), Fire});
-		Entries.Add({FSlateRect(150, 724, 470, 788), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({FSlateRect(110, 190, 560, 680), TEXT("ローカル"), TEXT(""), TEXT("LOCAL"), Ice});
+		Entries.Add({FSlateRect(590, 190, 1040, 680), TEXT("通信"), TEXT(""), TEXT("ONLINE"), Fire});
+		Entries.Add({FSlateRect(110, 718, 400, 790), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
 		// (Index 3, after the back button: the cards' code reads 0 and 1 as before.)
-		Entries.Add({FSlateRect(1050, 236, 1480, 652), TEXT("トーナメント"), TEXT("tourney"), TEXT("TOURNAMENT"), Gold});
+		Entries.Add({FSlateRect(1070, 190, 1490, 680), TEXT("トーナメント"), TEXT("tourney"), TEXT("TOURNAMENT"), Gold});
 		break;
 	case EChaosImpactScreen::OnlinePlayers:
 	{
@@ -2953,6 +3034,15 @@ void UChaosImpactMenuWidget::BuildEntries()
 			break;
 		}
 
+		// 訓練場: the lesson again, the list, or out.
+		if (Controller && AChaosImpactDojo::IsDojoWorld(Controller->GetWorld()))
+		{
+			// (Two only: back to the lesson, or back to the lesson list.)
+			Entries.Add({ FSlateRect(490, 285, 1110, 347), TEXT("再開"), TEXT("resume"), TEXT(""), Ice });
+			Entries.Add({ FSlateRect(490, 365, 1110, 427), TEXT("レッスン選択へ戻る"), TEXT("dojo_list"), TEXT(""), Gold });
+			break;
+		}
+
 		// ★ソロモードプレイ中のポーズメニュー（新規追加分岐）
 		if (Controller && Controller->IsSoloMode())
 		{
@@ -3077,6 +3167,23 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::MatchRules:
+	if (bBallSwitch)
+	{
+		// ボールスイッチ: the special balls in two rows of seven (Number: the kind), then すべてオン and もどる.
+		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const TArray<EChaosImpactBallType> Kinds = ChaosImpactBallSwitch::GetSwitchable();
+		for (int32 Index = 0; Index < Kinds.Num(); ++Index)
+		{
+			const float Left = 110.0f + (Index % 7) * 199.0f - (Index / 7) * 22.0f * 0.06f;
+			const float Top = 214.0f + (Index / 7) * 222.0f;
+			const bool bOn = !Controller || ChaosImpactBallSwitch::IsOn(Controller->GetPendingMatchRules(), Kinds[Index]);
+			Entries.Add({FSlateRect(Left, Top, Left + 181.0f, Top + 200.0f), ChaosImpactBallTypes::GetDisplayName(Kinds[Index]), TEXT("ball"),
+				FString::FromInt(static_cast<int32>(Kinds[Index])), bOn ? ChaosImpactBallTypes::GetColor(Kinds[Index]) : Muted});
+		}
+		Entries.Add({FSlateRect(430, 726, 800, 790), TEXT("すべてオン"), TEXT("all_on"), TEXT(""), Gold});
+		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("switch_back"), TEXT(""), Muted});
+		break;
+	}
 	if (bModePicker)
 	{
 		// Every kind of match, in rows by kind (バトル / バトルロイヤル / そのほか): Number its mode, greyed out with the
@@ -3175,6 +3282,11 @@ void UChaosImpactMenuWidget::BuildEntries()
 		}
 		Entries.Add({FSlateRect(1010, 718, 1490, 800), Rules.bDuel ? TEXT("試合開始") : TEXT("決定"), TEXT(""), TEXT(""), Gold});
 		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		// (Index 6, after 決定 and 戻る: their indices stay as they were.)
+		const int32 On = ChaosImpactBallSwitch::CountOn(Rules);
+		const int32 All = ChaosImpactBallSwitch::GetSwitchable().Num();
+		Entries.Add({FSlateRect(430, 726, 980, 790), On >= All ? FString(TEXT("ボールスイッチ（すべてオン）"))
+			: FString::Printf(TEXT("ボールスイッチ（%d / %d）"), On, All), TEXT("ball_switch"), TEXT(""), Violet});
 		break;
 	}
 	case EChaosImpactScreen::StageSelect:
@@ -3301,6 +3413,28 @@ void UChaosImpactMenuWidget::BuildEntries()
 void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	if (DojoInviteVideo)
+	{
+		// The invitation's picture: the lesson list, its cursor stepping down a group and on to the next group by itself,
+		// the picked lesson's clip playing in its preview as it does there.
+		const bool bShown = Screen == EChaosImpactScreen::ModeSelect && bDojoInvite && DojoInviteMenu;
+		const double Clock = FPlatformTime::Seconds();
+		if (bShown && Clock >= DojoInviteStepAt)
+		{
+			++DojoInviteSteps;
+			if (DojoInviteSteps % 4 == 0)
+			{
+				DojoInviteMenu->SetTab(DojoInviteMenu->GetTab() + 1);
+			}
+			else
+			{
+				DojoInviteMenu->MoveSelection(1);
+			}
+			DojoInviteStepAt = Clock + 1.8;
+		}
+		DojoInviteVideo->Want(bShown ? DojoInviteMenu->GetSelectedClip() : FString());
+		DojoInviteVideo->Tick();
+	}
 	// Slate continues to animate while the gameplay world is paused.
 	const double Now = FPlatformTime::Seconds();
 	AnimationSeconds = static_cast<float>(Now - ScreenStartedAt);
@@ -3637,6 +3771,62 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const int32 EditLayer = ColourEdit->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
 		PaintEnterWipe(DesignGeometry, OutDrawElements, EditLayer + 1, T);
 		return EditLayer + 2;
+	}
+	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu)
+	{
+		const int32 ListLayer = DojoMenu->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
+		PaintEnterWipe(DesignGeometry, OutDrawElements, ListLayer + 1, T);
+		return ListLayer + 2;
+	}
+	if ((Screen == EChaosImpactScreen::ModeSelect && Entries.Num() == 7) || (Screen == EChaosImpactScreen::VSSelect && Entries.Num() == 4))
+	{
+		// The online menu's tiles: the chosen one drawn last (its glow over its neighbours), the bar along the bottom.
+		const bool bMode = Screen == EChaosImpactScreen::ModeSelect;
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, bMode ? TEXT("MODE SELECT") : TEXT("VS MODE"), T);
+		static const TCHAR* ModeKinds[] = {TEXT("solo"), TEXT("vs"), TEXT("training"), TEXT("back"), TEXT("settings"), TEXT("colour"), TEXT("dojo")};
+		static const TCHAR* VersusKinds[] = {TEXT("local"), TEXT("online"), TEXT("vsback"), TEXT("tourney")};
+		const auto TileOf = [&](const int32 Index, const FSlateRect& At)
+		{
+			ChaosImpactModeMenu::FTile Tile;
+			Tile.Rect = At;
+			Tile.Name = Entries[Index].Title;
+			Tile.Kind = bMode ? ModeKinds[Index] : VersusKinds[Index];
+			Tile.Big = Entries[Index].Number;
+			Tile.Accent = Entries[Index].Accent;
+			Tile.bDisabled = Entries[Index].bDisabled;
+			return Tile;
+		};
+		int32 TileLayer = BaseLayer + 4;
+		for (int32 Pass = 0; Pass < 2; ++Pass)
+		{
+			for (int32 Index = 0; Index < Entries.Num(); ++Index)
+			{
+				if ((Index == SelectedIndex) != (Pass == 1))
+				{
+					continue;
+				}
+				const float Blend = SelectBlend.IsValidIndex(Index) ? SelectBlend[Index] : (Index == SelectedIndex ? 1.0f : 0.0f);
+				const float EntryIn = EaseOut((T - 0.1f - 0.05f * Index) / 0.35f);
+				const FSlateRect At = Entries[Index].Rect.OffsetBy(FVector2D(0.0f, (1.0f - EntryIn) * 60.0f));
+				ChaosImpactModeMenu::PaintTile(DesignGeometry, OutDrawElements, TileLayer, TileOf(Index, At), Blend, PressedIndex == Index, EntryIn, T);
+				TileLayer += 10;
+			}
+		}
+		if (Entries.IsValidIndex(SelectedIndex))
+		{
+			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			const bool bPad = Owner && Owner->IsUsingGamepad();
+			const float BarIn = EaseOut((T - 0.35f) / 0.35f);
+			ChaosImpactModeMenu::PaintInfoBar(DesignGeometry, OutDrawElements, TileLayer, TileOf(SelectedIndex, Entries[SelectedIndex].Rect),
+				FSlateRect(430.0f + (1.0f - BarIn) * 80.0f, 718.0f, 1490.0f, 790.0f), bPad ? TEXT("A") : TEXT("Enter"), bPad ? TEXT("B") : TEXT("Esc"), BarIn, T);
+		}
+		if (bDojoInvite)
+		{
+			PaintDojoInvite(DesignGeometry, OutDrawElements, TileLayer + 4, static_cast<float>(FPlatformTime::Seconds() - DojoInviteAt));
+			TileLayer += 160;
+		}
+		PaintEnterWipe(DesignGeometry, OutDrawElements, TileLayer + 10, T);
+		return TileLayer + 12;
 	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry)
 	{
@@ -4028,14 +4218,14 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const int32 Total = People + CPUs;
 			const FLinearColor ModeColor = Rules.bTournament || Rules.bCrashBall ? Violet : Rules.bDuel ? Ice : Rules.IsTeamBattle() ? Gold : Fire;
 			// How the rows change, beside the title.
-			if (!bModePicker)
+			if (!bModePicker && !bBallSwitch)
 			{
 				const FString Hint = TEXT("◀ ▶ で変更　・　ルールは決定で一覧から選べます");
 				P.Text(Hint, 880.0f, 156.0f, ChaosImpactPaint::HudFit(Hint, 18.0f, 500.0f, TEXT("Bold")), Muted, ETextAlign::Right, TEXT("Bold"));
 			}
 
 			// Under the rows: who plays, as a sum (not while the list of kinds is open over the page).
-			if (!bModePicker)
+			if (!bModePicker && !bBallSwitch)
 			{
 				const float In = EaseOut((T - 0.25f) / 0.35f);
 				constexpr float SW = 818.0f;
@@ -4078,7 +4268,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			}
 
 			// On the right: the kind of match chosen, what it is and how it is won (クラッシュボール has its own guide).
-			if (bModePicker)
+			if (bModePicker || bBallSwitch)
 			{
 			}
 			else if (Rules.bCrashBall)
@@ -4154,6 +4344,26 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 					: FString(TEXT("ステージは次の画面で選びます"));
 				CT.Box(34.0f, CH - 60.0f, CW - 68.0f, 1.0f, WithAlpha(Paper, 0.14f));
 				CT.Text(Stage, 34.0f, CH - 46.0f, CP::HudFit(Stage, 18.0f, CW - 68.0f, TEXT("Bold")), Muted, CP::ETextAlign::Left, TEXT("Bold"));
+			}
+			if (bBallSwitch)
+			{
+				// ボールスイッチ: the page dimmed under it, a heading, how many are on, and how to use it.
+				const float Veil = EaseOut(static_cast<float>(FPlatformTime::Seconds() - BallSwitchAt) / 0.2f);
+				FMenuPainter{AllottedGeometry, OutDrawElements, BaseLayer + 7}.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y,
+					FLinearColor(0.0f, 0.004f, 0.02f, 0.9f * Veil));
+				const CP::FPainter Head{DesignGeometry, OutDrawElements, BaseLayer + 8, Veil};
+				CP::HudText3D(Head, TEXT("ボールスイッチ"), 110.0f, 92.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
+				const int32 On = ChaosImpactBallSwitch::CountOn(Rules);
+				const int32 All = ChaosImpactBallSwitch::GetSwitchable().Num();
+				const FString Count = FString::Printf(TEXT("オン %d / %d"), On, All);
+				const float ChipX = 110.0f + CP::HudMeasure(TEXT("ボールスイッチ"), 54.0f) + 36.0f;
+				CP::RoundedBox(Head, ChipX, 112.0f, CP::HudMeasure(Count, 22.0f) + 36.0f, 40.0f, 20.0f, On > 0 ? FLinearColor(0.12f, 0.6f, 0.32f, 1.0f) : Fire);
+				CP::HudAbove(Head, 1).Text(Count, ChipX + 18.0f, 117.0f, 22.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
+				const FString Note = On == 0 ? TEXT("全部オフ：ふつうのボールだけになります")
+					: TEXT("オフにした特殊ボールは出てきません（デュエル・トーナメントのスロットにも）");
+				Head.Text(Note, 1490.0f, 112.0f, CP::HudFit(Note, 18.0f, 740.0f, TEXT("Bold")), On == 0 ? Gold : Muted, CP::ETextAlign::Right, TEXT("Bold"));
+				Head.Text(TEXT("十字 / 矢印：えらぶ　　A / Enter：オン・オフ　　B / Esc：もどる"), 1490.0f, 146.0f, 17.0f, Muted, CP::ETextAlign::Right,
+					TEXT("Bold"));
 			}
 			if (bModePicker)
 			{
@@ -4259,6 +4469,55 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 					Entry.Accent, Blend, bPressed, EntryIn, T, BigFontSize, 0);
 				PaintStageMap(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Index, Blend, EntryIn);
 			}
+		}
+		else if (Screen == EChaosImpactScreen::MatchRules && bBallSwitch && Entry.Detail == TEXT("ball"))
+		{
+			// A special ball: its ball (greyed and struck through when off), its name, ON / OFF.
+			namespace CP = ChaosImpactPaint;
+			const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(FCString::Atoi(*Entry.Number));
+			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+			const bool bOn = !Owner || ChaosImpactBallSwitch::IsOn(Owner->GetPendingMatchRules(), Kind);
+			const float TileIn = EaseOut(static_cast<float>(FPlatformTime::Seconds() - BallSwitchAt - 0.015 * Index) / 0.25f);
+			const float B = EaseOut(Blend);
+			const float W = static_cast<float>(Rect.GetSize().X);
+			const float H = static_cast<float>(Rect.GetSize().Y);
+			const FLinearColor Color = ChaosImpactBallTypes::GetColor(Kind);
+			const FGeometry Card = MakeSkewed(DesignGeometry, static_cast<float>(Rect.Left), static_cast<float>(Rect.Top) - 8.0f * B, W, H, -0.06f,
+				(1.0f + 0.03f * B) * (bPressed ? 0.96f : 1.0f));
+			const CP::FPainter Tile{Card, OutDrawElements, BaseLayer + 9, TileIn};
+			Tile.Box(8.0f, 10.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+			FLinearColor Deep = Color * (bOn ? 0.22f + 0.18f * B : 0.05f);
+			Deep.A = 0.97f;
+			CP::HudPoly(Tile, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)},
+				CP::MakeFill(bOn ? Deep : FLinearColor(0.04f, 0.045f, 0.06f, 0.97f), FLinearColor(0.008f, 0.01f, 0.025f, 0.97f)));
+			const CP::FPainter Up = CP::HudAbove(Tile, 1);
+			Up.Box(0.0f, 0.0f, W, 6.0f, bOn ? Color : WithAlpha(Muted, 0.5f));
+			const FVector2D Ball(W * 0.5f, H * 0.4f);
+			if (bOn)
+			{
+				Up.Disc(Ball, 52.0f + 6.0f * B * (0.5f + 0.5f * FMath::Sin(T * 4.0f)), WithAlpha(Color, 0.2f + 0.15f * B));
+			}
+			const CP::FPainter Icon{Card, OutDrawElements, BaseLayer + 11, TileIn * (bOn ? 1.0f : 0.35f)};
+			UChaosImpactChargeWidget::PaintBallIcon(Icon, Ball, 38.0f, true, Kind, 0.0f, T);
+			const CP::FPainter Top = CP::HudAbove(Tile, 6);
+			if (!bOn)
+			{
+				Top.Line(Ball + FVector2D(-46.0, 46.0), Ball + FVector2D(46.0, -46.0), FLinearColor(0.95f, 0.2f, 0.25f, 0.9f), 7.0f);
+			}
+			const FString Name = Entry.Title;
+			Top.Text(Name, W * 0.5f, H - 74.0f, CP::HudFit(Name, 22.0f, W - 24.0f), bOn ? Paper : Muted, CP::ETextAlign::Center, TEXT("Black"));
+			const FString State = bOn ? TEXT("ON") : TEXT("OFF");
+			const float SW = 64.0f;
+			CP::RoundedBox(Top, W * 0.5f - SW * 0.5f, H - 40.0f, SW, 26.0f, 13.0f, bOn ? FLinearColor(0.12f, 0.62f, 0.32f, 1.0f) : FLinearColor(0.3f, 0.32f, 0.38f, 1.0f));
+			CP::HudAbove(Top, 1).Text(State, W * 0.5f, H - 38.0f, 16.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"));
+			if (B > 0.01f)
+			{
+				CP::HudAbove(Top, 2).Outline(-5.0f, -5.0f, W + 10.0f, H + 10.0f, WithAlpha(Paper, B * (0.6f + 0.3f * FMath::Sin(T * 5.0f))), 3.0f);
+			}
+		}
+		else if (Screen == EChaosImpactScreen::MatchRules && bBallSwitch)
+		{
+			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Entry.Title, Entry.Accent, Blend, bPressed, false, 1.0f, T);
 		}
 		else if (Screen == EChaosImpactScreen::MatchRules && bModePicker && Entry.Detail == TEXT("mode"))
 		{
@@ -4428,6 +4687,44 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	}
 	const bool bLeft = Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Left;
 	const bool bRight = Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right;
+	if (Screen == EChaosImpactScreen::MatchRules && bBallSwitch && Key != EKeys::Tab)
+	{
+		// Two rows of seven, then すべてオン (14) and もどる (15) along the bottom.
+		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
+		const int32 Tiles = Entries.Num() - 2;
+		if (SelectedIndex < Tiles)
+		{
+			const int32 Row = SelectedIndex / 7;
+			int32 Column = SelectedIndex % 7;
+			if (bLeft || bRight)
+			{
+				Column = (Column + (bRight ? 1 : 6)) % 7;
+				SelectedIndex = FMath::Min(Row * 7 + Column, Tiles - 1);
+			}
+			else if (bUp)
+			{
+				SelectedIndex = Row == 0 ? Tiles + 1 : Column;
+			}
+			else
+			{
+				SelectedIndex = Row == 0 ? FMath::Min(7 + Column, Tiles - 1) : (Column <= 1 ? Tiles + 1 : Tiles);
+			}
+			if (SelectedIndex < Tiles)
+			{
+				LastBallSwitchTile = SelectedIndex;
+			}
+		}
+		else if (bLeft || bRight)
+		{
+			SelectedIndex = SelectedIndex == Tiles ? Tiles + 1 : Tiles;
+		}
+		else
+		{
+			SelectedIndex = bUp ? FMath::Clamp(LastBallSwitchTile >= 7 ? LastBallSwitchTile : LastBallSwitchTile + 7, 0, Tiles - 1)
+				: FMath::Clamp(LastBallSwitchTile % 7, 0, Tiles - 1);
+		}
+		return;
+	}
 	if (Screen == EChaosImpactScreen::MatchRules && bModePicker && Key != EKeys::Tab)
 	{
 		// Rows of 4 tiles, then もどる (index 12).
@@ -4462,7 +4759,7 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 			}
 			return;
 		}
-		if (Screen == EChaosImpactScreen::MatchRules && !bModePicker && SelectedIndex <= 3)
+		if (Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && SelectedIndex <= 3)
 		{
 			if (Entries[SelectedIndex].bDisabled)
 			{
@@ -4501,7 +4798,13 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 			SelectedIndex = Owner ? static_cast<int32>(Owner->GetTrainingSummonBallType()) : 0;
 		}
-		else if (bLeft || bRight) { SelectedIndex = (SelectedIndex / 3) * 3 + (SelectedIndex % 3 + (bRight ? 1 : 2)) % 3; }
+		else if (bLeft || bRight)
+		{
+			// Round its own row (the last row may be short).
+			const int32 RowStart = (SelectedIndex / 3) * 3;
+			const int32 InRow = FMath::Min(3, Back - RowStart);
+			SelectedIndex = RowStart + (SelectedIndex - RowStart + (bRight ? 1 : InRow - 1)) % InRow;
+		}
 		else if (bBack) { SelectedIndex = SelectedIndex < 3 ? Back : SelectedIndex - 3; }
 		else { SelectedIndex = SelectedIndex + 3 >= Back ? Back : SelectedIndex + 3; }
 	}
@@ -4509,39 +4812,28 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	{
 		NavigateResults(Key);
 	}
-	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() >= 5)
+	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() == 7)
 	{
-		// Solo/VS above; along the bottom, left to right: タイトルへ (3), 設定 (4), カラーエディット (5), トレーニング (2).
-		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
-			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
-		TArray<int32> Bottom = {3, 4};
-		if (Entries.Num() >= 6) { Bottom.Add(5); }
-		Bottom.Add(2);
-		// (Which card a bottom button stands under: the left half under ソロ, the right half under VS.)
-		const auto Column = [&Bottom](const int32 Index) { return Bottom.IndexOfByKey(Index) < Bottom.Num() / 2 ? 0 : 1; };
-		const int32 At = Bottom.IndexOfByKey(SelectedIndex);
-		if (bHorizontal && SelectedIndex <= 1)
+		// The mosaic: ソロ (0) VS (1) 訓練場 (6) / トレーニング (2) カラーエディット (5) 設定 (4) / タイトルへ (3).
+		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
+		const bool bDown = Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Down;
+		const int32 ToRight[] = {1, 6, 5, 3, 2, 4, 0};
+		const int32 ToLeft[] = {6, 0, 4, 3, 5, 2, 1};
+		const int32 Down[] = {2, 5, 3, 0, 3, 3, 4};
+		const int32 Up[] = {3, 3, 0, 2, 6, 1, 3};
+		const int32 From = FMath::Clamp(SelectedIndex, 0, 6);
+		if (bUp && From == 3)
 		{
-			SelectedIndex = 1 - SelectedIndex;
-		}
-		else if (bHorizontal && At != INDEX_NONE)
-		{
-			SelectedIndex = Bottom[(At + (bRight ? 1 : Bottom.Num() - 1)) % Bottom.Num()];
-		}
-		else if (SelectedIndex <= 1)
-		{
-			// Down to the button last used under this card (else its nearest one).
-			SelectedIndex = Bottom.Contains(LastModeBottom) && Column(LastModeBottom) == SelectedIndex ? LastModeBottom
-				: SelectedIndex == 0 ? Bottom[Bottom.Num() / 2 - 1] : Bottom[Bottom.Num() / 2];
-		}
-		else if (At != INDEX_NONE)
-		{
-			LastModeBottom = SelectedIndex;
-			SelectedIndex = Column(SelectedIndex);
+			// Up from タイトルへ: back to the tile last left for it.
+			SelectedIndex = LastModeBottom >= 0 && LastModeBottom <= 6 && LastModeBottom != 3 ? LastModeBottom : 2;
 		}
 		else
 		{
-			SelectedIndex = 0;
+			if ((bDown && Down[From] == 3) || (bUp && Up[From] == 3))
+			{
+				LastModeBottom = From;
+			}
+			SelectedIndex = bRight ? ToRight[From] : bLeft ? ToLeft[From] : bUp ? Up[From] : bDown ? Down[From] : From;
 		}
 	}
 	else if (Screen == EChaosImpactScreen::MultiReady && Key != EKeys::Tab && Entries.Num() == 9)
@@ -4881,6 +5173,167 @@ void UChaosImpactMenuWidget::GetPauseConfirmText(FString& OutQuestion, FString& 
 	}
 }
 
+FBox2D UChaosImpactMenuWidget::DojoInviteButton(const int32 Index)
+{
+	const float Left = Index == 0 ? 470.0f : 820.0f;
+	return FBox2D(FVector2D(Left, 730.0f), FVector2D(Left + 310.0f, 796.0f));
+}
+
+void UChaosImpactMenuWidget::CloseDojoInvite(const bool bGo)
+{
+	bDojoInvite = false;
+	ChaosImpactSfx::Play2D(this, bGo ? EChaosImpactSfx::UiConfirm : EChaosImpactSfx::UiBack);
+	if (bGo)
+	{
+		if (AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+		{
+			Controller->OpenDojo();
+		}
+	}
+	else
+	{
+		// Left on the mode select, on 訓練場.
+		SelectedIndex = 6;
+	}
+}
+
+bool UChaosImpactMenuWidget::HandleDojoInviteKey(const FKeyEvent& InKeyEvent)
+{
+	const FKey Key = InKeyEvent.GetKey();
+	// (A press as it opens is not taken.)
+	if (FPlatformTime::Seconds() - DojoInviteAt < 0.45)
+	{
+		return true;
+	}
+	const bool bSwap = ChaosImpactSettings::IsSwitchConfirmRight();
+	if (Key == EKeys::Left || Key == EKeys::Right || Key == EKeys::A || Key == EKeys::D || Key == EKeys::Gamepad_DPad_Left
+		|| Key == EKeys::Gamepad_DPad_Right || Key == EKeys::Gamepad_LeftStick_Left || Key == EKeys::Gamepad_LeftStick_Right)
+	{
+		DojoInviteChoice = 1 - DojoInviteChoice;
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiSelect);
+	}
+	else if (Key == EKeys::Enter || Key == EKeys::SpaceBar || Key == (bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom))
+	{
+		CloseDojoInvite(DojoInviteChoice == 0);
+	}
+	else if (Key == EKeys::Escape || Key == EKeys::BackSpace || Key == (bSwap ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right))
+	{
+		CloseDojoInvite(false);
+	}
+	return true;
+}
+
+void UChaosImpactMenuWidget::PaintDojoInvite(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const float Time) const
+{
+	namespace CP = ChaosImpactPaint;
+	const float In = EaseOut(Time / 0.35f);
+	const FLinearColor Teal(0.08f, 0.86f, 0.78f, 1.0f);
+	// The menu dimmed under it.
+	CP::FPainter{Design, Elements, Layer, In}.Box(-400.0f, -300.0f, 2400.0f, 1500.0f, FLinearColor(0.0f, 0.005f, 0.02f, 0.72f));
+	// The card, rising in a little.
+	const float Rise = (1.0f - In) * 40.0f;
+	const float CX = 400.0f;
+	const float CY = 86.0f + Rise;
+	const float CW = 800.0f;
+	const float CH = 736.0f;
+	const CP::FPainter Card{Design, Elements, Layer + 1, In};
+	CP::RoundedBox(Card, CX + 10.0f, CY + 14.0f, CW, CH, 34.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+	CP::RoundedBox(Card, CX - 6.0f, CY - 6.0f, CW + 12.0f, CH + 12.0f, 38.0f, WithAlpha(Teal, 0.9f));
+	CP::RoundedBox(CP::HudAbove(Card, 1), CX, CY, CW, CH, 32.0f, FLinearColor(0.035f, 0.06f, 0.13f, 0.98f));
+	// Faint stripes across it, leaning.
+	const CP::FPainter Stripes = CP::HudAbove(Card, 2);
+	for (int32 Band = 0; Band < 9; ++Band)
+	{
+		const float X = CX + 40.0f + Band * 90.0f + FMath::Fmod(Time * 18.0f, 90.0f);
+		if (X + 60.0f < CX + CW - 30.0f)
+		{
+			CP::HudPoly(Stripes, {FVector2D(X + 30.0f, CY + 20.0f), FVector2D(X + 60.0f, CY + 20.0f), FVector2D(X + 30.0f, CY + CH - 20.0f),
+				FVector2D(X, CY + CH - 20.0f)}, CP::SolidFill(WithAlpha(Teal, 0.035f)), 1);
+		}
+	}
+	// The ribbon across the top: the words, dark on white.
+	const CP::FPainter Ribbon = CP::HudAbove(Card, 3);
+	CP::HudPoly(Ribbon, {FVector2D(CX + 60.0f, CY + 26.0f), FVector2D(CX + CW - 60.0f, CY + 26.0f), FVector2D(CX + CW - 30.0f, CY + 70.0f),
+		FVector2D(CX + CW - 60.0f, CY + 114.0f), FVector2D(CX + 60.0f, CY + 114.0f), FVector2D(CX + 30.0f, CY + 70.0f)},
+		CP::MakeFill(Paper, FLinearColor(0.82f, 0.88f, 0.95f, 1.0f)), 4);
+	CP::HudPoly(Ribbon, {FVector2D(CX + 30.0f, CY + 70.0f), FVector2D(CX + 60.0f, CY + 26.0f), FVector2D(CX + 74.0f, CY + 26.0f), FVector2D(CX + 44.0f, CY + 70.0f),
+		FVector2D(CX + 74.0f, CY + 114.0f), FVector2D(CX + 60.0f, CY + 114.0f)}, CP::SolidFill(Teal), 1);
+	CP::HudPoly(Ribbon, {FVector2D(CX + CW - 30.0f, CY + 70.0f), FVector2D(CX + CW - 60.0f, CY + 26.0f), FVector2D(CX + CW - 74.0f, CY + 26.0f),
+		FVector2D(CX + CW - 44.0f, CY + 70.0f), FVector2D(CX + CW - 74.0f, CY + 114.0f), FVector2D(CX + CW - 60.0f, CY + 114.0f)}, CP::SolidFill(Teal), 1);
+	const FString Head = TEXT("「訓練場」で あそんでみよう！");
+	CP::HudAbove(Ribbon, 1).Text(Head, CX + CW * 0.5f, CY + 42.0f, CP::HudFit(Head, 36.0f, CW - 200.0f), CP::Navy, CP::ETextAlign::Center, TEXT("Black"));
+	// The picture: the lessons' own clips, in a frame.
+	const float VW = 620.0f;
+	const float VH = VW * 9.0f / 16.0f;
+	const float VX = CX + (CW - VW) * 0.5f;
+	const float VY = CY + 140.0f;
+	const CP::FPainter Frame = CP::HudAbove(Card, 3);
+	CP::RoundedBox(Frame, VX - 8.0f, VY - 8.0f, VW + 16.0f, VH + 16.0f, 16.0f, WithAlpha(Teal, 0.95f));
+	CP::RoundedBox(CP::HudAbove(Frame, 1), VX - 3.0f, VY - 3.0f, VW + 6.0f, VH + 6.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 1.0f));
+	if (DojoInviteMenu)
+	{
+		// (The list is laid out on the menu's 1600 x 900: drawn scaled into the frame, nothing of it outside.)
+		const FGeometry Small = Design.MakeChild(FVector2f(1600.0f, 900.0f), FSlateLayoutTransform(VW / 1600.0f, FVector2f(VX, VY)));
+		Elements.PushClip(FSlateClippingZone(Design.ToPaintGeometry(FVector2f(VW, VH), FSlateLayoutTransform(FVector2f(VX, VY)))));
+		DojoInviteMenu->Paint(Small, Elements, Layer + 6);
+		Elements.PopClip();
+	}
+	// What it is, and how far this player has come.
+	const FString Line = TEXT("ルールと操作を、動画つきのレッスンで 学べる");
+	const CP::FPainter Words = CP::HudAbove(Card, 4);
+	Words.Text(Line, CX + CW * 0.5f, VY + VH + 22.0f, CP::HudFit(Line, 26.0f, CW - 80.0f), Paper, CP::ETextAlign::Center, TEXT("Black"));
+	int32 Lessons = 0;
+	int32 Cleared = 0;
+	const TArray<FChaosImpactDojoCategory>& Groups = ChaosImpactDojo::GetCategories();
+	for (int32 Group = 0; Group < Groups.Num(); ++Group)
+	{
+		Lessons += Groups[Group].Lessons.Num();
+		Cleared += ChaosImpactDojo::CountCleared(Group);
+	}
+	const FString Progress = FString::Printf(TEXT("クリア %d / %d レッスン"), Cleared, Lessons);
+	Words.Text(Progress, CX + CW * 0.5f, VY + VH + 64.0f, 17.0f, WithAlpha(Teal, 0.95f), CP::ETextAlign::Center, TEXT("Bold"));
+	// The two choices.
+	const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const bool bPad = Owner && Owner->IsUsingGamepad();
+	const TCHAR* Labels[] = {TEXT("訓練場へ行く"), TEXT("あとで")};
+	const TCHAR* Keys[] = {bPad ? TEXT("A") : TEXT("Enter"), bPad ? TEXT("B") : TEXT("Esc")};
+	const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 5.0f);
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		const FBox2D Box = DojoInviteButton(Index);
+		const bool bOn = Index == DojoInviteChoice;
+		const float BX = static_cast<float>(Box.Min.X);
+		const float BY = static_cast<float>(Box.Min.Y) + Rise - (bOn ? 3.0f : 0.0f);
+		const float BW = static_cast<float>(Box.GetSize().X);
+		const float BH = static_cast<float>(Box.GetSize().Y);
+		const CP::FPainter Button = CP::HudAbove(Card, 5);
+		if (bOn)
+		{
+			CP::RoundedBox(Button, BX - 6.0f - 4.0f * Pulse, BY - 6.0f - 4.0f * Pulse, BW + 12.0f + 8.0f * Pulse, BH + 12.0f + 8.0f * Pulse, BH * 0.5f + 8.0f,
+				WithAlpha(Teal, 0.3f + 0.2f * Pulse));
+		}
+		CP::RoundedBox(CP::HudAbove(Button, 1), BX, BY + 5.0f, BW, BH, BH * 0.5f, WithAlpha(CP::Navy, 0.8f));
+		CP::RoundedBox(CP::HudAbove(Button, 2), BX, BY, BW, BH, BH * 0.5f, bOn ? (Index == 0 ? Teal : Paper) : FLinearColor(0.08f, 0.12f, 0.22f, 1.0f));
+		const FLinearColor Ink2 = bOn ? CP::Navy : Paper;
+		const float KeyW = CP::HudMeasure(Keys[Index], 15.0f) + 18.0f;
+		const float LabelSize = CP::HudFit(Labels[Index], 24.0f, BW - KeyW - 60.0f);
+		const float LabelW = CP::HudMeasure(Labels[Index], LabelSize);
+		const float StartX = BX + (BW - KeyW - 12.0f - LabelW) * 0.5f;
+		CP::RoundedBox(CP::HudAbove(Button, 3), StartX, BY + (BH - 26.0f) * 0.5f, KeyW, 26.0f, 7.0f, bOn ? WithAlpha(CP::Navy, 0.85f) : FMath::Lerp(CP::Navy, Ice, 0.45f));
+		CP::HudAbove(Button, 4).Text(Keys[Index], StartX + KeyW * 0.5f, BY + (BH - 15.0f * 1.38f) * 0.5f, 15.0f, Paper, CP::ETextAlign::Center, TEXT("Black"));
+		CP::HudAbove(Button, 4).Text(Labels[Index], StartX + KeyW + 12.0f, BY + (BH - LabelSize * 1.38f) * 0.5f, LabelSize, Ink2, CP::ETextAlign::Left, TEXT("Black"));
+	}
+}
+
+void UChaosImpactMenuWidget::OpenBallSwitch(const bool bOpen)
+{
+	bBallSwitch = bOpen;
+	BallSwitchAt = FPlatformTime::Seconds();
+	RefreshEntries();
+	SelectedIndex = bOpen ? FMath::Clamp(LastBallSwitchTile, 0, Entries.Num() - 1) : 6;
+	ChaosImpactSfx::Play2D(this, bOpen ? EChaosImpactSfx::UiOpen : EChaosImpactSfx::UiBack);
+}
+
 void UChaosImpactMenuWidget::OpenModePicker(const bool bOpen)
 {
 	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
@@ -4933,6 +5386,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (SelectedIndex == 2) { Controller->BeginTrainingSetup(); }
 		else if (SelectedIndex == 4) { Controller->OpenSettings(); }
 		else if (SelectedIndex == 5) { Controller->OpenColourEdit(EChaosImpactScreen::ModeSelect); }
+		else if (SelectedIndex == 6) { Controller->OpenDojo(); }
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::Title); }
 		break;
 
@@ -5143,6 +5597,29 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		Controller->CancelOnlineStatus();
 		break;
 	case EChaosImpactScreen::MatchRules:
+		if (bBallSwitch)
+		{
+			const FString Choice = Entries[SelectedIndex].Detail;
+			if (Choice == TEXT("ball"))
+			{
+				const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(FCString::Atoi(*Entries[SelectedIndex].Number));
+				const bool bOn = ChaosImpactBallSwitch::IsOn(Controller->GetPendingMatchRules(), Kind);
+				Controller->SetBallSwitchOn(Kind, !bOn);
+				ChaosImpactSfx::Play2D(this, bOn ? EChaosImpactSfx::UiBack : EChaosImpactSfx::UiConfirm);
+				BuildEntries();
+			}
+			else if (Choice == TEXT("all_on"))
+			{
+				Controller->SetAllBallsOn();
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiConfirm);
+				BuildEntries();
+			}
+			else
+			{
+				OpenBallSwitch(false);
+			}
+			break;
+		}
 		if (bModePicker)
 		{
 			if (Entries[SelectedIndex].Detail == TEXT("mode"))
@@ -5172,6 +5649,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (SelectedIndex == 4)
 		{
 			Controller->OpenStageSelect();
+		}
+		else if (SelectedIndex == 6)
+		{
+			OpenBallSwitch(true);
 		}
 		else
 		{
@@ -5378,6 +5859,21 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		{
 			Controller->ShowMenuScreen(Entries[SelectedIndex].Detail == TEXT("goto_mode")
 				? EChaosImpactScreen::ModeSelect : EChaosImpactScreen::Title);
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("dojo_retry") || Entries[SelectedIndex].Detail == TEXT("dojo_list"))
+		{
+			if (AChaosImpactDojo* Dojo = AChaosImpactDojo::Find(Controller->GetWorld()))
+			{
+				if (Entries[SelectedIndex].Detail == TEXT("dojo_retry"))
+				{
+					Controller->ResumeGameplay();
+					Dojo->RetryLesson();
+				}
+				else
+				{
+					Dojo->ReturnToList();
+				}
+			}
 		}
 		break;
 	case EChaosImpactScreen::TrainingSettings:
@@ -5589,6 +6085,11 @@ void UChaosImpactMenuWidget::GoBack()
 			Controller->CancelOnlineStatus();
 			break;
 		case EChaosImpactScreen::MatchRules:
+			if (bBallSwitch)
+			{
+				OpenBallSwitch(false);
+				break;
+			}
 			if (bModePicker)
 			{
 				OpenModePicker(false);
@@ -5624,6 +6125,11 @@ void UChaosImpactMenuWidget::ConfirmSecretChoice()
 
 FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
+	// (The 訓練場 invitation answers its keys itself, through HandleAnyUserKeyDown: nothing moves under it.)
+	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
+	{
+		return FReply::Handled();
+	}
 	const FKey Key = ChaosImpactSettings::ToMenuKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
 	if (SecretChoice != INDEX_NONE)
 	{
@@ -6153,6 +6659,23 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 		ColourEdit->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),
 			InMouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton));
 	}
+	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu && DojoMenu->IsOpen() && !InMouseEvent.GetCursorDelta().IsNearlyZero())
+	{
+		DojoMenu->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+	}
+	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
+	{
+		const FVector2D At = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+		for (int32 Index = 0; Index < 2; ++Index)
+		{
+			if (DojoInviteButton(Index).IsInside(At) && DojoInviteChoice != Index)
+			{
+				DojoInviteChoice = Index;
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiSelect);
+			}
+		}
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()
 		&& !InMouseEvent.GetCursorDelta().IsNearlyZero())
 	{
@@ -6200,6 +6723,23 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
 	{
 		ColourEdit->HandleClick(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu)
+	{
+		DojoMenu->HandleClick(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
+	{
+		const FVector2D At = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
+		for (int32 Index = 0; Index < 2; ++Index)
+		{
+			if (DojoInviteButton(Index).IsInside(At))
+			{
+				CloseDojoInvite(Index == 0);
+			}
+		}
 		return FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry)
@@ -6286,6 +6826,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	// (The invitation took the press: the tiles under it do not.)
+	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
+	{
+		return FReply::Handled();
+	}
 	if (!IsMenuMouseAllowed(this))
 	{
 		PressedIndex = INDEX_NONE;
@@ -6298,7 +6843,7 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry
 		PressedIndex = INDEX_NONE;
 		// A rules row: a click on its left half (the ◀ side of its value) goes back a step, on its right half on.
 		AChaosImpactPlayerController* RulesController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		if (bActivate && Screen == EChaosImpactScreen::MatchRules && !bModePicker && Released <= 3 && Released != 1 && Entries.IsValidIndex(Released)
+		if (bActivate && Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && Released <= 3 && Released != 1 && Entries.IsValidIndex(Released)
 			&& RulesController)
 		{
 			SelectedIndex = Released;

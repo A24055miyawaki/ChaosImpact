@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactBall.h"
+#include "ChaosImpactHook.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactPrisonBall.h"
@@ -33,6 +34,7 @@
 #include "Components/SphereComponent.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
 #include "GameFramework/PlayerState.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -1586,6 +1588,34 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 	DuelThrowDamage = IsSpecialBall() && HasAuthority() ? FChaosImpactDuelThrowDamage::Create(GetWorld()) : nullptr;
 	ResetContactPresentation();
+	if (BallType == EChaosImpactBallType::Hook || BallType == EChaosImpactBallType::Anchor)
+	{
+		// A hook (or anchor) ball never flies: leaving the hand, it sends out the hook on its chain (the server's; a
+		// preview just goes).
+		if (!ThrowingPawn.IsValid())
+		{
+			ThrowingPawn = GetInstigator();
+		}
+		ProjectileMovement->StopMovementImmediately();
+		ProjectileMovement->Deactivate();
+		CollisionSphere->SetSimulatePhysics(false);
+		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		SetActorHiddenInGame(true);
+		if (bCosmeticPrediction || !HasAuthority() || !GetWorld())
+		{
+			SetActorTickEnabled(false);
+			SetLifeSpan(0.25f);
+			return;
+		}
+		bDetonated = true;
+		DetonatedAt = GetWorld()->GetTimeSeconds();
+		FlightEndedAt = DetonatedAt;
+		SetActorTickEnabled(false);
+		AChaosImpactHook::Release(GetWorld(), GetActorLocation(), Direction, ThrowingPawn.Get(), BallType == EChaosImpactBallType::Anchor);
+		SetLifeSpan(1.0f);
+		ForceNetUpdate();
+		return;
+	}
 	if (BallType == EChaosImpactBallType::Wind)
 	{
 		// A wind ball never flies: leaving the hand, it becomes a tornado (the server's; a throw preview just goes).
@@ -2628,6 +2658,83 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		ChaosImpactDrive::BuildLook(this, BallMesh, DriveLook);
 		LightIntensity = 0.0f;
 	}
+	else if (BallType == EChaosImpactBallType::Hook || BallType == EChaosImpactBallType::Anchor)
+	{
+		// Its shape round the ball, held up facing the camera so it reads at a glance and never as another kind (nor as
+		// each other): hook: a J-shaped hook (a shank up to its eye, one curve round under the ball to a barbed point);
+		// anchor: an anchor (a shank through the ball, the stock across the top, two arms below with their flukes).
+		// Dark steel against the floor, the points in the kind's colour, the glow kept low so the outline shows.
+		const bool bAnchorBall = BallType == EChaosImpactBallType::Anchor;
+		BallMesh->SetMaterial(0, MakeEmissive(this, bAnchorBall ? FLinearColor(0.5f, 0.85f, 0.05f) : FLinearColor(0.08f, 0.75f, 0.62f), 1.2f));
+		TypeGlowMaterial = MakeAdditive(this, GetColor(BallType), 0.45f, 1.0f);
+		TypeGlow = AttachShell(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")), TypeGlowMaterial);
+		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+		UStaticMesh* Cone = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cone.Cone"));
+		UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		UMaterialInstanceDynamic* Steel = MakeEmissive(this, FLinearColor(0.16f, 0.18f, 0.21f), 1.0f);
+		UMaterialInstanceDynamic* Tip = MakeEmissive(this, GetColor(BallType), 2.4f);
+		TypeEmblem = NewObject<USceneComponent>(this);
+		TypeEmblem->SetupAttachment(BallMesh);
+		TypeEmblem->SetUsingAbsoluteRotation(true);
+		TypeEmblem->SetUsingAbsoluteScale(true);
+		TypeEmblem->RegisterComponent();
+		// A part along Way, in the emblem's plane (Y across, Z up; it faces its X at the camera): Length long, Thick across.
+		const auto Part = [this](UStaticMesh* Mesh, UMaterialInterface* Look, const FVector& Center, const FVector& Way,
+			const float Length, const float Thick)
+		{
+			UStaticMeshComponent* Piece = NewObject<UStaticMeshComponent>(this);
+			Piece->SetStaticMesh(Mesh);
+			Piece->SetMaterial(0, Look);
+			Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Piece->SetCastShadow(false);
+			Piece->SetupAttachment(TypeEmblem);
+			Piece->RegisterComponent();
+			Piece->SetRelativeLocationAndRotation(Center, FRotationMatrix::MakeFromZ(Way.GetSafeNormal()).Rotator());
+			Piece->SetRelativeScale3D(FVector(Thick / 100.0f, Thick / 100.0f, Length / 100.0f));
+		};
+		const auto Rod = [&Part, Cylinder](UMaterialInterface* Look, const FVector& From, const FVector& To, const float Thick)
+		{
+			Part(Cylinder, Look, (From + To) * 0.5f, To - From, static_cast<float>(FVector::Dist(From, To)) + Thick * 0.5f, Thick);
+		};
+		const FVector Up = FVector::UpVector;
+		if (bAnchorBall)
+		{
+			Rod(Steel, FVector(0.0f, 0.0f, -40.0f), FVector(0.0f, 0.0f, 46.0f), 9.0f);
+			Part(Sphere, Tip, FVector(0.0f, 0.0f, 52.0f), Up, 15.0f, 15.0f);
+			Rod(Steel, FVector(0.0f, -30.0f, 34.0f), FVector(0.0f, 30.0f, 34.0f), 8.0f);
+			for (const float Side : {-1.0f, 1.0f})
+			{
+				// The arm from the foot of the shank out and up, its fluke pointing on up.
+				const FVector Foot(0.0f, 0.0f, -40.0f);
+				const FVector End(0.0f, Side * 36.0f, -12.0f);
+				Rod(Steel, Foot, End, 8.0f);
+				Part(Cone, Tip, End + FVector(0.0f, Side * 3.0f, 9.0f), FVector(0.0f, Side * 0.45f, 1.0f), 22.0f, 17.0f);
+			}
+		}
+		else
+		{
+			// The shank and its eye above the ball.
+			Rod(Steel, FVector(0.0f, 0.0f, 20.0f), FVector(0.0f, 0.0f, 54.0f), 8.0f);
+			Part(Sphere, Steel, FVector(0.0f, 0.0f, 58.0f), Up, 14.0f, 14.0f);
+			Part(Sphere, Tip, FVector(0.0f, 0.0f, 58.0f), Up, 8.0f, 8.0f);
+			// One curve round under the ball (a J), its barbed point up on the far side.
+			const FVector Hub(0.0f, 8.0f, -6.0f);
+			constexpr float Bend = 34.0f;
+			FVector Last = Hub + FVector(0.0f, -Bend, 0.0f);
+			for (int32 Step = 1; Step <= 8; ++Step)
+			{
+				const float Angle = FMath::DegreesToRadians(180.0f + Step * 22.5f);
+				const FVector Next = Hub + FVector(0.0f, FMath::Cos(Angle) * Bend, FMath::Sin(Angle) * Bend);
+				Rod(Steel, Last, Next, 9.0f);
+				Last = Next;
+			}
+			Part(Cone, Tip, Last + FVector(0.0f, -2.0f, 10.0f), FVector(0.0f, -0.25f, 1.0f), 24.0f, 16.0f);
+			Part(Cone, Tip, Last + FVector(0.0f, -9.0f, 2.0f), FVector(0.0f, -0.9f, -0.6f), 12.0f, 8.0f);
+		}
+		LightColor = GetColor(BallType);
+		LightIntensity = 2200.0f;
+		LightRadius = 320.0f;
+	}
 	else if (BallType == EChaosImpactBallType::Prison)
 	{
 		BallMesh->SetMaterial(0,MakeEmissive(this,FLinearColor(.065f,.012f,.007f),1.f));
@@ -2791,6 +2898,19 @@ void AChaosImpactBall::UpdateBallTypePresentation(const float DeltaSeconds)
 	{
 		// The cage turns round the ball and its lock band glows (the ball itself rolls inside it).
 		ChaosImpactPrison::UpdateCage(Cast<UProceduralMeshComponent>(TypeVisual), 31.0f, ChaosImpactBallTypes::PrisonSeconds, TypeFxTime, false);
+	}
+	if (TypeEmblem)
+	{
+		// A hook or anchor ball's shape faces this screen's camera (swaying a little so it still looks solid).
+		FVector ToCamera = FVector::BackwardVector;
+		if (const APlayerController* Viewer = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+			Viewer && Viewer->PlayerCameraManager)
+		{
+			ToCamera = (Viewer->PlayerCameraManager->GetCameraLocation() - TypeEmblem->GetComponentLocation()).GetSafeNormal();
+		}
+		const FVector Facing = FQuat(FVector::UpVector, 0.35f * FMath::Sin(T * 1.6f)).RotateVector(ToCamera);
+		TypeEmblem->SetWorldRotation(FRotationMatrix::MakeFromXZ(Facing, FVector::UpVector).Rotator());
+		TypeEmblem->SetWorldScale3D(FVector(FMath::Max(ExpiryScale, 0.01f)));
 	}
 	for (int32 Index = 0; Index < TypeRings.Num(); ++Index)
 	{

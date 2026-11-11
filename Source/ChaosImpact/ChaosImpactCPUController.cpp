@@ -2092,6 +2092,7 @@ float AChaosImpactCPUController::GetHuntPickupValue(const EChaosImpactBallType T
 	case EChaosImpactBallType::Beam: return 3.5f;
 	case EChaosImpactBallType::Thunder: return 3.0f;
 	case EChaosImpactBallType::Drive: return 2.8f;
+	case EChaosImpactBallType::Hook: return 2.6f;
 	case EChaosImpactBallType::Ice: return 2.4f;
 	case EChaosImpactBallType::Snow: return 2.3f;
 	case EChaosImpactBallType::Black: return 2.2f;
@@ -2115,6 +2116,8 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Simae: return 1.7f;
 	case EChaosImpactBallType::Drive: return 1.9f;
 	case EChaosImpactBallType::Prison: return 2.1f;
+	case EChaosImpactBallType::Hook: return 2.0f;
+	case EChaosImpactBallType::Anchor: return 0.9f;
 	case EChaosImpactBallType::Wind: return 1.6f;
 	case EChaosImpactBallType::Snow: return 1.5f;
 	default: return 1.0f;

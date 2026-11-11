@@ -178,6 +178,8 @@ namespace
 		case EChaosImpactBallType::Simae: return TEXT("シマエナガの群れが相手を追いかけてつつく。ダッシュで振り落とせる");
 		case EChaosImpactBallType::Drive: return TEXT("投げたあと移動の操作で曲げられる。最初に当たった相手ではじける");
 		case EChaosImpactBallType::Prison: return TEXT("当たった相手を殻に閉じこめる。閉じこめた相手は投げられる");
+		case EChaosImpactBallType::Hook: return TEXT("フックを飛ばし、当てた相手や床のボールを手元へ引き寄せる");
+		case EChaosImpactBallType::Anchor: return TEXT("壁や床に打ちこみ、そこまで一気に飛んでいく。ダッシュで止まれる");
 		default: return FString();
 		}
 	}
@@ -245,7 +247,11 @@ void FChaosImpactTutorial::Tick(AChaosImpactPlayerController* Controller, const 
 	const UWorld* World = Controller ? Controller->GetWorld() : nullptr;
 	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
 	// Training only: never an online room's lobby (its own screens are there), a match or a tournament's world.
-	const bool bPlace = Controller && Controller->IsTrainingMode() && !Controller->IsOnlineRoom()
+	// (Not in 訓練場: its lessons teach the same, one at a time.)
+	// (Retired since 訓練場 teaches everything in its lessons: neither the steps nor the ball notes come up any more. The
+	// button hints along the edges, drawn by the charge widget, are not this and stay.)
+	static constexpr bool bRetired = true;
+	const bool bPlace = !bRetired && Controller && Controller->IsTrainingMode() && !Controller->IsOnlineRoom() && !Controller->IsDojo()
 		&& !(Match && (Match->bVersusMatch || Match->IsTournament() || Match->bPublicTournament));
 	const bool bOn = bPlace && ChaosImpactSettings::IsTrainingTutorialOn();
 	if (bOn && Revision != ChaosImpactSettings::GetTrainingTutorialRevision())

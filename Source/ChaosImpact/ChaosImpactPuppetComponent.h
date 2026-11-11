@@ -77,6 +77,12 @@ public:
 	 * reaches out toward PointAt, guiding the ball, and the left fist is pulled back to the hip.
 	 */
 	void SetDrivePose(float HoldWeight, const FVector& HoldPoint, float PointWeight, const FVector& PointAt);
+	/**
+	 * Hook ball poses (weights 0-1, over whatever the pose is). Spin: the right hand swings the hook round over the head
+	 * (SpinAngle, radians). Chain: both arms reach along the chain toward AimAt (world space), the right one in front.
+	 * Reel: on the chain, the hands pull it in hand over hand (ReelTime drives the rhythm).
+	 */
+	void SetHookPose(float SpinWeight, float SpinAngle, float ChainWeight, const FVector& AimAt, float ReelWeight, float ReelTime);
 	/** Shows or hides the five parts only; balls attached elsewhere keep their own visibility. */
 	void SetPartsVisible(bool bShow);
 	void SetPartsOverlayMaterial(UMaterialInterface* Material);
@@ -221,6 +227,19 @@ private:
 	/** A held ball's radius in this component's units (to cup the hands round it). */
 	float DriveBallRadius = 18.0f;
 	void PrepareDrivePose();
+	float HookSpinWeight = 0.0f;
+	float HookSpinAngle = 0.0f;
+	float HookChainWeight = 0.0f;
+	float HookReelWeight = 0.0f;
+	float HookReelTime = 0.0f;
+	FVector HookAimAt = FVector::ZeroVector;
+	/** The hook poses' aim and the owner's facing, in this component's space, worked out once per pose. */
+	FVector HookAimLocal = FVector::ZeroVector;
+	FVector HookForward = FVector::ForwardVector;
+	FVector HookUp = FVector::UpVector;
+	void PrepareHookPose();
+	void HookArm(bool bRight, const FVector& Shoulder, const FVector& Outward, float Reach, FVector& InOutTarget,
+		FVector& InOutPole) const;
 	/** Where an arm goes in the drive poses (bRight: the guiding arm). */
 	void DriveArm(bool bRight, const FVector& Shoulder, const FVector& Outward, float Reach, FVector& InOutTarget,
 		FVector& InOutPole) const;

@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactHook.h"
 #include "ChaosImpactEase.h"
 #include "ChaosImpactFxKit.h"
 #include "Components/PoseableMeshComponent.h"
@@ -76,6 +77,8 @@
 #include "ChaosImpact.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+
+FChaosImpactAnyCharacterDamaged AChaosImpactCharacter::OnAnyDamaged;
 
 namespace
 {
@@ -448,6 +451,8 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 	UpdateBlackHolePull(DeltaSeconds);
 	UpdateWindKnockback(DeltaSeconds);
 	UpdateWindCarry(DeltaSeconds);
+	UpdateHookPull(DeltaSeconds);
+	UpdateAnchorZip(DeltaSeconds);
 	if (CameraSnapFrames > 0 && CameraBoom && --CameraSnapFrames == 0)
 	{
 		CameraBoom->bEnableCameraLag = bCameraLagBeforeSnap;
@@ -489,7 +494,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		FVector DriveOffset = Driven ? Driven->GetActorLocation() - GetActorLocation() : FVector::ZeroVector;
 		DriveOffset.Z = 0.0f;
 		const FVector DesiredTargetOffset = bTrainingMenuCameraActive
-			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead + CameraMoveLead;
+			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead + CameraMoveLead + DojoCameraLead;
 		const float DriveBlendSpeed = 6.0f;
 		// Springs rather than a chase at a fixed rate: each change of view sets off gently and settles (イージーイーズ).
 		const auto SmoothTime = [](const float Speed) { return 1.2f / FMath::Max(Speed, 0.01f); };
@@ -972,7 +977,7 @@ void AChaosImpactCharacter::DoMove(float Right, float Forward)
 {
 	const AChaosImpactPlayerController* MenuController = Cast<AChaosImpactPlayerController>(GetController());
 	if (Tackle->IsBusy() || IsInBallForm() || bEliminated || bTrainingMenuFrozen || IsIceFrozen() || IsMatchInputLocked() || IsChargingNova()
-		|| (MenuController && !MenuController->IsGameplayActive()))
+		|| IsAnchorZipping() || (MenuController && !MenuController->IsGameplayActive()))
 	{
 		return;
 	}
@@ -1099,7 +1104,7 @@ void AChaosImpactCharacter::StartDash()
 	{
 		EndDriving(true);
 	}
-	if (Tackle->IsBusy() || IsInBallForm() || !GetWorld() || bEliminated || bTrainingMenuFrozen || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
+	if (Tackle->IsBusy() || IsInBallForm() || !GetWorld() || bEliminated || bTrainingMenuFrozen || bDojoRooted || bIsDashing || Stamina + UE_SMALL_NUMBER < DashCost
 		|| GetWorld()->GetTimeSeconds() < NextDashAvailableAtSeconds || IsIceFrozen() || IsMatchInputLocked()
 		|| IsChargingNova())
 	{
@@ -2111,6 +2116,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 		else if (SourceZone) { ThrowDamage = SourceZone->GetDuelThrowDamage(); }
 		else if (const auto* Bird = Cast<AChaosImpactSimaeBird>(DamageCauser)) { ThrowDamage = Bird->GetDuelThrowDamage(); }
 		else if (const auto* Wind = Cast<AChaosImpactTornado>(DamageCauser)) { ThrowDamage = Wind->GetDuelThrowDamage(); }
+		else if (const auto* Hook = Cast<AChaosImpactHook>(DamageCauser)) { ThrowDamage = Hook->GetDuelThrowDamage(); }
 		if (ThrowDamage) { AllowedDamage = ThrowDamage->Consume(this, FMath::Min(Health, DamageAmount)); }
 	}
 	if (AllowedDamage <= 0.f) { return 0.f; }
@@ -2121,6 +2127,7 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	LastHitSourcePawn = SourcePawn;
 	LastDamagedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 	OnPlayerHit(Health, AppliedDamage);
+	OnAnyDamaged.Broadcast(this, AppliedDamage, DamageCauser, SourcePawn);
 	if (Match && Match->bVersusMatch && SourcePawn && SourcePawn != this)
 	{
 		if (AChaosImpactGameMode* ScoringMode = GetWorld()->GetAuthGameMode<AChaosImpactGameMode>())
@@ -2959,6 +2966,105 @@ void AChaosImpactCharacter::ServerReportBlastHit_Implementation(AChaosImpactHaza
 	// Judged by the reporter's screen, where they were not dashing.
 	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
 	Zone->TryApplyReportedBlast(this);
+}
+
+void AChaosImpactCharacter::ServerReportHookHit_Implementation(AChaosImpactHook* Hook)
+{
+	if (!IsValid(Hook) || bEliminated)
+	{
+		return;
+	}
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Hook->TryApplyReportedHit(this);
+}
+
+void AChaosImpactCharacter::BeginHookPull(AChaosImpactHook* Hook)
+{
+	if (!IsValid(Hook) || bEliminated || HookPuller == Hook)
+	{
+		return;
+	}
+	HookPuller = Hook;
+	HookPullSeconds = 0.0f;
+	if (IsLocallyControlled())
+	{
+		if (bIsChargingThrow)
+		{
+			CancelChargingThrow();
+		}
+		GetCharacterMovement()->StopMovementImmediately();
+		PlayControllerRumble(0.6f, 0.9f, 0.35f);
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Hook pull on %s (authority=%d local=%d)"), *GetNameSafe(GetPlayerState()), HasAuthority(),
+		IsLocallyControlled());
+}
+
+void AChaosImpactCharacter::UpdateHookPull(const float DeltaSeconds)
+{
+	AChaosImpactHook* Hook = HookPuller.Get();
+	if (!Hook)
+	{
+		return;
+	}
+	HookPullSeconds += FMath::Clamp(DeltaSeconds, 0.0f, 0.1f);
+	// Let go: the hook gone or (a moment after the catch) gone back without this player, down, broken free, or too long.
+	const bool bLetGo = !IsValid(Hook) || bEliminated || bIsDashing || HookPullSeconds >= AChaosImpactHook::PullMaxSeconds
+		|| (HookPullSeconds > 0.35f && Hook->GetPhase() == EChaosImpactHookPhase::Back);
+	if (bLetGo || !IsLocallyControlled() || !GetWorld())
+	{
+		if (bLetGo)
+		{
+			HookPuller = nullptr;
+		}
+		return;
+	}
+	const FVector Target = Hook->GetPullTarget(GetActorLocation());
+	const FVector Move(Target.X - GetActorLocation().X, Target.Y - GetActorLocation().Y, 0.0f);
+	const float Step = AChaosImpactHook::PullSpeed * FMath::Clamp(DeltaSeconds, 0.0f, 0.1f);
+	// Dragged along the floor: over a small step (lifted onto it, as walking steps up), else along a wall it meets.
+	const auto Drag = [this](const FVector& Delta)
+	{
+		FHitResult Hit;
+		AddActorWorldOffset(Delta, true, &Hit);
+		if (!Hit.bBlockingHit)
+		{
+			return;
+		}
+		const FVector Rest = Delta * (1.0f - Hit.Time);
+		const FVector Before = GetActorLocation();
+		const float Climb = FMath::Max(GetCharacterMovement()->MaxStepHeight, 45.0f) + 25.0f;
+		FHitResult Up;
+		AddActorWorldOffset(FVector(0.0f, 0.0f, Climb), true, &Up);
+		const float Raised = static_cast<float>(GetActorLocation().Z - Before.Z);
+		FHitResult Across;
+		AddActorWorldOffset(Rest, true, &Across);
+		if (FVector::Dist2D(GetActorLocation(), Before) > Rest.Size2D() * 0.5f)
+		{
+			// Over it: set down on top.
+			FHitResult Down;
+			AddActorWorldOffset(FVector(0.0f, 0.0f, -(Raised + 4.0f)), true, &Down);
+			return;
+		}
+		// Too high to step: back down, and slid along the wall instead.
+		SetActorLocation(Before, false);
+		const FVector Wall = FVector(Hit.ImpactNormal.X, Hit.ImpactNormal.Y, 0.0f).GetSafeNormal();
+		const FVector Slide = FVector::VectorPlaneProject(Rest, Wall);
+		if (!Slide.IsNearlyZero())
+		{
+			AddActorWorldOffset(Slide, true);
+		}
+	};
+	if (Move.Size2D() <= FMath::Max(Step, 12.0f))
+	{
+		Drag(Move);
+		HookPuller = nullptr;
+	}
+	else
+	{
+		Drag(Move.GetSafeNormal2D() * Step);
+	}
+	bRumbleBlackHolePull = true;
+	PreventClientMoveCombining();
 }
 
 void AChaosImpactCharacter::ServerReportTornadoHit_Implementation(AChaosImpactTornado* Tornado)
@@ -4304,6 +4410,20 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		if (!HeldPrisonMaterial) { HeldPrisonMaterial=MakeEmissive(this,FLinearColor(.065f,.012f,.007f),1.f); }
 		Material = HeldPrisonMaterial;
 		break;
+	case EChaosImpactBallType::Hook:
+		if (!HeldHookMaterial)
+		{
+			HeldHookMaterial = MakeEmissive(this, FLinearColor(0.32f, 0.85f, 0.74f), 1.6f);
+		}
+		Material = HeldHookMaterial;
+		break;
+	case EChaosImpactBallType::Anchor:
+		if (!HeldAnchorMaterial)
+		{
+			HeldAnchorMaterial = MakeEmissive(this, FLinearColor(0.7f, 0.9f, 0.25f), 1.6f);
+		}
+		Material = HeldAnchorMaterial;
+		break;
 	default:
 		// A normal ball: pale and evenly lit, so a hand on its shadowed side never looks black.
 		if (Type == EChaosImpactBallType::Normal)
@@ -4957,6 +5077,125 @@ void AChaosImpactCharacter::UpdateToonCharacter()
 	const FVector PointAt = Guided ? Guided->GetActorLocation() : HoldPoint + GetActorForwardVector() * 60.0f;
 	DrivePointShown = DrivePointWeight < 0.02f ? PointAt : FMath::VInterpTo(DrivePointShown, PointAt, PoseDelta, 12.0f);
 	ToonCharacter->SetDrivePose(DriveHoldWeight * (1.0f - Weight), HoldPoint, DrivePointWeight, DrivePointShown);
+	// A hook ball: charged, it is swung round over the head on its chain, faster the longer it is charged; thrown, the
+	// arms follow the chain out to the hook; once it has caught something, they reel it in hand over hand.
+	const bool bHookSpin = bCharging && !bEliminated && (Held == EChaosImpactBallType::Hook || Held == EChaosImpactBallType::Anchor);
+	const AChaosImpactHook* OwnHook = ShownHook.Get();
+	if (OwnHook && (OwnHook->GetSourcePawn() != this || OwnHook->IsActorBeingDestroyed()))
+	{
+		OwnHook = nullptr;
+		ShownHook.Reset();
+	}
+	const bool bOnChain = OwnHook && !bEliminated;
+	const bool bReel = bOnChain && OwnHook->IsReeling();
+	HookSpinAngle = FMath::Fmod(HookSpinAngle + PoseDelta * (9.0f + 9.0f * FMath::Clamp(ChargeSeconds, 0.0f, 1.0f)), UE_TWO_PI);
+	HookSpinWeight = FMath::FInterpTo(HookSpinWeight, bHookSpin ? 1.0f : 0.0f, PoseDelta, bHookSpin ? 10.0f : 20.0f);
+	HookChainWeight = FMath::FInterpTo(HookChainWeight, bOnChain ? 1.0f : 0.0f, PoseDelta, bOnChain ? 22.0f : 7.0f);
+	HookReelWeight = FMath::FInterpTo(HookReelWeight, bReel ? 1.0f : 0.0f, PoseDelta, 12.0f);
+	HookReelTime = bReel ? HookReelTime + PoseDelta : 0.0f;
+	if (bOnChain)
+	{
+		HookAimShown = OwnHook->GetHeadLocation();
+	}
+	ToonCharacter->SetHookPose(HookSpinWeight * (1.0f - Weight), HookSpinAngle, HookChainWeight * (1.0f - Weight),
+		HookAimShown, HookReelWeight, HookReelTime);
+}
+
+void AChaosImpactCharacter::ShowOwnHook(AChaosImpactHook* Hook)
+{
+	ShownHook = Hook;
+}
+
+void AChaosImpactCharacter::UpdateAnchorZip(const float DeltaSeconds)
+{
+	if (!IsLocallyControlled() || !GetWorld())
+	{
+		return;
+	}
+	if (!bAnchorZipping)
+	{
+		// Its own anchor has bitten in: off it goes (once per anchor).
+		AChaosImpactHook* Own = ShownHook.Get();
+		if (!Own || !IsValid(Own) || !Own->IsAnchor() || Own->GetSourcePawn() != this || Own == ZipDoneHook.Get() || bEliminated
+			|| bIsDashing || !Own->ShouldZipNow())
+		{
+			return;
+		}
+		ZipHook = Own;
+		ZipDoneHook = Own;
+		bAnchorZipping = true;
+		bZipToWall = Own->IsWallAnchor();
+		AChaosImpactHook* Hook = Own;
+		const float HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		ZipFrom = GetActorLocation();
+		ZipTo = Hook->GetZipTarget() + FVector(0.0f, 0.0f, HalfHeight + 4.0f);
+		ZipSeconds = 0.0f;
+		ZipDuration = FMath::Max(static_cast<float>(FVector::Dist(ZipFrom, ZipTo)) / AChaosImpactHook::ZipSpeed, 0.18f);
+		if (bIsChargingThrow)
+		{
+			CancelChargingThrow();
+		}
+		GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+		GetCharacterMovement()->Velocity = FVector::ZeroVector;
+		ZipPawnResponse = GetCapsuleComponent()->GetCollisionResponseToChannel(ECC_Pawn);
+		GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+		PlayControllerRumble(0.35f, 0.55f, 0.25f);
+		UE_LOG(LogChaosImpact, Log, TEXT("Anchor zip: %s from %s to %s (%.2fs)"), *GetNameSafe(GetPlayerState()), *ZipFrom.ToCompactString(),
+			*ZipTo.ToCompactString(), ZipDuration);
+	}
+	if (bEliminated || bIsDashing)
+	{
+		EndAnchorZip(false);
+		return;
+	}
+	const float Delta = FMath::Clamp(DeltaSeconds, 0.0f, 0.1f);
+	ZipSeconds += Delta;
+	// Away fast and easing in at the end, straight across (level: the anchor pulls it along, not up).
+	const float T = FMath::Clamp(ZipSeconds / ZipDuration, 0.0f, 1.0f);
+	const float Eased = 1.0f - (1.0f - T) * (1.0f - T);
+	const FVector Want = FMath::Lerp(ZipFrom, ZipTo, Eased);
+	const FVector Move = Want - GetActorLocation();
+	FHitResult Blocked;
+	AddActorWorldOffset(Move, true, &Blocked);
+	GetCharacterMovement()->Velocity = Delta > 0.0f ? Move / Delta : FVector::ZeroVector;
+	const FVector Flat = (ZipTo - ZipFrom).GetSafeNormal2D();
+	if (!Flat.IsNearlyZero())
+	{
+		SetActorRotation(Flat.Rotation());
+	}
+	PreventClientMoveCombining();
+	if (T >= 1.0f || ZipSeconds >= AChaosImpactHook::ZipMaxSeconds || (Blocked.bBlockingHit && T > 0.15f && Blocked.ImpactNormal.Z < 0.5f))
+	{
+		EndAnchorZip(T >= 1.0f);
+	}
+}
+
+void AChaosImpactCharacter::EndAnchorZip(const bool bArrived)
+{
+	const bool bWall = bZipToWall;
+	if (bAnchorZipping)
+	{
+		GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Pawn, ZipPawnResponse);
+	}
+	bAnchorZipping = false;
+	ZipHook.Reset();
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (Movement->MovementMode == MOVE_Flying)
+	{
+		Movement->SetMovementMode(MOVE_Falling);
+	}
+	if (!bIsDashing)
+	{
+		// Landing with a little of the flight's swing still in it (on the floor; at a wall it just drops in front of it).
+		const FVector Flat = (ZipTo - ZipFrom).GetSafeNormal2D();
+		Movement->Velocity = bArrived && !bWall ? Flat * 420.0f : FVector(0.0f, 0.0f, -100.0f);
+	}
+	PreventClientMoveCombining();
+}
+
+bool AChaosImpactCharacter::GetHookHandLocation(FVector& OutLocation) const
+{
+	return ToonCharacter && GetNetMode() != NM_DedicatedServer && ToonCharacter->GetPalmLocation(true, OutLocation);
 }
 
 bool AChaosImpactCharacter::IsShowingLastHitSmoke() const
@@ -5116,8 +5355,8 @@ void AChaosImpactCharacter::UpdateSnowball()
 		const bool bDuelIceSlow = ChaosImpactDuelBallBalance::IsDuel(GetWorld()) && IceFrozenUntilServerTime > 0.0
 			&& Now >= IceFrozenUntilServerTime && Now < IceFrozenUntilServerTime + ChaosImpactDuelBallBalance::IceSlowSeconds;
 		const float IceSpeed = bDuelIceSlow ? ChaosImpactDuelBallBalance::IceSlowMultiplier : 1.f;
-		// Charging a nova roots its thrower to the spot.
-		GetCharacterMovement()->MaxWalkSpeed = IsChargingNova() || IsDriving() ? 0.0f
+		// Charging a nova roots its thrower to the spot (so does a 訓練場 lesson about aiming).
+		GetCharacterMovement()->MaxWalkSpeed = IsChargingNova() || IsDriving() || bDojoRooted ? 0.0f
 			: BaseMaxWalkSpeed * (1.0f - ChaosImpactBallTypes::SnowMaxSlowdown * Heaviest) * ExplorationSpeed * IceSpeed;
 	}
 }

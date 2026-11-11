@@ -559,6 +559,9 @@ protected:
 	/** Black: tilted rings spinning around the ball. */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UStaticMeshComponent>> TypeRings;
+	/** A hook or anchor ball's shape built round it (a grappling claw, an anchor), turning slowly so it reads. */
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> TypeEmblem;
 
 	float NextArcFlickerTime = 0.0f;
 

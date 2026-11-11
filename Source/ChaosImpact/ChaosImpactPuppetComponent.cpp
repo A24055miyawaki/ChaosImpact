@@ -664,6 +664,7 @@ void UChaosImpactPuppetComponent::UpdatePose(const bool bPushNow, const float An
 		return;
 	}
 	PrepareDrivePose();
+	PrepareHookPose();
 	if (AuthoredMesh)
 	{
 		// Ball form may also ask for a pose in this frame. Never advance the clip twice.
@@ -964,6 +965,7 @@ void UChaosImpactPuppetComponent::UpdateSkinnedPose()
 		}
 		RaiseArm(Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		DriveArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
+		HookArm(bRight, Shoulder, Outward, Chain.UpperLength + Chain.LowerLength, Target, Pole);
 		if(TackleWeight>0)
 		{
 			const float Reach=Chain.UpperLength+Chain.LowerLength;
@@ -1003,6 +1005,72 @@ void UChaosImpactPuppetComponent::SetDrivePose(const float HoldWeight, const FVe
 	DrivePointWeight = FMath::Clamp(PointWeight, 0.0f, 1.0f);
 	DriveHoldPoint = HoldPoint;
 	DrivePointAt = PointAt;
+}
+
+void UChaosImpactPuppetComponent::SetHookPose(const float SpinWeight, const float SpinAngle, const float ChainWeight,
+	const FVector& AimAt, const float ReelWeight, const float ReelTime)
+{
+	HookSpinWeight = FMath::Clamp(SpinWeight, 0.0f, 1.0f);
+	HookSpinAngle = SpinAngle;
+	HookChainWeight = FMath::Clamp(ChainWeight, 0.0f, 1.0f);
+	HookAimAt = AimAt;
+	HookReelWeight = FMath::Clamp(ReelWeight, 0.0f, 1.0f);
+	HookReelTime = ReelTime;
+}
+
+void UChaosImpactPuppetComponent::PrepareHookPose()
+{
+	const AActor* Owner = GetOwner();
+	if ((HookSpinWeight <= 0.0f && HookChainWeight <= 0.0f) || !Owner)
+	{
+		return;
+	}
+	const FTransform& ToWorld = GetComponentTransform();
+	HookAimLocal = ToWorld.InverseTransformPosition(HookAimAt);
+	HookForward = ToWorld.InverseTransformVectorNoScale(Owner->GetActorForwardVector()).GetSafeNormal();
+	HookUp = ToWorld.InverseTransformVectorNoScale(FVector::UpVector).GetSafeNormal();
+}
+
+void UChaosImpactPuppetComponent::HookArm(const bool bRight, const FVector& Shoulder, const FVector& Outward,
+	const float Reach, FVector& InOutTarget, FVector& InOutPole) const
+{
+	const FVector& Forward = HookForward;
+	const FVector& Up = HookUp;
+	if (HookSpinWeight > 0.0f && bRight)
+	{
+		// The hand up over the head, circling: the hook on its short chain swings round above.
+		const FVector Center = Shoulder + Up * Reach * 0.78f - Outward * Reach * 0.12f;
+		const FVector Side = (Outward - Up * FVector::DotProduct(Outward, Up)).GetSafeNormal();
+		const FVector Circle = Center + (Forward * FMath::Cos(HookSpinAngle) + Side * FMath::Sin(HookSpinAngle)) * Reach * 0.3f;
+		InOutTarget = FMath::Lerp(InOutTarget, Circle, HookSpinWeight);
+		InOutPole = FMath::Lerp(InOutPole.GetSafeNormal(), (Outward - Up * 0.4f).GetSafeNormal(), HookSpinWeight);
+	}
+	if (HookChainWeight > 0.0f)
+	{
+		// Along the chain: toward the hook, never far down or up; the right hand in front, the left behind it.
+		FVector Toward = HookAimLocal - Shoulder;
+		const float Rise = FMath::Clamp(static_cast<float>(FVector::DotProduct(Toward.GetSafeNormal(), Up)), -0.3f, 0.4f);
+		FVector Flat = Toward - Up * FVector::DotProduct(Toward, Up);
+		Flat = Flat.IsNearlyZero(0.01f) ? Forward : Flat.GetSafeNormal();
+		Toward = Flat * FMath::Sqrt(1.0f - Rise * Rise) + Up * Rise;
+		float Out = bRight ? 0.97f : 0.84f;
+		FVector Inward = -Outward * Reach * (bRight ? 0.08f : 0.18f) - Up * Reach * (bRight ? 0.0f : 0.1f);
+		if (HookReelWeight > 0.0f)
+		{
+			// Hand over hand: each hand reaches out and hauls back to the chest in turn.
+			const float Stroke = 0.5f + 0.5f * FMath::Sin(HookReelTime * 15.0f + (bRight ? 0.0f : UE_PI));
+			Out = FMath::Lerp(Out, FMath::Lerp(0.38f, 0.98f, Stroke), HookReelWeight);
+			Inward -= Up * Reach * 0.12f * (1.0f - Stroke) * HookReelWeight;
+		}
+		const FVector Target = Shoulder + Toward * Reach * Out + Inward;
+		const FVector Pole = (Outward * 0.4f - Up).GetSafeNormal();
+		InOutTarget = FMath::Lerp(InOutTarget, Target, HookChainWeight);
+		InOutPole = FMath::Lerp(InOutPole.GetSafeNormal(), Pole, HookChainWeight);
+	}
+	if (InOutPole.SizeSquared() < 0.01f)
+	{
+		InOutPole = Outward;
+	}
 }
 
 void UChaosImpactPuppetComponent::PrepareDrivePose()

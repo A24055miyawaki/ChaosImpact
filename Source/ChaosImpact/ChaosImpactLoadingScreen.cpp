@@ -40,6 +40,8 @@ namespace
 		{EChaosImpactBallType::Nova, TEXT("ノヴァはためるほど大きくなる。光る着地点をよく見て逃げよう。")},
 		{EChaosImpactBallType::Simae, TEXT("シマエナガボールからは、相手を追いかけるシマエナガが飛び出す。")},
 		{EChaosImpactBallType::Drive, TEXT("ドライブは投げたあと自分で操れる。逆を押すとその場で折り返す！")},
+		{EChaosImpactBallType::Hook, TEXT("フックは当てた相手を引き寄せる。ダッシュで振りほどける！床のボールも拾える。")},
+		{EChaosImpactBallType::Anchor, TEXT("アンカーを壁や床に打ちこむと、そこまで一気に飛んでいける。逃げにも回りこみにも！")},
 		{EChaosImpactBallType::Normal, TEXT("ダッシュ中は無敵。飛んでくるボールもすり抜けられる。")},
 		{EChaosImpactBallType::Normal, TEXT("ボールは2つまで持てる。入れ替えで投げる順番を変えられる。")},
 		{EChaosImpactBallType::Normal, TEXT("長押しでためると、速くて強い球になる。")},
@@ -49,7 +51,8 @@ namespace
 	const EChaosImpactBallType LoadingBallTypes[] = {EChaosImpactBallType::Normal, EChaosImpactBallType::Fire,
 		EChaosImpactBallType::Ice, EChaosImpactBallType::Thunder, EChaosImpactBallType::Black, EChaosImpactBallType::Wind,
 		EChaosImpactBallType::Smoke, EChaosImpactBallType::Beam, EChaosImpactBallType::Snow, EChaosImpactBallType::Nova,
-		EChaosImpactBallType::Simae, EChaosImpactBallType::Drive};
+		EChaosImpactBallType::Simae, EChaosImpactBallType::Drive, EChaosImpactBallType::Hook,
+		EChaosImpactBallType::Anchor};
 	constexpr int32 LoadingBallTypeCount = UE_ARRAY_COUNT(LoadingBallTypes);
 
 	EChaosImpactBallType LoadingBallType(const int32 Type)

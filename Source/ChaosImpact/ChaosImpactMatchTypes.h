@@ -61,6 +61,9 @@ struct FChaosImpactMatchRules
 	bool bTournament = false;
 	UPROPERTY()
 	FChaosImpactTournamentSettings Tournament;
+	/** ボールスイッチ: the special balls switched off for this match (bit N: EChaosImpactBallType N; 0: every one on). */
+	UPROPERTY()
+	int32 OffBalls = 0;
 
 	bool IsTeamBattle() const { return !bDuel && (bCrashBall || TeamCount >= 2); }
 	bool IsCrashBall() const { return bCrashBall; }
@@ -347,9 +350,9 @@ namespace ChaosImpactMatch
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d"),
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d?CIOffBalls=%d"),
 			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0,
-			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0);
+			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0, Rules.OffBalls);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -367,6 +370,7 @@ namespace ChaosImpactMatch
 		OutRules.bCrashBall = FCString::Atoi(URL.GetOption(TEXT("CICrashBall="), TEXT("0"))) != 0;
 		OutRules.bDuel = FCString::Atoi(URL.GetOption(TEXT("CIDuel="), TEXT("0"))) != 0;
 		OutRules.bBattleRoyale = FCString::Atoi(URL.GetOption(TEXT("CIBattleRoyale="), TEXT("0"))) != 0;
+		OutRules.OffBalls = FCString::Atoi(URL.GetOption(TEXT("CIOffBalls="), TEXT("0")));
 		if (OutRules.bCrashBall)
 		{
 			OutRules.TeamCount = 2;

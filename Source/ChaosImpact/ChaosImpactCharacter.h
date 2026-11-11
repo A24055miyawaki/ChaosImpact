@@ -31,12 +31,16 @@ class UChaosImpactBallFormComponent;
 class UChaosImpactTackleComponent;
 enum class EChaosImpactNovaPart : uint8;
 class AChaosImpactTornado;
+class AChaosImpactHook;
 class AChaosImpactHazardZone;
 class UChaosImpactPuppetComponent;
 enum class EChaosImpactBallFlightMode : uint8;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
+
+/** Any character hit (Victim, the damage done, what did it, who threw it): native, for the dojo's counting. */
+DECLARE_MULTICAST_DELEGATE_FourParams(FChaosImpactAnyCharacterDamaged, class AChaosImpactCharacter*, float, AActor*, APawn*);
 
 /** A character has just been knocked out (see AChaosImpactCharacter::OnEliminated). */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChaosImpactCharacterEliminated, AChaosImpactCharacter*, Character);
@@ -133,6 +137,13 @@ public:
 	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
 	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
 	virtual void RequestBallSwap();
+	/** 訓練場's filming: this player's aim and actions come from the script, not the keys and the mouse. */
+	void SetDojoScripted(bool bOn) { bDevAutoInput = bOn; }
+	/** 訓練場: how far the camera looks ahead of this player, toward the lesson's goals (zero: on the player). */
+	void SetDojoCameraLead(const FVector& Lead) { DojoCameraLead = Lead; }
+	/** 訓練場: held to the spot (no walking, no dash) for the lessons that are about aiming (targets, the drive course). */
+	void SetDojoRooted(bool bOn) { bDojoRooted = bOn; }
+	bool IsDojoRooted() const { return bDojoRooted; }
 	/** Drops the ball in hand (the one thrown next) on the floor in front, where anyone can pick it up (F, D-pad left). */
 	virtual void RequestDropBall();
 	UChaosImpactBallFormComponent* GetBallForm() const { return BallForm; }
@@ -249,6 +260,8 @@ public:
 	/** The moment this character is knocked out (a solo room starts over on its player's). Blueprints can bind it too. */
 	UPROPERTY(BlueprintAssignable, Category="Chaos Impact|Solo")
 	FChaosImpactCharacterEliminated OnEliminated;
+	/** Every hit on any character, as it lands (server). */
+	static FChaosImpactAnyCharacterDamaged OnAnyDamaged;
 
 	/** Where this character comes back after its next knockout (a solo room sets its entrance). Nothing moves now. */
 	UFUNCTION(BlueprintCallable, Category="Chaos Impact|Solo")
@@ -311,6 +324,21 @@ public:
 	 */
 	void BeginWindCarry(AChaosImpactTornado* Tornado);
 	bool IsCarriedByWind() const { return WindCarrier != nullptr; }
+	/**
+	 * Caught by a hook: reeled in to just in front of its thrower, quickly, for at most AChaosImpactHook::PullMaxSeconds.
+	 * Takes effect where this character is moved (its owner, the host, a CPU); a dash breaks free.
+	 */
+	void BeginHookPull(AChaosImpactHook* Hook);
+	bool IsPulledByHook() const { return HookPuller != nullptr; }
+	/** Every machine: this character's own hook is out (its arms follow the chain). */
+	void ShowOwnHook(AChaosImpactHook* Hook);
+	/** Flying to its own anchor on its chain (where this character is moved). */
+	bool IsAnchorZipping() const { return bAnchorZipping; }
+	/** Where the chain of this character's hook starts on this screen (the right palm). False when not drawn. */
+	bool GetHookHandLocation(FVector& OutLocation) const;
+	/** Client: this player's own screen saw a hook catch it; the server checks and applies the hit. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportHookHit(AChaosImpactHook* Hook);
 	virtual bool IsMoveInputIgnored() const override;
 	static constexpr float WindCarrySeconds = 1.1f;
 	/** Client: this player's own screen touched a pickup; predicted now, confirmed by the server. */
@@ -691,6 +719,10 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldDriveMaterial;
 	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldHookMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HeldAnchorMaterial;
+	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldPrisonMaterial;
 	UPROPERTY(Transient)
 	TObjectPtr<UProceduralMeshComponent> HeldPrisonCages[2];
@@ -862,6 +894,8 @@ protected:
 	void SpawnDashGhost();
 	void UpdateDashGhosts(float DeltaSeconds, bool bDashing);
 	FVector CameraMoveLead = FVector::ZeroVector;
+	FVector DojoCameraLead = FVector::ZeroVector;
+	bool bDojoRooted = false;
 	FVector FeelLastLocation = FVector::ZeroVector;
 	FVector FeelVelocity = FVector::ZeroVector;
 	FVector FeelAcceleration = FVector::ZeroVector;
@@ -1022,6 +1056,32 @@ protected:
 	/** A tornado's blow (StartWindKnockback), applied where this character is moved. */
 	void UpdateWindKnockback(float DeltaSeconds);
 	void UpdateWindCarry(float DeltaSeconds);
+	/** Reeled in by a hook: moved toward its thrower where this character is moved; ends on arrival, a dash, or time. */
+	void UpdateHookPull(float DeltaSeconds);
+	UPROPERTY(Transient)
+	TObjectPtr<AChaosImpactHook> HookPuller;
+	float HookPullSeconds = 0.0f;
+	/** This character's own hook while it is out, and the arms' hook poses (spinning it overhead, on the chain, reeling). */
+	TWeakObjectPtr<AChaosImpactHook> ShownHook;
+	/** Its own anchor's flight: the anchor, from where, how long so far and in all; the last one flown (not again). */
+	TWeakObjectPtr<AChaosImpactHook> ZipHook;
+	TWeakObjectPtr<AChaosImpactHook> ZipDoneHook;
+	bool bAnchorZipping = false;
+	bool bZipToWall = false;
+	/** How its capsule met other characters before the flight (it slips past them on the way). */
+	TEnumAsByte<ECollisionResponse> ZipPawnResponse = ECR_Block;
+	FVector ZipFrom = FVector::ZeroVector;
+	FVector ZipTo = FVector::ZeroVector;
+	float ZipSeconds = 0.0f;
+	float ZipDuration = 0.0f;
+	void UpdateAnchorZip(float DeltaSeconds);
+	void EndAnchorZip(bool bArrived);
+	float HookSpinWeight = 0.0f;
+	float HookSpinAngle = 0.0f;
+	float HookChainWeight = 0.0f;
+	float HookReelWeight = 0.0f;
+	float HookReelTime = 0.0f;
+	FVector HookAimShown = FVector::ZeroVector;
 	UPROPERTY(Replicated)
 	TObjectPtr<AChaosImpactTornado> WindCarrier;
 	UPROPERTY(Replicated)

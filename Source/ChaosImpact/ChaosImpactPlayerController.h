@@ -327,6 +327,9 @@ public:
 	/** Row 0 = minutes, 1 = free-for-all / teams, 2 = CPUs, 3 = CPU strength (only with CPUs). */
 	void AdjustMatchRule(int32 Row, int32 Direction);
 	const FChaosImpactMatchRules& GetPendingMatchRules() const { return PendingMatchRules; }
+	/** ボールスイッチ on the rules being chosen: one special ball on / off, or every one back on. */
+	void SetBallSwitchOn(EChaosImpactBallType Type, bool bOn);
+	void SetAllBallsOn();
 	int32 GetMatchHumanCount() const;
 	/** Spectating: hides the whole-screen match UI (time, GO, results banner stay hidden until shown again). */
 	void SetGameplayUIHidden(bool bHide);
@@ -478,7 +481,17 @@ public:
 	bool HandleWorldMapPauseChoice(const FString& Choice);
 
 	// 既存の ShowsTrainingPauseEntries を変更（ソロモード中はトレーニングポーズ項目を出さない）
-	bool ShowsTrainingPauseEntries() const { return bTrainingMode && !bSoloMode && !IsVersusMatchWorld(); }
+	bool ShowsTrainingPauseEntries() const { return bTrainingMode && !bSoloMode && !IsVersusMatchWorld() && !IsDojo(); }
+	/** 訓練場: its world is open (a VS stage with ?CIDojo=1). */
+	bool IsDojo() const;
+	/** 訓練場's filming: the overview map shown or put away. */
+	void SetOverviewMapOpen(bool bOpen) { bOverviewMapOpen = bOpen; }
+	/** 訓練場: from its lesson list (or the pause menu) straight into play. */
+	void EnterDojoPlay() { EnterPlayingScreen(); }
+	/** From the mode select: 訓練場 on a VS stage, one player. Level / Lesson: another of its levels, opened on a lesson ("group_lesson"). */
+	void OpenDojo(const FString& Level = FString(), const FString& Lesson = FString(), const FString& Focus = FString());
+	/** 訓練場's mock matches: a real local match by these rules (one player), the dojo along on Lesson ("group_lesson"). */
+	void OpenDojoMatch(const struct FChaosImpactMatchRules& Rules, const FString& Lesson);
 
 protected:
 	UPROPERTY(Transient)

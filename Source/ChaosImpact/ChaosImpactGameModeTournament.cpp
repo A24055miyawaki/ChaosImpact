@@ -1,6 +1,8 @@
 // トーナメント: the game mode's side (see ChaosImpactTournament.h for how a tournament is played).
 
 #include "ChaosImpactGameMode.h"
+#include "ChaosImpactBallSwitch.h"
+#include "ChaosImpactHook.h"
 
 static_assert(ChaosImpactTournament::OpeningSeconds == ChaosImpactMatch::FlyoverSeconds + ChaosImpactMatch::DiveSeconds,
 	"A tournament match's opening lasts as long as the duel opening's camera.");
@@ -628,21 +630,10 @@ void AChaosImpactGameMode::BeginTournamentMatch(const int32 MatchIndex)
 		DecideTournamentMatch(MatchIndex, Winner, true, false);
 		return;
 	}
-	// Its own three special balls (as a ランクマッチ: every kind but the nova and the prison).
-	TArray<uint8> Pool;
-	for (int32 Type = 1; Type < ChaosImpactBallTypes::Count; ++Type)
-	{
-		const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(Type);
-		if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison)
-		{
-			Pool.Add(static_cast<uint8>(Type));
-		}
-	}
-	for (int32 Pick = 0; Pick < ChaosImpactMatch::DuelBallPicks && !Pool.IsEmpty(); ++Pick)
-	{
-		Duel.BallPicks.Add(Pool[TournamentRandom.RandRange(0, Pool.Num() - 1)]);
-		Pool.Remove(Duel.BallPicks.Last());
-	}
+	// Its own three special balls (as a ランクマッチ: every kind on but the nova and the prison, the hook and the anchor
+	// not together).
+	Duel.BallPicks = ChaosImpactBallSwitch::DrawDuelBalls(Match->Rules, ChaosImpactMatch::DuelBallPicks,
+		[this](const int32 Min, const int32 Max) { return TournamentRandom.RandRange(Min, Max); });
 	// The arena's pads: normal balls only until the slot has shown this match's kinds.
 	for (const TWeakObjectPtr<AChaosImpactBallSpawner>& Old : TournamentArenaSpawners[Arena])
 	{
@@ -743,7 +734,18 @@ void AChaosImpactGameMode::StartArenaRound(const int32 Arena, const int32 Round)
 	Duel.RoundEnd = EChaosImpactDuelEnd::None;
 	if (Round > 1)
 	{
+		// The arena cleared, and a fresh ball on each of its pads before the round starts.
 		ClearArenaBalls(Arena);
+		if (TournamentArenaSpawners.IsValidIndex(Arena))
+		{
+			for (const TWeakObjectPtr<AChaosImpactBallSpawner>& Spawner : TournamentArenaSpawners[Arena])
+			{
+				if (Spawner.IsValid())
+				{
+					Spawner->SpawnNow();
+				}
+			}
+		}
 	}
 	PlaceArenaDuellists(Arena);
 	SetArenaStep(Arena, EChaosImpactDuelStep::RoundIntro, ChaosImpactMatch::DuelRoundIntroSeconds);
@@ -1013,6 +1015,7 @@ void AChaosImpactGameMode::ClearArenaBalls(const int32 Arena)
 	ClearOf(AChaosImpactBall::StaticClass());
 	ClearOf(AChaosImpactHazardZone::StaticClass());
 	ClearOf(AChaosImpactTornado::StaticClass());
+	ClearOf(AChaosImpactHook::StaticClass());
 }
 
 void AChaosImpactGameMode::ApplyArenaBallChances(const int32 Arena, const bool bWithPicks)

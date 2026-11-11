@@ -32,6 +32,8 @@ public:
 
 	/** Constructor */
 	AChaosImpactGameMode();
+	/** 訓練場: a CPU of its own (training's CPU count leaves it alone), standing at Location. */
+	class AChaosImpactCharacter* SpawnDojoCPU(const FVector& Location, const FRotator& Rotation, int32 Number);
 	/** Live training changes; these never reload the current level. */
 	void SetTrainingLocalPlayerCountLive(int32 DesiredPlayers);
 	void SetTrainingCPUCountLive(int32 DesiredCPUCount);

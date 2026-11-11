@@ -1,4 +1,5 @@
 #include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ChaosImpactBallSwitch.h"
 #include "ChaosImpactSettings.h"
 
 #include "ChaosImpactBallTypes.h"
@@ -903,6 +904,18 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 		}
 	}
 
+	// Every special ball switched off (ボールスイッチ): three empty slots, each struck through.
+	if (Duel.Step != EChaosImpactDuelStep::BallDraw && Duel.Step != EChaosImpactDuelStep::Opening && Duel.BallPicks.IsEmpty())
+	{
+		const FPainter Balls{TopCenter, OutDrawElements, BaseLayer + 4};
+		for (int32 Pick = 0; Pick < ChaosImpactMatch::DuelBallPicks; ++Pick)
+		{
+			const FVector2D BallAt((Pick - (ChaosImpactMatch::DuelBallPicks - 1) * 0.5f) * 26.0f, 128.0f);
+			Balls.Disc(BallAt, 10.0f, Navy);
+			HudAbove(Balls, 1).Disc(BallAt, 7.5f, FLinearColor(0.22f, 0.24f, 0.3f, 1.0f));
+			HudAbove(Balls, 2).Line(BallAt + FVector2D(-6.0, 6.0), BallAt + FVector2D(6.0, -6.0), WithAlpha(Paper, 0.85f), 2.5f);
+		}
+	}
 	// The special balls of this match, small, at the outer ends of the plates' feet (once the slot has shown them).
 	if (Duel.Step != EChaosImpactDuelStep::BallDraw && Duel.Step != EChaosImpactDuelStep::Opening && !Duel.BallPicks.IsEmpty())
 	{
@@ -943,16 +956,18 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelBallSlot(const FGeometry& Center
 	{
 		return;
 	}
-	// The reels hold every kind that can be drawn, in the same order as the draw itself.
+	// The reels hold every kind that can be drawn (switched on in ボールスイッチ), in the same order as the draw itself.
 	TArray<EChaosImpactBallType> Pool;
 	for (int32 Type = 1; Type < ChaosImpactBallTypes::Count; ++Type)
 	{
 		const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(Type);
-		if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison)
+		if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison && ChaosImpactBallSwitch::IsOn(Match.Rules, Kind))
 		{
 			Pool.Add(Kind);
 		}
 	}
+	// Every one switched off: the slot shows three empty windows, each struck through as it "stops".
+	const bool bNone = Duel.BallPicks.IsEmpty() || Pool.IsEmpty();
 	const float LastStop = ChaosImpactMatch::DuelReelStopSeconds[ChaosImpactMatch::DuelBallPicks - 1];
 	const bool bAllStopped = Age >= LastStop;
 	const float Rise = (1.0f - EaseOut(Age / 0.35f)) * 30.0f;
@@ -966,13 +981,32 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelBallSlot(const FGeometry& Center
 	Face.Text(TEXT("BALL SLOT"), 0.0f, -170.0f + Rise, 18.0f, Gold, ETextAlign::Center, TEXT("BlackItalic"), 1.5f, Navy);
 	const float TitlePop = bAllStopped ? 1.0f + 0.25f * FMath::Exp(-9.0f * (Age - LastStop)) : 1.0f;
 	const FGeometry TitleSpace = MakeSkewed(Center, -400.0f, -146.0f + Rise, 800.0f, 44.0f, 0.0f, TitlePop);
-	HudText3D(FPainter{TitleSpace, OutDrawElements, BaseLayer + 8, Alpha}, bAllStopped
-		? FString::Printf(TEXT("この%d種類で勝負！"), ChaosImpactMatch::DuelBallPicks) : FString(TEXT("使用ボール抽選")), 400.0f, 0.0f, 32.0f,
+	TSet<uint8> Kinds(Duel.BallPicks);
+	HudText3D(FPainter{TitleSpace, OutDrawElements, BaseLayer + 8, Alpha}, !bAllStopped ? FString(TEXT("使用ボール抽選"))
+		: bNone ? FString(TEXT("特殊ボールなし")) : FString::Printf(TEXT("この%d種類で勝負！"), Kinds.Num()), 400.0f, 0.0f, 32.0f,
 		bAllStopped ? Gold : Paper, ETextAlign::Center, TEXT("Black"));
 
 	constexpr float ItemHeight = 130.0f;
 	constexpr float WindowHalf = 100.0f;
-	for (int32 Reel = 0; Reel < ChaosImpactMatch::DuelBallPicks; ++Reel)
+	for (int32 Reel = 0; Reel < ChaosImpactMatch::DuelBallPicks && bNone; ++Reel)
+	{
+		// An empty window, struck through from corner to corner as its reel would have stopped.
+		const float X = (Reel - 1) * 250.0f;
+		const float Y = 10.0f + Rise;
+		const float Stop = ChaosImpactMatch::DuelReelStopSeconds[Reel];
+		Face.Box(X - 104.0f, Y - WindowHalf, 208.0f, WindowHalf * 2.0f, FLinearColor(0.008f, 0.012f, 0.028f, 0.96f));
+		const float Strike = EaseOut((Age - Stop) / 0.2f);
+		const FPainter Bar{Center, OutDrawElements, BaseLayer + 6, Alpha};
+		if (Strike > 0.0f)
+		{
+			const FVector2D From(X - 70.0f, Y + 60.0f);
+			const FVector2D To(X + 70.0f, Y - 60.0f);
+			Bar.Line(From, FMath::Lerp(From, To, Strike), FLinearColor(0.62f, 0.66f, 0.75f, 1.0f), 12.0f);
+		}
+		const FPainter Frame{Center, OutDrawElements, BaseLayer + 8, Alpha};
+		Frame.Outline(X - 104.0f, Y - WindowHalf, 208.0f, WindowHalf * 2.0f, WithAlpha(Paper, Strike > 0.0f ? 0.6f : 0.35f), Strike > 0.0f ? 5.0f : 3.0f);
+	}
+	for (int32 Reel = 0; Reel < ChaosImpactMatch::DuelBallPicks && !bNone; ++Reel)
 	{
 		const float X = (Reel - 1) * 250.0f;
 		const float Y = 10.0f + Rise;
@@ -1043,7 +1077,8 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelBallSlot(const FGeometry& Center
 	if (bAllStopped)
 	{
 		const float In = EaseOut((Age - LastStop) / 0.3f);
-		FPainter{Center, OutDrawElements, BaseLayer + 8, Alpha * In}.Text(TEXT("ノーマルと この3種類がステージに出ます"), 0.0f, 120.0f + Rise, 20.0f,
+		FPainter{Center, OutDrawElements, BaseLayer + 8, Alpha * In}.Text(bNone ? FString(TEXT("ノーマルボールだけで勝負"))
+			: FString::Printf(TEXT("ノーマルと この%d種類がステージに出ます"), Kinds.Num()), 0.0f, 120.0f + Rise, 20.0f,
 			WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Bold"), 2.0f, Navy);
 	}
 }

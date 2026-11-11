@@ -1784,6 +1784,16 @@ void UChaosImpactTournamentWidget::PaintArena(const FGeometry& Design, FSlateWin
 		const float In = TwEase(StepT / 0.35f);
 		RoundedBox(FPainter{Design, Elements, Layer + 2, In}, DesignWidth * 0.5f - 350.0f, 300.0f, 700.0f, 220.0f, 24.0f, FLinearColor(0.01f, 0.015f, 0.04f, 0.9f));
 		FPainter{Design, Elements, Layer + 3, In}.Text(TEXT("この試合のボール"), (DesignWidth * 0.5f), 316.0f, 26.0f, Paper, ETextAlign::Center, TEXT("Black"));
+		// Every special ball switched off (ボールスイッチ): three empty chips, each struck through.
+		for (int32 Pick = 0; Pick < ChaosImpactMatch::DuelBallPicks && Duel.BallPicks.IsEmpty(); ++Pick)
+		{
+			const float Shown = TwEase((StepT - ChaosImpactMatch::DuelReelStopSeconds[Pick]) / 0.25f);
+			const FVector2D At(570.0f + Pick * 230.0f, 410.0f);
+			FPainter{Design, Elements, Layer + 3, In}.Disc(At, 34.0f, WithAlpha(Navy, 1.0f));
+			FPainter{Design, Elements, Layer + 4, In}.Disc(At, 30.0f, FLinearColor(0.2f, 0.22f, 0.28f, 1.0f));
+			FPainter{Design, Elements, Layer + 5, In * Shown}.Line(At + FVector2D(-22.0, 22.0), At + FVector2D(22.0, -22.0), FLinearColor(0.75f, 0.78f, 0.86f, 1.0f), 6.0f);
+			FPainter{Design, Elements, Layer + 4, In * Shown}.Text(TEXT("なし"), At.X, At.Y + 44.0f, 18.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+		}
 		for (int32 Pick = 0; Pick < Duel.BallPicks.Num(); ++Pick)
 		{
 			const float Shown = TwEase((StepT - ChaosImpactMatch::DuelReelStopSeconds[FMath::Min(Pick, ChaosImpactMatch::DuelBallPicks - 1)]) / 0.25f);

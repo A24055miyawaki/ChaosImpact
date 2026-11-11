@@ -116,6 +116,26 @@ private:
 	FBox2D SecretChoiceRect(int32 Index) const;
 	double ModePickerAt = 0.0;
 	void OpenModePicker(bool bOpen);
+	/** The rules screen's ボールスイッチ: every special ball as a tile to switch on / off (over the rules page). */
+	bool bBallSwitch = false;
+	/** 「訓練場」で あそんでみよう！: over the mode select once a run, while 訓練場 is not all cleared. */
+	bool bDojoInvite = false;
+	double DojoInviteAt = 0.0;
+	int32 DojoInviteChoice = 0;
+	UPROPERTY(Transient)
+	TObjectPtr<class UChaosImpactDojoVideo> DojoInviteVideo;
+	/** The lesson list itself, small in the invitation, its cursor going round by itself. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UChaosImpactDojoMenu> DojoInviteMenu;
+	double DojoInviteStepAt = 0.0;
+	int32 DojoInviteSteps = 0;
+	void CloseDojoInvite(bool bGo);
+	bool HandleDojoInviteKey(const FKeyEvent& InKeyEvent);
+	static FBox2D DojoInviteButton(int32 Index);
+	void PaintDojoInvite(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
+	double BallSwitchAt = 0.0;
+	int32 LastBallSwitchTile = 0;
+	void OpenBallSwitch(bool bOpen);
 	double PauseConfirmAt = 0.0;
 	/** The question and the line under it for PauseConfirm. */
 	void GetPauseConfirmText(FString& OutQuestion, FString& OutNote) const;
@@ -180,6 +200,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactColourEdit> ColourEdit;
+
+	/** 訓練場's lesson list. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UChaosImpactDojoMenu> DojoMenu;
 
 	/** ローカルトーナメント's registration screen. */
 	UPROPERTY(Transient)

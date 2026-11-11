@@ -1,4 +1,5 @@
 #include "ChaosImpactNovaParts.h"
+#include "ChaosImpactBallSwitch.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
@@ -373,7 +374,8 @@ void UChaosImpactNovaDirector::Tick(const float DeltaTime)
 	{
 		// One set a match: each part once, at its own random time in the first two thirds or so.
 		// The duel (ランクマッチ) is played with normal balls only: no nova there.
-		if (Match->Phase != EChaosImpactOnlinePhase::Match || Match->Rules.bDuel)
+		// (Nor with the nova switched off in ボールスイッチ.)
+		if (Match->Phase != EChaosImpactOnlinePhase::Match || Match->Rules.bDuel || !ChaosImpactBallSwitch::IsOn(Match->Rules, EChaosImpactBallType::Nova))
 		{
 			return;
 		}

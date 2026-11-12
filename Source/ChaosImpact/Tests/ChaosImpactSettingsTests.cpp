@@ -194,9 +194,9 @@ namespace
 				TypeLetter(TEXT('Q'));
 				TypeLetter(TEXT('A'));
 				Settings->GetNameEntry().MoveCursor(1, 0);
-				PressKey(EKeys::SpaceBar);
+				Settings->GetNameEntry().PressCell();
 				Settings->GetNameEntry().MoveCursor(-2, 0);
-				PressKey(EKeys::SpaceBar);
+				Settings->GetNameEntry().PressCell();
 				Test->TestEqual(TEXT("Typed and picked letters, ゛ voicing か"), Settings->GetNameEntry().GetText(), FString(TEXT("QAが")));
 				return Next(0.5);
 			case 5:

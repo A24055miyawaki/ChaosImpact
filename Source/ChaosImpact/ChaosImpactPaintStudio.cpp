@@ -33,6 +33,20 @@ namespace
 	constexpr float StRecent = 25.0f;
 	constexpr float StRecentStep = 29.0f;
 	constexpr float StBarTop = 842.0f;
+	// The colours, as on the カラーエディット: the palette, or the hue ring round the saturation x brightness square with
+	// H S B / R G B under it.
+	constexpr float StPickerTop = 226.0f;
+	constexpr float StRingOuter = 98.0f;
+	constexpr float StRingWidth = 18.0f;
+	constexpr float StSquareHalf = 54.0f;
+	constexpr float StColourSlidersTop = 434.0f;
+	constexpr float StColourSliderHeight = 26.0f;
+	constexpr float StColourSliderGap = 4.0f;
+	constexpr int32 StColourSliders = 6;
+	/** A colour slider's track: after its letter, before its number. */
+	constexpr float StTrackLeft = 28.0f;
+	constexpr float StTrackRight = 64.0f;
+	const TCHAR* const StColourSliderNames[StColourSliders] = {TEXT("H"), TEXT("S"), TEXT("B"), TEXT("R"), TEXT("G"), TEXT("B")};
 	constexpr int32 StSliders = 3;
 	const TCHAR* const StSliderNames[StSliders] = {TEXT("太さ"), TEXT("かたさ"), TEXT("こさ")};
 	const TCHAR* const StToolNames[UChaosImpactPaintStudio::ToolCount] = {TEXT("ペン"), TEXT("消しゴム"), TEXT("バケツ"), TEXT("スポイト")};
@@ -273,6 +287,7 @@ void UChaosImpactPaintStudio::SetColour(const FColor& Colour, const bool bRememb
 {
 	Brush.Colour = FColor(Colour.R, Colour.G, Colour.B, 255);
 	SyncHSB();
+	bKeepColour = false;
 	if (bRemember)
 	{
 		if (UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get()))
@@ -286,13 +301,93 @@ void UChaosImpactPaintStudio::SyncHSB()
 {
 	float Hue = EditHue, Saturation = 0.0f, Value = 0.0f;
 	ChaosImpactCustomColour::ToHSV(Brush.Colour, Hue, Saturation, Value);
-	// (A grey keeps the hue it had.)
+	// (A grey keeps the hue it had, and black its saturation too, as on the カラーエディット.)
 	if (Saturation > 0.001f && Value > 0.001f)
 	{
 		EditHue = Hue;
 	}
-	EditSaturation = Saturation;
+	if (Value > 0.001f)
+	{
+		EditSaturation = Saturation;
+	}
 	EditBrightness = Value;
+}
+
+void UChaosImpactPaintStudio::ApplyHSB()
+{
+	Brush.Colour = ChaosImpactCustomColour::FromHSV(EditHue, EditSaturation, EditBrightness);
+	KeepColourLater();
+	if (Tool == ETool::Eraser || Tool == ETool::Picker)
+	{
+		SetTool(ETool::Pen);
+	}
+}
+
+void UChaosImpactPaintStudio::KeepColourNow()
+{
+	if (bKeepColour)
+	{
+		bKeepColour = false;
+		if (UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get()))
+		{
+			Colours->AddRecent(Brush.Colour);
+		}
+	}
+}
+
+void UChaosImpactPaintStudio::ToggleFine()
+{
+	bFine = !bFine;
+	if (Dragging >= 700 && Dragging < 800)
+	{
+		Dragging = INDEX_NONE;
+	}
+	SyncHSB();
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
+}
+
+int32 UChaosImpactPaintStudio::Accelerated()
+{
+	const double Now = FPlatformTime::Seconds();
+	AdjustRun = Now - LastAdjustAt < 0.25 ? AdjustRun + 1 : 0;
+	LastAdjustAt = Now;
+	return AdjustRun > 24 ? 10 : AdjustRun > 8 ? 4 : 1;
+}
+
+void UChaosImpactPaintStudio::NudgeColour(const int32 Control, const int32 Columns, const int32 Rows)
+{
+	const int32 Steps = Accelerated();
+	if (Control == 700)
+	{
+		// Saturation across, brightness up.
+		EditSaturation = FMath::Clamp(EditSaturation + Columns * Steps * 0.01f, 0.0f, 1.0f);
+		EditBrightness = FMath::Clamp(EditBrightness - Rows * Steps * 0.01f, 0.0f, 1.0f);
+		ApplyHSB();
+		return;
+	}
+	const int32 Slider = Control == 701 ? 0 : Control - 710;
+	const int32 By = (Columns != 0 ? Columns : -Rows) * Steps;
+	if (Slider == 0)
+	{
+		EditHue = FMath::Fmod(EditHue + By + 360.0f, 360.0f);
+		ApplyHSB();
+	}
+	else if (Slider <= 2)
+	{
+		float& Value = Slider == 1 ? EditSaturation : EditBrightness;
+		Value = FMath::Clamp(Value + By * 0.01f, 0.0f, 1.0f);
+		ApplyHSB();
+	}
+	else if (Slider < StColourSliders)
+	{
+		FColor Colour = Brush.Colour;
+		uint8& Channel = Slider == 3 ? Colour.R : Slider == 4 ? Colour.G : Colour.B;
+		Channel = static_cast<uint8>(FMath::Clamp(Channel + By, 0, 255));
+		ApplyHSB();
+		// (R G B exactly as set, not through H S B and back.)
+		Brush.Colour = Colour;
+		SyncHSB();
+	}
 }
 
 float UChaosImpactPaintStudio::GetSlider(const int32 Slider) const
@@ -322,20 +417,40 @@ void UChaosImpactPaintStudio::PickSquare(const FVector2D& Point)
 	const FBox2D R = SquareRect();
 	EditSaturation = FMath::Clamp(static_cast<float>((Point.X - R.Min.X) / R.GetSize().X), 0.0f, 1.0f);
 	EditBrightness = FMath::Clamp(static_cast<float>(1.0 - (Point.Y - R.Min.Y) / R.GetSize().Y), 0.0f, 1.0f);
-	Brush.Colour = ChaosImpactCustomColour::FromHSV(EditHue, EditSaturation, EditBrightness);
+	ApplyHSB();
 }
 
-void UChaosImpactPaintStudio::PickHue(const FVector2D& Point)
+void UChaosImpactPaintStudio::PickRing(const FVector2D& Point)
 {
-	const FBox2D R = HueRect();
-	EditHue = FMath::Clamp(static_cast<float>((Point.Y - R.Min.Y) / R.GetSize().Y), 0.0f, 0.9999f) * 360.0f;
-	if (EditSaturation < 0.05f)
+	const FVector2D Offset = Point - WheelCentre();
+	if (Offset.SizeSquared() < 1.0)
 	{
-		// Choosing a hue on a grey: a colour of it.
-		EditSaturation = 0.85f;
+		return;
+	}
+	// Red to the right, round anticlockwise (as the カラーエディット's wheel); screen y runs down.
+	EditHue = FMath::Fmod(FMath::RadiansToDegrees(static_cast<float>(FMath::Atan2(-Offset.Y, Offset.X))) + 360.0f, 360.0f);
+	if (EditSaturation < 0.05f || EditBrightness < 0.05f)
+	{
+		// Choosing a hue on a grey or black: a colour of it.
+		EditSaturation = FMath::Max(EditSaturation, 0.85f);
 		EditBrightness = FMath::Max(EditBrightness, 0.6f);
 	}
-	Brush.Colour = ChaosImpactCustomColour::FromHSV(EditHue, EditSaturation, EditBrightness);
+	ApplyHSB();
+}
+
+void UChaosImpactPaintStudio::PickColourSlider(const int32 Slider, const FVector2D& Point)
+{
+	const FBox2D R = ColourSliderRect(Slider);
+	const float Track0 = static_cast<float>(R.Min.X) + StTrackLeft, Track1 = static_cast<float>(R.Max.X) - StTrackRight;
+	const float Amount = FMath::Clamp(static_cast<float>((Point.X - Track0) / (Track1 - Track0)), 0.0f, 1.0f);
+	if (Slider == 0) { EditHue = Amount * 359.9f; ApplyHSB(); return; }
+	if (Slider == 1) { EditSaturation = Amount; ApplyHSB(); return; }
+	if (Slider == 2) { EditBrightness = Amount; ApplyHSB(); return; }
+	FColor Colour = Brush.Colour;
+	(Slider == 3 ? Colour.R : Slider == 4 ? Colour.G : Colour.B) = static_cast<uint8>(FMath::RoundToInt(Amount * 255.0f));
+	ApplyHSB();
+	Brush.Colour = Colour;
+	SyncHSB();
 }
 
 // ---- The view ---------------------------------------------------------------------------------------------------------
@@ -495,6 +610,7 @@ void UChaosImpactPaintStudio::ClickView(const FVector2D& Point)
 	{
 		FChaosImpactBrush FillBrush = Brush;
 		FillBrush.bErase = false;
+		KeepColourNow();
 		Surface.Fill(Layers, Hit, FillBrush);
 		bChanged = true;
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
@@ -610,12 +726,25 @@ int32 UChaosImpactPaintStudio::HitTest(const FVector2D& Point) const
 	{
 		if (FinishRect(Index).IsInside(Point)) { return 500 + Index; }
 	}
-	for (int32 Index = 0; Index < ChaosImpactCustomColour::PaletteColumns * ChaosImpactCustomColour::PaletteRows; ++Index)
+	if (TabRect(false).IsInside(Point)) { return 720; }
+	if (TabRect(true).IsInside(Point)) { return 721; }
+	if (!bFine)
 	{
-		if (StGrow(SwatchRect(Index), 2.0f).IsInside(Point)) { return 600 + Index; }
+		for (int32 Index = 0; Index < ChaosImpactCustomColour::PaletteColumns * ChaosImpactCustomColour::PaletteRows; ++Index)
+		{
+			if (StGrow(SwatchRect(Index), 2.0f).IsInside(Point)) { return 600 + Index; }
+		}
 	}
-	if (SquareRect().IsInside(Point)) { return 700; }
-	if (StGrow(HueRect(), 4.0f).IsInside(Point)) { return 701; }
+	else
+	{
+		if (SquareRect().IsInside(Point)) { return 700; }
+		const float Distance = static_cast<float>((Point - WheelCentre()).Size());
+		if (Distance <= StRingOuter + 3.0f && Distance >= StRingOuter - StRingWidth - 4.0f) { return 701; }
+		for (int32 Slider = 0; Slider < StColourSliders; ++Slider)
+		{
+			if (ColourSliderRect(Slider).IsInside(Point)) { return 710 + Slider; }
+		}
+	}
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 	const int32 Recent = Colours ? Colours->GetRecent().Num() : 0;
 	for (int32 Index = 0; Index < Recent; ++Index)
@@ -652,6 +781,10 @@ void UChaosImpactPaintStudio::Press(const FVector2D& Point, const bool bAlt)
 		{
 			if (bAlt) { PickAt(Point); } else { ClickView(Point); }
 			return;
+		}
+		if (Tool == ETool::Pen)
+		{
+			KeepColourNow();
 		}
 		Surface.BeginStroke(Layers, Brush);
 		bPenDown = true;
@@ -693,7 +826,7 @@ void UChaosImpactPaintStudio::Press(const FVector2D& Point, const bool bAlt)
 		}
 		Finish(false);
 	}
-	else if (Hit >= 600 && Hit < 800)
+	else if (Hit >= 600 && Hit < 600 + ChaosImpactCustomColour::PaletteColumns * ChaosImpactCustomColour::PaletteRows)
 	{
 		const int32 Index = Hit - 600;
 		SetColour(ChaosImpactCustomColour::GetPaletteSwatch(Index % ChaosImpactCustomColour::PaletteColumns,
@@ -704,13 +837,16 @@ void UChaosImpactPaintStudio::Press(const FVector2D& Point, const bool bAlt)
 		}
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 	}
-	else if (Hit == 700 || Hit == 701)
+	else if (IsColourControl(Hit))
 	{
 		Dragging = Hit;
 		DragTo(Point);
-		if (Tool == ETool::Eraser || Tool == ETool::Picker)
+	}
+	else if (Hit == 720 || Hit == 721)
+	{
+		if (bFine != (Hit == 721))
 		{
-			SetTool(ETool::Pen);
+			ToggleFine();
 		}
 	}
 	else if (Hit >= 800 && Hit < 900)
@@ -741,7 +877,11 @@ void UChaosImpactPaintStudio::DragTo(const FVector2D& Point)
 	}
 	else if (Dragging == 701)
 	{
-		PickHue(Point);
+		PickRing(Point);
+	}
+	else if (Dragging >= 710 && Dragging < 710 + StColourSliders)
+	{
+		PickColourSlider(Dragging - 710, Point);
 	}
 }
 
@@ -752,10 +892,10 @@ void UChaosImpactPaintStudio::Release()
 		bPenDown = false;
 		Surface.EndStroke();
 	}
-	if (Dragging == 700 || Dragging == 701)
+	if (IsColourControl(Dragging))
 	{
-		// The colour made on the square: into the recent ones.
-		SetColour(Brush.Colour, true);
+		// The colour made on the ring, the square or a slider: into the recent ones.
+		KeepColourNow();
 	}
 	Dragging = INDEX_NONE;
 }
@@ -865,6 +1005,15 @@ bool UChaosImpactPaintStudio::HandleKeyDown(const FKeyEvent& Event)
 	else if (!bRepeat && Key == EKeys::Gamepad_FaceButton_Top) { Redo(); }
 	else if (!bRepeat && Key == EKeys::Gamepad_LeftShoulder) { CycleTool(-1); }
 	else if (!bRepeat && Key == EKeys::Gamepad_RightShoulder) { CycleTool(1); }
+	else if (bPad && IsColourControl(HitTest(Cursor))
+		&& StIsAny(Key, {EKeys::Gamepad_DPad_Left, EKeys::Gamepad_DPad_Right, EKeys::Gamepad_DPad_Up, EKeys::Gamepad_DPad_Down}))
+	{
+		// The cursor on the ring, the square or a slider: the d-pad sets it finely (faster held down).
+		const int32 Columns = Key == EKeys::Gamepad_DPad_Left ? -1 : Key == EKeys::Gamepad_DPad_Right ? 1 : 0;
+		const int32 Rows = Key == EKeys::Gamepad_DPad_Up ? -1 : Key == EKeys::Gamepad_DPad_Down ? 1 : 0;
+		NudgeColour(HitTest(Cursor), Columns, Rows);
+	}
+	else if (!bRepeat && !bCtrl && Raw == EKeys::T) { ToggleFine(); }
 	else if (StIsAny(Key, {EKeys::Gamepad_DPad_Left, EKeys::LeftBracket})) { SetSlider(0, GetSlider(0) - 0.04f); }
 	else if (StIsAny(Key, {EKeys::Gamepad_DPad_Right, EKeys::RightBracket})) { SetSlider(0, GetSlider(0) + 0.04f); }
 	else if (Key == EKeys::Gamepad_DPad_Up) { SetSlider(2, GetSlider(2) + 0.05f); }
@@ -1031,6 +1180,15 @@ void UChaosImpactPaintStudio::HandleWheel(const FVector2D& Point, const float De
 	{
 		SetView(ViewYaw, ViewPitch, ViewZoom * FMath::Pow(1.15f, Delta), ViewPan);
 	}
+	else if (IsColourControl(HitTest(Point)))
+	{
+		// On the ring or a colour slider, a step a notch (on the square, brightness).
+		const int32 Notches = FMath::Clamp(FMath::RoundToInt(Delta), -10, 10);
+		const int32 Control = HitTest(Point);
+		NudgeColour(Control, Control == 700 ? 0 : (Notches != 0 ? Notches : (Delta > 0.0f ? 1 : -1)),
+			Control == 700 ? (Delta > 0.0f ? -1 : 1) : 0);
+		KeepColourLater();
+	}
 	else
 	{
 		for (int32 Index = 0; Index < StSliders; ++Index)
@@ -1139,18 +1297,37 @@ FBox2D UChaosImpactPaintStudio::FinishRect(const int32 Index)
 FBox2D UChaosImpactPaintStudio::SwatchRect(const int32 Index)
 {
 	const FVector2D At(StRight + (Index % ChaosImpactCustomColour::PaletteColumns) * StSwatchStep,
-		226.0f + (Index / ChaosImpactCustomColour::PaletteColumns) * StSwatchStep);
+		StPickerTop + (Index / ChaosImpactCustomColour::PaletteColumns) * StSwatchStep);
 	return FBox2D(At, At + FVector2D(StSwatch));
+}
+
+FVector2D UChaosImpactPaintStudio::WheelCentre()
+{
+	return FVector2D(StRight + StRightWidth * 0.5f, StPickerTop + StRingOuter + 2.0f);
 }
 
 FBox2D UChaosImpactPaintStudio::SquareRect()
 {
-	return FBox2D(FVector2D(StRight, 424.0f), FVector2D(StRight + 200.0f, 624.0f));
+	const FVector2D Centre = WheelCentre();
+	return FBox2D(Centre - FVector2D(StSquareHalf), Centre + FVector2D(StSquareHalf));
 }
 
-FBox2D UChaosImpactPaintStudio::HueRect()
+FVector2D UChaosImpactPaintStudio::RingPoint(const float Hue)
 {
-	return FBox2D(FVector2D(StRight + 214.0f, 424.0f), FVector2D(StRight + 240.0f, 624.0f));
+	const float Radians = FMath::DegreesToRadians(Hue);
+	return WheelCentre() + FVector2D(FMath::Cos(Radians), -FMath::Sin(Radians)) * (StRingOuter - StRingWidth * 0.5f);
+}
+
+FBox2D UChaosImpactPaintStudio::ColourSliderRect(const int32 Slider)
+{
+	const FVector2D At(StRight, StColourSlidersTop + Slider * (StColourSliderHeight + StColourSliderGap));
+	return FBox2D(At, At + FVector2D(StRightWidth, StColourSliderHeight));
+}
+
+FBox2D UChaosImpactPaintStudio::TabRect(const bool bFineTab)
+{
+	const FVector2D At(StRight + StRightWidth - (bFineTab ? 108.0f : 222.0f), 108.0f);
+	return FBox2D(At, At + FVector2D(108.0f, 30.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::RecentRect(const int32 Index)
@@ -1334,68 +1511,133 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 			static_cast<float>(R.GetSize().X) - 16.0f, bHover ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
 	}
 
-	// The colours.
+	// The colours, as on the カラーエディット: the colour now, then パレット or こまかく (T).
 	P.Text(TEXT("いろ"), StRight, 110.0f, 20.0f, Paper, ETextAlign::Left, TEXT("Black"));
+	for (const bool bFineTab : {false, true})
 	{
-		const FBox2D Now2(FVector2D(StRight, 144.0f), FVector2D(StRight + 110.0f, 204.0f));
+		const FBox2D R = TabRect(bFineTab);
+		const bool bChosen = bFine == bFineTab;
+		StRound(Back, R, 8.0f, bChosen ? Gold : StCard);
+		StText(P, bFineTab ? TEXT("こまかく") : TEXT("パレット"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 5.0f, 16.0f,
+			static_cast<float>(R.GetSize().X) - 12.0f, bChosen ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+		if (Hover == (bFineTab ? 721 : 720) && !bChosen)
+		{
+			StFrame(Top, StGrow(R, 1.0f), WithAlpha(Ice, 0.9f), 2.0f);
+		}
+	}
+	P.Text(TEXT("T"), static_cast<float>(TabRect(false).Min.X) - 8.0f, 115.0f, 14.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	{
+		const FBox2D Now2(FVector2D(StRight, 148.0f), FVector2D(StRight + 110.0f, 208.0f));
 		StRound(P, Now2, 12.0f, StShown(Brush.Colour));
 		StFrame(Over, Now2, WithAlpha(Paper, 0.5f), 2.0f);
-		P.Text(FString::Printf(TEXT("#%02X%02X%02X"), Brush.Colour.R, Brush.Colour.G, Brush.Colour.B), StRight + 124.0f, 150.0f, 20.0f, Paper,
+		P.Text(FString::Printf(TEXT("#%02X%02X%02X"), Brush.Colour.R, Brush.Colour.G, Brush.Colour.B), StRight + 124.0f, 152.0f, 20.0f, Paper,
 			ETextAlign::Left, TEXT("Black"));
-		StText(P, TEXT("スポイト（I・Alt+クリック）でキャラの色もひろえる"), StRight + 124.0f, 180.0f, 12.0f, StRightWidth - 124.0f, Muted);
+		StText(P, TEXT("スポイト（I・Alt+クリック）でキャラの色もひろえる"), StRight + 124.0f, 184.0f, 12.0f, StRightWidth - 124.0f, Muted);
 	}
-	const int32 Swatches = ChaosImpactCustomColour::PaletteColumns * ChaosImpactCustomColour::PaletteRows;
-	for (int32 Index = 0; Index < Swatches; ++Index)
+	if (!bFine)
 	{
-		const FBox2D R = SwatchRect(Index);
-		const FColor Colour = ChaosImpactCustomColour::GetPaletteSwatch(Index % ChaosImpactCustomColour::PaletteColumns,
-			Index / ChaosImpactCustomColour::PaletteColumns);
-		StRound(P, R, 5.0f, StShown(Colour));
-		if (Colour == Brush.Colour)
+		// The palette: hues across, pale to deep down, the greys at the end.
+		const int32 Swatches = ChaosImpactCustomColour::PaletteColumns * ChaosImpactCustomColour::PaletteRows;
+		for (int32 Index = 0; Index < Swatches; ++Index)
 		{
-			StFrame(Over, StGrow(R, 2.0f), Paper, 2.0f);
-		}
-		if (Hover == 600 + Index)
-		{
-			StFrame(Top, StGrow(R, 3.0f), WithAlpha(Gold, Pulse), 2.0f);
+			const FBox2D R = SwatchRect(Index);
+			const FColor Colour = ChaosImpactCustomColour::GetPaletteSwatch(Index % ChaosImpactCustomColour::PaletteColumns,
+				Index / ChaosImpactCustomColour::PaletteColumns);
+			StRound(P, R, 5.0f, StShown(Colour));
+			if (Colour == Brush.Colour)
+			{
+				StFrame(Over, StGrow(R, 2.0f), Paper, 2.0f);
+			}
+			if (Hover == 600 + Index)
+			{
+				StFrame(Top, StGrow(R, 3.0f), WithAlpha(Gold, Pulse), 2.0f);
+			}
 		}
 	}
-	// The fine colour: saturation across, brightness up; the hue bar beside it.
-	P.Text(TEXT("こまかく"), StRight, 398.0f, 15.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-	const FBox2D Square = SquareRect();
-	StGradient(P, Square, {FLinearColor::White, StShown(ChaosImpactCustomColour::FromHSV(EditHue, 1.0f, 1.0f))});
-	StGradient(Over, Square, {FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f)}, false);
-	const FVector2D SquareKnob(Square.Min.X + Square.GetSize().X * EditSaturation, Square.Max.Y - Square.GetSize().Y * EditBrightness);
-	Top.Ring(SquareKnob, 8.0f, Ink, 4.0f, 24);
-	Top.Ring(SquareKnob, 8.0f, Paper, 2.0f, 24);
-	if (Hover == 700 || Dragging == 700)
+	else
 	{
-		StFrame(Top, StGrow(Square, 2.0f), WithAlpha(Ice, 0.9f), 2.0f);
-	}
-	const FBox2D Hue = HueRect();
-	{
-		TArray<FLinearColor> Run;
-		for (int32 Stop = 0; Stop <= 6; ++Stop)
+		// The colour wheel: the hue ring, smooth all round; inside it the square of saturation (across) and brightness (up).
+		const FVector2D Centre = WheelCentre();
+		TArray<FVector2f> RingPoints;
+		TArray<FLinearColor> RingColours;
+		constexpr int32 RingSteps = 180;
+		const float RingMid = StRingOuter - StRingWidth * 0.5f;
+		for (int32 Step = 0; Step <= RingSteps; ++Step)
 		{
-			Run.Add(StShown(ChaosImpactCustomColour::FromHSV(60.0f * Stop, 1.0f, 1.0f)));
+			const float Angle = 360.0f * Step / RingSteps;
+			const float Radians = FMath::DegreesToRadians(Angle);
+			RingPoints.Add(FVector2f(Centre + FVector2D(FMath::Cos(Radians), -FMath::Sin(Radians)) * RingMid));
+			RingColours.Add(WithAlpha(StShown(ChaosImpactCustomColour::FromHSV(Angle, 1.0f, 1.0f)), P.Alpha));
 		}
-		StGradient(P, Hue, Run, false);
-		const float KnobY = static_cast<float>(Hue.Min.Y + Hue.GetSize().Y * EditHue / 360.0f);
-		Top.Box(static_cast<float>(Hue.Min.X) - 4.0f, KnobY - 3.0f, static_cast<float>(Hue.GetSize().X) + 8.0f, 6.0f, Ink);
-		Top.Box(static_cast<float>(Hue.Min.X) - 3.0f, KnobY - 1.5f, static_cast<float>(Hue.GetSize().X) + 6.0f, 3.0f, Paper);
+		FSlateDrawElement::MakeLines(P.Elements, P.Layer, P.Geometry.ToPaintGeometry(), MoveTemp(RingPoints), MoveTemp(RingColours),
+			ESlateDrawEffect::None, FLinearColor::White, true, StRingWidth);
 		if (Hover == 701 || Dragging == 701)
 		{
-			StFrame(Top, StGrow(Hue, 2.0f), WithAlpha(Ice, 0.9f), 2.0f);
+			Over.Ring(Centre, StRingOuter + 3.0f, WithAlpha(Gold, Pulse), 3.0f, 96);
 		}
-	}
-	{
-		const float X = StRight + 254.0f;
-		P.Text(FString::Printf(TEXT("H %d°"), FMath::RoundToInt(EditHue)), X, 430.0f, 15.0f, Paper, ETextAlign::Left, TEXT("Bold"));
-		P.Text(FString::Printf(TEXT("S %d%%"), FMath::RoundToInt(EditSaturation * 100.0f)), X, 456.0f, 15.0f, Paper, ETextAlign::Left, TEXT("Bold"));
-		P.Text(FString::Printf(TEXT("B %d%%"), FMath::RoundToInt(EditBrightness * 100.0f)), X, 482.0f, 15.0f, Paper, ETextAlign::Left, TEXT("Bold"));
-		P.Text(FString::Printf(TEXT("R %d"), Brush.Colour.R), X, 520.0f, 15.0f, FLinearColor(1.0f, 0.45f, 0.45f), ETextAlign::Left, TEXT("Bold"));
-		P.Text(FString::Printf(TEXT("G %d"), Brush.Colour.G), X, 546.0f, 15.0f, FLinearColor(0.45f, 1.0f, 0.55f), ETextAlign::Left, TEXT("Bold"));
-		P.Text(FString::Printf(TEXT("B %d"), Brush.Colour.B), X, 572.0f, 15.0f, FLinearColor(0.55f, 0.7f, 1.0f), ETextAlign::Left, TEXT("Bold"));
+		const float HueRadians = FMath::DegreesToRadians(EditHue);
+		const FVector2D HueKnob = Centre + FVector2D(FMath::Cos(HueRadians), -FMath::Sin(HueRadians)) * RingMid;
+		Top.Ring(HueKnob, StRingWidth * 0.5f + 2.0f, Ink, 4.0f, 24);
+		Top.Ring(HueKnob, StRingWidth * 0.5f + 2.0f, Paper, 2.0f, 24);
+		const FBox2D Square = SquareRect();
+		StGradient(P, Square, {FLinearColor::White, StShown(ChaosImpactCustomColour::FromHSV(EditHue, 1.0f, 1.0f))});
+		StGradient(Over, Square, {FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f)}, false);
+		if (Hover == 700 || Dragging == 700)
+		{
+			StFrame(Top, StGrow(Square, 3.0f), WithAlpha(Gold, Pulse), 3.0f);
+		}
+		const FVector2D SquareKnob(Square.Min.X + Square.GetSize().X * EditSaturation, Square.Max.Y - Square.GetSize().Y * EditBrightness);
+		Top.Ring(SquareKnob, 8.0f, Ink, 4.0f, 24);
+		Top.Ring(SquareKnob, 8.0f, EditBrightness > 0.6f && EditSaturation < 0.4f ? Ink : Paper, 2.0f, 24);
+
+		// H S B and R G B: each track is what moving along it gives; the number at the end.
+		const FColor Fine = Brush.Colour;
+		for (int32 Slider = 0; Slider < StColourSliders; ++Slider)
+		{
+			const FBox2D R = ColourSliderRect(Slider);
+			const bool bActive = Hover == 710 + Slider || Dragging == 710 + Slider;
+			StRound(Back, R, 8.0f, bActive ? StCardOn : StCard);
+			P.Text(StColourSliderNames[Slider], static_cast<float>(R.Min.X) + 10.0f, static_cast<float>(R.Min.Y) + 3.0f, 15.0f,
+				Slider == 3 ? FLinearColor(1.0f, 0.4f, 0.4f) : Slider == 4 ? FLinearColor(0.4f, 1.0f, 0.5f) : Slider == 5 ? FLinearColor(0.5f, 0.65f, 1.0f) : Paper,
+				ETextAlign::Left, TEXT("Black"));
+			const FBox2D Track(FVector2D(R.Min.X + StTrackLeft, R.Min.Y + 8.0f), FVector2D(R.Max.X - StTrackRight, R.Max.Y - 8.0f));
+			TArray<FLinearColor> Run;
+			float Amount = 0.0f;
+			FString Number;
+			if (Slider == 0)
+			{
+				for (int32 Stop = 0; Stop <= 6; ++Stop) { Run.Add(StShown(ChaosImpactCustomColour::FromHSV(60.0f * Stop, 1.0f, 1.0f))); }
+				Amount = EditHue / 360.0f;
+				Number = FString::Printf(TEXT("%d°"), FMath::RoundToInt(EditHue));
+			}
+			else if (Slider <= 2)
+			{
+				const bool bSat = Slider == 1;
+				Run = {StShown(ChaosImpactCustomColour::FromHSV(EditHue, bSat ? 0.0f : EditSaturation, bSat ? EditBrightness : 0.0f)),
+					StShown(ChaosImpactCustomColour::FromHSV(EditHue, bSat ? 1.0f : EditSaturation, bSat ? EditBrightness : 1.0f))};
+				Amount = bSat ? EditSaturation : EditBrightness;
+				Number = FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Amount * 100.0f));
+			}
+			else
+			{
+				FColor Low = Fine, High = Fine;
+				(Slider == 3 ? Low.R : Slider == 4 ? Low.G : Low.B) = 0;
+				(Slider == 3 ? High.R : Slider == 4 ? High.G : High.B) = 255;
+				Run = {StShown(Low), StShown(High)};
+				const uint8 Channel = Slider == 3 ? Fine.R : Slider == 4 ? Fine.G : Fine.B;
+				Amount = Channel / 255.0f;
+				Number = FString::FromInt(Channel);
+			}
+			StGradient(P, Track, Run);
+			Over.Box(static_cast<float>(Track.Min.X + Track.GetSize().X * Amount) - 2.5f, static_cast<float>(R.Min.Y) + 3.0f, 5.0f,
+				StColourSliderHeight - 6.0f, Paper);
+			StText(P, Number, static_cast<float>(R.Max.X) - 8.0f, static_cast<float>(R.Min.Y) + 4.0f, 14.0f, StTrackRight - 16.0f, bActive ? Gold : Paper,
+				ETextAlign::Right, TEXT("Bold"));
+			if (bActive)
+			{
+				StFrame(Top, StGrow(R, 1.0f), WithAlpha(Gold, Pulse), 2.0f);
+			}
+		}
 	}
 	// The colours used last.
 	P.Text(TEXT("最近つかった色"), StRight, 640.0f, 15.0f, Muted, ETextAlign::Left, TEXT("Bold"));
@@ -1468,6 +1710,8 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 	Back.Box(0.0f, StBarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
 	const FString Guide = bLeaveMenu
 		? FString(bPadCursor ? TEXT("↑↓：えらぶ　　A：決定　　B：つづける") : TEXT("クリック・↑↓ Enter：えらぶ　　Esc：つづける"))
+		: bPadCursor && IsColourControl(Hover)
+			? FString(TEXT("A（おしたまま動かす）：色をえらぶ　　十字：こまかく調整（長押しで速く）　　LB / RB：どうぐ　　X：もどす　　Y：やりなおす　　B：おわる"))
 		: FString(bPadCursor
 			? TEXT("A：描く　　右スティック：回す　　LT / RT：拡大縮小　　LB / RB：どうぐ　　X：もどす　　Y：やりなおす　　十字：太さ・こさ　　View：左右対称　　B：おわる")
 			: TEXT("左ドラッグ：描く　　右ドラッグ：回す　　中ドラッグ：ずらす　　ホイール：拡大縮小　　Ctrl+Z：もどす　　[ ]：太さ　　B E G I：どうぐ　　Esc：おわる"));

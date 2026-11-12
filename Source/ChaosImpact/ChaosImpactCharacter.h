@@ -94,6 +94,8 @@ public:
 
 	/** Constructor */
 	AChaosImpactCharacter();
+	/** ペイント now on the model (0: none), and whether it is on the model shown now (for checks). */
+	int32 GetShownPaintKey() const { return ShownPaintOn.IsValid() ? ShownPaintKey : 0; }
 	/** Speeds up take-off and landing without reducing the authored jump height. 1 restores the old arc. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Jump", meta=(ClampMin="1.0", ClampMax="2.5"))
 	float JumpTempo = 1.7f;

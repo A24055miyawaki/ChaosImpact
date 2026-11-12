@@ -634,6 +634,8 @@ void UChaosImpactColourEdit::OpenPaint()
 	bool bOn = false;
 	const FColor PartNow = PartColour(PartCursor, &bOn);
 	const FColor Start = bOn ? PartNow : RecentCount() > 0 ? RecentColour(0) : FColor(255, 70, 90);
+	// The colours chosen the same way as here (パレット or こまかく).
+	Studio->SetFine(bFine);
 	Studio->Open(Controller.Get(), Preview, Layers, Start, ViewYaw);
 }
 

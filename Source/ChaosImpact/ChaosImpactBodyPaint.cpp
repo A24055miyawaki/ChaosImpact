@@ -12,7 +12,8 @@
 #include "StaticMeshResources.h"
 #include "TextureResource.h"
 
-using namespace ChaosImpactBodyPaint;
+// (An alias, not a using-directive: in a unity build that would put CIBP::Size and the rest in every later file's way.)
+namespace CIBP = ChaosImpactBodyPaint;
 
 namespace
 {
@@ -57,18 +58,18 @@ namespace
 
 UTexture2D* ChaosImpactBodyPaint::MakeTexture(const TArray<FColor>& Pixels, UObject* Outer)
 {
-	if (Pixels.Num() != Size * Size)
+	if (Pixels.Num() != CIBP::Size * CIBP::Size)
 	{
 		return nullptr;
 	}
 	UTexture2D* Texture = NewObject<UTexture2D>(Outer ? Outer : GetTransientPackage(), NAME_None, RF_Transient);
 	FTexturePlatformData* Data = new FTexturePlatformData();
-	Data->SizeX = Size;
-	Data->SizeY = Size;
+	Data->SizeX = CIBP::Size;
+	Data->SizeY = CIBP::Size;
 	Data->SetNumSlices(1);
 	Data->PixelFormat = PF_B8G8R8A8;
 	TArray<FColor> Level = Pixels;
-	int32 Width = Size;
+	int32 Width = CIBP::Size;
 	TArray<FColor> Shown;
 	for (;;)
 	{
@@ -181,14 +182,14 @@ bool ChaosImpactBodyPaint::Unpack(const TArray<uint8>& Packed, TArray<FChaosImpa
 	}
 	At = 4;
 	int32 Count = 0;
-	if (!Get(Count) || Count < 0 || Count > MaxLayers)
+	if (!Get(Count) || Count < 0 || Count > CIBP::MaxLayers)
 	{
 		return false;
 	}
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		int32 Layer = 0, Bytes = 0;
-		if (!Get(Layer) || !Get(Bytes) || Layer < 0 || Layer >= MaxLayers || Bytes <= 0 || At + Bytes > Packed.Num())
+		if (!Get(Layer) || !Get(Bytes) || Layer < 0 || Layer >= CIBP::MaxLayers || Bytes <= 0 || At + Bytes > Packed.Num())
 		{
 			OutLayers.Reset();
 			return false;
@@ -226,8 +227,8 @@ int32 ChaosImpactBodyPaint::WeightOf(const TArray<FChaosImpactPaintLayerData>& L
 
 void UChaosImpactPaintLayer::Init()
 {
-	Pixels.Init(FColor(0, 0, 0, 0), Size * Size);
-	Texture = UTexture2D::CreateTransient(Size, Size, PF_B8G8R8A8, TEXT("CIPaintLayer"));
+	Pixels.Init(FColor(0, 0, 0, 0), CIBP::Size * CIBP::Size);
+	Texture = UTexture2D::CreateTransient(CIBP::Size, CIBP::Size, PF_B8G8R8A8, TEXT("CIPaintLayer"));
 	if (Texture)
 	{
 		Texture->SRGB = true;
@@ -237,14 +238,14 @@ void UChaosImpactPaintLayer::Init()
 		Texture->NeverStream = true;
 		Texture->UpdateResource();
 	}
-	MarkDirty(FIntRect(0, 0, Size, Size));
+	MarkDirty(FIntRect(0, 0, CIBP::Size, CIBP::Size));
 	Flush();
 }
 
 void UChaosImpactPaintLayer::MarkDirty(const FIntRect& Rect)
 {
-	const FIntRect Clamped(FMath::Clamp(Rect.Min.X, 0, Size), FMath::Clamp(Rect.Min.Y, 0, Size), FMath::Clamp(Rect.Max.X, 0, Size),
-		FMath::Clamp(Rect.Max.Y, 0, Size));
+	const FIntRect Clamped(FMath::Clamp(Rect.Min.X, 0, CIBP::Size), FMath::Clamp(Rect.Min.Y, 0, CIBP::Size), FMath::Clamp(Rect.Max.X, 0, CIBP::Size),
+		FMath::Clamp(Rect.Max.Y, 0, CIBP::Size));
 	if (Clamped.Width() <= 0 || Clamped.Height() <= 0)
 	{
 		return;
@@ -268,7 +269,7 @@ void UChaosImpactPaintLayer::Flush()
 	}
 	bDirty = false;
 	// (One pixel more round: the see-through pixels next to the changed ones take their colour too.)
-	Dirty = FIntRect(FMath::Max(Dirty.Min.X - 1, 0), FMath::Max(Dirty.Min.Y - 1, 0), FMath::Min(Dirty.Max.X + 1, Size), FMath::Min(Dirty.Max.Y + 1, Size));
+	Dirty = FIntRect(FMath::Max(Dirty.Min.X - 1, 0), FMath::Max(Dirty.Min.Y - 1, 0), FMath::Min(Dirty.Max.X + 1, CIBP::Size), FMath::Min(Dirty.Max.Y + 1, CIBP::Size));
 	const int32 W = Dirty.Width();
 	const int32 H = Dirty.Height();
 	// (The render thread reads its own copy of just the changed rows.)
@@ -277,7 +278,7 @@ void UChaosImpactPaintLayer::Flush()
 	{
 		for (int32 Col = 0; Col < W; ++Col)
 		{
-			Copy[Row * W + Col] = Spread(Pixels.GetData(), Size, Dirty.Min.X + Col, Dirty.Min.Y + Row);
+			Copy[Row * W + Col] = Spread(Pixels.GetData(), CIBP::Size, Dirty.Min.X + Col, Dirty.Min.Y + Row);
 		}
 	}
 	FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(Dirty.Min.X, Dirty.Min.Y, 0, 0, W, H);
@@ -306,37 +307,37 @@ void UChaosImpactPaintLayer::Clear()
 	{
 		Pixel = FColor(0, 0, 0, 0);
 	}
-	MarkDirty(FIntRect(0, 0, Size, Size));
+	MarkDirty(FIntRect(0, 0, CIBP::Size, CIBP::Size));
 	Flush();
 }
 
 TArray<uint8> UChaosImpactPaintLayer::ToPng() const
 {
 	TArray64<uint8> Out;
-	FImageUtils::PNGCompressImageArray(Size, Size, TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Out);
+	FImageUtils::PNGCompressImageArray(CIBP::Size, CIBP::Size, TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Out);
 	return TArray<uint8>(Out.GetData(), static_cast<int32>(Out.Num()));
 }
 
 bool UChaosImpactPaintLayer::FromPng(const TArray<uint8>& Png)
 {
 	FImage Image;
-	if (Png.IsEmpty() || !FImageUtils::DecompressImage(Png.GetData(), Png.Num(), Image) || Image.SizeX != Size || Image.SizeY != Size)
+	if (Png.IsEmpty() || !FImageUtils::DecompressImage(Png.GetData(), Png.Num(), Image) || Image.SizeX != CIBP::Size || Image.SizeY != CIBP::Size)
 	{
 		return false;
 	}
 	FImage Bgra;
 	Image.CopyTo(Bgra, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
 	const TArrayView64<FColor> View = Bgra.AsBGRA8();
-	if (View.Num() != static_cast<int64>(Size) * Size)
+	if (View.Num() != static_cast<int64>(CIBP::Size) * CIBP::Size)
 	{
 		return false;
 	}
-	if (Pixels.Num() != Size * Size)
+	if (Pixels.Num() != CIBP::Size * CIBP::Size)
 	{
 		Init();
 	}
-	FMemory::Memcpy(Pixels.GetData(), View.GetData(), static_cast<SIZE_T>(Size) * Size * sizeof(FColor));
-	MarkDirty(FIntRect(0, 0, Size, Size));
+	FMemory::Memcpy(Pixels.GetData(), View.GetData(), static_cast<SIZE_T>(CIBP::Size) * CIBP::Size * sizeof(FColor));
+	MarkDirty(FIntRect(0, 0, CIBP::Size, CIBP::Size));
 	Flush();
 	return true;
 }
@@ -376,10 +377,10 @@ namespace
 		{
 			return;
 		}
-		const int32 MinX = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.X, B.X, C.X)) - 1, 0, Size - 1);
-		const int32 MaxX = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.X, B.X, C.X)) + 1, 0, Size - 1);
-		const int32 MinY = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.Y, B.Y, C.Y)) - 1, 0, Size - 1);
-		const int32 MaxY = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.Y, B.Y, C.Y)) + 1, 0, Size - 1);
+		const int32 MinX = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.X, B.X, C.X)) - 1, 0, CIBP::Size - 1);
+		const int32 MaxX = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.X, B.X, C.X)) + 1, 0, CIBP::Size - 1);
+		const int32 MinY = FMath::Clamp(FMath::FloorToInt(FMath::Min3(A.Y, B.Y, C.Y)) - 1, 0, CIBP::Size - 1);
+		const int32 MaxY = FMath::Clamp(FMath::CeilToInt(FMath::Max3(A.Y, B.Y, C.Y)) + 1, 0, CIBP::Size - 1);
 		for (int32 Y = MinY; Y <= MaxY; ++Y)
 		{
 			for (int32 X = MinX; X <= MaxX; ++X)
@@ -595,11 +596,11 @@ bool FChaosImpactPaintSurface::Build(const UChaosImpactPuppetComponent* Model)
 		RestScale = FMath::Max(static_cast<float>(Pieces[0].Mesh->GetComponentTransform().GetMaximumAxisScale()), 0.001f);
 		FindRestMirror();
 	}
-	LayerCount = FMath::Clamp(LayerCount, 1, MaxLayers);
+	LayerCount = FMath::Clamp(LayerCount, 1, CIBP::MaxLayers);
 	Covered.SetNum(LayerCount);
 	for (TBitArray<>& Bits : Covered)
 	{
-		Bits.Init(false, Size * Size);
+		Bits.Init(false, CIBP::Size * CIBP::Size);
 	}
 	for (const FTri& Tri : Tris)
 	{
@@ -607,9 +608,9 @@ bool FChaosImpactPaintSurface::Build(const UChaosImpactPuppetComponent* Model)
 		{
 			continue;
 		}
-		RasteriseUV(Tri.UV[0] * Size, Tri.UV[1] * Size, Tri.UV[2] * Size, [this, &Tri](const int32 X, const int32 Y, const FVector3f&)
+		RasteriseUV(Tri.UV[0] * CIBP::Size, Tri.UV[1] * CIBP::Size, Tri.UV[2] * CIBP::Size, [this, &Tri](const int32 X, const int32 Y, const FVector3f&)
 		{
-			Covered[Tri.Layer][Y * Size + X] = true;
+			Covered[Tri.Layer][Y * CIBP::Size + X] = true;
 		});
 	}
 	return !Tris.IsEmpty();
@@ -923,13 +924,13 @@ FChaosImpactPaintSurface::FTileEdit& FChaosImpactPaintSurface::Touch(const int32
 	FTileEdit& Edit = StrokeStep.Tiles.AddDefaulted_GetRef();
 	Edit.Layer = Layer;
 	Edit.Tile = Tile;
-	Edit.Before.SetNumUninitialized(TileSize * TileSize);
+	Edit.Before.SetNumUninitialized(CIBP::TileSize * CIBP::TileSize);
 	const TArray<FColor>& Pixels = StrokeLayers[Layer]->GetPixels();
-	const int32 X0 = (Tile % TilesPerSide) * TileSize;
-	const int32 Y0 = (Tile / TilesPerSide) * TileSize;
-	for (int32 Row = 0; Row < TileSize; ++Row)
+	const int32 X0 = (Tile % CIBP::TilesPerSide) * CIBP::TileSize;
+	const int32 Y0 = (Tile / CIBP::TilesPerSide) * CIBP::TileSize;
+	for (int32 Row = 0; Row < CIBP::TileSize; ++Row)
 	{
-		FMemory::Memcpy(&Edit.Before[Row * TileSize], &Pixels[(Y0 + Row) * Size + X0], TileSize * sizeof(FColor));
+		FMemory::Memcpy(&Edit.Before[Row * CIBP::TileSize], &Pixels[(Y0 + Row) * CIBP::Size + X0], CIBP::TileSize * sizeof(FColor));
 	}
 	StrokeTiles.Add(Key, StrokeStep.Tiles.Num() - 1);
 	return Edit;
@@ -1019,7 +1020,7 @@ void FChaosImpactPaintSurface::Dab(const FVector& Centre, const FVector& ViewDir
 			{
 				continue;
 			}
-			RasteriseUV(Tri.UV[0] * Size, Tri.UV[1] * Size, Tri.UV[2] * Size, [&](const int32 X, const int32 Y, const FVector3f& Bary)
+			RasteriseUV(Tri.UV[0] * CIBP::Size, Tri.UV[1] * CIBP::Size, Tri.UV[2] * CIBP::Size, [&](const int32 X, const int32 Y, const FVector3f& Bary)
 			{
 				const FVector3f P = Tri.P[0] * Bary.X + Tri.P[1] * Bary.Y + Tri.P[2] * Bary.Z;
 				const float Distance = (P - At).Size();
@@ -1049,7 +1050,7 @@ void FChaosImpactPaintSurface::Dab(const FVector& Centre, const FVector& ViewDir
 			{
 				continue;
 			}
-			RasteriseUV(Tri.UV[0] * Size, Tri.UV[1] * Size, Tri.UV[2] * Size, [&](const int32 X, const int32 Y, const FVector3f& Bary)
+			RasteriseUV(Tri.UV[0] * CIBP::Size, Tri.UV[1] * CIBP::Size, Tri.UV[2] * CIBP::Size, [&](const int32 X, const int32 Y, const FVector3f& Bary)
 			{
 				const FVector3f P = Tri.R[0] * Bary.X + Tri.R[1] * Bary.Y + Tri.R[2] * Bary.Z;
 				const float Distance = (P - At).Size();
@@ -1079,17 +1080,17 @@ void FChaosImpactPaintSurface::Apply(const int32 Layer, const int32 X, const int
 	{
 		return;
 	}
-	const int64 Key = (static_cast<int64>(Layer) << 32) | (Y * Size + X);
+	const int64 Key = (static_cast<int64>(Layer) << 32) | (Y * CIBP::Size + X);
 	float& Strongest = StrokeWeights.FindOrAdd(Key, 0.0f);
 	if (Weight <= Strongest)
 	{
 		return;
 	}
 	Strongest = Weight;
-	const int32 Tile = (Y / TileSize) * TilesPerSide + X / TileSize;
+	const int32 Tile = (Y / CIBP::TileSize) * CIBP::TilesPerSide + X / CIBP::TileSize;
 	FTileEdit& Edit = Touch(Layer, Tile);
-	const FColor& Before = Edit.Before[(Y % TileSize) * TileSize + X % TileSize];
-	StrokeLayers[Layer]->GetPixels()[Y * Size + X] = Composite(Before, StrokeBrush, Weight);
+	const FColor& Before = Edit.Before[(Y % CIBP::TileSize) * CIBP::TileSize + X % CIBP::TileSize];
+	StrokeLayers[Layer]->GetPixels()[Y * CIBP::Size + X] = Composite(Before, StrokeBrush, Weight);
 	const FIntRect Pixel(X, Y, X + 1, Y + 1);
 	StrokeLayers[Layer]->MarkDirty(Pixel);
 	if (StrokeRects[Layer].Area() <= 0)
@@ -1111,13 +1112,13 @@ void FChaosImpactPaintSurface::Bleed(const int32 Layer, const FIntRect& Rect)
 	TArray<FColor>& Pixels = StrokeLayers[Layer]->GetPixels();
 	const TBitArray<>& Inside = Covered[Layer];
 	constexpr int32 Reach = 2;
-	const FIntRect Area(FMath::Max(Rect.Min.X - Reach, 0), FMath::Max(Rect.Min.Y - Reach, 0), FMath::Min(Rect.Max.X + Reach, Size),
-		FMath::Min(Rect.Max.Y + Reach, Size));
+	const FIntRect Area(FMath::Max(Rect.Min.X - Reach, 0), FMath::Max(Rect.Min.Y - Reach, 0), FMath::Min(Rect.Max.X + Reach, CIBP::Size),
+		FMath::Min(Rect.Max.Y + Reach, CIBP::Size));
 	for (int32 Y = Area.Min.Y; Y < Area.Max.Y; ++Y)
 	{
 		for (int32 X = Area.Min.X; X < Area.Max.X; ++X)
 		{
-			if (Inside[Y * Size + X])
+			if (Inside[Y * CIBP::Size + X])
 			{
 				continue;
 			}
@@ -1129,7 +1130,7 @@ void FChaosImpactPaintSurface::Bleed(const int32 Layer, const FIntRect& Rect)
 				for (int32 DX = -Reach; DX <= Reach; ++DX)
 				{
 					const int32 NX = X + DX, NY = Y + DY;
-					if (NX < 0 || NY < 0 || NX >= Size || NY >= Size || !Inside[NY * Size + NX])
+					if (NX < 0 || NY < 0 || NX >= CIBP::Size || NY >= CIBP::Size || !Inside[NY * CIBP::Size + NX])
 					{
 						continue;
 					}
@@ -1137,16 +1138,16 @@ void FChaosImpactPaintSurface::Bleed(const int32 Layer, const FIntRect& Rect)
 					if (D < Nearest)
 					{
 						Nearest = D;
-						Take = Pixels[NY * Size + NX];
+						Take = Pixels[NY * CIBP::Size + NX];
 					}
 				}
 			}
-			if (Nearest == MAX_int32 || Pixels[Y * Size + X] == Take)
+			if (Nearest == MAX_int32 || Pixels[Y * CIBP::Size + X] == Take)
 			{
 				continue;
 			}
-			Touch(Layer, (Y / TileSize) * TilesPerSide + X / TileSize);
-			Pixels[Y * Size + X] = Take;
+			Touch(Layer, (Y / CIBP::TileSize) * CIBP::TilesPerSide + X / CIBP::TileSize);
+			Pixels[Y * CIBP::Size + X] = Take;
 			StrokeLayers[Layer]->MarkDirty(FIntRect(X, Y, X + 1, Y + 1));
 		}
 	}
@@ -1182,17 +1183,17 @@ void FChaosImpactPaintSurface::FinishStep()
 	}
 	for (FTileEdit& Edit : StrokeStep.Tiles)
 	{
-		Edit.After.SetNumUninitialized(TileSize * TileSize);
+		Edit.After.SetNumUninitialized(CIBP::TileSize * CIBP::TileSize);
 		const TArray<FColor>& Pixels = StrokeLayers[Edit.Layer]->GetPixels();
-		const int32 X0 = (Edit.Tile % TilesPerSide) * TileSize;
-		const int32 Y0 = (Edit.Tile / TilesPerSide) * TileSize;
-		for (int32 Row = 0; Row < TileSize; ++Row)
+		const int32 X0 = (Edit.Tile % CIBP::TilesPerSide) * CIBP::TileSize;
+		const int32 Y0 = (Edit.Tile / CIBP::TilesPerSide) * CIBP::TileSize;
+		for (int32 Row = 0; Row < CIBP::TileSize; ++Row)
 		{
-			FMemory::Memcpy(&Edit.After[Row * TileSize], &Pixels[(Y0 + Row) * Size + X0], TileSize * sizeof(FColor));
+			FMemory::Memcpy(&Edit.After[Row * CIBP::TileSize], &Pixels[(Y0 + Row) * CIBP::Size + X0], CIBP::TileSize * sizeof(FColor));
 		}
 	}
 	Undo.Add(MoveTemp(StrokeStep));
-	if (Undo.Num() > MaxUndo)
+	if (Undo.Num() > CIBP::MaxUndo)
 	{
 		Undo.RemoveAt(0);
 	}
@@ -1212,9 +1213,9 @@ void FChaosImpactPaintSurface::Fill(const TArray<UChaosImpactPaintLayer*>& Layer
 	// too: a blank model fills whole, a shape drawn round an area keeps the fill inside it.
 	const auto ColourAt = [this](const int32 Layer, const FVector2f& UV)
 	{
-		const int32 X = FMath::Clamp(FMath::FloorToInt(UV.X * Size), 0, Size - 1);
-		const int32 Y = FMath::Clamp(FMath::FloorToInt(UV.Y * Size), 0, Size - 1);
-		return StrokeLayers[Layer]->GetPixels()[Y * Size + X];
+		const int32 X = FMath::Clamp(FMath::FloorToInt(UV.X * CIBP::Size), 0, CIBP::Size - 1);
+		const int32 Y = FMath::Clamp(FMath::FloorToInt(UV.Y * CIBP::Size), 0, CIBP::Size - 1);
+		return StrokeLayers[Layer]->GetPixels()[Y * CIBP::Size + X];
 	};
 	const FColor Target = ColourAt(Hit.Layer, Hit.UV);
 	const auto Matches = [&Target](const FColor& Colour)
@@ -1258,10 +1259,10 @@ void FChaosImpactPaintSurface::Fill(const TArray<UChaosImpactPaintLayer*>& Layer
 	{
 		const FTri& Tri = Tris[Index];
 		TArray<FColor>& Pixels = StrokeLayers[Tri.Layer]->GetPixels();
-		RasteriseUV(Tri.UV[0] * Size, Tri.UV[1] * Size, Tri.UV[2] * Size, [&](const int32 X, const int32 Y, const FVector3f&)
+		RasteriseUV(Tri.UV[0] * CIBP::Size, Tri.UV[1] * CIBP::Size, Tri.UV[2] * CIBP::Size, [&](const int32 X, const int32 Y, const FVector3f&)
 		{
 			// (Pixel by pixel too: a line through the piece stays.)
-			if (Matches(Pixels[Y * Size + X]) || StrokeWeights.Contains((static_cast<int64>(Tri.Layer) << 32) | (Y * Size + X)))
+			if (Matches(Pixels[Y * CIBP::Size + X]) || StrokeWeights.Contains((static_cast<int64>(Tri.Layer) << 32) | (Y * CIBP::Size + X)))
 			{
 				Apply(Tri.Layer, X, Y, Brush.Opacity);
 			}
@@ -1282,16 +1283,16 @@ void FChaosImpactPaintSurface::ClearAll(const TArray<UChaosImpactPaintLayer*>& L
 			continue;
 		}
 		TArray<FColor>& Pixels = Layers[Layer]->GetPixels();
-		for (int32 Tile = 0; Tile < TilesPerSide * TilesPerSide; ++Tile)
+		for (int32 Tile = 0; Tile < CIBP::TilesPerSide * CIBP::TilesPerSide; ++Tile)
 		{
-			const int32 X0 = (Tile % TilesPerSide) * TileSize;
-			const int32 Y0 = (Tile / TilesPerSide) * TileSize;
+			const int32 X0 = (Tile % CIBP::TilesPerSide) * CIBP::TileSize;
+			const int32 Y0 = (Tile / CIBP::TilesPerSide) * CIBP::TileSize;
 			bool bAny = false;
-			for (int32 Row = 0; Row < TileSize && !bAny; ++Row)
+			for (int32 Row = 0; Row < CIBP::TileSize && !bAny; ++Row)
 			{
-				for (int32 Col = 0; Col < TileSize; ++Col)
+				for (int32 Col = 0; Col < CIBP::TileSize; ++Col)
 				{
-					if (Pixels[(Y0 + Row) * Size + X0 + Col].A != 0)
+					if (Pixels[(Y0 + Row) * CIBP::Size + X0 + Col].A != 0)
 					{
 						bAny = true;
 						break;
@@ -1303,14 +1304,14 @@ void FChaosImpactPaintSurface::ClearAll(const TArray<UChaosImpactPaintLayer*>& L
 				continue;
 			}
 			Touch(Layer, Tile);
-			for (int32 Row = 0; Row < TileSize; ++Row)
+			for (int32 Row = 0; Row < CIBP::TileSize; ++Row)
 			{
-				for (int32 Col = 0; Col < TileSize; ++Col)
+				for (int32 Col = 0; Col < CIBP::TileSize; ++Col)
 				{
-					Pixels[(Y0 + Row) * Size + X0 + Col] = FColor(0, 0, 0, 0);
+					Pixels[(Y0 + Row) * CIBP::Size + X0 + Col] = FColor(0, 0, 0, 0);
 				}
 			}
-			Layers[Layer]->MarkDirty(FIntRect(X0, Y0, X0 + TileSize, Y0 + TileSize));
+			Layers[Layer]->MarkDirty(FIntRect(X0, Y0, X0 + CIBP::TileSize, Y0 + CIBP::TileSize));
 		}
 		Layers[Layer]->Flush();
 	}
@@ -1324,9 +1325,9 @@ bool FChaosImpactPaintSurface::PickColour(const TArray<UChaosImpactPaintLayer*>&
 	{
 		return false;
 	}
-	const int32 X = FMath::Clamp(FMath::FloorToInt(Hit.UV.X * Size), 0, Size - 1);
-	const int32 Y = FMath::Clamp(FMath::FloorToInt(Hit.UV.Y * Size), 0, Size - 1);
-	const FColor Pixel = Layers[Hit.Layer]->GetPixels()[Y * Size + X];
+	const int32 X = FMath::Clamp(FMath::FloorToInt(Hit.UV.X * CIBP::Size), 0, CIBP::Size - 1);
+	const int32 Y = FMath::Clamp(FMath::FloorToInt(Hit.UV.Y * CIBP::Size), 0, CIBP::Size - 1);
+	const FColor Pixel = Layers[Hit.Layer]->GetPixels()[Y * CIBP::Size + X];
 	if (Pixel.A < 24)
 	{
 		return false;
@@ -1337,18 +1338,18 @@ bool FChaosImpactPaintSurface::PickColour(const TArray<UChaosImpactPaintLayer*>&
 
 void FChaosImpactPaintSurface::PutTile(UChaosImpactPaintLayer* Layer, const int32 Tile, const TArray<FColor>& Source)
 {
-	if (!Layer || Source.Num() != TileSize * TileSize)
+	if (!Layer || Source.Num() != CIBP::TileSize * CIBP::TileSize)
 	{
 		return;
 	}
 	TArray<FColor>& Pixels = Layer->GetPixels();
-	const int32 X0 = (Tile % TilesPerSide) * TileSize;
-	const int32 Y0 = (Tile / TilesPerSide) * TileSize;
-	for (int32 Row = 0; Row < TileSize; ++Row)
+	const int32 X0 = (Tile % CIBP::TilesPerSide) * CIBP::TileSize;
+	const int32 Y0 = (Tile / CIBP::TilesPerSide) * CIBP::TileSize;
+	for (int32 Row = 0; Row < CIBP::TileSize; ++Row)
 	{
-		FMemory::Memcpy(&Pixels[(Y0 + Row) * Size + X0], &Source[Row * TileSize], TileSize * sizeof(FColor));
+		FMemory::Memcpy(&Pixels[(Y0 + Row) * CIBP::Size + X0], &Source[Row * CIBP::TileSize], CIBP::TileSize * sizeof(FColor));
 	}
-	Layer->MarkDirty(FIntRect(X0, Y0, X0 + TileSize, Y0 + TileSize));
+	Layer->MarkDirty(FIntRect(X0, Y0, X0 + CIBP::TileSize, Y0 + CIBP::TileSize));
 }
 
 void FChaosImpactPaintSurface::UndoStep(const TArray<UChaosImpactPaintLayer*>& Layers)

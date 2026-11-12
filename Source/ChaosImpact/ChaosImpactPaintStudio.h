@@ -53,6 +53,10 @@ public:
 	ETool GetTool() const { return Tool; }
 	FChaosImpactBrush& GetBrush() { return Brush; }
 	void SetColour(const FColor& Colour, bool bRemember = true);
+	/** The colours as on the カラーエディット: the palette, or (こまかく) the hue ring round its square with H S B / R G B. */
+	void SetFine(bool bInFine) { bFine = bInFine; }
+	bool IsFine() const { return bFine; }
+	void ToggleFine();
 	/** A stroke from one point of the view to another (design space), as a drag with the tool would draw it. */
 	void DrawLine(const FVector2D& From, const FVector2D& To);
 	/** The tool used once at a point of the view (a dab, a fill, a colour picked). */
@@ -72,10 +76,18 @@ public:
 	/** The brush's size on its 0..1 slider and back (world units). */
 	static float SizeToRadius(float Amount);
 	static float RadiusToSize(float Radius);
+	/** The colours' controls on the screen (design space): the wheel's middle, the square in it, a point on the hue ring,
+	 * a slider (0..5: H S B R G B) and the two tabs (パレット / こまかく). */
+	static FVector2D WheelCentre();
+	static FBox2D SquareRect();
+	static FVector2D RingPoint(float Hue);
+	static FBox2D ColourSliderRect(int32 Slider);
+	static FBox2D TabRect(bool bFineTab);
 
 private:
 	/** What is at a point: 1 the view, 100 + n a tool, 200 + n a slider, 300 左右対称, 400 + n a button, 500 + n 完了 / やめる,
-	 * 600 + n a palette colour, 700 the square, 701 the hue bar, 800 + n a recent colour, 900 + n the leaving menu's choices. */
+	 * 600 + n a palette colour, 700 the square, 701 the hue ring, 710 + n a colour slider (H S B R G B), 720 パレット / 721 こまかく,
+	 * 800 + n a recent colour, 900 + n the leaving menu's choices. */
 	int32 HitTest(const FVector2D& Point) const;
 	void Press(const FVector2D& Point, bool bAlt);
 	void Release();
@@ -87,7 +99,17 @@ private:
 	void SetSlider(int32 Slider, float Amount);
 	float GetSlider(int32 Slider) const;
 	void PickSquare(const FVector2D& Point);
-	void PickHue(const FVector2D& Point);
+	void PickRing(const FVector2D& Point);
+	void PickColourSlider(int32 Slider, const FVector2D& Point);
+	/** A colour control nudged (the controller's d-pad, the wheel): Steps of a degree, a per cent or one of 255. */
+	void NudgeColour(int32 Control, int32 Columns, int32 Rows);
+	/** Held keys speed up: how many steps this press is worth. */
+	int32 Accelerated();
+	void ApplyHSB();
+	/** The colour made from the controls: into the colours to keep in 最近 (on letting go, or when it is first used). */
+	void KeepColourLater() { bKeepColour = true; }
+	void KeepColourNow();
+	bool IsColourControl(int32 Hit) const { return Hit == 700 || Hit == 701 || (Hit >= 710 && Hit < 716); }
 	void SyncHSB();
 	void ApplyView();
 	void Notify(const FString& Text);
@@ -106,8 +128,6 @@ private:
 	static FBox2D ButtonRect(int32 Index);
 	static FBox2D FinishRect(int32 Index);
 	static FBox2D SwatchRect(int32 Index);
-	static FBox2D SquareRect();
-	static FBox2D HueRect();
 	static FBox2D RecentRect(int32 Index);
 	static FBox2D LeaveRect(int32 Index);
 
@@ -133,6 +153,11 @@ private:
 	float EditHue = 0.0f;
 	float EditSaturation = 1.0f;
 	float EditBrightness = 1.0f;
+	/** こまかく (the ring, the square and the sliders) rather than the palette. */
+	bool bFine = false;
+	bool bKeepColour = false;
+	double LastAdjustAt = 0.0;
+	int32 AdjustRun = 0;
 
 	// The view.
 	float ViewYaw = 90.0f;

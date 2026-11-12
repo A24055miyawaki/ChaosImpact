@@ -4,6 +4,11 @@
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"
+#include "ChaosImpactBallTypes.h"
+#include "Engine/StaticMesh.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 
 namespace
 {
@@ -253,6 +258,14 @@ bool AChaosImpactStageBase::IsOutside(const FVector& Location) const
 
 AChaosImpactStageBase::AChaosImpactStageBase()
 {
+	// The stage effects' ring of light (a flat band) and its glowing material (Color, Intensity).
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> FxRing(
+		TEXT("/Game/LevelPrototyping/Interactable/JumpPad/Assets/Meshes/SM_CircularBand.SM_CircularBand"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FxGlow(TEXT("/Game/ChaosImpact/Versus/M_StageGlow.M_StageGlow"));
+	FxRingMesh = FxRing.Succeeded() ? FxRing.Object : nullptr;
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> FxSegment(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	FxSegmentMesh = FxSegment.Succeeded() ? FxSegment.Object : nullptr;
+	FxGlowMaterial = FxGlow.Succeeded() ? FxGlow.Object : nullptr;
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WallFade(TEXT("/Game/ChaosImpact/Versus/M_CI_WallFade.M_CI_WallFade"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WallFadeGlow(
 		TEXT("/Game/ChaosImpact/Versus/M_CI_WallFadeGlow.M_CI_WallFadeGlow"));
@@ -331,4 +344,135 @@ void AChaosImpactStageBase::HideNearCamera(const TArray<FString>& Prefixes)
 			NearCameraParts.Add(Part);
 		}
 	}
+}
+
+// ---- Stage gimmick effects -----------------------------------------------------------------------------------------------
+
+void AChaosImpactStageBase::Tick(const float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	const double Now = FPlatformTime::Seconds();
+	for (int32 Index = FloorRings.Num() - 1; Index >= 0; --Index)
+	{
+		FFloorRing& Ring = FloorRings[Index];
+		const float T = static_cast<float>((Now - Ring.StartedAt) / FMath::Max(Ring.Seconds, 0.05f));
+		bool bAlive = T < 1.0f;
+		for (const TWeakObjectPtr<UStaticMeshComponent>& Segment : Ring.Segments)
+		{
+			bAlive &= Segment.IsValid();
+		}
+		if (!bAlive)
+		{
+			for (const TWeakObjectPtr<UStaticMeshComponent>& Segment : Ring.Segments)
+			{
+				if (UStaticMeshComponent* Mesh = Segment.Get())
+				{
+					Mesh->DestroyComponent();
+				}
+			}
+			FloorRings.RemoveAtSwap(Index);
+			continue;
+		}
+		// Out fast then easing; in steady (it gathers to the moment).
+		const float Ease = Ring.To >= Ring.From ? 1.0f - FMath::Pow(1.0f - T, 3.0f) : T * T;
+		const float Radius = FMath::Lerp(Ring.From, Ring.To, Ease);
+		const float Arc = 2.0f * PI * Radius / FloorRingSegments * 1.06f;
+		for (int32 Piece = 0; Piece < Ring.Segments.Num(); ++Piece)
+		{
+			const float Angle = 2.0f * PI * Piece / Ring.Segments.Num();
+			UStaticMeshComponent* Mesh = Ring.Segments[Piece].Get();
+			Mesh->SetWorldLocationAndRotation(Ring.At + FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, 0.0f),
+				FRotator(0.0f, FMath::RadiansToDegrees(Angle), 0.0f));
+			Mesh->SetWorldScale3D(FVector(Ring.Thickness / 100.0f, Arc / 100.0f, 0.02f));
+		}
+		if (UMaterialInstanceDynamic* Look = Ring.Look.Get())
+		{
+			// A spreading ring fades as it goes; a gathering one brightens toward the end.
+			const float Glow = Ring.To >= Ring.From ? FMath::Pow(1.0f - T, 1.6f) : 0.3f + 0.7f * T;
+			Look->SetScalarParameterValue(TEXT("Intensity"), Ring.Intensity * Glow);
+		}
+	}
+	for (int32 Index = TimedEffects.Num() - 1; Index >= 0; --Index)
+	{
+		UNiagaraComponent* Effect = TimedEffects[Index].Effect.Get();
+		if (!Effect || Now >= TimedEffects[Index].StopAt)
+		{
+			if (Effect)
+			{
+				Effect->Deactivate();
+			}
+			TimedEffects.RemoveAtSwap(Index);
+		}
+	}
+}
+
+void AChaosImpactStageBase::PlayFloorRing(const FVector& WorldAt, const FLinearColor& Color, const float FromRadius, const float ToRadius,
+	const float Seconds, const float Thickness, const float Intensity)
+{
+	if (GetNetMode() == NM_DedicatedServer || !FxSegmentMesh || !GetWorld())
+	{
+		return;
+	}
+	// A flat band of light: segments round a circle, Thickness x 3 wide (so it reads from the camera's height).
+	FFloorRing Ring;
+	Ring.At = WorldAt + FVector(0.0f, 0.0f, 3.0f);
+	Ring.StartedAt = FPlatformTime::Seconds();
+	Ring.Seconds = Seconds;
+	Ring.From = FromRadius;
+	Ring.To = ToRadius;
+	Ring.Thickness = Thickness * 3.0f;
+	Ring.Intensity = Intensity;
+	UMaterialInstanceDynamic* Look = FxGlowMaterial ? UMaterialInstanceDynamic::Create(FxGlowMaterial, this) : nullptr;
+	if (Look)
+	{
+		Look->SetVectorParameterValue(TEXT("Color"), Color);
+		Look->SetScalarParameterValue(TEXT("Intensity"), Intensity * (ToRadius >= FromRadius ? 1.0f : 0.3f));
+	}
+	Ring.Look = Look;
+	for (int32 Piece = 0; Piece < FloorRingSegments; ++Piece)
+	{
+		UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(this, NAME_None, RF_Transient);
+		Mesh->SetStaticMesh(FxSegmentMesh);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetCastShadow(false);
+		Mesh->SetGenerateOverlapEvents(false);
+		Mesh->SetMobility(EComponentMobility::Movable);
+		Mesh->SetupAttachment(GetRootComponent());
+		Mesh->RegisterComponent();
+		if (Look)
+		{
+			Mesh->SetMaterial(0, Look);
+		}
+		const float Angle = 2.0f * PI * Piece / FloorRingSegments;
+		Mesh->SetWorldLocationAndRotation(Ring.At + FVector(FMath::Cos(Angle) * FromRadius, FMath::Sin(Angle) * FromRadius, 0.0f),
+			FRotator(0.0f, FMath::RadiansToDegrees(Angle), 0.0f));
+		Mesh->SetWorldScale3D(FVector(Ring.Thickness / 100.0f, 2.0f * PI * FromRadius / FloorRingSegments * 1.06f / 100.0f, 0.02f));
+		Ring.Segments.Add(Mesh);
+	}
+	FloorRings.Add(Ring);
+}
+
+UNiagaraComponent* AChaosImpactStageBase::PlayStageEffect(const TCHAR* Path, const FVector& WorldAt, const FVector& Scale, const float Seconds,
+	const FLinearColor* Color, const FRotator& Rotation)
+{
+	if (GetNetMode() == NM_DedicatedServer || !GetWorld())
+	{
+		return nullptr;
+	}
+	UNiagaraSystem* System = ChaosImpactBallTypes::LoadEffect(Path);
+	UNiagaraComponent* Effect = System ? UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, System, WorldAt, Rotation, Scale) : nullptr;
+	if (!Effect)
+	{
+		return nullptr;
+	}
+	if (Color)
+	{
+		ChaosImpactBallTypes::SetEffectColor(Effect, TEXT("Base Color"), *Color);
+		ChaosImpactBallTypes::SetEffectColor(Effect, TEXT("Color"), *Color);
+	}
+	if (Seconds > 0.0f)
+	{
+		TimedEffects.Add({Effect, FPlatformTime::Seconds() + Seconds});
+	}
+	return Effect;
 }

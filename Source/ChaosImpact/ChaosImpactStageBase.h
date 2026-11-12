@@ -6,6 +6,9 @@
 
 class UStaticMeshComponent;
 class UMaterialInterface;
+class UMaterialInstanceDynamic;
+class UNiagaraComponent;
+class UStaticMesh;
 class UPrimitiveComponent;
 
 USTRUCT(BlueprintType)
@@ -33,6 +36,8 @@ public:
 	AChaosImpactStageBase();
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	/** (Runs the stage effects below; the stages call it through Super::Tick.) */
+	virtual void Tick(float DeltaSeconds) override;
 
 	/**
 	 * Props up on the walls (billboards, graffiti) that each player's own view drops while that player's camera is
@@ -164,6 +169,16 @@ protected:
 	/** Lists the components whose names start with one of Prefixes as near-camera parts (GetNearCameraParts). */
 	void HideNearCamera(const TArray<FString>& Prefixes);
 
+	/**
+	 * Stage gimmick effects, each machine's own (cosmetic). A ring of light on the floor going from one radius to another
+	 * and fading as it goes (out: a shock spreading from a strike; in: something gathering on a spot that is about to go
+	 * off), and a Niagara effect stopped after a while (0: left to end by itself).
+	 */
+	void PlayFloorRing(const FVector& WorldAt, const FLinearColor& Color, float FromRadius, float ToRadius, float Seconds,
+		float Thickness = 8.0f, float Intensity = 8.0f);
+	UNiagaraComponent* PlayStageEffect(const TCHAR* Path, const FVector& WorldAt, const FVector& Scale, float Seconds,
+		const FLinearColor* Color = nullptr, const FRotator& Rotation = FRotator::ZeroRotator);
+
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> WallFadeMaterial;
 	UPROPERTY()
@@ -171,4 +186,31 @@ protected:
 
 private:
 	TArray<TWeakObjectPtr<UPrimitiveComponent>> NearCameraParts;
+
+	static constexpr int32 FloorRingSegments = 32;
+	struct FFloorRing
+	{
+		TArray<TWeakObjectPtr<UStaticMeshComponent>> Segments;
+		FVector At = FVector::ZeroVector;
+		TWeakObjectPtr<UMaterialInstanceDynamic> Look;
+		double StartedAt = 0.0;
+		float Seconds = 1.0f;
+		float From = 100.0f;
+		float To = 300.0f;
+		float Thickness = 8.0f;
+		float Intensity = 8.0f;
+	};
+	TArray<FFloorRing> FloorRings;
+	struct FTimedEffect
+	{
+		TWeakObjectPtr<UNiagaraComponent> Effect;
+		double StopAt = 0.0;
+	};
+	TArray<FTimedEffect> TimedEffects;
+	UPROPERTY()
+	TObjectPtr<UStaticMesh> FxRingMesh;
+	UPROPERTY()
+	TObjectPtr<UStaticMesh> FxSegmentMesh;
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> FxGlowMaterial;
 };

@@ -152,6 +152,12 @@ protected:
 	/** -1: calm; 0..3: wind blowing toward N, E, S, W. */
 	UPROPERTY(ReplicatedUsing=OnRep_WindState)
 	int32 WindDirectionIndex = -1;
+	/** Streaks of driven snow flying downwind across the court while a gust blows (each machine's own, on the server's clock). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> GustStreaks;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> GustStreakLook;
+	void UpdateGustStreaks(bool bActive, float Blow);
 
 	/** Server world time when the current wind warning started. */
 	UPROPERTY(ReplicatedUsing=OnRep_WindState)

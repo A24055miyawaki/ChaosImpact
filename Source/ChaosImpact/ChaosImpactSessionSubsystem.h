@@ -283,8 +283,19 @@ public:
 		DuelOffer.Record.Wins = 12;
 		DuelOffer.Record.Losses = 7;
 		DuelOffer.Record.Recent = {TEXT("W"), TEXT("W"), TEXT("L"), TEXT("W"), TEXT("D")};
+		DuelOffer.Record.Streak = 1;
+		DuelOffer.Record.BestStreak = 4;
+		DuelOffer.Record.Rating.bKnown = true;
+		DuelOffer.Record.Rating.bMeasured = true;
+		DuelOffer.Record.Rating.Rate = 1612;
+		DuelOffer.Record.Rating.RatedGames = 19;
+		DuelOffer.Record.Rating.MeasuringLeft = 0;
+		DuelOffer.Record.Rating.Best = 1640;
 		DuelOffer.bOpponentAccepted = true;
 	}
+	/** Development / tests: this player's records and the last game's rating as if the relay had said them. */
+	void SetRecordsForTests(const FChaosImpactRecords& InRecords) { Records = InRecords; }
+	void SetRateReportForTests(const FChaosImpactRateReport& InReport) { RateReport = InReport; }
 #endif
 	const FChaosImpactDuelOffer& GetDuelOffer() const { return DuelOffer; }
 	/** This player's answer: yes waits for the opponent's; no stops searching. */
@@ -316,6 +327,8 @@ public:
 	void ReportDuelRecord(const FString& Result);
 	/** The 8-player match just played: this machine's first player's place out of how many. */
 	void ReportRandomRecord(int32 Place, int32 Of);
+	/** The rating the last ランダムマッチ game reported moved (or is still being worked out on the relay). */
+	const FChaosImpactRateReport& GetRateReport() const { return RateReport; }
 
 	// ---- Rank (the preseason, kept by the relay)
 	void RefreshRankInfo();
@@ -391,6 +404,13 @@ private:
 	FString RankReportResult;
 	int32 RankReportTries = 0;
 	FTSTicker::FDelegateHandle RankReportTicker;
+	/** The ランダムマッチ game's report, sent again while its rating is being worked out (the other players' reports). */
+	FChaosImpactRateReport RateReport;
+	TSharedPtr<FJsonObject> RateReportMessage;
+	FString RateReportGame;
+	int32 RateReportTries = 0;
+	FTSTicker::FDelegateHandle RateReportTicker;
+	void SendRateReport();
 	mutable FString CachedPlayerToken;
 
 	// ---- Internet rooms (the relay)

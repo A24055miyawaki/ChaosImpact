@@ -263,6 +263,8 @@ public:
 	AChaosImpactPodiumStage* GetPodium() const { return Podium; }
 	int32 Paint(const FGeometry& Allotted, FSlateWindowElementList& Elements, int32 Layer) const;
 	void Stop();
+	/** When the rating card's own show started (FPlatformTime; 0 while it has nothing new to show yet). */
+	double GetRatingAnimStart() const;
 
 	/** Seconds into the show when it has settled and asks for a button to go on. */
 	static constexpr float RevealSeconds = 3.9f;
@@ -273,6 +275,11 @@ private:
 	int32 PaintStatsPage(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 	int32 PaintNumbersTab(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Alpha, float Slide) const;
 	int32 PaintAwardsTab(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Alpha, float Slide) const;
+	/**
+	 * ランダムマッチ: this player's rating for the game (集計中 / the count from before to after with the change / 計測中 /
+	 * the measuring just over: the rating shown for the first time). Top left of the podium page, top right of the numbers.
+	 */
+	int32 PaintRating(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 
 	FChaosImpactResultsData Data;
 
@@ -295,4 +302,12 @@ private:
 	bool bLeft = false;
 	/** The final numbers have been taken again (they arrive with FINISH). */
 	bool bRecaptured = false;
+	/** A ランダムマッチ (1v1 or 8 players): the rating card is shown. */
+	bool bRated = false;
+	TWeakObjectPtr<APlayerController> RatedOwner;
+	/** When the rating card first came up, and whether its sound has been played. */
+	mutable double RatingShownAt = 0.0;
+	bool bRatingSoundPlayed = false;
+	/** The rating's digits that have stopped turning (a tick each). */
+	int32 RatingDigitTicks = 0;
 };

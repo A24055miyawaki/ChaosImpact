@@ -831,6 +831,11 @@ void AChaosImpactForgeStage::MulticastVentErupt_Implementation(const int32 Pair)
 		}
 		const FVector At = GetActorTransform().TransformPosition(GetVentOffset(Vent));
 		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBurst, At, 0.9f, 0.72f);
+		// It erupts: a column of fire for as long as it blows, the blast at its foot, smoke after, a ring of heat spreading.
+		PlayStageEffect(ChaosImpactBallTypes::Effects::Fire, At + FVector(0.0f, 0.0f, 10.0f), FVector(2.4f, 2.4f, 3.2f), VentEruptSeconds);
+		PlayStageEffect(ChaosImpactBallTypes::Effects::Explosion, At + FVector(0.0f, 0.0f, 40.0f), FVector(1.3f), 0.0f);
+		PlayStageEffect(ChaosImpactBallTypes::Effects::Smoke, At + FVector(0.0f, 0.0f, 20.0f), FVector(1.2f), VentEruptSeconds + 1.2f);
+		PlayFloorRing(At, FLinearColor(1.0f, 0.45f, 0.06f), VentRadius * 0.9f, VentRadius * 2.6f, 0.65f, 14.0f, 14.0f);
 		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, At, 0.85f, 0.68f);
 		if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::WarpIn))
 		{
@@ -981,6 +986,22 @@ void AChaosImpactForgeStage::TickVentsServer(const double Now)
 
 void AChaosImpactForgeStage::UpdateVentsLook(const float DeltaSeconds)
 {
+	// The warning: smoke starts to rise from each coming vent and a ring of heat closes in on it.
+	if (ActiveVentPair >= 0 && GetVentProgress() < 1.0f && VentWarnFxStartedAt != VentStartedAt)
+	{
+		VentWarnFxStartedAt = VentStartedAt;
+		const float Left = VentWarnSeconds * (1.0f - GetVentProgress());
+		for (int32 Vent = 0; Vent < 4; ++Vent)
+		{
+			if (!IsVentInPair(Vent, ActiveVentPair))
+			{
+				continue;
+			}
+			const FVector At = GetActorTransform().TransformPosition(GetVentOffset(Vent));
+			PlayStageEffect(ChaosImpactBallTypes::Effects::LastHitSmoke, At + FVector(0.0f, 0.0f, 8.0f), FVector(1.6f), Left);
+			PlayFloorRing(At, FLinearColor(1.0f, 0.38f, 0.08f), VentRadius * 2.2f, VentRadius * 1.02f, Left, 10.0f, 7.0f);
+		}
+	}
 	const float Progress = GetVentProgress();
 	for (int32 Vent = 0; Vent < VentDiscs.Num(); ++Vent)
 	{

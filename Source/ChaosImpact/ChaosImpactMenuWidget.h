@@ -9,6 +9,7 @@ class UTexture2D;
 class UEditableText;
 class UChaosImpactCharacterSelect;
 class UChaosImpactColourEdit;
+class UChaosImpactGallery;
 class UChaosImpactSettingsScreen;
 
 /** Native, resolution-independent front end. All hit regions and D-pad focus share one layout. */
@@ -39,6 +40,7 @@ public:
 	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
 	UChaosImpactColourEdit* GetColourEdit() const { return ColourEdit; }
+	UChaosImpactGallery* GetGallery() const { return Gallery; }
 	UChaosImpactSettingsScreen* GetSettingsScreen() const { return SettingsScreen; }
 	void OpenTrainingBallPicker();
 	bool IsTrainingBallPickerOpen() const { return bTrainingBallPickerOpen; }
@@ -117,6 +119,8 @@ private:
 	FBox2D SecretChoiceRect(int32 Index) const;
 	double ModePickerAt = 0.0;
 	void OpenModePicker(bool bOpen);
+	/** The rules page's bottom row (戻る 5, ボールスイッチ 6, 決定 4): where the cursor was left on it (down from the rows goes back there). */
+	int32 RulesBottomCursor = 4;
 	/** The rules screen's ボールスイッチ: every special ball as a tile to switch on / off (over the rules page). */
 	bool bBallSwitch = false;
 	/** 「訓練場」で あそんでみよう！: over the mode select once a run, while 訓練場 is not all cleared. */
@@ -201,6 +205,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactColourEdit> ColourEdit;
+
+	/** みんなのカラー (online). */
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactGallery> Gallery;
 
 	/** 訓練場's lesson list. */
 	UPROPERTY(Transient)

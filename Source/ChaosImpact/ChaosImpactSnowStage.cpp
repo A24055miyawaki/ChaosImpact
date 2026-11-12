@@ -948,6 +948,7 @@ void AChaosImpactSnowStage::UpdateWindLook(const float DeltaSeconds)
 	{
 		WindLaneRoot->SetRelativeRotation(FRotator(0.0f, 90.0f * WindDirectionIndex, 0.0f));
 	}
+	UpdateGustStreaks(bActive, bActive ? Progress - 1.0f : 0.0f);
 	// The lanes: fade in and fill from the upwind side, one floor after the next, while it is coming; arrows racing
 	// downwind while it blows, fading as it dies down.
 	const float Warn = bWarning ? Progress : 0.0f;
@@ -1004,6 +1005,69 @@ void AChaosImpactSnowStage::UpdateWindLook(const float DeltaSeconds)
 		{
 			SpawnedFlakes->Wind = FVector(20.0f, 30.0f, 0.0f);
 		}
+	}
+}
+
+void AChaosImpactSnowStage::UpdateGustStreaks(const bool bActive, const float Blow)
+{
+	constexpr int32 Streaks = 40;
+	if (GustStreaks.IsEmpty() && bActive && BoxMesh && GlowMaterial)
+	{
+		GustStreakLook = UMaterialInstanceDynamic::Create(GlowMaterial, this);
+		GustStreakLook->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.82f, 0.93f, 1.0f));
+		for (int32 Index = 0; Index < Streaks; ++Index)
+		{
+			UStaticMeshComponent* Streak = NewObject<UStaticMeshComponent>(this, NAME_None, RF_Transient);
+			Streak->SetStaticMesh(BoxMesh);
+			Streak->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Streak->SetCastShadow(false);
+			Streak->SetMobility(EComponentMobility::Movable);
+			Streak->SetupAttachment(GetRootComponent());
+			Streak->RegisterComponent();
+			Streak->SetMaterial(0, GustStreakLook);
+			GustStreaks.Add(Streak);
+		}
+	}
+	const float Envelope = bActive ? FMath::Clamp(Blow * WindActiveSeconds / 0.4f, 0.0f, 1.0f) * FMath::Clamp((1.0f - Blow) * WindActiveSeconds / 0.7f, 0.0f, 1.0f)
+		: 0.0f;
+	if (GustStreakLook)
+	{
+		GustStreakLook->SetScalarParameterValue(TEXT("Intensity"), 8.0f * Envelope);
+	}
+	if (Envelope <= 0.0f || WindDirectionIndex < 0)
+	{
+		for (UStaticMeshComponent* Streak : GustStreaks)
+		{
+			if (Streak)
+			{
+				Streak->SetVisibility(false);
+			}
+		}
+		return;
+	}
+	// Each streak its own lane, height, length and pace (the same numbers on every machine), flying downwind and coming
+	// round again from the upwind side.
+	const FVector Down = GetActorTransform().TransformVectorNoScale(GetWindDirectionVector(WindDirectionIndex));
+	const FVector Across = FVector::CrossProduct(FVector::UpVector, Down);
+	const float Since = static_cast<float>(GetServerNow() - WindStartedAt - WindWarnSeconds);
+	const float Span = 2.0f * SnowHalfExtent + 900.0f;
+	const float Yaw = Down.Rotation().Yaw;
+	const auto Hash = [](const int32 Index, const float Salt) { return FMath::Frac(FMath::Sin(Index * 12.9898f + Salt * 78.233f) * 43758.5453f); };
+	for (int32 Index = 0; Index < GustStreaks.Num(); ++Index)
+	{
+		UStaticMeshComponent* Streak = GustStreaks[Index];
+		if (!Streak)
+		{
+			continue;
+		}
+		const float Lane = (Hash(Index, 1.0f) * 2.0f - 1.0f) * SnowHalfExtent * 0.95f;
+		const float Height = 40.0f + Hash(Index, 2.0f) * 230.0f;
+		const float Speed = 1500.0f + Hash(Index, 3.0f) * 1100.0f;
+		const float Length = 200.0f + Hash(Index, 4.0f) * 300.0f;
+		const float Along = FMath::Fmod(Hash(Index, 5.0f) * Span + Since * Speed, Span) - Span * 0.5f;
+		Streak->SetVisibility(true);
+		Streak->SetWorldLocationAndRotation(GetActorLocation() + Down * Along + Across * Lane + FVector(0.0f, 0.0f, Height), FRotator(0.0f, Yaw, 0.0f));
+		Streak->SetWorldScale3D(FVector(Length / 100.0f, 0.09f, 0.05f));
 	}
 }
 

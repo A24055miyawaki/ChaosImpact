@@ -18,6 +18,26 @@ struct FChaosImpactRankInfo
 	TArray<FString> Recent;
 };
 
+/**
+ * A ランダムマッチ rating (1v1 and 8 players apart), as the relay keeps it: 1500 to start, shown once the first
+ * MeasuringGames are played (計測中 until then), never under 500.
+ */
+struct FChaosImpactRating
+{
+	static constexpr int32 MeasuringGames = 5;
+	bool bKnown = false;
+	bool bMeasured = false;
+	/** 0 while measuring. */
+	int32 Rate = 0;
+	int32 RatedGames = 0;
+	int32 MeasuringLeft = MeasuringGames;
+	int32 Best = 0;
+	/** The last ratings, oldest first (the 戦績 graph). */
+	TArray<int32> History;
+	/** The last changes, oldest first. */
+	TArray<int32> Deltas;
+};
+
 /** A player's ランダムマッチ 1v1 record, as the relay keeps it (RankBook.records). */
 struct FChaosImpactDuelRecord
 {
@@ -26,6 +46,10 @@ struct FChaosImpactDuelRecord
 	int32 Draws = 0;
 	/** The last results, oldest first: "W", "L" or "D". */
 	TArray<FString> Recent;
+	/** Wins in a row now, and the most ever. */
+	int32 Streak = 0;
+	int32 BestStreak = 0;
+	FChaosImpactRating Rating;
 
 	int32 GetGames() const { return Wins + Losses + Draws; }
 };
@@ -42,6 +66,10 @@ struct FChaosImpactRecords
 	float FfaAverage = 0.0f;
 	/** The last places, oldest first: X the place, Y out of how many. */
 	TArray<FIntPoint> FfaRecent;
+	/** 1st places in a row now, and the most ever. */
+	int32 FfaStreak = 0;
+	int32 FfaBestStreak = 0;
+	FChaosImpactRating FfaRating;
 };
 
 /** A ランダムマッチ 1v1 the relay found: who it is against and where both stand on accepting it. */
@@ -74,6 +102,24 @@ enum class EChaosImpactRankReportState : uint8
 	Void,
 	/** The relay never answered: nothing was recorded. */
 	Failed
+};
+
+/** What became of a ランダムマッチ game's rating (1v1 or 8 players), for the results. */
+struct FChaosImpactRateReport
+{
+	/** Sending / Pending (the other reports not in yet) / Done / Void (not counted) / Failed (no answer); None: nothing. */
+	EChaosImpactRankReportState State = EChaosImpactRankReportState::None;
+	bool bDuel = true;
+	bool bMeasured = false;
+	/** This game finished the measuring: the rating shows for the first time. */
+	bool bJustMeasured = false;
+	int32 MeasuringLeft = 0;
+	int32 Before = 0;
+	int32 After = 0;
+	int32 Delta = 0;
+	/** Held at the floor (500). */
+	bool bFloor = false;
+	double ChangedAt = 0.0;
 };
 
 struct FChaosImpactRankReport

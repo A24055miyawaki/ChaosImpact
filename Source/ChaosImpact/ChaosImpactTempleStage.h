@@ -212,5 +212,8 @@ private:
 	double NextAltarCheckAt = 0.0;
 	float LookClock = 0.0f;
 	int32 LastStrikeShown = -1;
+	/** The warning whose effects have been started (its start time), and whether its second gathering ring has come. */
+	float WarnFxStartedAt = -1.0f;
+	bool bWarnFxLate = false;
 	float StrikeFlash = 0.0f;
 };

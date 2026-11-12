@@ -60,12 +60,43 @@ namespace
 			: Mode == EChaosImpactQueueMode::Duel ? TEXT("ランダムマッチ 1v1") : TEXT("ランダムマッチ 8人");
 	}
 
+	/** A ランダムマッチ rating, from the same object as its record (an older relay has none: left unknown). */
+	void ReadRating(const TSharedPtr<FJsonObject>& From, FChaosImpactRating& Rating)
+	{
+		Rating = FChaosImpactRating();
+		if (!From.IsValid() || !From->HasField(TEXT("measured")))
+		{
+			return;
+		}
+		Rating.bKnown = true;
+		Rating.bMeasured = From->GetBoolField(TEXT("measured"));
+		Rating.Rate = static_cast<int32>(From->GetNumberField(TEXT("rate")));
+		Rating.RatedGames = static_cast<int32>(From->GetNumberField(TEXT("rated_games")));
+		Rating.MeasuringLeft = static_cast<int32>(From->GetNumberField(TEXT("measuring_left")));
+		Rating.Best = static_cast<int32>(From->GetNumberField(TEXT("best")));
+		for (const TCHAR* Field : {TEXT("history"), TEXT("deltas")})
+		{
+			TArray<int32>& Into = FCString::Strcmp(Field, TEXT("history")) == 0 ? Rating.History : Rating.Deltas;
+			const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+			if (From->TryGetArrayField(Field, Values))
+			{
+				for (const TSharedPtr<FJsonValue>& Value : *Values)
+				{
+					Into.Add(Value.IsValid() ? static_cast<int32>(Value->AsNumber()) : 0);
+				}
+			}
+		}
+	}
+
 	void ReadDuelRecord(const TSharedPtr<FJsonObject>& From, FChaosImpactDuelRecord& Record)
 	{
 		if (!From.IsValid())
 		{
 			return;
 		}
+		Record.Streak = From->HasField(TEXT("streak")) ? static_cast<int32>(From->GetNumberField(TEXT("streak"))) : 0;
+		Record.BestStreak = From->HasField(TEXT("best_streak")) ? static_cast<int32>(From->GetNumberField(TEXT("best_streak"))) : 0;
+		ReadRating(From, Record.Rating);
 		Record.Wins = static_cast<int32>(From->GetNumberField(TEXT("wins")));
 		Record.Losses = static_cast<int32>(From->GetNumberField(TEXT("losses")));
 		Record.Draws = static_cast<int32>(From->GetNumberField(TEXT("draws")));
@@ -95,6 +126,9 @@ namespace
 		Records.FfaWins = static_cast<int32>((*Ffa)->GetNumberField(TEXT("wins")));
 		Records.FfaTop3 = static_cast<int32>((*Ffa)->GetNumberField(TEXT("top3")));
 		Records.FfaAverage = static_cast<float>((*Ffa)->GetNumberField(TEXT("average")));
+		Records.FfaStreak = (*Ffa)->HasField(TEXT("streak")) ? static_cast<int32>((*Ffa)->GetNumberField(TEXT("streak"))) : 0;
+		Records.FfaBestStreak = (*Ffa)->HasField(TEXT("best_streak")) ? static_cast<int32>((*Ffa)->GetNumberField(TEXT("best_streak"))) : 0;
+		ReadRating(*Ffa, Records.FfaRating);
 		Records.FfaRecent.Reset();
 		const TArray<TSharedPtr<FJsonValue>>* Recent = nullptr;
 		if ((*Ffa)->TryGetArrayField(TEXT("recent"), Recent))
@@ -165,6 +199,11 @@ void UChaosImpactSessionSubsystem::Deinitialize()
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(RoomTravelWatch);
 		RoomTravelWatch.Reset();
+	}
+	if (RateReportTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RateReportTicker);
+		RateReportTicker.Reset();
 	}
 	if (RankReportTicker.IsValid())
 	{
@@ -1832,6 +1871,54 @@ FString UChaosImpactSessionSubsystem::GetRelayTransportName() const
 
 void UChaosImpactSessionSubsystem::RefreshRecords()
 {
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevRecords=measured|measuring|new fills in made-up records (screenshots of the cards and 戦績 with no relay).
+	if (FString Kind; FParse::Value(FCommandLine::Get(), TEXT("CIDevRecords="), Kind))
+	{
+		FChaosImpactRecords Fake;
+		Fake.bKnown = true;
+		const bool bNew = Kind == TEXT("new");
+		const bool bMeasured = Kind == TEXT("measured");
+		if (!bNew)
+		{
+			Fake.Duel.Wins = bMeasured ? 21 : 2;
+			Fake.Duel.Losses = bMeasured ? 13 : 1;
+			Fake.Duel.Draws = bMeasured ? 2 : 0;
+			Fake.Duel.Recent = bMeasured ? TArray<FString>{TEXT("L"), TEXT("W"), TEXT("W"), TEXT("D"), TEXT("L"), TEXT("W"), TEXT("L"), TEXT("W"), TEXT("W"), TEXT("W")}
+				: TArray<FString>{TEXT("W"), TEXT("L"), TEXT("W")};
+			Fake.Duel.Streak = bMeasured ? 3 : 1;
+			Fake.Duel.BestStreak = bMeasured ? 6 : 1;
+			Fake.FfaGames = bMeasured ? 28 : 2;
+			Fake.FfaWins = bMeasured ? 7 : 0;
+			Fake.FfaTop3 = bMeasured ? 16 : 1;
+			Fake.FfaAverage = bMeasured ? 3.2f : 4.5f;
+			Fake.FfaRecent = bMeasured ? TArray<FIntPoint>{{3, 8}, {1, 8}, {5, 7}, {2, 8}, {1, 6}, {6, 8}, {4, 8}, {2, 8}, {1, 8}, {1, 7}}
+				: TArray<FIntPoint>{{4, 8}, {5, 8}};
+			Fake.FfaStreak = bMeasured ? 2 : 0;
+			Fake.FfaBestStreak = bMeasured ? 3 : 0;
+		}
+		for (FChaosImpactRating* Rating : {&Fake.Duel.Rating, &Fake.FfaRating})
+		{
+			Rating->bKnown = true;
+			Rating->bMeasured = bMeasured;
+			Rating->RatedGames = bNew ? 0 : bMeasured ? 30 : 3;
+			Rating->MeasuringLeft = bMeasured ? 0 : FChaosImpactRating::MeasuringGames - Rating->RatedGames;
+		}
+		if (bMeasured)
+		{
+			Fake.Duel.Rating.Rate = 1642;
+			Fake.Duel.Rating.Best = 1688;
+			Fake.Duel.Rating.History = {1564, 1580, 1571, 1592, 1610, 1601, 1588, 1606, 1630, 1655, 1688, 1670, 1652, 1661, 1642};
+			Fake.Duel.Rating.Deltas = {-18, 9, 18, 25, 33, -18, -18, 9, -19, -10};
+			Fake.FfaRating.Rate = 1487;
+			Fake.FfaRating.Best = 1533;
+			Fake.FfaRating.History = {1520, 1533, 1511, 1500, 1478, 1490, 1502, 1471, 1460, 1487};
+			Fake.FfaRating.Deltas = {4, 22, -14, 9, 21, -19, -6, 12, 18, 27};
+		}
+		Records = Fake;
+		return;
+	}
+#endif
 	if (!IsInternet() || bRecordsPending)
 	{
 		return;
@@ -1896,14 +1983,93 @@ void UChaosImpactSessionSubsystem::SendRecordReport(TSharedRef<FJsonObject> Mess
 	Message->SetStringField(TEXT("token"), GetPlayerToken());
 	Message->SetNumberField(TEXT("game"), MatchmadeGame);
 	UE_LOG(LogChaosImpact, Log, TEXT("Match %s: recording game %d"), *MatchmadeId, MatchmadeGame);
-	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this)](
+	// Its rating: worked out once every player's report is in, so the same report is sent again until it is.
+	if (RateReportTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RateReportTicker);
+		RateReportTicker.Reset();
+	}
+	RateReport = FChaosImpactRateReport();
+	RateReport.State = EChaosImpactRankReportState::Sending;
+	RateReport.bDuel = MatchmadeMode == EChaosImpactQueueMode::Duel;
+	RateReport.ChangedAt = FPlatformTime::Seconds();
+	RateReportMessage = Message;
+	RateReportGame = Game;
+	RateReportTries = 0;
+	SendRateReport();
+}
+
+void UChaosImpactSessionSubsystem::SendRateReport()
+{
+	if (!RateReportMessage.IsValid())
+	{
+		return;
+	}
+	++RateReportTries;
+	const FString Game = RateReportGame;
+	ChaosImpactRelay::Request(RateReportMessage.ToSharedRef(), [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Game](
 		TSharedPtr<FJsonObject> Reply, int32)
 	{
 		UChaosImpactSessionSubsystem* Self = WeakThis.Get();
-		if (Self && Reply.IsValid() && Reply->GetBoolField(TEXT("ok")))
+		if (!Self || Self->RateReportGame != Game)
+		{
+			return;
+		}
+		const bool bOk = Reply.IsValid() && Reply->GetBoolField(TEXT("ok"));
+		if (bOk)
 		{
 			ReadRecords(Reply, Self->Records);
 		}
+		FChaosImpactRateReport& Report = Self->RateReport;
+		const TSharedPtr<FJsonObject>* Rating = nullptr;
+		if (bOk && !Reply->TryGetObjectField(TEXT("rating"), Rating))
+		{
+			// An older relay keeps the records only: nothing to show.
+			Report.State = EChaosImpactRankReportState::None;
+			return;
+		}
+		const FString Step = Rating ? (*Rating)->GetStringField(TEXT("state")) : FString();
+		if (Step == TEXT("done"))
+		{
+			Report.State = EChaosImpactRankReportState::Done;
+			Report.bMeasured = (*Rating)->GetBoolField(TEXT("measured"));
+			Report.bJustMeasured = (*Rating)->GetBoolField(TEXT("just_measured"));
+			Report.MeasuringLeft = static_cast<int32>((*Rating)->GetNumberField(TEXT("measuring_left")));
+			Report.Before = static_cast<int32>((*Rating)->GetNumberField(TEXT("before")));
+			Report.After = static_cast<int32>((*Rating)->GetNumberField(TEXT("after")));
+			Report.Delta = static_cast<int32>((*Rating)->GetNumberField(TEXT("delta")));
+			Report.bFloor = (*Rating)->GetBoolField(TEXT("floor"));
+			Report.ChangedAt = FPlatformTime::Seconds();
+			UE_LOG(LogChaosImpact, Log, TEXT("Rating (%s) %d -> %d%s"), Report.bDuel ? TEXT("1v1") : TEXT("8 players"), Report.Before, Report.After,
+				Report.bMeasured ? TEXT("") : TEXT(" (measuring)"));
+			return;
+		}
+		if (Step == TEXT("void"))
+		{
+			Report.State = EChaosImpactRankReportState::Void;
+			Report.ChangedAt = FPlatformTime::Seconds();
+			return;
+		}
+		if (Step == TEXT("pending") && Report.State != EChaosImpactRankReportState::Pending)
+		{
+			Report.State = EChaosImpactRankReportState::Pending;
+			Report.ChangedAt = FPlatformTime::Seconds();
+		}
+		if (Self->RateReportTries >= (Step.IsEmpty() ? 6 : RankReportMaxTries))
+		{
+			Report.State = EChaosImpactRankReportState::Failed;
+			Report.ChangedAt = FPlatformTime::Seconds();
+			return;
+		}
+		Self->RateReportTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(Self, [Self, Game](float)
+		{
+			Self->RateReportTicker.Reset();
+			if (Self->RateReportGame == Game)
+			{
+				Self->SendRateReport();
+			}
+			return false;
+		}), RankReportRetrySeconds);
 	});
 }
 

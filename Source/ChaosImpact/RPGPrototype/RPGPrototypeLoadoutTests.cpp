@@ -42,7 +42,10 @@ public:
             Test->TestTrue(TEXT("Maguro is in the ruins, not colony"),Boss->GetActorLocation().X>12500 && !World->IsInColony(Boss->GetActorLocation()));
             Test->TestEqual(TEXT("Maguro starts at level 10"),Boss->GetRPGLevel(),10);
             Test->TestFalse(TEXT("Maguro does not engage from colony"),Boss->IsBossActive());
+#if WITH_EDITOR
+            // (Actor folders exist in the editor only.)
             for(TActorIterator<APointLight> It(W);It;++It) { if(It->GetFolderPath().ToString()==TEXT("RPGAdventure/Lighting")) { Test->TestTrue(TEXT("Decorative lights no longer overexpose colony"),It->GetLightComponent()->Intensity<=45.1f); } }
+#endif
             bool Bloom=false; for(TActorIterator<APostProcessVolume> It(W);It;++It) { if(It->bUnbound && It->Settings.bOverride_BloomIntensity && It->Settings.BloomIntensity<=.051f) { Bloom=true; } }
             Test->TestTrue(TEXT("Adventure has restrained bloom"),Bloom);
             for(int32 S=0;S<4;++S) { Test->TestFalse(TEXT("No free starter gear"),P->GetGear(S).IsValid()); }

@@ -141,6 +141,20 @@ public:
 	float GetGateProgress() const;
 	void StartGatePattern(int32 Pattern);
 
+	/**
+	 * The moving walkways (動く歩道): one along the outer edge of each overpass, all four turning the same way round the
+	 * junction. Whoever stands on one is carried along it (quicker with it, slower against it); chevrons flow along the
+	 * belt the way it goes. Each machine carries the characters it moves (its own players, and the host its CPUs), so it
+	 * is the same online.
+	 */
+	static constexpr float WalkwayX = 3260.0f;
+	static constexpr float WalkwayHalfWidth = 115.0f;
+	static constexpr float WalkwayHalfLength = 1000.0f;
+	static constexpr float WalkwaySpeed = 380.0f;
+	static constexpr int32 WalkwayChevrons = 10;
+	/** The walkway under a point on the floor (world): its push (cm/s, world) when it is on one. */
+	bool GetWalkwayPush(const FVector& FootLocation, FVector& OutVelocity) const;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -191,6 +205,11 @@ private:
 
 	void TickGatesServer(double Now);
 	void UpdateGatesLook(float DeltaSeconds);
+	void BuildWalkway(int32 Quarter);
+	/** Carries the characters this machine moves along the walkways. */
+	void TickWalkways(float DeltaSeconds);
+	/** The chevrons flowing along the belts (on the server's clock, the same on every machine). */
+	void UpdateWalkwaysLook();
 	bool IsMatchOn() const;
 	double GetServerNow() const;
 
@@ -230,6 +249,10 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> GateWarnLooks;
+
+	/** Each walkway's chevrons (WalkwayChevrons per walkway, walkway by walkway). */
+	UPROPERTY(VisibleAnywhere, Category="Components")
+	TArray<TObjectPtr<USceneComponent>> WalkwayChevronRoots;
 
 	enum ECity : uint8
 	{
@@ -272,6 +295,8 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> FieldAmberMaterial;
 
+	/** The warning whose effects have been started (its start time). */
+	float GateWarnFxStartedAt = -1.0f;
 	double NextGateAt = -1.0;
 	bool bGateLocked = false;
 	int32 LastGatePattern = -1;

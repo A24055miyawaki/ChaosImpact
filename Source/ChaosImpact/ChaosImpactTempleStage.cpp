@@ -690,6 +690,10 @@ void AChaosImpactTempleStage::MulticastPillarStrike_Implementation(const int32 S
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, At + FVector(0.0f, 0.0f, 60.0f), FRotator::ZeroRotator, FVector(2.6f));
 	}
+	// Where it lands: the stone dust thrown up, and two rings of light spreading over the floor from the seal.
+	PlayStageEffect(ChaosImpactBallTypes::Effects::DirtBurstMedium, At + FVector(0.0f, 0.0f, 10.0f), FVector(1.5f), 0.0f);
+	PlayFloorRing(At, FLinearColor(0.55f, 1.0f, 0.95f), SealRadius * 0.9f, SealRadius * 3.0f, 0.7f, 14.0f, 14.0f);
+	PlayFloorRing(At, FLinearColor(1.0f, 0.9f, 0.6f), SealRadius * 0.6f, SealRadius * 2.0f, 1.0f, 8.0f, 9.0f);
 }
 
 void AChaosImpactTempleStage::TickPillarServer(const double Now)
@@ -762,6 +766,26 @@ void AChaosImpactTempleStage::TickPillarServer(const double Now)
 void AChaosImpactTempleStage::UpdatePillarLook(const float DeltaSeconds)
 {
 	const float Progress = GetPillarProgress();
+	// The warning: light gathering on the seal (motes rising, a ring of light closing in on it, a second faster one near
+	// the end), every machine from the same replicated start.
+	if (PillarSeal >= 0 && Progress < 1.0f)
+	{
+		const FVector At = GetActorTransform().TransformPosition(GetSealOffset(PillarSeal));
+		const float Left = PillarWarnSeconds * (1.0f - Progress);
+		if (WarnFxStartedAt != PillarStartedAt)
+		{
+			WarnFxStartedAt = PillarStartedAt;
+			bWarnFxLate = false;
+			const FLinearColor Mote(1.0f, 0.85f, 0.45f);
+			PlayStageEffect(ChaosImpactBallTypes::Effects::WarpAura, At + FVector(0.0f, 0.0f, 12.0f), FVector(2.6f), Left, &Mote);
+			PlayFloorRing(At, FLinearColor(1.0f, 0.42f, 0.22f), SealRadius * 2.4f, SealRadius * 1.02f, Left, 10.0f, 7.0f);
+		}
+		if (!bWarnFxLate && Progress >= 0.6f)
+		{
+			bWarnFxLate = true;
+			PlayFloorRing(At, FLinearColor(1.0f, 0.75f, 0.4f), SealRadius * 1.8f, SealRadius * 1.02f, Left, 7.0f, 9.0f);
+		}
+	}
 	StrikeFlash = FMath::Max(0.0f, StrikeFlash - DeltaSeconds * 2.5f);
 	for (int32 Seal = 0; Seal < SealDiscs.Num(); ++Seal)
 	{
@@ -798,7 +822,8 @@ void AChaosImpactTempleStage::UpdatePillarLook(const float DeltaSeconds)
 				Look->SetScalarParameterValue(TEXT("Progress"), bStrike ? 1.0f : Warn);
 				Look->SetScalarParameterValue(TEXT("Flash"), bStrike ? 1.0f - StrikeT : 0.12f * Blink * Warn);
 				Look->SetScalarParameterValue(TEXT("Opacity"), bStrike ? 1.0f - StrikeT : FMath::Clamp(Warn * 8.0f, 0.0f, 1.0f));
-				Look->SetScalarParameterValue(TEXT("Intensity"), 1.5f + 0.4f * Blink * Warn);
+				// (Strong enough to read on the sandstone from the far side of the plateau.)
+				Look->SetScalarParameterValue(TEXT("Intensity"), 2.6f + 1.0f * Blink * Warn);
 			}
 		}
 		if (UStaticMeshComponent* Beam = PillarBeams.IsValidIndex(Seal) ? PillarBeams[Seal].Get() : nullptr)

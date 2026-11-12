@@ -69,6 +69,8 @@ enum class EChaosImpactScreen : uint8
 	TourneySeat,
 	/** The dojo's lesson list (UChaosImpactDojoMenu). */
 	DojoSelect,
+	/** Online: the gallery of custom colours players post (UChaosImpactGallery). */
+	Gallery,
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

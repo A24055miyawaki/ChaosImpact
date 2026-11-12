@@ -77,6 +77,26 @@ void UChaosImpactFxPreloadSubsystem::OnLoaded()
 
 bool UChaosImpactFxPreloadSubsystem::Poll(const float DeltaSeconds)
 {
+	// Never waited on for good (the start-up loading screen waits on this): what has come by then is kept, the rest
+	// loads when first used.
+	if ((Phase == EPhase::Loading || Phase == EPhase::Compiling) && FPlatformTime::Seconds() - StartedAt > 60.0)
+	{
+		UE_LOG(LogChaosImpact, Warning, TEXT("Ball FX preload still not done after a minute (%s); going on without waiting"),
+			Phase == EPhase::Loading ? TEXT("loading") : TEXT("compiling"));
+		if (Phase == EPhase::Loading && Handle.IsValid())
+		{
+			TArray<UObject*> Loaded;
+			Handle->GetLoadedAssets(Loaded);
+			for (UObject* Asset : Loaded)
+			{
+				if (Asset) { PreloadedAssets.AddUnique(Asset); }
+			}
+			Handle->CancelHandle();
+		}
+		StillCompiling.Reset();
+		Complete();
+		return false;
+	}
 	if (Phase == EPhase::Compiling)
 	{
 #if WITH_EDITOR

@@ -358,8 +358,10 @@ private:
 	double WorldLoadedAt = 0.0;
 	/** Loading has really finished: it goes once it has been up for MinimumShowSeconds (looking as if still loading). */
 	bool bReady = false;
-	/** Up at least this long, so its little game can be played even when the load is quick. */
-	static constexpr double MinimumShowSeconds = 4.0;
+	/** The start-up screen's loading came to the end at (0: not yet). */
+	double StartupLoadedAt = 0.0;
+	/** Up at least this long (a quick load does not flash it on and off); no longer held for its little game. */
+	static constexpr double MinimumShowSeconds = 1.0;
 	EChaosImpactLoadingGame LastGame = EChaosImpactLoadingGame::Count;
 	/** The game the arcade was last left on (it opens there again). */
 	EChaosImpactLoadingGame LastArcadeGame = EChaosImpactLoadingGame::Pop;

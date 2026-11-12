@@ -146,6 +146,8 @@ protected:
 	/** -1: idle; 0: North+South vents (0 & 2); 1: East+West vents (1 & 3). */
 	UPROPERTY(ReplicatedUsing=OnRep_VentState)
 	int32 ActiveVentPair = -1;
+	/** The warning whose effects have been started (its start time). */
+	float VentWarnFxStartedAt = -1.0f;
 
 	/** Server world time when the current vent warning began. */
 	UPROPERTY(ReplicatedUsing=OnRep_VentState)

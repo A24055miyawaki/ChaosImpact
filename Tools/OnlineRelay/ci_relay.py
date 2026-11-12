@@ -40,6 +40,9 @@ do); where that does not work, every packet passes through this relay, so no one
                                                       delta, ...rank_info} | {ok, state:"void"}
   Every request carries "rid"; the reply echoes it.
 
+    みんなのカラー (custom colours players post; ci_gallery.py, kept beside the ranks in gallery/):
+    gallery_list, gallery_post, gallery_piece, gallery_paint, gallery_save, gallery_delete   (see ci_gallery.py)
+
   Relay (one UDP port per room, from the pool):
     host -> relay  b"CIH1" + key                  register / keep alive (every 2 s); relay answers b"CIHK"
     host -> relay  b"CIHD" + client id (4 bytes) + packet   -> the packet to that client
@@ -67,6 +70,8 @@ import secrets
 import socket
 import struct
 import time
+
+from ci_gallery import Gallery
 
 ROOM_TIMEOUT = 20.0       # no update from the host for this long: the room is gone
 CLIENT_TIMEOUT = 60.0     # a client silent this long is dropped
@@ -106,6 +111,14 @@ RANK_PLACEMENT_GAMES = 10
 RANK_WINDOWS = ((15.0, 150), (45.0, 300))   # (seconds waited, MMR difference allowed); after the last: any
 REPORT_WAIT = 60.0        # one side's report stands alone this long after it came (the other side left)
 PAIR_DAY = 24 * 3600.0    # the same two players: half the change from their 6th game in a day, none from the 11th
+# The ランダムマッチ ratings (1v1 and 8 players apart): shown once the measuring games are played (計測中 until then).
+RATE_START = 1500
+RATE_FLOOR = 500
+RATE_MEASURING = 5        # games played before the rating shows
+DUEL_K = (40.0, 20.0)     # (while measuring, after)
+FFA_K = (48.0, 32.0)
+RATE_HISTORY = 20         # the last ratings kept (the 戦績 graph)
+FFA_REPORT_WAIT = 30.0    # an 8-player game is settled this long after its first report (who never said is last)
 
 log = logging.getLogger("ci_relay")
 
@@ -387,6 +400,85 @@ class RankBook:
             entry["name"] = str(name)[:16]
         return entry
 
+    # ---- the ランダムマッチ ratings (1v1 "duel", 8 players "ffa")
+    def rating(self, pid, mode):
+        entry = self.player(pid)
+        rating = entry.setdefault(mode + "_rating", {})
+        rating.setdefault("rate", float(RATE_START))
+        rating.setdefault("games", 0)
+        rating.setdefault("best", float(RATE_START))
+        rating.setdefault("history", [])
+        rating.setdefault("deltas", [])
+        return rating
+
+    def describe_rating(self, pid, mode):
+        rating = self.rating(pid, mode)
+        measured = rating["games"] >= RATE_MEASURING
+        return {"rate": int(round(rating["rate"])) if measured else 0, "measured": measured, "rated_games": rating["games"],
+                "measuring_left": max(0, RATE_MEASURING - rating["games"]),
+                "best": int(round(rating["best"])) if measured else 0,
+                "history": [int(v) for v in rating["history"][-RATE_HISTORY:]] if measured else [],
+                "deltas": [int(v) for v in rating["deltas"][-10:]] if measured else []}
+
+    @staticmethod
+    def expected(rate, other):
+        return 1.0 / (1.0 + 10 ** ((other - rate) / 400.0))
+
+    def apply_rating(self, pid, mode, delta):
+        rating = self.rating(pid, mode)
+        before = rating["rate"]
+        after = max(float(RATE_FLOOR), before + delta)
+        rating["rate"] = after
+        rating["games"] += 1
+        if rating["games"] == RATE_MEASURING:
+            rating["best"] = after
+        elif rating["games"] > RATE_MEASURING:
+            rating["best"] = max(rating["best"], after)
+        rating["history"] = (rating["history"] + [int(round(after))])[-RATE_HISTORY:]
+        rating["deltas"] = (rating["deltas"] + [int(round(after)) - int(round(before))])[-10:]
+        return before, after
+
+    def rated_change(self, pid, mode, before, after):
+        rating = self.rating(pid, mode)
+        measured = rating["games"] >= RATE_MEASURING
+        delta = int(round(after)) - int(round(before))
+        return {"state": "done", "measured": measured, "measuring_left": max(0, RATE_MEASURING - rating["games"]),
+                "just_measured": rating["games"] == RATE_MEASURING,
+                "before": int(round(before)), "after": int(round(after)), "delta": delta,
+                "floor": after <= RATE_FLOOR + 0.001 and delta <= 0}
+
+    def settle_duel(self, a, b, score_a):
+        """A rated 1v1: score_a 1 a won, 0 b won, 0.5 drawn. Returns {pid: (before, after)}."""
+        ra, rb = self.rating(a, "duel"), self.rating(b, "duel")
+        expected_a = self.expected(ra["rate"], rb["rate"])
+        ka = DUEL_K[0] if ra["games"] < RATE_MEASURING else DUEL_K[1]
+        kb = DUEL_K[0] if rb["games"] < RATE_MEASURING else DUEL_K[1]
+        delta_a, delta_b = ka * (score_a - expected_a), kb * ((1.0 - score_a) - (1.0 - expected_a))
+        changes = {a: self.apply_rating(a, "duel", delta_a), b: self.apply_rating(b, "duel", delta_b)}
+        self.save()
+        return changes
+
+    def settle_ffa(self, places):
+        """A rated 8-player game: {pid: place} (people only). Each pair is a 1v1 (the better place wins), the sum shared
+        out over the others. Returns {pid: (before, after)}."""
+        pids = list(places)
+        if len(pids) < 2:
+            return {}
+        rates = {pid: self.rating(pid, "ffa")["rate"] for pid in pids}
+        deltas = {}
+        for pid in pids:
+            total = 0.0
+            for other in pids:
+                if other == pid:
+                    continue
+                score = 1.0 if places[pid] < places[other] else 0.5 if places[pid] == places[other] else 0.0
+                total += score - self.expected(rates[pid], rates[other])
+            k = FFA_K[0] if self.rating(pid, "ffa")["games"] < RATE_MEASURING else FFA_K[1]
+            deltas[pid] = k * total / (len(pids) - 1)
+        changes = {pid: self.apply_rating(pid, "ffa", delta) for pid, delta in deltas.items()}
+        self.save()
+        return changes
+
     def describe(self, pid):
         entry = self.data["players"].get(pid) or self.player(pid)
         return {"mmr": int(round(entry["mmr"])), "games": entry["games"], "wins": entry["wins"],
@@ -404,27 +496,33 @@ class RankBook:
         for key in ("wins", "losses", "draws"):
             duel.setdefault(key, 0)
         duel.setdefault("recent", [])
+        duel.setdefault("streak", 0)
+        duel.setdefault("best_streak", 0)
         ffa = entry.setdefault("ffa", {})
-        for key in ("games", "wins", "top3", "places"):
+        for key in ("games", "wins", "top3", "places", "streak", "best_streak"):
             ffa.setdefault(key, 0)
         ffa.setdefault("recent", [])
         return duel, ffa
 
     def describe_duel(self, pid):
         duel, _ = self.records(pid)
-        return {"wins": duel["wins"], "losses": duel["losses"], "draws": duel["draws"], "recent": duel["recent"][-10:]}
+        return dict({"wins": duel["wins"], "losses": duel["losses"], "draws": duel["draws"], "recent": duel["recent"][-10:],
+                     "streak": duel["streak"], "best_streak": duel["best_streak"]}, **self.describe_rating(pid, "duel"))
 
     def describe_records(self, pid):
         _, ffa = self.records(pid)
         average = round(ffa["places"] / ffa["games"], 1) if ffa["games"] else 0
         return {"name": self.player(pid)["name"], "duel": self.describe_duel(pid),
-                "ffa": {"games": ffa["games"], "wins": ffa["wins"], "top3": ffa["top3"], "average": average,
-                        "recent": ffa["recent"][-10:]}}
+                "ffa": dict({"games": ffa["games"], "wins": ffa["wins"], "top3": ffa["top3"], "average": average,
+                             "recent": ffa["recent"][-10:], "streak": ffa["streak"], "best_streak": ffa["best_streak"]},
+                            **self.describe_rating(pid, "ffa"))}
 
     def add_duel(self, pid, result):
         duel, _ = self.records(pid)
         duel[{"win": "wins", "lose": "losses", "draw": "draws"}[result]] += 1
         duel["recent"] = (duel["recent"] + [{"win": "W", "lose": "L", "draw": "D"}[result]])[-10:]
+        duel["streak"] = duel["streak"] + 1 if result == "win" else 0
+        duel["best_streak"] = max(duel["best_streak"], duel["streak"])
         self.save()
 
     def add_ffa(self, pid, place, of):
@@ -434,6 +532,8 @@ class RankBook:
         ffa["top3"] += 1 if place <= 3 else 0
         ffa["places"] += place
         ffa["recent"] = (ffa["recent"] + [[place, of]])[-10:]
+        ffa["streak"] = ffa["streak"] + 1 if place == 1 else 0
+        ffa["best_streak"] = max(ffa["best_streak"], ffa["streak"])
         self.save()
 
     def settle(self, a, b, score_a, match_id):
@@ -503,6 +603,7 @@ class Match:
         self.seen = set()                 # duel: the pids that have been shown the opponent
         self.deadline = None              # duel: when the answers are due (set once both have seen it)
         self.recorded = set()             # (pid, game) already in the records
+        self.games = {}                   # ランダムマッチ game -> {"reports": {pid: (value, at[, of])}, "changes", "outcome"}
 
     def host(self):
         return self.tickets[0]
@@ -517,6 +618,7 @@ class Relay:
         self.matches = {}
         self.gather_since = {}            # version -> when two random players first waited together
         self.ranks = RankBook(data_path)
+        self.gallery = Gallery(os.path.join(os.path.dirname(os.path.abspath(data_path)), "gallery") if data_path else None)
         self.matchmaking = False
         self.ws_peers = {}
         self.mux_transport = None
@@ -528,6 +630,8 @@ class Relay:
             return {"ok": True, "protocol": 1, "transports": ["udp", "wss"] + (["mux"] if self.mux_transport else [])}
         if op == "create":
             return await self.create(request, addr)
+        if isinstance(op, str) and op.startswith("gallery_"):
+            return self.gallery.handle(request)
         if op == "search":
             password = str(request.get("password", ""))
             version = str(request.get("ver", ""))
@@ -755,10 +859,16 @@ class Relay:
                 del self.matches[match.id]
             elif match.room.id in self.rooms and match.room.host_addr is None and now - match.created > HOST_WAIT:
                 self.remove(match.room, "the matched host never came")
-            elif match.mode == "rank" and match.outcome is None and match.reports:
-                first = min(at for _, at in match.reports.values())
-                if now - first > REPORT_WAIT:
-                    self.settle(match)
+            else:
+                for game, rated in list(match.games.items()):
+                    if rated["outcome"] is None and rated["reports"]:
+                        first = min(value[1] for value in rated["reports"].values())
+                        if now - first > (REPORT_WAIT if match.mode == "duel" else FFA_REPORT_WAIT):
+                            self.settle_game(match, game)
+                if match.mode == "rank" and match.outcome is None and match.reports:
+                    first = min(at for _, at in match.reports.values())
+                    if now - first > REPORT_WAIT:
+                        self.settle(match)
 
     async def match_random(self, version, waiting, now):
         while sum(t.players for t in waiting) >= 2:
@@ -778,15 +888,22 @@ class Relay:
         self.gather_since.pop(version, None)
 
     def match_duel(self, waiting, now):
-        """1 v 1 for fun: the two who have waited longest (but not someone who just declined the other)."""
+        """1 v 1: the one who has waited longest with the nearest rating (any rating once they have waited a little;
+        never someone who just declined the other)."""
         taken = set()
         for ticket in waiting:
             if ticket.id in taken:
                 continue
-            for other in waiting:
-                if other is ticket or other.id in taken or other.pid == ticket.pid:
+            mine = self.ranks.rating(ticket.pid, "duel")["rate"]
+            window = 150 if now - ticket.joined < 6.0 else 350 if now - ticket.joined < 12.0 else 1 << 30
+            candidates = sorted((o for o in waiting if o is not ticket), key=lambda o: abs(self.ranks.rating(o.pid, "duel")["rate"] - mine))
+            for other in candidates:
+                if other.id in taken or other.pid == ticket.pid:
                     continue
                 if ticket.avoid.get(other.pid, 0) > now or other.avoid.get(ticket.pid, 0) > now:
+                    continue
+                if abs(self.ranks.rating(other.pid, "duel")["rate"] - mine) > max(window, 150 if now - other.joined < 6.0 else 350
+                                                                                 if now - other.joined < 12.0 else 1 << 30):
                     continue
                 taken.update((ticket.id, other.id))
                 # The host is the one with the quicker way to the relay.
@@ -859,9 +976,55 @@ class Relay:
                     self.ranks.add_ffa(pid, place, of)
                 match.recorded.add(key)
                 log.info("match %s: %s recorded game %d", match.id, self.ranks.player(pid)["name"], game)
+                rated = match.games.setdefault(game, {"reports": {}, "changes": None, "outcome": None})
+                if match.mode == "duel":
+                    rated["reports"][pid] = (request.get("result"), time.monotonic())
+                    if len(rated["reports"]) == 2:
+                        self.settle_game(match, game)
+                else:
+                    rated["reports"][pid] = (place, time.monotonic(), of)
+                    if all(t.pid in rated["reports"] for t in match.tickets):
+                        self.settle_game(match, game)
         except (TypeError, ValueError):
             return {"ok": False, "error": "bad request"}
-        return dict(ok=True, **self.ranks.describe_records(pid))
+        return dict(ok=True, rating=self.game_rating(match, game, pid), **self.ranks.describe_records(pid))
+
+    def game_rating(self, match, game, pid):
+        """Where this player's rating stands for that game: pending, done (before / after) or void (not counted)."""
+        rated = match.games.get(game)
+        if rated is None or rated["outcome"] is None:
+            return {"state": "pending"}
+        if rated["outcome"] == "void" or pid not in (rated["changes"] or {}):
+            return {"state": "void"}
+        before, after = rated["changes"][pid]
+        return self.ranks.rated_change(pid, "duel" if match.mode == "duel" else "ffa", before, after)
+
+    def settle_game(self, match, game):
+        rated = match.games.get(game)
+        if rated is None or rated["outcome"] is not None:
+            return
+        reports = rated["reports"]
+        if match.mode == "duel":
+            a, b = match.tickets[0].pid, match.tickets[1].pid
+            ra, rb = (reports.get(a) or (None,))[0], (reports.get(b) or (None,))[0]
+            flip = {"win": "lose", "lose": "win", "draw": "draw"}
+            if ra and rb and flip.get(ra) != rb:
+                rated["outcome"] = "void"
+                log.warning("match %s game %d: the 1v1 reports disagree (%s / %s): not rated", match.id, game, ra, rb)
+                return
+            said = ra or flip.get(rb)
+            if said not in flip:
+                rated["outcome"] = "void"
+                return
+            rated["changes"] = self.ranks.settle_duel(a, b, 1.0 if said == "win" else 0.0 if said == "lose" else 0.5)
+        else:
+            # Who never said (left, or gone) is last.
+            of = max([value[2] for value in reports.values()] + [len(match.tickets)])
+            places = {t.pid: (reports[t.pid][0] if t.pid in reports else of) for t in match.tickets}
+            rated["changes"] = self.ranks.settle_ffa(places)
+        rated["outcome"] = "done"
+        log.info("match %s game %d rated: %s", match.id, game, ", ".join(
+            f"{self.ranks.player(pid)['name']} {before:.0f}->{after:.0f}" for pid, (before, after) in (rated["changes"] or {}).items()))
 
     # ---- rank results
     def rank_report(self, request):

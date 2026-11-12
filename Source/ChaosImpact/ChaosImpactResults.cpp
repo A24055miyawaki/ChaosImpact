@@ -12,6 +12,11 @@
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPuppetComponent.h"
+#include "ChaosImpactRank.h"
+#include "ChaosImpactSessionSubsystem.h"
+#include "ChaosImpactSfx.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -996,6 +1001,36 @@ void UChaosImpactResultsView::Start(const AChaosImpactGameState* Match, APlayerC
 	bOnline = Match->bOnlineRoom;
 	bLeft = false;
 	bRecaptured = false;
+	bRated = Match->bOnlineRoom && (Match->Matchmade == EChaosImpactMatchmade::Duel || Match->Matchmade == EChaosImpactMatchmade::Random);
+	RatedOwner = Owner;
+	RatingShownAt = 0.0;
+	bRatingSoundPlayed = false;
+	RatingDigitTicks = 0;
+#if !UE_BUILD_SHIPPING
+	// Development: -CIDevRatedResults=duel|ffa|measuring|measured|pending|floor|void shows the rating card on a local match's
+	// results, with that made-up answer coming a moment after the winner lands (screenshots of each).
+	if (FString Kind; FParse::Value(FCommandLine::Get(), TEXT("CIDevRatedResults="), Kind))
+	{
+		bRated = true;
+		if (UChaosImpactSessionSubsystem* Sessions = Owner ? UChaosImpactSessionSubsystem::Get(Owner) : nullptr)
+		{
+			FChaosImpactRateReport Fake;
+			Fake.State = Kind == TEXT("pending") ? EChaosImpactRankReportState::Pending
+				: Kind == TEXT("void") ? EChaosImpactRankReportState::Void : EChaosImpactRankReportState::Done;
+			Fake.bDuel = Kind != TEXT("ffa");
+			Fake.bMeasured = Kind != TEXT("measuring");
+			Fake.bJustMeasured = Kind == TEXT("measured");
+			Fake.MeasuringLeft = Kind == TEXT("measuring") ? 2 : 0;
+			Fake.Before = Kind == TEXT("measured") ? 1548 : Kind == TEXT("floor") ? 503 : Kind == TEXT("ffa") ? 1604 : 1514;
+			Fake.Delta = Kind == TEXT("measured") ? 16 : Kind == TEXT("floor") ? -3 : Kind == TEXT("ffa") ? -12 : Kind == TEXT("measuring") ? 21 : 18;
+			Fake.After = Fake.Before + Fake.Delta;
+			Fake.bFloor = Kind == TEXT("floor");
+			// (Its answer comes in a moment after the winner has landed.)
+			Fake.ChangedAt = StartedAtReal + AChaosImpactPodiumStage::LandAt + 2.2;
+			Sessions->SetRateReportForTests(Fake);
+		}
+	}
+#endif
 	Page = 0;
 	bActive = true;
 	// The show's clock runs from FINISH's end (1.5 s into the results), on this machine's own time.
@@ -1054,8 +1089,111 @@ void UChaosImpactResultsView::ShowStats()
 	}
 }
 
+namespace
+{
+	/** The rating card's roll: when the digits start turning, and when each (from the left) stops. */
+	float RatingRollStart(const bool bReveal)
+	{
+		return bReveal ? 0.7f : 1.0f;
+	}
+
+	float RatingDigitStop(const int32 Digit, const bool bReveal)
+	{
+		return RatingRollStart(bReveal) + (bReveal ? 0.9f : 0.5f) + 0.22f * Digit;
+	}
+
+	int32 RatingDigits(const int32 From, const int32 To)
+	{
+		return FMath::Max(FString::FromInt(FMath::Max(From, 0)).Len(), FString::FromInt(FMath::Max(To, 0)).Len());
+	}
+
+	/**
+	 * A number turning like a slot machine from From to To: every digit spins (the right ones more), each stopping in turn
+	 * from the left on its new digit, the next one rolling up from below. Top left at (X, Y) in Space.
+	 */
+	void PaintRollingNumber(const FGeometry& Space, FSlateWindowElementList& Elements, const int32 Layer, const float X, const float Y,
+		const float Size, const int32 From, const int32 To, const float Anim, const bool bReveal, const FLinearColor Color, const float Alpha)
+	{
+		namespace RP = ResultsPaint;
+		const int32 Count = RatingDigits(From, To);
+		const float Advance = RP::HudMeasure(TEXT("8"), Size, TEXT("BlackItalic")) * 1.04f;
+		const float LineH = Size * 1.18f;
+		const FString FromText = FString::FromInt(FMath::Max(From, 0)).LeftPad(Count).Replace(TEXT(" "), TEXT("0"));
+		const FString ToText = FString::FromInt(FMath::Max(To, 0)).LeftPad(Count).Replace(TEXT(" "), TEXT("0"));
+		const FString ToShown = FString::FromInt(FMath::Max(To, 0));
+		const FGeometry Band = Space.MakeChild(FVector2f(Advance * Count + Size * 0.5f, LineH), FSlateLayoutTransform(FVector2f(X - Size * 0.12f, Y)));
+		// The reel's window while the digits turn (it goes once they have all stopped), so the cut digits read as a reel.
+		const float Stopped = RatingDigitStop(Count - 1, bReveal);
+		const float Window = Anim < RatingRollStart(bReveal) - 0.2f ? 0.0f
+			: Anim < Stopped ? RP::EaseOut((Anim - RatingRollStart(bReveal) + 0.2f) / 0.2f) : 1.0f - RP::EaseOut((Anim - Stopped) / 0.4f);
+		if (Window > 0.0f)
+		{
+			const RP::FPainter Reel{Band, Elements, Layer, Alpha * Window};
+			RP::RoundedBox(Reel, -4.0f, 0.0f, Advance * Count + Size * 0.5f + 8.0f, LineH, 8.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+			Reel.Box(-4.0f, 0.0f, Advance * Count + Size * 0.5f + 8.0f, 2.0f, RP::WithAlpha(RP::Paper, 0.25f));
+			Reel.Box(-4.0f, LineH - 2.0f, Advance * Count + Size * 0.5f + 8.0f, 2.0f, RP::WithAlpha(RP::Paper, 0.25f));
+		}
+		Elements.PushClip(FSlateClippingZone(Band));
+		const RP::FPainter P{Band, Elements, Layer + 1, Alpha};
+		for (int32 Digit = 0; Digit < Count; ++Digit)
+		{
+			const int32 D0 = FromText[Digit] - TEXT('0');
+			const int32 D1 = ToText[Digit] - TEXT('0');
+			const int32 Turns = (bReveal ? 2 : 1) + Digit;
+			const int32 Total = Turns * 10 + (D1 - D0 + 10) % 10;
+			const float T = FMath::Clamp((Anim - RatingRollStart(bReveal)) / (RatingDigitStop(Digit, bReveal) - RatingRollStart(bReveal)), 0.0f, 1.0f);
+			const float Roll = D0 + Total * RP::EaseOut(T);
+			const int32 Whole = FMath::FloorToInt(Roll);
+			const float Part = Roll - Whole;
+			const int32 Shown = Whole % 10;
+			const float DX = Size * 0.12f + Digit * Advance;
+			// (A leading place the new number does not have stays empty once it has stopped.)
+			const bool bBlank = T >= 1.0f && Digit < Count - ToShown.Len();
+			if (!bBlank)
+			{
+				P.Text(FString::FromInt(Shown), DX, -Part * LineH, Size, Color, RP::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, RP::Ink);
+			}
+			if (Part > 0.001f)
+			{
+				P.Text(FString::FromInt((Shown + 1) % 10), DX, (1.0f - Part) * LineH, Size, Color, RP::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, RP::Ink);
+			}
+		}
+		Elements.PopClip();
+	}
+}
+
 void UChaosImpactResultsView::Tick(APlayerController* Owner, const float DeltaSeconds)
 {
+	if (bActive && bRated && !bRatingSoundPlayed)
+	{
+		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(Owner);
+		const double AnimStart = GetRatingAnimStart();
+		if (Sessions && AnimStart > 0.0)
+		{
+			const FChaosImpactRateReport& Report = Sessions->GetRateReport();
+			const bool bReveal = Report.bJustMeasured;
+			const float Anim = static_cast<float>(FPlatformTime::Seconds() - AnimStart);
+			if (!Report.bMeasured)
+			{
+				if (Anim >= 0.3f)
+				{
+					bRatingSoundPlayed = true;
+					ChaosImpactSfx::Play2D(Owner, EChaosImpactSfx::UiValue);
+				}
+			}
+			else
+			{
+				const int32 Digits = RatingDigits(bReveal ? 0 : Report.Before, Report.After);
+				while (RatingDigitTicks < Digits && Anim >= RatingDigitStop(RatingDigitTicks, bReveal))
+				{
+					++RatingDigitTicks;
+					ChaosImpactSfx::Play2D(Owner, RatingDigitTicks == Digits ? (bReveal ? EChaosImpactSfx::UiReveal : EChaosImpactSfx::UiValue)
+						: EChaosImpactSfx::UiMove);
+				}
+				bRatingSoundPlayed = RatingDigitTicks >= Digits;
+			}
+		}
+	}
 	const UWorld* World = Owner ? Owner->GetWorld() : nullptr;
 	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
 	const bool bResultsNow = Match && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Results;
@@ -1169,6 +1307,10 @@ int32 UChaosImpactResultsView::Paint(const FGeometry& Allotted, FSlateWindowElem
 	if (Page == 1)
 	{
 		Top = PaintStatsPage(Design, Elements, Top + 1);
+	}
+	if (bRated)
+	{
+		Top = PaintRating(Design, Elements, Top + 1);
 	}
 	if (const float Left = GetAutoReturnRemaining(); Left >= 0.f)
 	{
@@ -1311,6 +1453,177 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		}
 	}
 	return Layer + 7;
+}
+
+double UChaosImpactResultsView::GetRatingAnimStart() const
+{
+	const UChaosImpactSessionSubsystem* Sessions = RatedOwner.IsValid() ? UChaosImpactSessionSubsystem::Get(RatedOwner.Get()) : nullptr;
+	if (!Sessions || RatingShownAt <= 0.0)
+	{
+		return 0.0;
+	}
+	const FChaosImpactRateReport& Report = Sessions->GetRateReport();
+	return Report.State == EChaosImpactRankReportState::Done ? FMath::Max(Report.ChangedAt, RatingShownAt) : 0.0;
+}
+
+int32 UChaosImpactResultsView::PaintRating(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
+{
+	namespace RP = ResultsPaint;
+	const UChaosImpactSessionSubsystem* Sessions = RatedOwner.IsValid() ? UChaosImpactSessionSubsystem::Get(RatedOwner.Get()) : nullptr;
+	if (!Sessions)
+	{
+		return Layer;
+	}
+	const FChaosImpactRateReport& Report = Sessions->GetRateReport();
+	if (Report.State == EChaosImpactRankReportState::None)
+	{
+		return Layer;
+	}
+	const double Now = FPlatformTime::Seconds();
+	// Where: the podium page's top left (above the headline) once the winner has landed; the numbers' top, by the graph.
+	const bool bPodium = Page == 0;
+	const double ShowFrom = bPodium ? StartedAtReal + AChaosImpactPodiumStage::LandAt + 0.7 : PageChangedAt + 0.2;
+	if (Now < ShowFrom)
+	{
+		return Layer;
+	}
+	if (RatingShownAt <= 0.0)
+	{
+		RatingShownAt = Now;
+	}
+	constexpr float W = 540.0f;
+	constexpr float H = 150.0f;
+	const float Scale = bPodium ? 1.0f : 0.68f;
+	const float In = RP::EaseOut(static_cast<float>(Now - ShowFrom) / 0.35f);
+	const FVector2f At = bPodium ? FVector2f(96.0f - (1.0f - In) * 60.0f, 64.0f) : FVector2f(960.0f, 28.0f - (1.0f - In) * 20.0f);
+	const FGeometry Space = Design.MakeChild(FVector2f(W, H), FSlateLayoutTransform(Scale, At));
+	const RP::FPainter Back{Space, Elements, Layer, In};
+	const RP::FPainter P{Space, Elements, Layer + 1, In};
+	const RP::FPainter Top{Space, Elements, Layer + 2, In};
+	const FLinearColor Tone = Report.bDuel ? RP::Gold : RP::Fire;
+	const bool bWaiting = Report.State == EChaosImpactRankReportState::Sending || Report.State == EChaosImpactRankReportState::Pending
+		|| (Report.State == EChaosImpactRankReportState::Done && Now < Report.ChangedAt);
+	const bool bLost = Report.State == EChaosImpactRankReportState::Void || Report.State == EChaosImpactRankReportState::Failed;
+	const double AnimStart = bWaiting || bLost ? 0.0 : FMath::Max(Report.ChangedAt, RatingShownAt);
+	const float Anim = AnimStart > 0.0 ? static_cast<float>(Now - AnimStart) : 0.0f;
+	const bool bReveal = !bWaiting && !bLost && Report.bJustMeasured;
+
+	// The card: night with the mode's colour down its left edge (gold around it as the rating is first shown).
+	Back.Box(10.0f, 12.0f, W, H, RP::WithAlpha(FLinearColor::Black, 0.45f));
+	RP::RoundedBox(Back, 0.0f, 0.0f, W, H, 14.0f, FLinearColor(0.012f, 0.016f, 0.034f, 0.92f));
+	RP::RoundedBox(P, 0.0f, 0.0f, 8.0f, H, 4.0f, Tone);
+	if (bReveal)
+	{
+		const float Glow = RP::EaseOut((Anim - 1.6f) / 0.5f) * (0.55f + 0.25f * FMath::Sin(Anim * 3.0f));
+		P.Outline(0.0f, 0.0f, W, H, RP::WithAlpha(RP::Gold, Glow), 3.0f);
+	}
+	else
+	{
+		P.Outline(0.0f, 0.0f, W, H, RP::WithAlpha(RP::Paper, 0.12f), 1.5f);
+	}
+	const FString Label = Report.bDuel ? TEXT("ランダムマッチ 1v1  レート") : TEXT("ランダムマッチ 8人  レート");
+	Top.Text(Label, 30.0f, 12.0f, RP::HudFit(Label, 18.0f, W - 60.0f, TEXT("Bold")), RP::Muted, RP::ETextAlign::Left, TEXT("Bold"));
+
+	// The measuring games as five pips (filled: played).
+	const auto Pips = [&Top](const float X, const float Y, const int32 Played, const float NewIn)
+	{
+		for (int32 Pip = 0; Pip < FChaosImpactRating::MeasuringGames; ++Pip)
+		{
+			const FVector2D C(X + Pip * 30.0f, Y);
+			Top.Ring(C, 10.0f, RP::WithAlpha(RP::Paper, 0.35f), 2.0f, 24);
+			const float Fill = Pip < Played - 1 ? 1.0f : Pip == Played - 1 ? NewIn : 0.0f;
+			if (Fill > 0.0f)
+			{
+				Top.Disc(C, 8.0f * Fill, RP::Ice);
+			}
+		}
+	};
+
+	if (bWaiting)
+	{
+		const int32 Dots = 1 + static_cast<int32>(Now * 2.5) % 3;
+		Top.Text(FString(TEXT("集計中")) + FString::ChrN(Dots, TEXT('・')), 30.0f, 46.0f, 46.0f, RP::Paper, RP::ETextAlign::Left, TEXT("BlackItalic"));
+		Top.Text(TEXT("みんなの結果を待っています"), 30.0f, 108.0f, 18.0f, RP::Muted, RP::ETextAlign::Left, TEXT("Bold"));
+		return Layer + 3;
+	}
+	if (bLost)
+	{
+		Top.Text(TEXT("この試合はレートに入りません"), 30.0f, 58.0f, RP::HudFit(TEXT("この試合はレートに入りません"), 30.0f, W - 60.0f), RP::Paper,
+			RP::ETextAlign::Left, TEXT("Black"));
+		Top.Text(Report.State == EChaosImpactRankReportState::Void ? TEXT("おたがいの結果が合いませんでした") : TEXT("中継サーバーから答えがありませんでした"),
+			30.0f, 104.0f, 17.0f, RP::Muted, RP::ETextAlign::Left, TEXT("Bold"));
+		return Layer + 3;
+	}
+	if (!Report.bMeasured)
+	{
+		// Still measuring: the pips, the newest one filling.
+		const int32 Played = FChaosImpactRating::MeasuringGames - Report.MeasuringLeft;
+		Top.Text(TEXT("計測中…"), 30.0f, 42.0f, 46.0f, RP::Paper, RP::ETextAlign::Left, TEXT("BlackItalic"));
+		Pips(W - 160.0f, 70.0f, Played, RP::EaseOut((Anim - 0.2f) / 0.4f));
+		const FString Left = FString::Printf(TEXT("あと%d戦でレートが決まります"), Report.MeasuringLeft);
+		Top.Text(Left, 30.0f, 108.0f, RP::HudFit(Left, 18.0f, W - 60.0f, TEXT("Bold")), RP::Muted, RP::ETextAlign::Left, TEXT("Bold"));
+		return Layer + 3;
+	}
+	if (bReveal)
+	{
+		// The measuring is over: the five pips fill, then every digit spins and they stop one by one on the rating (レート決定).
+		Pips(W - 160.0f, 28.0f, FChaosImpactRating::MeasuringGames, RP::EaseOut((Anim - 0.1f) / 0.4f));
+		const float Stopped = RatingDigitStop(RatingDigits(0, Report.After) - 1, true);
+		const bool bDecided = Anim >= Stopped;
+		const FString Head = bDecided ? FString(TEXT("レート決定！")) : FString(TEXT("計測完了"));
+		Top.Text(Head, W - 30.0f, 108.0f, 22.0f, bDecided ? RP::Gold : RP::Paper, RP::ETextAlign::Right, TEXT("Black"));
+		const float Land = RP::EaseOut((Anim - Stopped) / 0.3f);
+		if (bDecided)
+		{
+			// A soft gold line under it as it lands.
+			Top.Box(30.0f, 114.0f, 230.0f * Land, 3.0f, RP::WithAlpha(RP::Gold, 0.9f));
+		}
+		PaintRollingNumber(Space, Elements, Layer + 2, 30.0f, 42.0f, 56.0f, 0, Report.After, Anim, true,
+			bDecided ? RP::Gold : RP::WithAlpha(RP::Paper, 0.9f), In);
+		return Layer + 4;
+	}
+
+	// The rating as it was; the change comes up beside it and is drawn into it, then the digits turn to the new rating.
+	const FLinearColor DeltaColor = Report.Delta > 0 ? RP::Ice : Report.Delta < 0 ? RP::Fire : RP::Muted;
+	const FString DeltaText = Report.Delta > 0 ? FString::Printf(TEXT("+%d"), Report.Delta)
+		: Report.Delta < 0 ? FString::FromInt(Report.Delta) : FString(TEXT("±0"));
+	const float Stopped = RatingDigitStop(RatingDigits(Report.Before, Report.After) - 1, false);
+	const bool bSettled = Anim >= Stopped;
+	PaintRollingNumber(Space, Elements, Layer + 2, 30.0f, 42.0f, 56.0f, Report.Before, Report.After, Anim, false, RP::Paper, In);
+	{
+		// The change: up at the right (0.15 s), then flying into the number and fading as it goes (0.55 to 0.95 s).
+		const float Appear = RP::EaseOut((Anim - 0.15f) / 0.3f);
+		const float Fly = RP::EaseOut((Anim - 0.55f) / 0.4f);
+		if (Appear > 0.0f && Fly < 1.0f)
+		{
+			const float DeltaSize = 44.0f;
+			const FVector2D From(W - 30.0f - RP::HudMeasure(DeltaText, DeltaSize, TEXT("BlackItalic")) * 0.5f, 52.0f + (1.0f - Appear) * 14.0f);
+			const FVector2D To(30.0f + RP::HudMeasure(FString::FromInt(Report.Before), 56.0f, TEXT("BlackItalic")) * 0.5f, 72.0f);
+			const FVector2D FlyAt = FMath::Lerp(From, To, Fly);
+			const RP::FPainter D{RP::MakeAnchor(Space, static_cast<float>(FlyAt.X), static_cast<float>(FlyAt.Y), FMath::Lerp(1.0f, 0.45f, Fly)), Elements, Layer + 3,
+				In * Appear * (1.0f - Fly)};
+			D.Text(DeltaText, 0.0f, -DeltaSize * 0.55f, DeltaSize, DeltaColor, RP::ETextAlign::Center, TEXT("BlackItalic"), 2.0f, RP::Ink);
+		}
+		// Taken in: a soft glow of its colour along the number while the digits turn.
+		const float Glow = Anim > 0.9f ? FMath::Clamp(1.0f - (Anim - 0.9f) / (Stopped - 0.4f), 0.0f, 1.0f) : 0.0f;
+		if (Glow > 0.0f)
+		{
+			Top.Box(30.0f, 113.0f, 240.0f, 3.0f, RP::WithAlpha(DeltaColor, 0.8f * Glow));
+		}
+	}
+	// Once it has stopped: where it came from and the change (kept on).
+	const float UnderIn = RP::EaseOut((Anim - Stopped) / 0.3f);
+	const RP::FPainter U{Space, Elements, Layer + 2, In * UnderIn};
+	const FString Under = FString::Printf(TEXT("%d → %d"), Report.Before, Report.After);
+	U.Text(Under, 30.0f, 120.0f, RP::HudFit(Under, 18.0f, 200.0f, TEXT("Bold")), RP::Muted, RP::ETextAlign::Left, TEXT("Bold"));
+	const FString Change = FString::Printf(TEXT("%s%s"), Report.Delta > 0 ? TEXT("▲ ") : Report.Delta < 0 ? TEXT("▼ ") : TEXT(""), *DeltaText);
+	U.Text(Change, W - 30.0f, 56.0f, RP::HudFit(Change, 38.0f, 220.0f, TEXT("BlackItalic")), DeltaColor, RP::ETextAlign::Right, TEXT("BlackItalic"), 2.0f, RP::Ink);
+	if (Report.bFloor)
+	{
+		U.Text(TEXT("下限 500"), W - 30.0f, 108.0f, 16.0f, RP::Muted, RP::ETextAlign::Right, TEXT("Bold"));
+	}
+	(void)bSettled;
+	return Layer + 4;
 }
 
 FSlateRect UChaosImpactResultsView::GetStatsRowRect(const int32 Index, const int32 Count)

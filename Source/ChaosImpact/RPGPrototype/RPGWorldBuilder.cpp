@@ -1299,8 +1299,8 @@ void BuildNewLandmarks(FKit& K,FRandomStream& R)
 	// Signposts where the new roads leave the old map.
 	Sign(K,G(10500,10500),90); Sign(K,G(-2350,11800),90); Sign(K,G(23600,6800),70); Sign(K,G(12700,9800),110); Sign(K,G(11700,18200),30);
 }
-#endif
 }
+#endif
 
 int32 URPGWorldBuilder::PopulateLevel(UObject* WorldContextObject)
 {

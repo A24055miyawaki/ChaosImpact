@@ -15,6 +15,7 @@
 #include "ChaosImpactCharacterSelect.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactColourEdit.h"
+#include "ChaosImpactGallery.h"
 #include "ChaosImpactDojoMenu.h"
 #include "ChaosImpactModeMenu.h"
 #include "ChaosImpactDojoLessons.h"
@@ -771,6 +772,21 @@ namespace
 				CP::RoundedBox(Icon, At.X - Unit * 0.9f + Bar * Unit * 0.48f, At.Y + Unit * 0.7f - BarH, Unit * 0.3f, BarH, 3.0f, Mark);
 			}
 		}
+		else if (Kind == TEXT("gallery"))
+		{
+			// Three cards fanned out, the front one turning a little, each its own colours.
+			const FLinearColor Fan[3] = {WithAlpha(FLinearColor(0.3f, 0.75f, 1.0f, 1.0f), Mark.A), WithAlpha(Gold, Mark.A), WithAlpha(FLinearColor(1.0f, 0.42f, 0.72f, 1.0f), Mark.A)};
+			for (int32 Leaf = 0; Leaf < 3; ++Leaf)
+			{
+				const float Angle = (Leaf - 1) * 0.32f + (Leaf == 2 ? FMath::Sin(Time * 2.0f) * 0.06f * B : 0.0f);
+				const FVector2D Centre = At + FVector2D((Leaf - 1) * Unit * 0.42f, (Leaf == 1 ? -Unit * 0.08f : 0.0f));
+				const FVector2D Across(FMath::Cos(Angle) * Unit * 0.36f, FMath::Sin(Angle) * Unit * 0.36f);
+				const FVector2D Along(-FMath::Sin(Angle) * Unit * 0.5f, FMath::Cos(Angle) * Unit * 0.5f);
+				CP::HudPoly(Icon, {Centre - Across - Along, Centre + Across - Along, Centre + Across + Along, Centre - Across + Along},
+					CP::MakeFill(Fan[Leaf], Fan[Leaf] * 0.7f));
+			}
+			Icon.Disc(At + FVector2D(Unit * 0.42f, Unit * 0.1f), Unit * 0.12f, WithAlpha(Paper, Mark.A));
+		}
 		else if (Kind == TEXT("linecheck"))
 		{
 			// Signal bars, and waves going out from them.
@@ -794,7 +810,8 @@ namespace
 			: Kind == TEXT("tourney") ? TEXT("大会にエントリー・大会をひらく")
 			: Kind == TEXT("private") ? TEXT("あいことばで友だちと部屋をつくる・入る")
 			: Kind == TEXT("record") ? TEXT("これまでの成績")
-			: Kind == TEXT("linecheck") ? TEXT("中継サーバーまでの回線をはかる") : TEXT("");
+			: Kind == TEXT("linecheck") ? TEXT("中継サーバーまでの回線をはかる")
+			: Kind == TEXT("gallery") ? TEXT("カラーを投稿・みんなの作品を保存") : TEXT("");
 		if (!Line.IsEmpty() && H >= 150.0f)
 		{
 			Top.Text(Line, 37.0f, H - 50.0f, CP::HudFit(Line, 18.0f, W - 60.0f, TEXT("Bold")), WithAlpha(Paper, 0.6f + 0.3f * B),
@@ -1327,6 +1344,7 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 
 	CharacterSelect = NewObject<UChaosImpactCharacterSelect>(this);
 	ColourEdit = NewObject<UChaosImpactColourEdit>(this);
+	Gallery = NewObject<UChaosImpactGallery>(this);
 	DojoMenu = NewObject<UChaosImpactDojoMenu>(this);
 	TourneyEntry = NewObject<UChaosImpactTourneyEntry>(this);
 	SettingsScreen = NewObject<UChaosImpactSettingsScreen>(this);
@@ -1374,6 +1392,10 @@ void UChaosImpactMenuWidget::NativeDestruct()
 	{
 		CharacterSelect->Close();
 	}
+	if (Gallery)
+	{
+		Gallery->Close();
+	}
 	if (ColourEdit)
 	{
 		ColourEdit->Close();
@@ -1420,6 +1442,10 @@ bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 		&& GetVisibility() != ESlateVisibility::Collapsed)
 	{
 		return ColourEdit->HandleKeyDown(InKeyEvent);
+	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen() && GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return Gallery->HandleKeyDown(InKeyEvent);
 	}
 	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite && GetVisibility() != ESlateVisibility::Collapsed)
 	{
@@ -1506,6 +1532,10 @@ bool UChaosImpactMenuWidget::HandleAnyUserAnalog(const FAnalogInputEvent& InAnal
 	{
 		return ColourEdit->HandleAnalog(InAnalogEvent);
 	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen() && GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return Gallery->HandleAnalog(InAnalogEvent);
+	}
 	// (The 訓練場 invitation over the mode select: the stick moves nothing under it.)
 	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
 	{
@@ -1561,6 +1591,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	{
 		ColourEdit->Close();
 	}
+	if (Gallery && NewScreen != EChaosImpactScreen::Gallery)
+	{
+		Gallery->Close();
+	}
 	if (DojoMenu && NewScreen != EChaosImpactScreen::DojoSelect)
 	{
 		DojoMenu->Close();
@@ -1611,6 +1645,10 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && !ColourEdit->IsOpen())
 	{
 		ColourEdit->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
+	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && !Gallery->IsOpen())
+	{
+		Gallery->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()));
 	}
 	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu && !DojoMenu->IsOpen())
 	{
@@ -1844,6 +1882,7 @@ namespace
 void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
 	const float Time) const
 {
+	namespace CP = ChaosImpactPaint;
 	const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 	if (!Sessions)
 	{
@@ -1853,7 +1892,10 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 	const float ChipIn = EaseOut((Time - 0.1f) / 0.3f);
 	const FMenuPainter Chip{MakeSkewed(Design, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f), Elements, Layer, ChipIn};
 	Chip.Box(0.0f, 0.0f, 360.0f, 70.0f, Violet);
-	Chip.Text(FString::Printf(TEXT("なまえ  %s"), *Sessions->GetPlayerName()), 180.0f, 14.0f, 30.0f, Paper, ETextAlign::Center);
+	{
+		const FString NameLine = FString::Printf(TEXT("なまえ  %s"), *Sessions->GetPlayerName());
+		Chip.Text(NameLine, 180.0f, 14.0f, CP::HudFit(NameLine, 30.0f, 320.0f), Paper, ETextAlign::Center);
+	}
 	if (!Records.bKnown)
 	{
 		const float In = EaseOut((Time - 0.2f) / 0.3f);
@@ -1864,6 +1906,8 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 			Paper, ETextAlign::Center, TEXT("Black"));
 		return;
 	}
+	constexpr float PW = 620.0f;
+	constexpr float PH = 470.0f;
 	struct FPanel
 	{
 		float X;
@@ -1873,49 +1917,191 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 	const FPanel Panels[] = {{150.0f, TEXT("ランダムマッチ 1v1"), Gold}, {830.0f, TEXT("ランダムマッチ 8人"), Fire}};
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
+		const bool bDuel = Index == 0;
+		const FLinearColor Accent = Panels[Index].Accent;
+		const FChaosImpactRating& Rating = bDuel ? Records.Duel.Rating : Records.FfaRating;
+		const int32 Games = bDuel ? Records.Duel.GetGames() : Records.FfaGames;
 		const float In = EaseOut((Time - 0.14f - 0.06f * Index) / 0.35f);
-		const FMenuPainter P{MakeSkewed(Design, Panels[Index].X + (1.0f - In) * 100.0f, 212.0f, 620.0f, 470.0f, -0.08f), Elements, Layer + 1, In};
-		P.Box(12.0f, 14.0f, 620.0f, 470.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
-		P.Box(0.0f, 0.0f, 620.0f, 470.0f, FLinearColor(0.015f, 0.02f, 0.04f, 0.95f));
-		P.Box(0.0f, 0.0f, 620.0f, 8.0f, Panels[Index].Accent);
-		P.Text(Panels[Index].Title, 34.0f, 22.0f, 34.0f, Paper, ETextAlign::Left, TEXT("Black"));
-		if (Index == 0)
+		const FGeometry Space = MakeSkewed(Design, Panels[Index].X + (1.0f - In) * 100.0f, 212.0f, PW, PH, -0.08f);
+		const CP::FPainter Back{Space, Elements, Layer + 1, In};
+		const CP::FPainter P = CP::HudAbove(Back, 1);
+		const CP::FPainter Top = CP::HudAbove(Back, 2);
+		// The panel: a shadow, night shading from the mode's colour, its band on top.
+		Back.Box(12.0f, 14.0f, PW, PH, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+		FLinearColor Deep = Accent * 0.12f;
+		Deep.A = 0.96f;
+		CP::HudPoly(Back, {FVector2D(0.0, 0.0), FVector2D(PW, 0.0), FVector2D(PW, PH), FVector2D(0.0, PH)},
+			CP::MakeFill(Deep, FLinearColor(0.008f, 0.011f, 0.024f, 0.96f)));
+		CP::HudPoly(P, {FVector2D(0.0, 0.0), FVector2D(PW, 0.0), FVector2D(PW, 8.0), FVector2D(0.0, 8.0)},
+			CP::MakeFill(FMath::Lerp(Accent, Paper, 0.35f), Accent));
+		P.Outline(0.0f, 0.0f, PW, PH, WithAlpha(Paper, 0.12f), 1.5f);
+		Top.Text(Panels[Index].Title, 30.0f, 22.0f, 30.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
+
+		// The rating, top right: the number (gold or red), the best under it; 計測中 with its five pips before that.
+		Top.Text(TEXT("レート"), PW - 30.0f, 18.0f, 15.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
+		if (!Rating.bKnown)
 		{
-			const FChaosImpactDuelRecord& Duel = Records.Duel;
-			if (Duel.GetGames() == 0)
+			Top.Text(TEXT("―"), PW - 30.0f, 36.0f, 44.0f, Muted, CP::ETextAlign::Right, TEXT("BlackItalic"));
+		}
+		else if (!Rating.bMeasured)
+		{
+			Top.Text(TEXT("計測中…"), PW - 30.0f, 38.0f, 30.0f, Paper, CP::ETextAlign::Right, TEXT("BlackItalic"));
+			const int32 Played = FChaosImpactRating::MeasuringGames - Rating.MeasuringLeft;
+			for (int32 Pip = 0; Pip < FChaosImpactRating::MeasuringGames; ++Pip)
 			{
-				P.Text(TEXT("まだ対戦していません"), 310.0f, 200.0f, 30.0f, Muted, ETextAlign::Center, TEXT("Bold"));
-				continue;
+				const FVector2D C(PW - 30.0f - 10.0f - (FChaosImpactRating::MeasuringGames - 1 - Pip) * 26.0f, 92.0f);
+				Top.Ring(C, 9.0f, WithAlpha(Paper, 0.35f), 2.0f, 24);
+				if (Pip < Played)
+				{
+					Top.Disc(C, 7.0f, Accent);
+				}
 			}
-			P.Text(DescribeDuelRecord(Duel), 34.0f, 92.0f, 64.0f, Paper, ETextAlign::Left, TEXT("Black"), 3.0f, Ink);
-			const int32 Rate = FMath::RoundToInt(100.0f * Duel.Wins / FMath::Max(1, Duel.GetGames()));
-			P.Text(FString::Printf(TEXT("勝率  %d%%"), Rate), 36.0f, 196.0f, 32.0f, Gold, ETextAlign::Left, TEXT("Black"));
-			P.Text(FString::Printf(TEXT("%d試合"), Duel.GetGames()), 586.0f, 202.0f, 26.0f, Muted, ETextAlign::Right, TEXT("Bold"));
-			P.Box(34.0f, 262.0f, 552.0f, 2.0f, WithAlpha(Paper, 0.14f));
-			P.Text(TEXT("さいきんの10試合"), 36.0f, 284.0f, 22.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-			PaintDuelRecent(P, Duel.Recent, 36.0f, 330.0f, 46.0f);
 		}
 		else
 		{
-			if (Records.FfaGames == 0)
+			const FString RateText = FString::FromInt(Rating.Rate);
+			CP::HudText3D(CP::HudAbove(Top, 1), RateText, PW - 40.0f, 34.0f, CP::HudFit(RateText, 46.0f, 200.0f, TEXT("BlackItalic")), Accent,
+				CP::ETextAlign::Right, TEXT("BlackItalic"), 3.0f);
+			Top.Text(FString::Printf(TEXT("最高 %d"), Rating.Best), PW - 40.0f, 98.0f, 15.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
+		}
+
+		if (Games == 0)
+		{
+			Top.Text(TEXT("まだ対戦していません"), PW * 0.5f, 210.0f, 30.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+			const FString Hint = FString::Printf(TEXT("%d試合遊ぶと、レートが決まります"), FChaosImpactRating::MeasuringGames);
+			Top.Text(Hint, PW * 0.5f, 258.0f, CP::HudFit(Hint, 18.0f, PW - 80.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), CP::ETextAlign::Center, TEXT("Bold"));
+			continue;
+		}
+
+		// Three tiles: the record, the rate (a ring), the run.
+		constexpr float TileTop = 124.0f;
+		constexpr float TileW = 176.0f;
+		constexpr float TileH = 112.0f;
+		const auto TileBox = [&Back, &P](const float X)
+		{
+			CP::RoundedBox(Back, X, TileTop, TileW, TileH, 12.0f, FLinearColor(0.03f, 0.04f, 0.08f, 0.9f));
+			P.Outline(X, TileTop, TileW, TileH, WithAlpha(Paper, 0.08f), 1.0f);
+		};
+		for (int32 Tile = 0; Tile < 3; ++Tile)
+		{
+			TileBox(30.0f + Tile * (TileW + 12.0f));
+		}
+		// 1: the record (1v1 W-L, 8人 1st places), the games under it.
+		{
+			const float X = 30.0f;
+			const FString Head = bDuel ? TEXT("戦績") : TEXT("1位");
+			Top.Text(Head, X + 14.0f, TileTop + 10.0f, 14.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+			const FString Main = bDuel ? DescribeDuelRecord(Records.Duel) : FString::Printf(TEXT("%d回"), Records.FfaWins);
+			Top.Text(Main, X + TileW * 0.5f, TileTop + 34.0f, CP::HudFit(Main, 28.0f, TileW - 24.0f, TEXT("Black")), Paper, CP::ETextAlign::Center, TEXT("Black"));
+			Top.Text(FString::Printf(TEXT("%d試合"), Games), X + TileW * 0.5f, TileTop + 82.0f, 15.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+		}
+		// 2: a ring of the win rate (8人: the share of top-3 finishes), the average place under it.
+		{
+			const float X = 30.0f + TileW + 12.0f;
+			const float Share = bDuel ? static_cast<float>(Records.Duel.Wins) / FMath::Max(1, Games)
+				: static_cast<float>(Records.FfaTop3) / FMath::Max(1, Games);
+			const FVector2D C(X + 46.0f, TileTop + TileH * 0.5f);
+			Top.Ring(C, 30.0f, WithAlpha(Paper, 0.12f), 8.0f, 64);
+			if (Share > 0.0f)
 			{
-				P.Text(TEXT("まだ対戦していません"), 310.0f, 200.0f, 30.0f, Muted, ETextAlign::Center, TEXT("Bold"));
-				continue;
+				CP::HudAbove(Top, 1).Arc(C, 30.0f, -90.0f, -90.0f + 360.0f * FMath::Clamp(Share, 0.0f, 1.0f), Accent, 8.0f);
 			}
-			P.Text(FString::Printf(TEXT("1位  %d回"), Records.FfaWins), 34.0f, 92.0f, 64.0f, Paper, ETextAlign::Left, TEXT("Black"), 3.0f, Ink);
-			P.Text(FString::Printf(TEXT("平均 %.1f位"), Records.FfaAverage), 586.0f, 118.0f, 32.0f, Paper, ETextAlign::Right, TEXT("Black"));
-			P.Text(FString::Printf(TEXT("3位以内  %d回"), Records.FfaTop3), 36.0f, 196.0f, 32.0f, Fire, ETextAlign::Left, TEXT("Black"));
-			P.Text(FString::Printf(TEXT("%d試合"), Records.FfaGames), 586.0f, 202.0f, 26.0f, Muted, ETextAlign::Right, TEXT("Bold"));
-			P.Box(34.0f, 262.0f, 552.0f, 2.0f, WithAlpha(Paper, 0.14f));
-			P.Text(TEXT("さいきんの10試合（順位）"), 36.0f, 284.0f, 22.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-			for (int32 Game = 0; Game < Records.FfaRecent.Num(); ++Game)
+			const FString Percent = FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Share * 100.0f));
+			Top.Text(Percent, C.X, C.Y - 10.0f, CP::HudFit(Percent, 16.0f, 44.0f, TEXT("Black")), Paper, CP::ETextAlign::Center, TEXT("Black"));
+			const FString Label = bDuel ? TEXT("勝率") : TEXT("3位以内");
+			Top.Text(Label, X + 124.0f, TileTop + 24.0f, CP::HudFit(Label, 15.0f, 84.0f, TEXT("Bold")), Muted, CP::ETextAlign::Center, TEXT("Bold"));
+			const FString Sub = bDuel ? FString::Printf(TEXT("%d勝"), Records.Duel.Wins) : FString::Printf(TEXT("平均%.1f位"), Records.FfaAverage);
+			Top.Text(Sub, X + 124.0f, TileTop + 54.0f, CP::HudFit(Sub, 18.0f, 84.0f, TEXT("Black")), Paper, CP::ETextAlign::Center, TEXT("Black"));
+		}
+		// 3: the run now (1v1 wins in a row, 8人 1st places in a row), the best ever under it.
+		{
+			const float X = 30.0f + 2.0f * (TileW + 12.0f);
+			const int32 Streak = bDuel ? Records.Duel.Streak : Records.FfaStreak;
+			const int32 BestStreak = bDuel ? Records.Duel.BestStreak : Records.FfaBestStreak;
+			Top.Text(bDuel ? TEXT("連勝") : TEXT("連続1位"), X + 14.0f, TileTop + 10.0f, 14.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+			const FString Now = Streak > 0 ? FString::Printf(TEXT("%d"), Streak) : FString(TEXT("0"));
+			CP::HudText3D(CP::HudAbove(Top, 1), Now, X + TileW * 0.5f - 12.0f, TileTop + 28.0f, 36.0f, Streak >= 2 ? Gold : Paper,
+				CP::ETextAlign::Center, TEXT("BlackItalic"), 2.0f);
+			Top.Text(Streak >= 2 ? TEXT("中") : TEXT(""), X + TileW * 0.5f + 18.0f, TileTop + 42.0f, 17.0f, Streak >= 2 ? Gold : Muted,
+				CP::ETextAlign::Left, TEXT("Black"));
+			const FString Best = FString::Printf(TEXT("最高 %d"), BestStreak);
+			Top.Text(Best, X + TileW * 0.5f, TileTop + 84.0f, 15.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+		}
+
+		// The rating's way so far (a line of the last ratings), or the measuring still to go.
+		constexpr float GraphTop = 256.0f;
+		constexpr float GraphH = 96.0f;
+		constexpr float GraphL = 30.0f;
+		constexpr float GraphW = PW - 60.0f;
+		CP::RoundedBox(Back, GraphL, GraphTop, GraphW, GraphH, 12.0f, FLinearColor(0.02f, 0.028f, 0.055f, 0.9f));
+		if (Rating.bMeasured && Rating.History.Num() >= 2)
+		{
+			int32 Low = Rating.History[0], High = Rating.History[0];
+			for (const int32 Value : Rating.History)
+			{
+				Low = FMath::Min(Low, Value);
+				High = FMath::Max(High, Value);
+			}
+			const float Span = FMath::Max(40.0f, static_cast<float>(High - Low));
+			const float Mid = (High + Low) * 0.5f;
+			const auto PointAt = [&](const int32 Step) -> FVector2D
+			{
+				const float X = GraphL + 60.0f + (GraphW - 90.0f) * Step / FMath::Max(1, Rating.History.Num() - 1);
+				const float Y = GraphTop + GraphH * 0.5f - (Rating.History[Step] - Mid) / Span * (GraphH - 30.0f);
+				return FVector2D(X, Y);
+			};
+			Top.Text(FString::FromInt(High), GraphL + 12.0f, GraphTop + 8.0f, 13.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+			Top.Text(FString::FromInt(Low), GraphL + 12.0f, GraphTop + GraphH - 24.0f, 13.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+			for (int32 Step = 1; Step < Rating.History.Num(); ++Step)
+			{
+				P.Line(PointAt(Step - 1), PointAt(Step), WithAlpha(Accent, 0.9f), 3.0f);
+			}
+			for (int32 Step = 0; Step < Rating.History.Num(); ++Step)
+			{
+				Top.Disc(PointAt(Step), Step == Rating.History.Num() - 1 ? 6.0f : 3.5f, Step == Rating.History.Num() - 1 ? Paper : Accent);
+			}
+		}
+		else
+		{
+			const FString Line = Rating.bMeasured ? FString(TEXT("レートの流れは、これから記録されます"))
+				: FString::Printf(TEXT("計測中…  あと%d戦でレートが決まります"), Rating.MeasuringLeft);
+			Top.Text(Line, GraphL + GraphW * 0.5f, GraphTop + GraphH * 0.5f - 13.0f, CP::HudFit(Line, 20.0f, GraphW - 40.0f, TEXT("Bold")),
+				WithAlpha(Paper, 0.75f), CP::ETextAlign::Center, TEXT("Bold"));
+		}
+
+		// The last ten: ○ × △ (1v1) or the places (8人), each with the rating it moved under it.
+		constexpr float RecentTop = 370.0f;
+		Top.Text(TEXT("最近の10試合"), 30.0f, RecentTop, 15.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+		constexpr float TileSize = 40.0f;
+		const int32 Count = bDuel ? Records.Duel.Recent.Num() : Records.FfaRecent.Num();
+		for (int32 Game = 0; Game < Count; ++Game)
+		{
+			const float Left = 30.0f + Game * (TileSize + 16.0f);
+			const float Y = RecentTop + 24.0f;
+			if (bDuel)
+			{
+				const FString& Result = Records.Duel.Recent[Game];
+				const bool bWin = Result == TEXT("W");
+				const bool bDraw = Result == TEXT("D");
+				CP::RoundedBox(P, Left, Y, TileSize, TileSize, 8.0f, bWin ? WithAlpha(Gold, 0.92f) : bDraw ? WithAlpha(Ice, 0.55f) : FLinearColor(0.12f, 0.14f, 0.2f, 1.0f));
+				Top.Text(bWin ? TEXT("○") : bDraw ? TEXT("△") : TEXT("×"), Left + TileSize * 0.5f, Y + 4.0f, 24.0f, bWin ? Ink : Paper, CP::ETextAlign::Center, TEXT("Black"));
+			}
+			else
 			{
 				const int32 Place = Records.FfaRecent[Game].X;
 				const FLinearColor Medal = Place == 1 ? Gold : Place == 2 ? FLinearColor(0.78f, 0.84f, 0.94f)
 					: Place == 3 ? FLinearColor(0.86f, 0.52f, 0.26f) : FLinearColor(0.12f, 0.14f, 0.2f, 1.0f);
-				const float Left = 36.0f + Game * 52.0f;
-				P.Box(Left, 330.0f, 46.0f, 46.0f, Medal);
-				P.Text(FString::FromInt(Place), Left + 23.0f, 334.0f, 28.0f, Place <= 3 ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+				CP::RoundedBox(P, Left, Y, TileSize, TileSize, 8.0f, Medal);
+				Top.Text(FString::FromInt(Place), Left + TileSize * 0.5f, Y + 4.0f, 24.0f, Place <= 3 ? Ink : Paper, CP::ETextAlign::Center, TEXT("Black"));
+			}
+			// (The changes line up from the newest back.)
+			const int32 FromEnd = Count - 1 - Game;
+			if (Rating.Deltas.IsValidIndex(Rating.Deltas.Num() - 1 - FromEnd))
+			{
+				const int32 Delta = Rating.Deltas[Rating.Deltas.Num() - 1 - FromEnd];
+				const FString DeltaText = Delta > 0 ? FString::Printf(TEXT("+%d"), Delta) : Delta < 0 ? FString::FromInt(Delta) : FString(TEXT("±0"));
+				Top.Text(DeltaText, Left + TileSize * 0.5f, Y + TileSize + 3.0f, CP::HudFit(DeltaText, 13.0f, TileSize + 12.0f, TEXT("Bold")),
+					Delta > 0 ? Ice : Delta < 0 ? Fire : Muted, CP::ETextAlign::Center, TEXT("Bold"));
 			}
 		}
 	}
@@ -2037,8 +2223,21 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 		const float Scale = FMath::Lerp(1.6f, 1.0f, In);
 		const CP::FPainter Title{CP::MakeAnchor(Design, 800.0f, 92.0f, Scale), Elements, Layer + 2, In};
 		CP::HudText3D(Title, TEXT("MATCH FOUND"), 0.0f, -62.0f, 74.0f, Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
-		const CP::FPainter Under{Design, Elements, Layer + 2, EaseOut((Time - 0.2f) / 0.3f)};
-		Under.Text(TEXT("対戦相手が見つかりました"), 800.0f, 140.0f, 22.0f, WithAlpha(Paper, 0.85f), CP::ETextAlign::Center, TEXT("Black"));
+		// Under it, on a ribbon of its own (both sides' colours at its ends): what it means, large and clear.
+		const float RibbonIn = EaseOut((Time - 0.2f) / 0.3f);
+		constexpr float RibbonW = 580.0f;
+		constexpr float RibbonH = 40.0f;
+		const CP::FPainter Ribbon{MakeSkewed(Design, 800.0f - RibbonW * 0.5f, 140.0f + (1.0f - RibbonIn) * 12.0f, RibbonW, RibbonH, -0.25f), Elements, Layer + 2, RibbonIn};
+		Ribbon.Box(6.0f, 6.0f, RibbonW, RibbonH, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		CP::HudPoly(Ribbon, {FVector2D(0.0, 0.0), FVector2D(RibbonW, 0.0), FVector2D(RibbonW, RibbonH), FVector2D(0.0, RibbonH)},
+			CP::MakeFill(FLinearColor(0.03f, 0.045f, 0.09f, 0.96f), FLinearColor(0.008f, 0.01f, 0.024f, 0.96f)));
+		const CP::FPainter RibbonTop = CP::HudAbove(Ribbon, 1);
+		RibbonTop.Box(0.0f, 0.0f, 8.0f, RibbonH, Ice);
+		RibbonTop.Box(RibbonW - 8.0f, 0.0f, 8.0f, RibbonH, Fire);
+		RibbonTop.Box(8.0f, RibbonH - 3.0f, RibbonW - 16.0f, 3.0f, WithAlpha(Gold, 0.85f));
+		const FString Found = TEXT("対戦相手が見つかりました");
+		CP::HudText3D(CP::HudAbove(RibbonTop, 1), Found, RibbonW * 0.5f, 4.0f, CP::HudFit(Found, 25.0f, RibbonW - 60.0f, TEXT("Black")), Paper,
+			CP::ETextAlign::Center, TEXT("Black"), 2.0f);
 	}
 
 	constexpr float CardW = 620.0f;
@@ -2129,13 +2328,44 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 			const int32 Games = Side.Record.GetGames();
 			const float Rate = Games > 0 ? static_cast<float>(Side.Record.Wins) / Games : 0.0f;
 			Top.Text(FString::Printf(TEXT("勝率 %d%%"), FMath::RoundToInt(Rate * 100.0f)), TX, 346.0f, 18.0f, Gold, CP::ETextAlign::Left, TEXT("Black"));
+			if (Side.Record.Streak >= 2)
+			{
+				// Wins in a row, on a gold tag at the right of the line.
+				const FString Streak = FString::Printf(TEXT("%d連勝中"), Side.Record.Streak);
+				const float StreakSize = CP::HudFit(Streak, 17.0f, TW - 110.0f, TEXT("Black"));
+				const float TagW = CP::HudMeasure(Streak, StreakSize, TEXT("Black")) + 22.0f;
+				CP::RoundedBox(Top, TX + TW - TagW, 342.0f, TagW, 26.0f, 13.0f, Gold);
+				CP::HudAbove(Top, 1).Text(Streak, TX + TW - TagW * 0.5f, 345.0f, StreakSize, Ink, CP::ETextAlign::Center, TEXT("Black"));
+			}
 			CP::RoundedBox(Top, TX, 374.0f, TW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
 			CP::RoundedBox(CP::HudAbove(Top, 1), TX, 374.0f, TW * Rate, 6.0f, 3.0f, Gold);
-			PaintDuelRecent(Words, Side.Record.Recent, TX, 398.0f, 30.0f);
+			const int32 RecentCount = FMath::Max(1, Side.Record.Recent.Num());
+			PaintDuelRecent(Words, Side.Record.Recent, TX, 398.0f, FMath::Min(30.0f, (TW - 6.0f * (RecentCount - 1)) / RecentCount));
 		}
 		else
 		{
 			Top.Text(Side.bKnownRecord ? TEXT("はじめての1v1") : TEXT("―"), TX, 298.0f, 28.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
+		}
+		// The 1v1 rating (計測中 for the first games), under the record.
+		Top.Box(TX, 444.0f, TW, 1.0f, WithAlpha(Paper, 0.16f));
+		Top.Text(TEXT("1v1 レート"), TX, 458.0f, 18.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+		{
+			const FChaosImpactRating& Rating = Side.Record.Rating;
+			if (!Side.bKnownRecord || !Rating.bKnown)
+			{
+				Top.Text(TEXT("―"), TX + TW, 450.0f, 34.0f, Muted, CP::ETextAlign::Right, TEXT("BlackItalic"));
+			}
+			else if (!Rating.bMeasured)
+			{
+				const FString Measuring = FString::Printf(TEXT("計測中… あと%d戦"), Rating.MeasuringLeft);
+				Top.Text(Measuring, TX + TW, 456.0f, CP::HudFit(Measuring, 20.0f, TW - 110.0f, TEXT("Black")), Paper, CP::ETextAlign::Right, TEXT("Black"));
+			}
+			else
+			{
+				const FString RateText = FString::FromInt(Rating.Rate);
+				CP::HudText3D(CP::HudAbove(Top, 1), RateText, TX + TW, 446.0f, CP::HudFit(RateText, 38.0f, TW - 110.0f, TEXT("BlackItalic")), Gold,
+					CP::ETextAlign::Right, TEXT("BlackItalic"), 2.0f);
+			}
 		}
 		if (Side.bAccepted)
 		{
@@ -2289,23 +2519,49 @@ void UChaosImpactMenuWidget::PaintOnlinePlayerCard(const FGeometry& Design, FSla
 	{
 		return;
 	}
-	// Top right: who plays, and the line to the relay as last measured.
+	// Top right: who plays, their ランダムマッチ ratings (1v1, 8人), and the line to the relay as last measured.
 	const float In = EaseOut((Time - 0.1f) / 0.35f);
-	constexpr float W = 400.0f;
+	constexpr float W = 720.0f;
 	constexpr float H = 96.0f;
-	const CP::FPainter P{MakeSkewed(Design, 1090.0f + (1.0f - In) * 80.0f, 66.0f, W, H, -0.12f), Elements, Layer, In};
+	const CP::FPainter P{MakeSkewed(Design, 770.0f + (1.0f - In) * 80.0f, 66.0f, W, H, -0.12f), Elements, Layer, In};
 	OlPageCard(P, W, H, Gold);
 	const CP::FPainter T = CP::HudAbove(P, 2);
 	T.Text(TEXT("PLAYER"), 24.0f, 14.0f, 14.0f, Gold, CP::ETextAlign::Left, TEXT("BlackItalic"));
 	const FString Name = Sessions->GetPlayerName();
 	CP::HudText3D(CP::HudAbove(T, 1), Name, 24.0f, 34.0f, CP::HudFit(Name, 32.0f, 200.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 2.0f);
+	const FChaosImpactRecords& Records = Sessions->GetRecords();
+	const auto RateBlock = [&T](const float X, const TCHAR* Label, const FLinearColor Tone, const bool bKnown, const FChaosImpactRating& Rating)
+	{
+		constexpr float BlockW = 128.0f;
+		T.Box(X - 14.0f, 16.0f, 1.5f, H - 32.0f, WithAlpha(Paper, 0.14f));
+		T.Text(Label, X, 14.0f, 14.0f, Tone, CP::ETextAlign::Left, TEXT("BlackItalic"));
+		if (!bKnown || !Rating.bKnown)
+		{
+			T.Text(TEXT("—"), X, 34.0f, 30.0f, Muted, CP::ETextAlign::Left, TEXT("BlackItalic"));
+			return;
+		}
+		if (!Rating.bMeasured)
+		{
+			T.Text(TEXT("計測中…"), X, 38.0f, CP::HudFit(TEXT("計測中…"), 24.0f, BlockW, TEXT("Black")), Paper, CP::ETextAlign::Left, TEXT("Black"));
+			const FString Left = FString::Printf(TEXT("あと%d戦"), Rating.MeasuringLeft);
+			T.Text(Left, X, 70.0f, 13.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
+			return;
+		}
+		const FString Rate = FString::FromInt(Rating.Rate);
+		T.Text(Rate, X, 30.0f, CP::HudFit(Rate, 34.0f, BlockW, TEXT("BlackItalic")), Paper, CP::ETextAlign::Left, TEXT("BlackItalic"));
+		const FString Best = FString::Printf(TEXT("最高 %d"), Rating.Best);
+		T.Text(Best, X, 70.0f, CP::HudFit(Best, 13.0f, BlockW, TEXT("Bold")), Muted, CP::ETextAlign::Left, TEXT("Bold"));
+	};
+	RateBlock(262.0f, TEXT("1v1 レート"), Gold, Records.bKnown, Records.Duel.Rating);
+	RateBlock(404.0f, TEXT("8人 レート"), Fire, Records.bKnown, Records.FfaRating);
+	T.Box(534.0f, 16.0f, 1.5f, H - 32.0f, WithAlpha(Paper, 0.14f));
 	const int32 Rtt = Sessions->GetLastRelayRtt();
 	const FLinearColor Tone = Rtt > 0 ? OlLineColor(Rtt) : Muted;
 	const int32 Level = Rtt <= 0 ? 0 : Rtt <= 60 ? 4 : Rtt <= 120 ? 3 : Rtt <= 200 ? 2 : 1;
 	for (int32 Bar = 0; Bar < 4; ++Bar)
 	{
 		const float BarH = 10.0f + Bar * 8.0f;
-		CP::RoundedBox(T, 236.0f + Bar * 12.0f, 66.0f - BarH, 8.0f, BarH, 2.0f, Bar < Level ? Tone : WithAlpha(Paper, 0.15f));
+		CP::RoundedBox(T, 552.0f + Bar * 12.0f, 66.0f - BarH, 8.0f, BarH, 2.0f, Bar < Level ? Tone : WithAlpha(Paper, 0.15f));
 	}
 	const FString RttText = Rtt > 0 ? FString::Printf(TEXT("%dms"), Rtt) : FString(TEXT("未計測"));
 	T.Text(RttText, W - 24.0f, 22.0f, CP::HudFit(RttText, 22.0f, 96.0f, TEXT("BlackItalic")), Tone, CP::ETextAlign::Right, TEXT("BlackItalic"));
@@ -2777,15 +3033,15 @@ void UChaosImpactMenuWidget::BuildEntries()
 		const AChaosImpactPlayerController* OnlineController =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bPair = OnlineController && OnlineController->GetRequestedLocalPlayerCount() >= 2;
-		// ランダムマッチ 8人 / 1v1 / トーナメント across the top; 合言葉マッチ / 戦績 / 回線チェック under them; 戻る /
-		// カラーエディット / なまえ along the bottom. (The indices stay as they were: 0 8人, 1 1v1, 2 合言葉, 3 戦績, 4 なまえ,
-		// 5 戻る, 6 トーナメント, 7 カラーエディット, 8 回線チェック.)
+		// ランダムマッチ 8人 / 1v1 / トーナメント across the top; 合言葉マッチ / みんなのカラー / 戦績 / 回線チェック under them;
+		// 戻る / カラーエディット / なまえ along the bottom. (The indices stay as they were: 0 8人, 1 1v1, 2 合言葉, 3 戦績, 4 なまえ,
+		// 5 戻る, 6 トーナメント, 7 カラーエディット, 8 回線チェック, 9 みんなのカラー.)
 		Entries.Add({FSlateRect(110, 196, 590, 470), TEXT("ランダムマッチ 8人"), TEXT("random"), TEXT("8 PLAYERS"), Fire});
 		FMenuEntry Duel{FSlateRect(620, 196, 1100, 470), TEXT("ランダムマッチ 1v1"), TEXT("duel"), TEXT("1 VS 1"), Gold};
 		Duel.bDisabled = bPair;
 		Entries.Add(Duel);
-		Entries.Add({FSlateRect(110, 500, 700, 680), TEXT("合言葉マッチ"), TEXT("private"), TEXT("ROOM"), Ice});
-		Entries.Add({FSlateRect(730, 500, 1100, 680), TEXT("戦績"), TEXT("record"), TEXT("RECORD"), Violet});
+		Entries.Add({FSlateRect(110, 500, 430, 680), TEXT("合言葉マッチ"), TEXT("private"), TEXT("ROOM"), Ice});
+		Entries.Add({FSlateRect(810, 500, 1130, 680), TEXT("戦績"), TEXT("record"), TEXT("RECORD"), Violet});
 		Entries.Add({FSlateRect(830, 718, 1490, 798),
 			FString::Printf(TEXT("なまえ  %s%s"), Sessions ? *Sessions->GetPlayerName() : TEXT(""),
 				bPair ? TEXT("  ＋(2)") : TEXT("")),
@@ -2793,7 +3049,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		Entries.Add({FSlateRect(1130, 196, 1490, 470), TEXT("トーナメント"), TEXT("tourney"), TEXT("TOURNAMENT"), Violet});
 		Entries.Add({FSlateRect(430, 726, 800, 790), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT(""), Violet});
-		Entries.Add({FSlateRect(1130, 500, 1490, 680), TEXT("回線チェック"), TEXT("linecheck"), TEXT("NETWORK"), FLinearColor(0.2f, 0.9f, 0.5f, 1.0f)});
+		Entries.Add({FSlateRect(1160, 500, 1490, 680), TEXT("回線チェック"), TEXT("linecheck"), TEXT("NETWORK"), FLinearColor(0.2f, 0.9f, 0.5f, 1.0f)});
+		Entries.Add({FSlateRect(460, 500, 780, 680), TEXT("みんなのカラー"), TEXT("gallery"), TEXT("GALLERY"), FLinearColor(1.0f, 0.42f, 0.72f, 1.0f)});
 		break;
 	}
 	case EChaosImpactScreen::LineCheck:
@@ -3529,6 +3786,17 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	{
 		ColourEdit->Tick(InDeltaTime);
 	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery)
+	{
+		Gallery->Tick(InDeltaTime);
+		if (Gallery->ConsumeLeave())
+		{
+			if (AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+			{
+				Owner->ShowMenuScreen(EChaosImpactScreen::MultiReady);
+			}
+		}
+	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry)
 	{
 		TourneyEntry->Tick(InDeltaTime);
@@ -3574,6 +3842,7 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 		const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bHideLevel = ((Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
 			|| (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen())
+			|| (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
 			|| (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen()))
 			&& Owner && !Owner->IsTravelPending();
 		if (Viewport->bDisableWorldRendering != bHideLevel && (bHideLevel || bLevelHiddenByMenu))
@@ -3785,6 +4054,12 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const int32 EditLayer = ColourEdit->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
 		PaintEnterWipe(DesignGeometry, OutDrawElements, EditLayer + 1, T);
 		return EditLayer + 2;
+	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery)
+	{
+		const int32 GalleryLayer = Gallery->Paint(DesignGeometry, OutDrawElements, BaseLayer + 2);
+		PaintEnterWipe(DesignGeometry, OutDrawElements, GalleryLayer + 1, T);
+		return GalleryLayer + 2;
 	}
 	if (Screen == EChaosImpactScreen::DojoSelect && DojoMenu)
 	{
@@ -4850,14 +5125,15 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 			SelectedIndex = bRight ? ToRight[From] : bLeft ? ToLeft[From] : bUp ? Up[From] : bDown ? Down[From] : From;
 		}
 	}
-	else if (Screen == EChaosImpactScreen::MultiReady && Key != EKeys::Tab && Entries.Num() == 9)
+	else if (Screen == EChaosImpactScreen::MultiReady && Key != EKeys::Tab && Entries.Num() == 10)
 	{
-		// Rows: 8人 (0), 1v1 (1), トーナメント (6) / 合言葉 (2), 戦績 (3), 回線チェック (8) / 戻る (5), カラーエディット (7), なまえ (4).
+		// Rows: 8人 (0), 1v1 (1), トーナメント (6) / 合言葉 (2), みんなのカラー (9), 戦績 (3), 回線チェック (8) /
+		// 戻る (5), カラーエディット (7), なまえ (4).
 		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
-		const int32 ToRight[] = {1, 6, 3, 8, 5, 7, 0, 4, 2};
-		const int32 ToLeft[] = {6, 0, 8, 2, 7, 4, 1, 5, 3};
-		const int32 Down[] = {2, 3, 5, 7, 6, 0, 8, 1, 4};
-		const int32 Up[] = {5, 7, 0, 1, 8, 2, 4, 3, 6};
+		const int32 ToRight[] = {1, 6, 9, 8, 5, 7, 0, 4, 2, 3};
+		const int32 ToLeft[] = {6, 0, 8, 9, 7, 4, 1, 5, 3, 2};
+		const int32 Down[] = {2, 3, 5, 4, 6, 0, 8, 1, 4, 7};
+		const int32 Up[] = {5, 7, 0, 1, 3, 2, 4, 9, 6, 1};
 		SelectedIndex = bRight ? ToRight[SelectedIndex] : bLeft ? ToLeft[SelectedIndex] : bUp ? Up[SelectedIndex] : Down[SelectedIndex];
 	}
 	else if (Screen == EChaosImpactScreen::LineCheck && Key != EKeys::Tab)
@@ -4932,6 +5208,54 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		SelectedIndex = bHorizontal
 			? (SelectedIndex == 0 ? 1 : SelectedIndex == 1 ? 0 : 2)
 			: (SelectedIndex == 2 ? 0 : 2);
+	}
+	else if (Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && Entries.Num() >= 7 && Key != EKeys::Tab)
+	{
+		// The rows (0 to 3, the fixed ones passed over) above; under them, left to right as drawn: 戻る (5), ボールスイッチ (6),
+		// 決定 (4). Sideways along the bottom row; down from the rows to where the bottom row was left, up from it to the rows.
+		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
+		const bool bSideways = bLeft || bRight;
+		static const int32 Bottom[] = {5, 6, 4};
+		const int32 BottomAt = SelectedIndex == 5 ? 0 : SelectedIndex == 6 ? 1 : SelectedIndex == 4 ? 2 : INDEX_NONE;
+		const auto NextRow = [this](int32 From, const int32 Step)
+		{
+			for (int32 Tries = 0; Tries < 4; ++Tries)
+			{
+				From += Step;
+				if (From < 0 || From > 3)
+				{
+					return static_cast<int32>(INDEX_NONE);
+				}
+				if (!Entries[From].bDisabled)
+				{
+					return From;
+				}
+			}
+			return static_cast<int32>(INDEX_NONE);
+		};
+		if (BottomAt != INDEX_NONE)
+		{
+			if (bSideways)
+			{
+				SelectedIndex = Bottom[(BottomAt + (bRight ? 1 : 2)) % 3];
+			}
+			else
+			{
+				RulesBottomCursor = SelectedIndex;
+				const int32 Row = bUp ? NextRow(4, -1) : NextRow(-1, 1);
+				SelectedIndex = Row != INDEX_NONE ? Row : SelectedIndex;
+			}
+			if (SelectedIndex == 4 || SelectedIndex == 5 || SelectedIndex == 6)
+			{
+				RulesBottomCursor = SelectedIndex;
+			}
+		}
+		else if (!bSideways)
+		{
+			const int32 Row = NextRow(SelectedIndex, bUp ? -1 : 1);
+			const int32 Back = RulesBottomCursor == 5 || RulesBottomCursor == 6 ? RulesBottomCursor : 4;
+			SelectedIndex = Row != INDEX_NONE ? Row : Back;
+		}
 	}
 	else
 	{
@@ -5345,6 +5669,10 @@ void UChaosImpactMenuWidget::OpenBallSwitch(const bool bOpen)
 	BallSwitchAt = FPlatformTime::Seconds();
 	RefreshEntries();
 	SelectedIndex = bOpen ? FMath::Clamp(LastBallSwitchTile, 0, Entries.Num() - 1) : 6;
+	if (!bOpen)
+	{
+		RulesBottomCursor = 6;
+	}
 	ChaosImpactSfx::Play2D(this, bOpen ? EChaosImpactSfx::UiOpen : EChaosImpactSfx::UiBack);
 }
 
@@ -5494,6 +5822,10 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (SelectedIndex == 7)
 		{
 			Controller->OpenColourEdit(EChaosImpactScreen::MultiReady);
+		}
+		else if (SelectedIndex == 9)
+		{
+			Controller->OpenGallery();
 		}
 		else if (SelectedIndex == 8)
 		{
@@ -6334,6 +6666,10 @@ FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, cons
 	{
 		return FReply::Handled();
 	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen() && Gallery->HandleCharacter(InCharEvent.GetCharacter()))
+	{
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::TourneyEntry && TourneyEntry && TourneyEntry->IsOpen() && TourneyEntry->HandleCharacter(InCharEvent.GetCharacter()))
 	{
 		return FReply::Handled();
@@ -6343,6 +6679,11 @@ FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, cons
 
 FReply UChaosImpactMenuWidget::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
+	{
+		Gallery->HandleWheel(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetWheelDelta());
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit
 		&& ColourEdit->HandleWheel(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetWheelDelta(),
 			InMouseEvent.IsControlDown()))
@@ -6674,6 +7015,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 	{
 		TeamMousePoint = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
 	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
+	{
+		Gallery->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton));
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen())
 	{
 		ColourEdit->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),
@@ -6738,6 +7084,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	if (Screen == EChaosImpactScreen::MatchEnd && Entries.IsEmpty())
 	{
 		GoOnFromPodium();
+		return FReply::Handled();
+	}
+	if (Screen == EChaosImpactScreen::Gallery && Gallery)
+	{
+		Gallery->HandleMouseDown(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());
 		return FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
@@ -6847,6 +7198,11 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
+	{
+		Gallery->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsPainting())
 	{
 		ColourEdit->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());

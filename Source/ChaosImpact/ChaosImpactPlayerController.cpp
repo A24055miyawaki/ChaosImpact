@@ -683,10 +683,14 @@ void AChaosImpactPlayerController::BeginPlay()
 		}
 	}
 #endif
-	// Every world: once the effects are in, they are shown once out of sight, then any loading screen goes.
-	if (IsLocalController() && IsPrimaryLocalPlayerController())
+	// Every world: once the effects are in, they are shown once out of sight, then any loading screen goes. (Started
+	// for any local controller: at the very start its player may not be set yet; the first one's carries on, see TickWarmUp.)
+	if (IsLocalController())
 	{
-		GetWorldTimerManager().SetTimer(WarmUpTimer, this, &AChaosImpactPlayerController::WarmUpWhenLoaded, 0.1f, true, 0.3f);
+		FTSTicker::GetCoreTicker().RemoveTicker(WarmUpTicker);
+		WarmUpCheckAt = FPlatformTime::Seconds() + 0.3;
+		WarmUpReadyAt = 0.0;
+		WarmUpTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &AChaosImpactPlayerController::TickWarmUp), 0.1f);
 	}
 }
 
@@ -729,13 +733,64 @@ void AChaosImpactPlayerController::ReleaseLoadingWhenRoomReady()
 	Loading->NotifyWorldReady();
 }
 
-void AChaosImpactPlayerController::WarmUpWhenLoaded()
+bool AChaosImpactPlayerController::TickWarmUp(const float DeltaSeconds)
+{
+	if (!IsValid(this) || !GetWorld())
+	{
+		WarmUpTicker.Reset();
+		return false;
+	}
+	if (!GetLocalPlayer())
+	{
+		// Not this machine's player yet (a moment at start-up): wait for it.
+		return true;
+	}
+	if (!IsPrimaryLocalPlayerController())
+	{
+		// The first player's controller does this.
+		WarmUpTicker.Reset();
+		return false;
+	}
+	const double Now = FPlatformTime::Seconds();
+	if (WarmUpReadyAt > 0.0)
+	{
+		// A few frames for the effects to be drawn, then this world is ready.
+		if (Now < WarmUpReadyAt)
+		{
+			return true;
+		}
+		WarmUpTicker.Reset();
+		FinishWarmUp();
+		return false;
+	}
+	if (Now >= WarmUpCheckAt && WarmUpWhenLoaded())
+	{
+		WarmUpReadyAt = Now + 0.3;
+	}
+	return true;
+}
+
+void AChaosImpactPlayerController::FinishWarmUp()
+{
+	ReleaseLoadingWhenRoomReady();
+	if (bAwaitingStartupLoad)
+	{
+		// The title from its start: the logo lands, then the demo match comes on behind it.
+		bAwaitingStartupLoad = false;
+		if (MenuWidget && CurrentScreen == EChaosImpactScreen::Title)
+		{
+			MenuWidget->ShowScreen(EChaosImpactScreen::Title);
+		}
+		GetWorldTimerManager().SetTimer(TitleDemoTimer, this, &AChaosImpactPlayerController::StartTitleDemo, 1.4f, false);
+	}
+}
+
+bool AChaosImpactPlayerController::WarmUpWhenLoaded()
 {
 	if (const UChaosImpactFxPreloadSubsystem* Preload = UChaosImpactFxPreloadSubsystem::Get(this); Preload && !Preload->IsComplete())
 	{
-		return;
+		return false;
 	}
-	GetWorldTimerManager().ClearTimer(WarmUpTimer);
 	// Every world balls fly in (training, VS, solo, and the title with its demo match): each effect shown once now,
 	// out of sight below the arena, so the first real fire or ice ball does not stall while pipeline states and GPU
 	// resources are created.
@@ -745,22 +800,7 @@ void AChaosImpactPlayerController::WarmUpWhenLoaded()
 		Below.Z -= 6000.0f;
 		ChaosImpactBallTypes::WarmUpEffects(GetWorld(), Below);
 	}
-	// A few frames for that to be drawn, then this world is ready.
-	FTimerHandle ReadyTimer;
-	GetWorldTimerManager().SetTimer(ReadyTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
-	{
-		ReleaseLoadingWhenRoomReady();
-		if (bAwaitingStartupLoad)
-		{
-			// The title from its start: the logo lands, then the demo match comes on behind it.
-			bAwaitingStartupLoad = false;
-			if (MenuWidget && CurrentScreen == EChaosImpactScreen::Title)
-			{
-				MenuWidget->ShowScreen(EChaosImpactScreen::Title);
-			}
-			GetWorldTimerManager().SetTimer(TitleDemoTimer, this, &AChaosImpactPlayerController::StartTitleDemo, 1.4f, false);
-		}
-	}), 0.3f, false);
+	return true;
 }
 
 bool AChaosImpactPlayerController::IsPrimaryLocalPlayerController() const
@@ -1303,6 +1343,14 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	}
 	// A menu over the game (a paused world may not tick) must not leave a held rumble running.
 	StopRumble();
+	if (NewScreen == EChaosImpactScreen::MultiReady && NewScreen != CurrentScreen && IsPrimaryLocalPlayerController())
+	{
+		// The online menu's player card shows the ratings: asked for again each time it comes up.
+		if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+		{
+			Sessions->RefreshRecords();
+		}
+	}
 	if (NewScreen == EChaosImpactScreen::TrainingOverlay)
 	{
 		OpenTrainingOverlay();
@@ -3055,6 +3103,12 @@ void AChaosImpactPlayerController::SetLocalInputRouting(const int32 Players, con
 	JoinedLegacyControllerIds = PadDevices;
 }
 
+void AChaosImpactPlayerController::OpenGallery()
+{
+	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+	ShowMenuScreen(EChaosImpactScreen::Gallery);
+}
+
 void AChaosImpactPlayerController::OpenLineCheck()
 {
 	// (Its page starts the measuring as it comes up.)
@@ -4148,6 +4202,8 @@ void AChaosImpactPlayerController::ConfirmMatchRules()
 
 void AChaosImpactPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	FTSTicker::GetCoreTicker().RemoveTicker(WarmUpTicker);
+	WarmUpTicker.Reset();
 	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
 	{
 		if (VersusCard.IsValid())

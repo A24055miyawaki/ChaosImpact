@@ -1812,6 +1812,7 @@ void UChaosImpactLoadingSubsystem::Show(const EChaosImpactLoadingKind Kind)
 		FSlateApplication::Get().RegisterInputPreProcessor(Input, 0);
 	}
 	ShownAt = FPlatformTime::Seconds();
+	StartupLoadedAt = 0.0;
 	UE_LOG(LogChaosImpact, Log, TEXT("Loading screen up: %s (%s)"), *State->Status, LoadingGameName(State->Game));
 }
 
@@ -1837,6 +1838,7 @@ void UChaosImpactLoadingSubsystem::Remove()
 	bTravelling = false;
 	bWorldLoaded = false;
 	bReady = false;
+	StartupLoadedAt = 0.0;
 }
 
 void UChaosImpactLoadingSubsystem::BeginTravel(const EChaosImpactLoadingKind Kind)
@@ -2031,6 +2033,20 @@ bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
 		FScopeLock Guard(&State->Lock);
 		State->Progress = State->Progress >= 0.0f ? 1.0f : State->Progress;
 		State->FadeStartedAt = Now;
+	}
+	// The start-up screen: once its loading has come to the end, it waits only a little for the world to say it is
+	// ready (it never stays up for good, whatever happened to that word).
+	if (ProgressSource && State->Kind == EChaosImpactLoadingKind::Startup && !bReady)
+	{
+		if (ProgressSource() >= 1.0f)
+		{
+			StartupLoadedAt = StartupLoadedAt > 0.0 ? StartupLoadedAt : Now;
+		}
+		if ((StartupLoadedAt > 0.0 && Now - StartupLoadedAt > 5.0) || Now - ShownAt > 120.0)
+		{
+			UE_LOG(LogChaosImpact, Warning, TEXT("Start-up loading screen: no word that the world is ready after %.1f s; going anyway"), Now - ShownAt);
+			bReady = true;
+		}
 	}
 	// Never stuck up: a level that never came, or never said it was ready.
 	if (State->FadeStartedAt < 0.0 && Now >= KeepUpUntil && ((bTravelling && !bWorldLoaded && Now - ShownAt > 30.0)

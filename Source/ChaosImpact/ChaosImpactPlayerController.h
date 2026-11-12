@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Containers/Ticker.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactScreen.h"
 #include "ChaosImpactMatchTypes.h"
@@ -257,6 +258,8 @@ public:
 	void SetLocalInputRouting(int32 Players, int32 KeyboardPlayer, const TArray<int32>& PadDevices);
 	/** 回線チェック: measures the line to the relay and shows it. */
 	void OpenLineCheck();
+	/** Online: みんなのカラー (the custom colours players post). */
+	void OpenGallery();
 	/** ランダムマッチ 1v1 found (DuelFound): this player's answer. */
 	void AnswerDuelOffer(bool bAccept);
 	/** A matched room's results: leave them, to search again the same way or for the online menu. */
@@ -519,9 +522,17 @@ protected:
 	TObjectPtr<AChaosImpactTitleDemo> TitleDemo;
 	FTimerHandle TitleDemoTimer;
 	void StartTitleDemo();
-	/** Effects shown once out of sight (when they are in), then any loading screen told this world is ready. */
-	FTimerHandle WarmUpTimer;
-	void WarmUpWhenLoaded();
+	/**
+	 * Effects shown once out of sight (when they are in), then any loading screen told this world is ready. Checked on
+	 * the core ticker, not a world timer: a menu that pauses the world (or the start-up screen) must not hold it up.
+	 */
+	FTSTicker::FDelegateHandle WarmUpTicker;
+	double WarmUpCheckAt = 0.0;
+	double WarmUpReadyAt = 0.0;
+	bool TickWarmUp(float DeltaSeconds);
+	/** True once the effects were in and have been shown. */
+	bool WarmUpWhenLoaded();
+	void FinishWarmUp();
 	/**
 	 * The loading screen goes once this world is ready, but online not before its match is under way: a matched room's
 	 * own lobby (passed through on the way to the match) and a match level still waiting for everyone to come back in

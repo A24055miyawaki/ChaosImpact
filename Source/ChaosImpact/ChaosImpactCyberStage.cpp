@@ -7,6 +7,8 @@
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSfx.h"
 #include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/PostProcessComponent.h"
 #include "Components/SceneComponent.h"
@@ -190,6 +192,7 @@ AChaosImpactCyberStage::AChaosImpactCyberStage()
 	{
 		BuildQuarter(Quarter);
 		BuildPulseGate(Quarter);
+		BuildWalkway(Quarter);
 		BuildCyberCity(Quarter);
 	}
 
@@ -355,6 +358,106 @@ void AChaosImpactCyberStage::BuildQuarter(const int32 Quarter)
 	Prop(TEXT("WallGraffiti"), Graffiti, FVector(Half - 8.0f, -850.0f, 150.0f), 90.0f, 1.0f, false);
 	Prop(TEXT("CornerBusStop"), BusStop, FVector(2820.0f, 2080.0f, 0.0f), 135.0f, 0.95f, true);
 	Prop(TEXT("CornerBin"), TrashBin, FVector(2340.0f, 1390.0f, 0.0f), 0.0f, 1.0f, true);
+}
+
+void AChaosImpactCyberStage::BuildWalkway(const int32 Quarter)
+{
+	using CyberStage::OverpassTop;
+	const FString Q = FString::Printf(TEXT("_%d"), Quarter);
+	const float Yaw = 90.0f * Quarter;
+	const auto At = [Quarter](const float X, const float Y, const float Z) { return CyberStage::Turn(FVector(X, Y, Z), Quarter); };
+	const float Top = OverpassTop + 1.0f;
+	// The belt (dark, a little raised), its two glowing rails, the steel comb plates at its ends.
+	AddPart(nullptr, TEXT("WalkwayBelt") + Q, Steel, BoxMesh, At(WalkwayX, 0.0f, Top), FVector(WalkwayHalfWidth * 2.0f, WalkwayHalfLength * 2.0f, 2.0f),
+		FRotator(0.0f, Yaw, 0.0f), false);
+	for (const float Side : {-1.0f, 1.0f})
+	{
+		AddPart(nullptr, FString::Printf(TEXT("WalkwayRail%s"), Side < 0.0f ? TEXT("In") : TEXT("Out")) + Q, Glow, BoxMesh,
+			At(WalkwayX + Side * (WalkwayHalfWidth + 6.0f), 0.0f, Top + 3.0f), FVector(10.0f, WalkwayHalfLength * 2.0f, 8.0f), FRotator(0.0f, Yaw, 0.0f), false);
+		AddPart(nullptr, FString::Printf(TEXT("WalkwayComb%s"), Side < 0.0f ? TEXT("Start") : TEXT("End")) + Q, Steel, BoxMesh,
+			At(WalkwayX, Side * (WalkwayHalfLength + 18.0f), Top + 1.0f), FVector(WalkwayHalfWidth * 2.0f + 24.0f, 36.0f, 4.0f), FRotator(0.0f, Yaw, 0.0f), false);
+		AddPart(nullptr, FString::Printf(TEXT("WalkwayCombGlow%s"), Side < 0.0f ? TEXT("Start") : TEXT("End")) + Q, Glow, BoxMesh,
+			At(WalkwayX, Side * (WalkwayHalfLength + 2.0f), Top + 3.5f), FVector(WalkwayHalfWidth * 2.0f, 4.0f, 2.0f), FRotator(0.0f, Yaw, 0.0f), false);
+	}
+	// The chevrons (">" pointing the way it goes), each two glowing bars under a root moved along the belt every frame.
+	for (int32 Chevron = 0; Chevron < WalkwayChevrons; ++Chevron)
+	{
+		USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(*FString::Printf(TEXT("WalkwayChevron%d%s"), Chevron, *Q));
+		Root->SetupAttachment(SceneRoot);
+		Root->SetRelativeLocation(At(WalkwayX, -WalkwayHalfLength + Chevron * (2.0f * WalkwayHalfLength / WalkwayChevrons), Top + 2.0f));
+		Root->SetRelativeRotation(FRotator(0.0f, Yaw, 0.0f));
+		WalkwayChevronRoots.Add(Root);
+		for (const float Side : {-1.0f, 1.0f})
+		{
+			// From the tip (on the line, ahead) back to the side: 74 long, leaning 42 degrees.
+			AddPart(Root, FString::Printf(TEXT("WalkwayArm%d%s"), Chevron, Side < 0.0f ? TEXT("L") : TEXT("R")) + Q, Glow, BoxMesh,
+				FVector(Side * 27.5f, 5.0f, 0.0f), FVector(74.0f, 14.0f, 2.0f), FRotator(0.0f, Side < 0.0f ? -137.7f : -42.3f, 0.0f), false);
+		}
+	}
+}
+
+bool AChaosImpactCyberStage::GetWalkwayPush(const FVector& FootLocation, FVector& OutVelocity) const
+{
+	const FVector Local = GetActorTransform().InverseTransformPosition(FootLocation);
+	for (int32 Quarter = 0; Quarter < 4; ++Quarter)
+	{
+		const FVector Along = FRotator(0.0f, -90.0f * Quarter, 0.0f).RotateVector(Local);
+		if (FMath::Abs(Along.X - WalkwayX) <= WalkwayHalfWidth && FMath::Abs(Along.Y) <= WalkwayHalfLength
+			&& Along.Z > CyberStage::OverpassTop - 40.0f && Along.Z < CyberStage::OverpassTop + 60.0f)
+		{
+			OutVelocity = GetActorTransform().TransformVectorNoScale(CyberStage::Turn(FVector(0.0f, WalkwaySpeed, 0.0f), Quarter));
+			return true;
+		}
+	}
+	return false;
+}
+
+void AChaosImpactCyberStage::TickWalkways(const float DeltaSeconds)
+{
+	const float Step = FMath::Min(DeltaSeconds, 0.1f);
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		AChaosImpactCharacter* Character = *It;
+		// The machine that moves them carries them: its own players, and the host its CPUs (a guest's own moves are trusted).
+		if (!Character || !(Character->IsLocallyControlled() || (HasAuthority() && !Character->IsPlayerControlled())))
+		{
+			continue;
+		}
+		const UCharacterMovementComponent* Movement = Character->GetCharacterMovement();
+		if (!Movement || !Movement->IsMovingOnGround())
+		{
+			continue;
+		}
+		const float Half = Character->GetCapsuleComponent() ? Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 90.0f;
+		FVector Push;
+		if (GetWalkwayPush(Character->GetActorLocation() - FVector(0.0f, 0.0f, Half), Push))
+		{
+			Character->AddActorWorldOffset(Push * Step, true);
+		}
+	}
+}
+
+void AChaosImpactCyberStage::UpdateWalkwaysLook()
+{
+	// The chevrons flow at the belt's own speed, from the start comb to the end one, shrinking in and out at the ends.
+	const float Clock = static_cast<float>(FMath::Fmod(GetServerNow(), 3600.0));
+	const float Length = 2.0f * WalkwayHalfLength;
+	const float Spacing = Length / WalkwayChevrons;
+	for (int32 Index = 0; Index < WalkwayChevronRoots.Num(); ++Index)
+	{
+		USceneComponent* Root = WalkwayChevronRoots[Index];
+		if (!Root)
+		{
+			continue;
+		}
+		const int32 Quarter = Index / WalkwayChevrons;
+		const int32 Chevron = Index % WalkwayChevrons;
+		const float Along = FMath::Fmod(Chevron * Spacing + Clock * WalkwaySpeed, Length) - WalkwayHalfLength;
+		const float Edge = FMath::Clamp((WalkwayHalfLength - FMath::Abs(Along)) / 160.0f, 0.0f, 1.0f);
+		Root->SetRelativeLocation(CyberStage::Turn(FVector(WalkwayX, Along, CyberStage::OverpassTop + 3.0f), Quarter));
+		Root->SetRelativeScale3D(FVector(FMath::Max(Edge, 0.01f)));
+		Root->SetVisibility(Edge > 0.02f, true);
+	}
 }
 
 void AChaosImpactCyberStage::BuildPulseGate(const int32 Gate)
@@ -839,6 +942,9 @@ void AChaosImpactCyberStage::MulticastGateActivated_Implementation(const int32 P
 		}
 		const FVector At = GetActorTransform().TransformPosition(GetGateOffset(Gate));
 		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageWarp, At, 0.7f, 1.25f);
+		// The barrier forms: a ring of its colour spreads out over the floor from it.
+		PlayFloorRing(At, Gate % 2 == 0 ? FLinearColor(0.0f, 0.9f, 1.0f) : FLinearColor(1.0f, 0.5f, 0.1f), GateHalfWidth * 0.5f, GateHalfWidth * 2.4f,
+			0.6f, 12.0f, 12.0f);
 		if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::WarpIn))
 		{
 			if (UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
@@ -1026,6 +1132,22 @@ void AChaosImpactCyberStage::TickGatesServer(const double Now)
 
 void AChaosImpactCyberStage::UpdateGatesLook(const float DeltaSeconds)
 {
+	// The warning: each coming gate crackles with electricity between its posts, and a red ring closes in on it.
+	if (GatePattern >= 0 && GetGateProgress() < 1.0f && GateWarnFxStartedAt != GateStartedAt)
+	{
+		GateWarnFxStartedAt = GateStartedAt;
+		const float Left = GateWarnSeconds * (1.0f - GetGateProgress());
+		for (int32 Gate = 0; Gate < 4; ++Gate)
+		{
+			if (!IsGateInPattern(Gate, GatePattern))
+			{
+				continue;
+			}
+			const FVector At = GetActorTransform().TransformPosition(GetGateOffset(Gate));
+			PlayStageEffect(ChaosImpactBallTypes::Effects::Electricity, At + FVector(0.0f, 0.0f, 150.0f), FVector(2.4f, 2.4f, 2.8f), Left);
+			PlayFloorRing(At, FLinearColor(1.0f, 0.3f, 0.2f), GateHalfWidth * 1.8f, GateHalfWidth * 0.6f, Left, 8.0f, 7.0f);
+		}
+	}
 	const float Progress = GetGateProgress();
 	for (int32 Gate = 0; Gate < GateFields.Num(); ++Gate)
 	{
@@ -1083,12 +1205,14 @@ void AChaosImpactCyberStage::Tick(const float DeltaSeconds)
 	{
 		TickGatesServer(GetServerNow());
 	}
+	TickWalkways(DeltaSeconds);
 	if (GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
 	LookClock += DeltaSeconds;
 	UpdateGatesLook(DeltaSeconds);
+	UpdateWalkwaysLook();
 
 	if (HoloRingRoot)
 	{

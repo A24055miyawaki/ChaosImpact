@@ -26,6 +26,7 @@ public:
 	void RefreshEntries();
 	int32 GetSelectedIndex() const { return SelectedIndex; }
 	int32 GetEntryCount() const { return Entries.Num(); }
+	bool IsEntryDisabled(const int32 Index) const { return Entries.IsValidIndex(Index) && Entries[Index].bDisabled; }
 	bool HasLogo() const { return LogoTexture != nullptr; }
 	EChaosImpactScreen GetScreen() const { return Screen; }
 	/**
@@ -140,7 +141,13 @@ private:
 	void PaintDojoInvite(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
 	double BallSwitchAt = 0.0;
 	int32 LastBallSwitchTile = 0;
+	/** When leaving with every kind off was refused (the note flashes). */
+	double BallSwitchDeniedAt = -100.0;
+	/** Ball tiles in a row on the ボールスイッチ. */
+	static constexpr int32 BallSwitchColumns = 8;
 	void OpenBallSwitch(bool bOpen);
+	/** Closes the ボールスイッチ unless every kind is off (then refused, false). */
+	bool CloseBallSwitchIfAnyOn();
 	double PauseConfirmAt = 0.0;
 	/** The question and the line under it for PauseConfirm. */
 	void GetPauseConfirmText(FString& OutQuestion, FString& OutNote) const;
@@ -155,6 +162,8 @@ private:
 	int32 ResultsRowCursor = 0;
 	double ScreenStartedAt = 0.0;
 public:
+	/** Tests: the rules screen's list of kinds opened or closed. */
+	void OpenModePickerForTests(const bool bOpen) { OpenModePicker(bOpen); }
 	/** When the screen shown now came up (a back or pause press right after is the same press arriving another way). */
 	double GetScreenStartedAt() const { return ScreenStartedAt; }
 private:

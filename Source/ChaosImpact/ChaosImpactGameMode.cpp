@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactGameMode.h"
+#include "ChaosImpactParty.h"
 #include "ChaosImpactBallSwitch.h"
 
 #include "ChaosImpactDojo.h"
@@ -299,6 +300,9 @@ void AChaosImpactGameMode::BeginPlay()
 			// ("crash": クラッシュボール, two teams.)
 			DevAutoVersusRules.bCrashBall = Parts.IsValidIndex(3) && Parts[3] == TEXT("crash");
 			if (DevAutoVersusRules.bCrashBall) { DevAutoVersusRules.TeamCount = 2; }
+			// ("ruby" / "crown": ルビーラッシュ / クラウンキープ, everyone for themselves.)
+			DevAutoVersusRules.PartyRule = !Parts.IsValidIndex(3) ? 0 : Parts[3] == TEXT("ruby") ? ChaosImpactMatch::PartyRuby
+				: Parts[3] == TEXT("crown") ? ChaosImpactMatch::PartyCrown : 0;
 			// (A fifth part: the stage, 1 to 6.)
 			if (Parts.IsValidIndex(4)) { DevAutoVersusRules.StageIndex = FMath::Clamp(FCString::Atoi(*Parts[4]) - 1, 0, ChaosImpactMatch::StageCount - 1); }
 			const float Delay = Parts.IsValidIndex(2) ? FMath::Max(1.0f, FCString::Atof(*Parts[2])) : 20.0f;
@@ -1493,6 +1497,7 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	Match->bVersusMatch = true;
 	Match->Rules = Rules;
 	SetupCrashMatch();
+	SetupPartyMatch();
 	Match->StageCenter = VersusStage->GetCenter();
 	Match->StageHalfExtent = VersusStage->GetHalfExtent();
 	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
@@ -1851,6 +1856,14 @@ void AChaosImpactGameMode::StartMatchIntro()
 	{
 		SpawnPoints.Swap(Index, FMath::RandRange(0, Index));
 	}
+	// クラウンキープ: everyone round the edge, the same way from the crown in the middle.
+	if (Match->Rules.IsCrownKeep())
+	{
+		if (const TArray<FVector> Edge = GetPartyEdgeStarts(Competitors.Num()); Edge.Num() >= Competitors.Num())
+		{
+			SpawnPoints = Edge;
+		}
+	}
 	// クラッシュボール: each team starts on its own half, in front of the goal it defends.
 	TArray<FVector> TeamPoints[2];
 	int32 TeamUsed[2] = {0, 0};
@@ -1974,6 +1987,10 @@ void AChaosImpactGameMode::BeginMatchPlay()
 	{
 		GetWorldTimerManager().SetTimer(CrashMatchTimer, this, &AChaosImpactGameMode::UpdateCrashMatch, 0.05f, true);
 	}
+	if (Match->Rules.IsParty())
+	{
+		GetWorldTimerManager().SetTimer(PartyMatchTimer, this, &AChaosImpactGameMode::UpdatePartyMatch, 0.05f, true);
+	}
 	// The graph starts at 0 for everyone at GO.
 	for (AChaosImpactPlayerState* Member : Match->GetCompetitors(true))
 	{
@@ -1990,7 +2007,12 @@ void AChaosImpactGameMode::EndMatch()
 	GetWorldTimerManager().ClearTimer(RoyaleTimer);
 	GetWorldTimerManager().ClearTimer(DuelTimer);
 	GetWorldTimerManager().ClearTimer(CrashMatchTimer);
+	GetWorldTimerManager().ClearTimer(PartyMatchTimer);
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	if (const AChaosImpactGameState* PartyMatch = GetGameState<AChaosImpactGameState>(); PartyMatch && IsValid(PartyMatch->PartyCrown))
+	{
+		PartyMatch->PartyCrown->Freeze();
+	}
 	// The last point of the graph is the final score; every number goes out now for the results.
 	GetWorldTimerManager().ClearTimer(HistoryTimer);
 	SampleMatchHistory();
@@ -2067,6 +2089,7 @@ void AChaosImpactGameMode::ReturnToLobbyAfterMatch()
 	}
 	SyncTrainingCPUCount(0, FVector::ZeroVector, FRotator::ZeroRotator);
 	ClearCrashMatch();
+	ClearPartyMatch();
 	DestroyStageBallSpawners();
 	ClearMatchBalls();
 	Match->bVersusMatch = false;
@@ -2521,7 +2544,8 @@ void AChaosImpactGameMode::AwardMatchPoints(APlayerState* Scorer, const int32 Po
 	{
 		return;
 	}
-	Member->Points += Points;
+	// パーティルール: the points are rubies or the crown's counts (hits score nothing; knockouts are still counted).
+	Member->Points += Match->Rules.IsParty() ? 0 : Points;
 	Member->Knockouts += bKnockout ? 1 : 0;
 	Member->ForceNetUpdate();
 }
@@ -2910,6 +2934,11 @@ void AChaosImpactGameMode::ApplyDuelBallChances(const bool bWithPicks)
 			const bool bDrawn = bWithPicks && Match->Duel.BallPicks.Contains(static_cast<uint8>(Type));
 			const float Weight = Defaults->GetChanceWeight(static_cast<EChaosImpactBallType>(Type));
 			Spawner->SetChanceWeight(static_cast<EChaosImpactBallType>(Type), bDrawn ? FMath::Max(Weight, 0.05f) : 0.0f);
+		}
+		// The balls put out before the draw (normal ones) go when the normal ball is switched off.
+		if (bWithPicks)
+		{
+			Spawner->ReplaceBallIfUnwanted();
 		}
 	}
 }

@@ -29,6 +29,8 @@ struct FChaosImpactResultEntry
 	int32 Colour = 0;
 	/** カスタムカラー parts as the model wore them (empty: its usual colours). */
 	TArray<uint8> CustomColours;
+	/** ペイント: the pictures drawn on it (UChaosImpactPaintCache key; 0: none, or others' hidden by the settings). */
+	int32 PaintKey = 0;
 	int32 Team = INDEX_NONE;
 	bool bBot = false;
 	/** Which player on this machine (P1-P4), or INDEX_NONE. */
@@ -64,10 +66,14 @@ struct FChaosImpactResultsData
 	bool bCrashBall = false;
 	bool bDuel = false;
 	bool bBattleRoyale = false;
+	/** パーティルール (ChaosImpactMatch::PartyRuby / PartyCrown): the points are rubies, or the crown's counts. */
+	uint8 PartyRule = 0;
 	FString ScoreText(const FChaosImpactResultEntry& Entry) const
 	{
 		return bBattleRoyale ? FString::Printf(TEXT("%d位"), Entry.Rank)
-			: bDuel ? FString::Printf(TEXT("%d勝"), Entry.RoundsWon) : FString::Printf(TEXT("%d pt"), Entry.Points);
+			: bDuel ? FString::Printf(TEXT("%d勝"), Entry.RoundsWon)
+			: PartyRule == 1 ? FString::Printf(TEXT("%d ルビー"), Entry.Points)
+			: PartyRule == 2 ? FString::Printf(TEXT("%d カウント"), Entry.Points) : FString::Printf(TEXT("%d pt"), Entry.Points);
 	}
 	bool bCrashKnockout = false;
 	/** Team battle: (team, points), best first. */
@@ -135,6 +141,9 @@ private:
 		bool bShown = false;
 		bool bLanded = false;
 		float NextCheerAt = 0.0f;
+		/** Its pictures were not here yet when it was made: put on once they arrive. */
+		bool bPaintPending = false;
+		int32 PaintKey = 0;
 	};
 
 	void AddPedestal(float Radius, float Height);

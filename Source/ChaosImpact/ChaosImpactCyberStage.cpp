@@ -74,6 +74,8 @@ AChaosImpactCyberStage::AChaosImpactCyberStage()
 	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/M_StageMetalFloor.M_StageMetalFloor"));
 	Team0GoalOffset = FVector(-2950, 0, 120);
 	Team1GoalOffset = FVector(2950, 0, 120);
+	// クラッシュボール: the goals (pedestals) at opposite corners (the ground round them is cleared), and the ways round to them.
+	SetCrashDiagonalGoals(FVector(-2400, -2400, 0), FVector(2400, 2400, 0), {FVector(150, 150, 70), FVector(0, 600, 40), FVector(0, 1350, 0), FVector(150, 2700, 120), FVector(1500, 2850, 60), FVector(2100, 2400, 0)}, {FVector(-150, -150, 70), FVector(0, -600, 40), FVector(0, -1350, 0), FVector(-150, -2700, 120), FVector(-1500, -2850, 60), FVector(-2100, -2400, 0)});
 	CrashBallExtraBallOffsets = {FVector(-900, 650, 0), FVector(900, -650, 0)};
 	for (const float Sign : {-1.f, 1.f})
 	{

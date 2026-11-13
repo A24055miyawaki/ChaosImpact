@@ -75,6 +75,17 @@ public:
 	/** Returns the horizontal unit direction in which AttackingTeam (0 or 1) should push the Giant Ball from WorldBallLocation. */
 	virtual FVector GetCrashBallPushDirection(int32 AttackingTeam, const FVector& WorldBallLocation) const;
 
+	/**
+	 * クラッシュボール's goals at opposite corners: red's at Red, blue's at Blue (stage frame, on the floor), each facing the
+	 * middle, and the ways round the obstacles from the middle to each (found with ChaosImpact.CrashBall.DiagonalProbe).
+	 */
+	void SetCrashDiagonalGoals(const FVector& Red, const FVector& Blue, const TArray<FVector>& ToBlue, const TArray<FVector>& ToRed);
+
+	/** How far round each goal the ground is cleared of obstacles in クラッシュボール (pillars, props, warp pads). */
+	static constexpr float CrashGoalClearRadius = 700.0f;
+	/** Something to clear for クラッシュボール: standing up within CrashGoalClearRadius of a goal, and not floor or outer wall. */
+	bool IsInCrashGoalArea(const UStaticMeshComponent* Part) const;
+
 	/** Enables or disables Crash Ball-specific route improvements and obstacle adjustments on this stage. */
 	virtual void ConfigureCrashBallMode(bool bEnable);
 	bool IsCrashBallModeActive() const { return bCrashBallModeActive; }

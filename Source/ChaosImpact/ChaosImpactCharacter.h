@@ -201,7 +201,11 @@ public:
 	 * How fast a big snowball leaves over the head: FullSpeed, or slower so it comes down on the nearest opponent standing
 	 * in its way (ahead, within its full reach and within its width of the aim) instead of sailing over them.
 	 */
-	float GetOverheadSnowSpeed(float Scale, float FullSpeed) const;
+	/**
+	 * A big snowball hurled from over the head: always at FullSpeed; aimed at someone near in front it leaves the hand
+	 * flatter (OutUpSpeed, down when need be) so it comes down on them, as a throw at someone far off does.
+	 */
+	float GetOverheadSnowSpeed(float Scale, float FullSpeed, float* OutUpSpeed = nullptr) const;
 	/** Seconds until this character could start a dash (0: now): stamina, the cooldown and a dash in progress. */
 	float GetDashReadyInSeconds() const;
 	/** Seconds left of the dash in progress (0 when not dashing). */
@@ -228,6 +232,16 @@ public:
 	const TArray<uint8>& GetShownCustomColours() const { return ShownCustomColours; }
 	/** 1-based number shown above a CPU character; 0 for human players. */
 	int32 GetCPUNumber() const { return CPUNumber; }
+
+	/**
+	 * パーティルール: this machine's player touched a ruby (its id) or the crown (ChaosImpactParty::CrownId) on their own
+	 * screen; the host decides who touched it first and answers.
+	 */
+	void ClaimPartyItem(int32 Id);
+	UFUNCTION(Server, Reliable)
+	void ServerClaimPartyItem(int32 Id);
+	UFUNCTION(Client, Reliable)
+	void ClientPartyClaimResolved(int32 Id, bool bAccepted);
 	void SetCPUNumber(const int32 Number) { CPUNumber = static_cast<uint8>(FMath::Clamp(Number, 0, 255)); }
 
 	// ---- Placed in a level (solo mode enemies). A character placed in a level plays as a CPU by itself
@@ -334,6 +348,14 @@ public:
 	bool IsPulledByHook() const { return HookPuller != nullptr; }
 	/** Every machine: this character's own hook is out (its arms follow the chain). */
 	void ShowOwnHook(AChaosImpactHook* Hook);
+	/** Knocked out of an anchor's flight (a stage's obstacle hit them): they fall from where they are. */
+	void BreakAnchorZip() { if (bAnchorZipping) { EndAnchorZip(false); } }
+	/** Server: health lost to a stage itself (a fall), with the usual hit presentation, never a knockout of itself. */
+	void LoseHealthToStage(const float Amount) { Health = FMath::Clamp(Health - Amount, 0.0f, MaxHealth); OnPlayerHit(Health, Amount); ForceNetUpdate(); }
+	/** Server: back to full health (a stage starting the player over). */
+	void RefillHealth() { Health = MaxHealth; ForceNetUpdate(); }
+	/** A stage that wants a wider view (the crane yard's long hops): the top-down camera's distance times this. */
+	void SetStageCameraScale(const float Scale) { StageCameraScale = FMath::Max(Scale, 0.1f); }
 	/** Flying to its own anchor on its chain (where this character is moved). */
 	bool IsAnchorZipping() const { return bAnchorZipping; }
 	/** Where the chain of this character's hook starts on this screen (the right palm). False when not drawn. */
@@ -728,6 +750,8 @@ protected:
 	TObjectPtr<UMaterialInstanceDynamic> HeldPrisonMaterial;
 	UPROPERTY(Transient)
 	TObjectPtr<UProceduralMeshComponent> HeldPrisonCages[2];
+	/** A prison ball's cage shows only on a hand that holds a prison ball (showing a hand's ball shows its children too). */
+	void SyncHeldPrisonCages();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldSimaeMaterial;
@@ -1372,6 +1396,7 @@ protected:
 	uint8 SavedTrainingMenuMovementMode = 1;
 	uint8 SavedTrainingMenuCustomMovementMode = 0;
 	float SavedCameraArmLength = 800.0f;
+	float StageCameraScale = 1.0f;
 	FVector SavedCameraSocketOffset = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, Category="Chaos Impact|Training Camera", meta=(ClampMin="250.0", ClampMax="800.0"))

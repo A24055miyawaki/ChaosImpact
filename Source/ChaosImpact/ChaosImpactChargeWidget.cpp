@@ -1,6 +1,9 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactParty.h"
+#include "ChaosImpactBallSwitch.h"
+#include "ChaosImpactRuleCard.h"
 #include "ChaosImpactSuddenDeathZone.h"
 #include "ChaosImpactTutorial.h"
 #include "ChaosImpactNovaParts.h"
@@ -512,12 +515,15 @@ void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const flo
 	if (const AChaosImpactPlayerState* Own = GetOwningPlayer()
 		? GetOwningPlayer()->GetPlayerState<AChaosImpactPlayerState>() : nullptr)
 	{
-		if (bMatchRunning && Own->Points > LastOwnPoints)
+		// (ルビーラッシュ: this machine's own pickups count at once.)
+		const AChaosImpactGameState* OwnMatch = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+		const int32 OwnPoints = OwnMatch && OwnMatch->IsRubyRush() ? ChaosImpactParty::GetShownCount(GetWorld(), Own) : Own->Points;
+		if (bMatchRunning && OwnPoints > LastOwnPoints)
 		{
-			PointsGained = Own->Points - LastOwnPoints;
+			PointsGained = OwnPoints - LastOwnPoints;
 			PointsGainedAt = FPlatformTime::Seconds();
 		}
-		LastOwnPoints = Own->Points;
+		LastOwnPoints = OwnPoints;
 	}
 
 	if (const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
@@ -1690,6 +1696,104 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		PaintOverviewMap(AllottedGeometry, OutDrawElements, HudLayer + 46);
 	}
 	return FMath::Max(BaseLayer + 22, HudLayer + 56);
+}
+
+void UChaosImpactChargeWidget::PaintRuleDetails(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, const int32 Layer,
+	const AChaosImpactPlayerController* Owner) const
+{
+	using namespace ChaosImpactPaint;
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	if (!Room || !Owner || Size.X < 1.0f || Size.Y < 1.0f)
+	{
+		return;
+	}
+	const FChaosImpactMatchRules& Rules = Room->Rules;
+	const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
+	const float In = EaseOut(static_cast<float>(FPlatformTime::Seconds() - Owner->GetRuleCardOpenedAt()) / 0.18f);
+	// The view dimmed under it (like the whole-stage map), the card in the middle.
+	FPainter{AllottedGeometry, OutDrawElements, Layer}.Box(0.0f, 0.0f, Size.X, Size.Y, FLinearColor(0.0f, 0.004f, 0.02f, 0.84f * In));
+	const float S = FMath::Min(FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor(),
+		FMath::Min(Size.X / 1180.0f, Size.Y / 720.0f));
+	constexpr float CW = 1080.0f;
+	constexpr float CH = 640.0f;
+	const FGeometry Middle = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.5f, S);
+	const FGeometry CardSpace = MakeSkewed(Middle, -CW * 0.5f, -CH * 0.5f + (1.0f - In) * 30.0f, CW, CH, -0.05f);
+	const FLinearColor Accent = ChaosImpactRuleCard::GetColor(Rules);
+	const FPainter C{CardSpace, OutDrawElements, Layer + 1, In};
+	C.Box(14.0f, 16.0f, CW, CH, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+	FLinearColor Deep = Accent * 0.2f;
+	Deep.A = 0.97f;
+	HudPoly(C, {FVector2D(0.0, 0.0), FVector2D(CW, 0.0), FVector2D(CW, CH), FVector2D(0.0, CH)}, MakeFill(Deep, FLinearColor(0.008f, 0.01f, 0.025f, 0.98f)));
+	const FPainter CU = HudAbove(C, 1);
+	HudPoly(CU, {FVector2D(0.0, 0.0), FVector2D(CW, 0.0), FVector2D(CW, 8.0), FVector2D(0.0, 8.0)}, MakeFill(FMath::Lerp(Accent, Paper, 0.35f), Accent));
+	CU.Outline(0.0f, 0.0f, CW, CH, WithAlpha(Paper, 0.14f), 1.5f);
+	const FPainter CT = HudAbove(C, 3);
+	// The kind: in English small, in Japanese large; its emblem on the right.
+	CT.Text(ChaosImpactRuleCard::GetEnglish(Rules), 44.0f, 28.0f, 20.0f, Accent, ETextAlign::Left, TEXT("BlackItalic"));
+	const FString Kind = ChaosImpactMatch::DescribeRule(Rules).Replace(TEXT("  "), TEXT(" "));
+	HudText3D(HudAbove(CT, 1), Kind, 44.0f, 56.0f, HudFit(Kind, 50.0f, CW - 88.0f - 260.0f), Paper, ETextAlign::Left, TEXT("Black"), 3.0f);
+	ChaosImpactRuleCard::PaintEmblem(HudAbove(C, 2), Rules, FVector2D(CW - 150.0f, 118.0f), 78.0f, WithAlpha(FMath::Lerp(Accent, Paper, 0.3f), 0.9f), Time);
+	// How it goes.
+	const int32 Total = Room->CountHumanMembers() + (Rules.bTournament ? Rules.Tournament.CPUs.Num() : Rules.CPUCount);
+	const TArray<FString> Points = ChaosImpactRuleCard::GetPoints(Rules, Total);
+	for (int32 Index = 0; Index < Points.Num(); ++Index)
+	{
+		const float Y = 150.0f + Index * 46.0f;
+		CT.Disc(FVector2D(52.0, Y + 16.0), 6.0f, Accent);
+		CT.Text(Points[Index], 72.0f, Y, HudFit(Points[Index], 25.0f, CW - 72.0f - 290.0f, TEXT("Bold")), Index == 0 ? Paper : WithAlpha(Paper, 0.85f),
+			ETextAlign::Left, TEXT("Bold"));
+	}
+	CT.Box(44.0f, 300.0f, CW - 88.0f, 1.0f, WithAlpha(Paper, 0.14f));
+	// The settings, two columns.
+	const bool bDuelRules = Rules.bTournament || Rules.bDuel;
+	const int32 CPULevel = Rules.bTournament ? (Rules.Tournament.CPUs.IsEmpty() ? INDEX_NONE : Rules.Tournament.CPUs[0].Level) : Rules.CPULevel;
+	const int32 CPUs = Rules.bTournament ? Rules.Tournament.CPUs.Num() : Rules.CPUCount;
+	const FString Length = Rules.bTournament
+		? (Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? FString(TEXT("同時進行")) : FString(TEXT("1試合ずつ")))
+		: Rules.bDuel ? FString::Printf(TEXT("1ラウンド%d秒・%d本先取"), FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::DuelRoundsToWin)
+		: FString::Printf(TEXT("%d分"), Rules.Minutes);
+	const TPair<FString, FString> Items[] = {
+		{TEXT("ステージ"), bDuelRules ? FString(ChaosImpactMatch::GetDuelStageName()) : ChaosImpactMatch::GetStageLabel(Rules.StageIndex)},
+		{Rules.bTournament ? TEXT("進め方") : TEXT("試合時間"), Length},
+		{TEXT("CPU"), CPUs > 0 ? FString::Printf(TEXT("%d人（%s）"), CPUs, CPULevel < 0 ? TEXT("おまかせ") : ChaosImpactMatch::GetCPULevelName(CPULevel))
+			: FString(TEXT("なし"))},
+		{TEXT("チーム"), Rules.IsTeamBattle() ? FString::Printf(TEXT("%dチーム"), Rules.TeamCount) : FString(TEXT("個人戦"))}};
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Items); ++Index)
+	{
+		const float X = Index % 2 == 0 ? 44.0f : CW * 0.5f + 10.0f;
+		const float Y = 314.0f + (Index / 2) * 72.0f;
+		CT.Text(Items[Index].Key, X, Y, 17.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		HudText3D(HudAbove(CT, 1), Items[Index].Value, X, Y + 24.0f, HudFit(Items[Index].Value, 28.0f, CW * 0.5f - 64.0f), Paper, ETextAlign::Left,
+			TEXT("Black"), 2.0f);
+	}
+	// ボールスイッチ: every ball, the ones switched off struck through.
+	const TArray<EChaosImpactBallType> Kinds = ChaosImpactBallSwitch::GetSwitchable();
+	const int32 On = ChaosImpactBallSwitch::CountOn(Rules);
+	CT.Box(44.0f, 462.0f, CW - 88.0f, 1.0f, WithAlpha(Paper, 0.14f));
+	CT.Text(TEXT("ボールスイッチ"), 44.0f, 474.0f, 17.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+	CT.Text(FString::Printf(TEXT("オン %d / %d"), On, Kinds.Num()), CW - 44.0f, 474.0f, 17.0f, On == Kinds.Num() ? Paper : Gold, ETextAlign::Right, TEXT("Black"));
+	const float Step = FMath::Min(60.0f, (CW - 88.0f) / FMath::Max(Kinds.Num(), 1));
+	for (int32 Index = 0; Index < Kinds.Num(); ++Index)
+	{
+		const bool bOn = ChaosImpactBallSwitch::IsOn(Rules, Kinds[Index]);
+		const FVector2D At(44.0f + Step * (Index + 0.5f), 532.0f);
+		const FPainter Icon{CardSpace, OutDrawElements, Layer + 6, In * (bOn ? 1.0f : 0.35f)};
+		PaintBallIcon(Icon, At, FMath::Min(20.0f, Step * 0.36f), true, Kinds[Index], 0.0f, Time);
+		if (!bOn)
+		{
+			HudAbove(CT, 4).Line(At + FVector2D(-18.0, 18.0), At + FVector2D(18.0, -18.0), FLinearColor(0.95f, 0.2f, 0.25f, 0.9f), 4.0f);
+		}
+	}
+	// How to close it.
+	const FString CloseKey = ChaosImpactSettings::DescribeAction(Owner, EChaosImpactAction::RuleCard);
+	const float KeyW = FMath::Max(HudMeasure(CloseKey, 17.0f, TEXT("Black")) + 18.0f, 32.0f);
+	const float CloseW = HudMeasure(TEXT("とじる"), 18.0f, TEXT("Bold"));
+	RoundedBox(CT, CW - 44.0f - CloseW - 10.0f - KeyW, CH - 52.0f, KeyW, 28.0f, 7.0f, WithAlpha(Paper, 0.9f));
+	HudAbove(CT, 1).Text(CloseKey, CW - 44.0f - CloseW - 10.0f - KeyW * 0.5f, CH - 49.0f, 17.0f, Ink, ETextAlign::Center, TEXT("Black"));
+	CT.Text(TEXT("とじる"), CW - 44.0f, CH - 49.0f, 18.0f, Paper, ETextAlign::Right, TEXT("Bold"));
+	const FString Note = TEXT("このルールで次の試合が始まります");
+	CT.Text(Note, 44.0f, CH - 49.0f, HudFit(Note, 17.0f, CW - 88.0f - CloseW - KeyW - 40.0f, TEXT("Bold")), Muted, ETextAlign::Left, TEXT("Bold"));
 }
 
 bool UChaosImpactChargeWidget::FindMapArea(FVector& OutCenter, float& OutHalf) const
@@ -2966,6 +3070,62 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	}
 }
 
+namespace
+{
+	/**
+	 * パーティルール: a competitor's rubies (or counts left) in a small pill, its bottom middle at Bottom: the gem or the
+	 * crown, the number, a glow as it goes up; the crown's holder gets the count in progress as a ring round the crown.
+	 */
+	void CwPaintPartyCount(const ChaosImpactPaint::FPainter& P, const UWorld* World, const APlayerState* Member, const FVector2D& Bottom,
+		const float S, const float Scale = 1.0f)
+	{
+		using namespace ChaosImpactPaint;
+		const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+		if (!Match || !Member)
+		{
+			return;
+		}
+		const bool bCrown = Match->Rules.IsCrownKeep();
+		const AChaosImpactCrown* Crown = bCrown ? AChaosImpactCrown::Get(World) : nullptr;
+		const bool bHolder = Crown && Crown->GetHolderState() == Member;
+		const float K = S * Scale;
+		const float Time = static_cast<float>(World->GetTimeSeconds());
+		const float Glow = FMath::Clamp(1.0f - static_cast<float>(Match->GetServerWorldTimeSeconds()
+			- ChaosImpactParty::GetCountGainedAt(World, Member)) / 0.55f, 0.0f, 1.0f);
+		const FString Text = FString::FromInt(ChaosImpactParty::GetShownCount(World, Member));
+		const float TextSize = 17.0f * K;
+		const float H = 26.0f * K;
+		const float W = 31.0f * K + HudMeasure(Text, TextSize, TEXT("BlackItalic")) + 11.0f * K;
+		const float X = static_cast<float>(Bottom.X) - W * 0.5f;
+		const float Y = static_cast<float>(Bottom.Y) - H;
+		const FLinearColor Accent = bCrown ? ChaosImpactParty::CrownColor : ChaosImpactParty::RubyColor;
+		if (Glow > 0.0f)
+		{
+			RoundedBox(P, X - 5.0f * K * Glow, Y - 5.0f * K * Glow, W + 10.0f * K * Glow, H + 10.0f * K * Glow, H * 0.5f + 5.0f * K * Glow,
+				WithAlpha(Accent, 0.4f * Glow));
+		}
+		RoundedBox(P, X - 1.5f * K, Y - 1.5f * K, W + 3.0f * K, H + 3.0f * K, H * 0.5f + 1.5f * K, WithAlpha(bHolder ? Accent : Paper, bHolder ? 0.95f : 0.22f));
+		const FPainter Face = HudAbove(P, 1);
+		RoundedBox(Face, X, Y, W, H, H * 0.5f, WithAlpha(Ink, 0.86f));
+		const FPainter Icon = HudAbove(Face, 1);
+		const FVector2D IconAt(X + 15.5f * K, Y + H * 0.5f + (bCrown ? 1.0f : 0.5f) * K);
+		if (bCrown)
+		{
+			ChaosImpactParty::PaintCrown(Icon, IconAt, 9.0f * K, Time + Member->GetPlayerId() * 0.37f, bHolder ? 1.0f : 0.4f);
+			if (bHolder)
+			{
+				Icon.Arc(IconAt - FVector2D(0.0, 0.5f * K), 12.5f * K, -90.0f, -90.0f + 360.0f * Crown->GetCountProgress(), Accent, 2.5f * K);
+			}
+		}
+		else
+		{
+			ChaosImpactParty::PaintRuby(Icon, IconAt, 8.5f * K, Time + Member->GetPlayerId() * 0.37f);
+		}
+		HudText3D(HudAbove(Icon, 3), Text, X + 28.0f * K, Y + 1.0f * K, TextSize, FMath::Lerp(Paper, FMath::Lerp(Accent, Paper, 0.45f), Glow),
+			ETextAlign::Left, TEXT("BlackItalic"), 1.5f * K);
+	}
+}
+
 void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeometry,
 	FSlateWindowElementList& OutDrawElements, const int32 BaseLayer) const
 {
@@ -3006,6 +3166,10 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		HudBoxes.Add(FBox2D(FVector2D(0.0, 0.0), FVector2D(Size.X, MarkerTopInset)));
 	}
 
+	const AChaosImpactGameState* PartyMatch = World->GetGameState<AChaosImpactGameState>();
+	const bool bPartyTags = PartyMatch && PartyMatch->bVersusMatch && PartyMatch->Rules.IsParty();
+	// (The count's pill over the name: the warp and nova gauges sit above it.)
+	const float PartyLift = bPartyTags ? 30.0f : 0.0f;
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
 		const AChaosImpactCharacter* Character = *It;
@@ -3075,6 +3239,14 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 				Tag.Text(Name, static_cast<float>(HeadScreen.X), static_cast<float>(HeadScreen.Y) - FontSize * 1.75f - 7.0f * S - HealthSpace,
 					FontSize, Color, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
 				PaintMarkerArrow(Tag, Tip, FVector2D(0.0, 1.0), 0.38f * S, Color);
+				// (クラウンキープ: only those with counts, and the crown's holder; ルビーラッシュ: everyone.)
+				const AChaosImpactPlayerState* TagState = Character->GetPlayerState<AChaosImpactPlayerState>();
+				const AChaosImpactCrown* TagCrown = bPartyTags && PartyMatch->Rules.IsCrownKeep() ? AChaosImpactCrown::Get(World) : nullptr;
+				if (bPartyTags && TagState && (!PartyMatch->Rules.IsCrownKeep() || TagState->Points > 0 || (TagCrown && TagCrown->GetHolder() == Character)))
+				{
+					CwPaintPartyCount(HudAbove(Tag, 2), World, TagState,
+						FVector2D(HeadScreen.X, HeadScreen.Y - FontSize * 1.75f - 9.0f * S - HealthSpace), S);
+				}
 			}
 			// Standing on a warp pad: a ring above the name fills up until the warp.
 			if (const float WarpCharge = AChaosImpactWarpPad::FindChargeProgress(Character); WarpCharge > 0.0f
@@ -3082,7 +3254,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 					PlayerController, Body + FVector(0.0f, 0.0f, HalfHeight + 40.0f), HeadScreen, true))
 			{
 				const FPainter Gauge{AllottedGeometry, OutDrawElements, BaseLayer + 1, Shown};
-				const FVector2D GaugeCenter(HeadScreen.X, HeadScreen.Y - 58.0f * S);
+				const FVector2D GaugeCenter(HeadScreen.X, HeadScreen.Y - (58.0f + PartyLift) * S);
 				const float Radius = 12.0f * S;
 				const float Pulse = WarpCharge > 0.8f
 					? 0.5f + 0.5f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * 22.0f) : 0.0f;
@@ -3098,7 +3270,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 			{
 				const float Now = static_cast<float>(World->GetTimeSeconds());
 				const FLinearColor NovaColor = ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Nova);
-				const FVector2D Mid(HeadScreen.X, HeadScreen.Y - 60.0f * S + FMath::Sin(Now * 3.0f) * 2.0f * S);
+				const FVector2D Mid(HeadScreen.X, HeadScreen.Y - (60.0f + PartyLift) * S + FMath::Sin(Now * 3.0f) * 2.0f * S);
 				const float Step = 20.0f * S;
 				const FPainter Back{AllottedGeometry, OutDrawElements, BaseLayer + 1, Shown};
 				RoundedBox(Back, Mid.X - Step * 1.5f - 4.0f * S, Mid.Y - 11.0f * S, Step * 3.0f + 8.0f * S, 22.0f * S, 11.0f * S, WithAlpha(Ink, 0.7f));
@@ -3158,6 +3330,50 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		const FVector2D Label = Tip - Direction * 48.0f * K;
 		Marker.Text(Name, static_cast<float>(Label.X), static_cast<float>(Label.Y) - LabelSize * 0.85f, LabelSize,
 			Color, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
+	}
+
+	// クラウンキープ: where the crown is. Off screen, a gold mark at the edge towards it; lying on the floor in view, a small
+	// crown over it (it can be behind a wall). Not for the one wearing it.
+	if (const AChaosImpactCrown* Crown = bPartyTags && PartyMatch->Rules.IsCrownKeep() ? AChaosImpactCrown::Get(World) : nullptr;
+		Crown && Crown->GetHolder() != ViewerPawn && PartyMatch->Phase == EChaosImpactOnlinePhase::Match)
+	{
+		const FVector At = Crown->GetShownLocation() + FVector(0, 0, 40);
+		const float Time = static_cast<float>(World->GetTimeSeconds());
+		FVector2D Screen;
+		const bool bProjected = UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PlayerController, At, Screen, true);
+		const FVector FromCamera = At - CameraLocation;
+		const bool bInFront = FVector::DotProduct(FromCamera, CameraAxes.GetScaledAxis(EAxis::X)) > 0.0;
+		const bool bOnScreen = bProjected && bInFront && Screen.X >= 0.0 && Screen.Y >= 0.0 && Screen.X <= Size.X && Screen.Y <= Size.Y;
+		if (bOnScreen)
+		{
+			if (Crown->IsOnFloor())
+			{
+				const FPainter Mark{AllottedGeometry, OutDrawElements, BaseLayer + 1, 0.85f};
+				const FVector2D Over(Screen.X, Screen.Y - 34.0f * S + FMath::Sin(Time * 3.0f) * 3.0f * S);
+				Mark.Disc(Over, 17.0f * S, WithAlpha(Ink, 0.55f));
+				ChaosImpactParty::PaintCrown(HudAbove(Mark, 1), Over + FVector2D(0.0, 1.0f * S), 11.0f * S, Time);
+				PaintMarkerArrow(HudAbove(Mark, 1), Over + FVector2D(0.0, 26.0f * S), FVector2D(0.0, 1.0), 0.32f * S, ChaosImpactParty::CrownColor);
+			}
+		}
+		else
+		{
+			FVector2D Direction = bProjected && bInFront ? Screen - Center
+				: FVector2D(FVector::DotProduct(FromCamera, CameraAxes.GetScaledAxis(EAxis::Y)), -FVector::DotProduct(FromCamera, CameraAxes.GetScaledAxis(EAxis::Z)));
+			if (Direction.Normalize())
+			{
+				const float K = S * 1.25f;
+				const FVector2D Tip = ChaosImpactPlayerMarkerLayout::EdgeTipClear(Size, Direction, K, MarkerTopInset, HudBoxesLast,
+					FVector2D(34.0f * K, 34.0f * K), 22.0f * K);
+				const FVector2D Badge = Tip - Direction * 22.0f * K;
+				const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 4.0f);
+				const FPainter Mark{AllottedGeometry, OutDrawElements, BaseLayer + 2};
+				Mark.Disc(Badge, (22.0f + 3.0f * Pulse) * K, WithAlpha(ChaosImpactParty::CrownColor, 0.2f + 0.15f * Pulse));
+				HudAbove(Mark, 1).Disc(Badge, 17.0f * K, WithAlpha(Ink, 0.88f));
+				HudAbove(Mark, 1).Ring(Badge, 17.5f * K, WithAlpha(ChaosImpactParty::CrownColor, 0.9f), 2.0f * K);
+				ChaosImpactParty::PaintCrown(HudAbove(Mark, 2), Badge + FVector2D(0.0, 1.0f * K), 10.5f * K, Time);
+				PaintMarkerArrow(HudAbove(Mark, 2), Tip, Direction, 0.5f * K, ChaosImpactParty::CrownColor);
+			}
+		}
 	}
 
 	// A ball thrown at this player from off screen: a mark at the edge it will come in by, in the ball's colour, larger
@@ -3308,7 +3524,8 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			// Plain type over the flyover, rising slightly into place.
 			const float Rise = (1.0f - In) * 16.0f;
 			const FPainter Words{Center, OutDrawElements, BaseLayer + 2, Alpha};
-			Words.Text(Match->Rules.bDuel ? TEXT("相手を3回当てて倒せ！") : Match->Rules.bCrashBall ? TEXT("巨大球を相手のゴールへ押し込め！")
+			Words.Text(Match->Rules.IsRubyRush() ? TEXT("ルビーを一番多く集めろ！") : Match->Rules.IsCrownKeep() ? TEXT("王冠を奪って守りきれ！")
+				: Match->Rules.bDuel ? TEXT("相手を3回当てて倒せ！") : Match->Rules.bCrashBall ? TEXT("巨大球を相手のゴールへ押し込め！")
 				: bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！"), 0.0f, -74.0f + Rise, 60.0f,
 				Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 			Words.Box(-150.0f * In, 18.0f + Rise, 300.0f * In, 2.0f, WithAlpha(Paper, 0.6f));
@@ -3348,7 +3565,8 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			const float ClockScale = FMath::Clamp(static_cast<float>(FMath::Min(Window.X / 1600.0, Window.Y / 900.0)), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 			FBox2D ClockBox(ForceInit);
 			ClockBox += FVector2D(GetCachedGeometry().AbsoluteToLocal(Viewport.LocalToAbsolute(FVector2D(Window.X * 0.5 - 175.0 * ClockScale, 0.0))));
-			ClockBox += FVector2D(GetCachedGeometry().AbsoluteToLocal(Viewport.LocalToAbsolute(FVector2D(Window.X * 0.5 + 175.0 * ClockScale, 96.0 * ClockScale))));
+			ClockBox += FVector2D(GetCachedGeometry().AbsoluteToLocal(Viewport.LocalToAbsolute(FVector2D(Window.X * 0.5 + 175.0 * ClockScale,
+				(Match->Rules.IsCrownKeep() ? 150.0 : 96.0) * ClockScale))));
 			HudBoxes.Add(ClockBox);
 		}
 		float RowTop = 16.0f;
@@ -3381,8 +3599,24 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 				At(RowLeft - 8.0f, Y + RowHeight + 4.0f)}, Medal, 2.5f, FVector2D(3.0, 4.0));
 			const FPainter Words = HudAbove(Front);
 			HudText3D(Words, Rank > 0 ? FString::FromInt(Rank) : FString(TEXT("-")), RowLeft + 14.0f, Y - 2.0f, 20.0f, Paper, ETextAlign::Center);
-			// (Clear of the points at the strip's right end.)
-			const float PointsW = HudMeasure(FString::FromInt(Points), 22.0f, TEXT("BlackItalic"));
+			// (Clear of the points at the strip's right end; パーティルール: the gem or the crown before the number.)
+			const bool bPartyRow = Match->Rules.IsParty() && Player;
+			const float NumberW = HudMeasure(FString::FromInt(Points), 22.0f, TEXT("BlackItalic"));
+			const float PointsW = NumberW + (bPartyRow ? 26.0f : 0.0f);
+			if (bPartyRow)
+			{
+				const FVector2D IconAt(RowLeft + RowWidth - 16.0f - NumberW - 14.0f, Y + RowHeight * 0.5f);
+				const float IconTime = static_cast<float>(Clock) + Row * 0.8f;
+				if (Match->Rules.IsCrownKeep())
+				{
+					const AChaosImpactCrown* Crown = AChaosImpactCrown::Get(GetWorld());
+					ChaosImpactParty::PaintCrown(HudAbove(Words, 1), IconAt, 10.0f, IconTime, Crown && Crown->GetHolderState() == Player ? 1.0f : 0.3f);
+				}
+				else
+				{
+					ChaosImpactParty::PaintRuby(HudAbove(Words, 1), IconAt, 9.5f, IconTime);
+				}
+			}
 			Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, HudFit(Label, 15.0f, RowWidth - 16.0f - PointsW - 10.0f - 46.0f), bOwn ? Paper : WithAlpha(Paper, 0.85f),
 				ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
 			HudText3D(Words, FString::FromInt(Points), RowLeft + RowWidth - 16.0f, Y - 3.0f, 22.0f, bOwn ? IceFill.Top : Paper, ETextAlign::Right);
@@ -3396,6 +3630,11 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 					: PingMs <= 120.0f ? FLinearColor(0.65f, 0.95f, 0.3f) : PingMs <= 200.0f ? Gold : Fire;
 				Words.Text(PingText, RowLeft + RowWidth + 8.0f, Y + 7.0f, 12.0f, WithAlpha(PingColor, 0.9f), ETextAlign::Left, TEXT("Bold"), 1.5f, Navy);
 			}
+		};
+		// パーティルール: rubies (with this machine's own pickups at once), or the crown's counts left.
+		const auto ShownOf = [this, &Match](const AChaosImpactPlayerState* Member)
+		{
+			return Match->Rules.IsParty() ? ChaosImpactParty::GetShownCount(GetWorld(), Member) : Member->Points;
 		};
 		int32 OwnRow = INDEX_NONE;
 		if (bTeams)
@@ -3428,7 +3667,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			for (int32 Index = 0; Index < FMath::Min(3, Ranking.Num()); ++Index)
 			{
 				Rank = Index == 0 || Ranking[Index]->Points != Ranking[Index - 1]->Points ? Index + 1 : Rank;
-				PaintRow(Index, Rank, ColorOf(Ranking[Index]), NameOf(Ranking[Index]), Ranking[Index]->Points,
+				PaintRow(Index, Rank, ColorOf(Ranking[Index]), NameOf(Ranking[Index]), ShownOf(Ranking[Index]),
 					Ranking[Index] == Own, Ranking[Index]);
 				OwnRow = Ranking[Index] == Own ? Index : OwnRow;
 			}
@@ -3440,7 +3679,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 				{
 					OwnRank += Other->Points > Own->Points ? 1 : 0;
 				}
-				PaintRow(3, OwnRank, ColorOf(Own), NameOf(Own), Own->Points, true, Own);
+				PaintRow(3, OwnRank, ColorOf(Own), NameOf(Own), ShownOf(Own), true, Own);
 				OwnRow = 3;
 			}
 		}
@@ -3517,6 +3756,14 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			{
 				HudText3D(FPainter{BottomLeft, OutDrawElements, BaseLayer + 4}, TEXT("チーム"), BadgeLeft + 10.0f, BadgeTop - 22.0f, 14.0f,
 					IceFill.Top, ETextAlign::Left, TEXT("Black"));
+			}
+			// パーティルール: this player's own rubies (or counts left), large, beside the place.
+			if (Match->Rules.IsParty())
+			{
+				const float ChipLeft = BadgeLeft + BadgeWidth + 18.0f;
+				CwPaintPartyCount(FPainter{BottomLeft, OutDrawElements, BaseLayer + 4}, GetWorld(), Own,
+					FVector2D(ChipLeft + 52.0f, BadgeTop + BadgeHeight - 6.0f), 1.0f, 1.65f);
+				Occupy(BottomLeft, ChipLeft - 10.0f, BadgeTop - 4.0f, 140.0f, BadgeHeight + 8.0f);
 			}
 
 			if (OwnRankDelta != 0 && ChangeAge < 1.6f)
@@ -4029,11 +4276,23 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			P2.Outline(0.0f, 0.0f, PW, PH, WithAlpha(Paper, 0.14f), 1.5f);
 			P3.Text(TEXT("MATCH RULES"), 22.0f, 2.0f, 12.0f, WithAlpha(Ink, 0.6f), ETextAlign::Left, TEXT("BlackItalic"));
 			P3.Text(TEXT("ルール"), 22.0f, 16.0f, 24.0f, Ink, ETextAlign::Left, TEXT("Black"));
+			// ルール確認: its key, beside the title (the rules in full over the screen).
+			const float CardKeyLeft = 22.0f + HudMeasure(TEXT("ルール"), 24.0f, TEXT("Black")) + 18.0f;
+			float CardKeyRight = CardKeyLeft;
+			if (const auto* CardOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); CardOwner && CardOwner->CanOpenRuleCard())
+			{
+				const FString CardKey = ChaosImpactSettings::DescribeAction(CardOwner, EChaosImpactAction::RuleCard);
+				const float CardKeyW = FMath::Max(HudMeasure(CardKey, 14.0f, TEXT("Black")) + 14.0f, 26.0f);
+				RoundedBox(P3, CardKeyLeft, 17.0f, CardKeyW, 24.0f, 6.0f, WithAlpha(Ink, 0.85f));
+				HudAbove(P3, 1).Text(CardKey, CardKeyLeft + CardKeyW * 0.5f, 20.0f, 14.0f, Paper, ETextAlign::Center, TEXT("Black"));
+				HudAbove(P3, 1).Text(TEXT("くわしく"), CardKeyLeft + CardKeyW + 6.0f, 20.0f, 15.0f, WithAlpha(Ink, 0.85f), ETextAlign::Left, TEXT("Black"));
+				CardKeyRight = CardKeyLeft + CardKeyW + 12.0f + HudMeasure(TEXT("くわしく"), 15.0f, TEXT("Black"));
+			}
 			// The match's kind as the rules screen names it; a duel or a tournament is played in rounds in the duel arena,
 			// not for some minutes on a stage.
 			const bool bDuelRules = Rules.bTournament || Rules.bDuel;
 			const FString Where = bDuelRules ? FString(ChaosImpactMatch::GetDuelStageName()) : ChaosImpactMatch::GetStageLabel(Rules.StageIndex);
-			P3.Text(Where, PW - 22.0f, 16.0f, HudFit(Where, 20.0f, PW - 160.0f), Ink, ETextAlign::Right, TEXT("Black"));
+			P3.Text(Where, PW - 22.0f, 16.0f, HudFit(Where, 20.0f, FMath::Max(60.0f, PW - 22.0f - CardKeyRight - 14.0f)), Ink, ETextAlign::Right, TEXT("Black"));
 
 			// Chips on the right of the kind: the length, and the CPUs and how strong.
 			const int32 CPULevel = Rules.bTournament ? (Rules.Tournament.CPUs.IsEmpty() ? INDEX_NONE : Rules.Tournament.CPUs[0].Level) : Rules.CPULevel;

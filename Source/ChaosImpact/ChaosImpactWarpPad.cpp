@@ -428,13 +428,29 @@ void AChaosImpactWarpPad::UpdateBursts(const double Now)
 	}
 }
 
+void AChaosImpactWarpPad::SetAside(const bool bAside)
+{
+	if (bSetAside == bAside)
+	{
+		return;
+	}
+	bSetAside = bAside;
+	SetActorHiddenInGame(bAside);
+	SetActorEnableCollision(!bAside);
+	SetActorTickEnabled(!bAside);
+	if (bAside)
+	{
+		Charges.Reset();
+	}
+}
+
 AChaosImpactWarpPad* AChaosImpactWarpPad::ChooseDestination() const
 {
 	TArray<AChaosImpactWarpPad*> Candidates;
 	for (TActorIterator<AChaosImpactWarpPad> It(GetWorld()); It; ++It)
 	{
 		if (*It != this && It->WarpGroup == WarpGroup && It->GetAttachParentActor() == GetAttachParentActor()
-			&& !It->IsActorBeingDestroyed())
+			&& !It->IsActorBeingDestroyed() && !It->IsSetAside())
 		{
 			Candidates.Add(*It);
 		}

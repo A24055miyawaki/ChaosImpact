@@ -29,7 +29,8 @@ namespace
 		const TCHAR* Sea = TEXT("潮の占領地");
 		Add(2, 1, TEXT("霧の桟橋"), Sea, TEXT("霧で遠くが見えない。近くの敵から確実に。"), EKind::Normal, {1}, TEXT("/Game/ChaosImpact/solo/Lvl_Solo_02_MistyPier"));
 		Add(3, 1, TEXT("朝どれ大漁市場"), Sea, TEXT("床を大きな魚がびちびち跳ね回る。潮が満ちると低い足場が沈む。"), EKind::Normal, {2}, TEXT("/Game/ChaosImpact/solo/Lvl_Solo_03_FishMarket"));
-		Add(4, 1, TEXT("クレーン操車場"), Sea, TEXT("動くクレーンがコンテナを落としてくる。"), EKind::Normal, {3});
+		Add(4, 1, TEXT("クレーン操車場"), Sea, TEXT("ミニゲーム：アンカーでコンテナの山を渡れ。落ちたら最初から。"), EKind::Normal, {3},
+			TEXT("/Game/ChaosImpact/solo/Lvl_Solo_04_CraneYard"));
 		Add(5, 1, TEXT("沈んだ灯台"), Sea, TEXT("真っ暗。灯台の光に入った敵だけが見える。"), EKind::Normal, {4});
 		Add(6, 1, TEXT("沖の的当て"), Sea, TEXT("チャレンジ：時間内に浮かぶ的を全部倒せ。"), EKind::Challenge, {5});
 		Add(7, 1, TEXT("港の司令塔"), Sea, TEXT("潮の占領地を仕切る四天王のひとり。"), EKind::Boss, {6});

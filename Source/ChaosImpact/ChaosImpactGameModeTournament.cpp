@@ -1039,6 +1039,11 @@ void AChaosImpactGameMode::ApplyArenaBallChances(const int32 Arena, const bool b
 			const float Weight = Defaults->GetChanceWeight(static_cast<EChaosImpactBallType>(Type));
 			Spawner->SetChanceWeight(static_cast<EChaosImpactBallType>(Type), bDrawn ? FMath::Max(Weight, 0.05f) : 0.0f);
 		}
+		// The balls put out before the draw (normal ones) go when the normal ball is switched off.
+		if (bWithPicks)
+		{
+			Spawner->ReplaceBallIfUnwanted();
+		}
 	}
 }
 

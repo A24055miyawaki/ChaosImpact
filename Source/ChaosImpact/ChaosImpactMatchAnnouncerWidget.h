@@ -39,6 +39,9 @@ private:
 	 * クラッシュボール: both teams' counts beside the clock, and under it the gauge from the red goal to the blue
 	 * goal: how far each team has pushed (its count) and where the giant ball is now.
 	 */
+	/** クラウンキープ: under the clock, who wears the crown, their counts left and the count in progress. */
+	void PaintCrownPanel(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
+		const AChaosImpactGameState& Match, double ServerNow, float Time) const;
 	void PaintCrashScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
 		const AChaosImpactGameState& Match, double ServerNow, float Time) const;
 

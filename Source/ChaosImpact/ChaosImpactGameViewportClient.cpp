@@ -54,6 +54,8 @@ void UChaosImpactGameViewportClient::Tick(const float DeltaTime)
 	// LocalPlayers, so explicitly update through replication/phase changes and restore the usual layout on exit.
 	if (bSingleNow || bSingleDuelLayout) { LayoutPlayers(); }
 	bSingleDuelLayout = bSingleNow;
+	// Online rooms: everyone at no more than 60 fps (the player's own limit comes back after).
+	ChaosImpactSettings::UpdateOnlineFrameCap(GetWorld());
 }
 
 bool UChaosImpactGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)

@@ -73,6 +73,8 @@ AChaosImpactSnowStage::AChaosImpactSnowStage()
 	CrashBallStartOffset = FVector(0, 0, 16);
 	Team0GoalOffset = FVector(-2750, 0, 0);
 	Team1GoalOffset = FVector(2750, 0, 0);
+	// クラッシュボール: the goals (pedestals) at opposite corners (the ground round them is cleared), and the ways round to them.
+	SetCrashDiagonalGoals(FVector(-2100, -2550, 0), FVector(2100, 2550, 0), {FVector(150, 150, 16), FVector(150, 750, -20), FVector(1050, 1650, -20), FVector(1650, 2100, 0)}, {FVector(-150, -150, 16), FVector(-150, -750, -20), FVector(-1050, -1650, -20), FVector(-1650, -2100, 0)});
 	CrashBallExtraBallOffsets = {FVector(-900, 500, SnowStage::PondFloorZ), FVector(900, -500, SnowStage::PondFloorZ), FVector(-2200, 600, 0),
 		FVector(2200, -600, 0)};
 	PrimaryActorTick.bCanEverTick = true;

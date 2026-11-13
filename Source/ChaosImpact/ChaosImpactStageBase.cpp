@@ -218,6 +218,16 @@ void AChaosImpactStageBase::ComputeCrashBallCounts(const FVector& WorldBallLocat
 	}
 }
 
+void AChaosImpactStageBase::SetCrashDiagonalGoals(const FVector& Red, const FVector& Blue, const TArray<FVector>& ToBlue, const TArray<FVector>& ToRed)
+{
+	Team0GoalOffset = Red;
+	Team1GoalOffset = Blue;
+	Team0GoalRotation = FRotator(0.0f, FMath::RadiansToDegrees(FMath::Atan2(-Red.Y + CrashBallStartOffset.Y, -Red.X + CrashBallStartOffset.X)), 0.0f);
+	Team1GoalRotation = FRotator(0.0f, FMath::RadiansToDegrees(FMath::Atan2(-Blue.Y + CrashBallStartOffset.Y, -Blue.X + CrashBallStartOffset.X)), 0.0f);
+	Team0AttackWaypoints = ToBlue;
+	Team1AttackWaypoints = ToRed;
+}
+
 FVector AChaosImpactStageBase::GetCrashBallPushDirection(const int32 AttackingTeam, const FVector& WorldBallLocation) const
 {
 	const FVector Local = GetActorTransform().InverseTransformPositionNoScale(WorldBallLocation);

@@ -1,4 +1,7 @@
 #include "ChaosImpactStageBase.h"
+#include "EngineUtils.h"
+#include "Engine/StaticMeshActor.h"
+#include "ChaosImpactWarpPad.h"
 #include "ChaosImpactCrashBall.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/ChildActorComponent.h"
@@ -110,7 +113,7 @@ void AChaosImpactStageBase::ConfigureCrashBallMode(const bool bEnable)
 		// Preview must never serialize disabled collision/visibility into the normal-rule map.
 		if (!GetWorld() || !GetWorld()->IsGameWorld()) { continue; }
 		if (Part->ComponentHasTag(TEXT("CI.CrashRoute"))) { continue; }
-		bool bReplace = false;
+		bool bReplace = IsInCrashGoalArea(Part);
 		for (const FString& Prefix : CrashRemovedObstaclePrefixes) { bReplace |= Part->GetName().StartsWith(Prefix); }
 		if (!bReplace) { continue; }
 		if (!CrashOriginalObstacles.Contains(Part))
@@ -122,7 +125,65 @@ void AChaosImpactStageBase::ConfigureCrashBallMode(const bool bEnable)
 		Part->SetHiddenInGame(bVisible);
 		Part->SetCollisionEnabled(bVisible ? ECollisionEnabled::NoCollision : Original.Value.GetValue());
 	}
+	// The level's own pieces and warp pads round the goals step aside too (the same on every machine: worked out from
+	// where the goals stand).
+	if (GetWorld() && GetWorld()->IsGameWorld())
+	{
+		for (TActorIterator<AStaticMeshActor> It(GetWorld()); It; ++It)
+		{
+			UStaticMeshComponent* Part = It->GetStaticMeshComponent();
+			if (!Part || !IsInCrashGoalArea(Part))
+			{
+				continue;
+			}
+			if (!CrashOriginalObstacles.Contains(Part))
+			{
+				CrashOriginalObstacles.Add(Part, {Part->IsVisible(), Part->GetCollisionEnabled()});
+			}
+			const auto& Original = CrashOriginalObstacles.FindChecked(Part);
+			Part->SetVisibility(bEnable ? false : Original.Key);
+			Part->SetCollisionEnabled(bEnable ? ECollisionEnabled::NoCollision : Original.Value.GetValue());
+		}
+		for (TActorIterator<AChaosImpactWarpPad> It(GetWorld()); It; ++It)
+		{
+			const FVector At = It->GetActorLocation();
+			bool bNear = false;
+			for (const FVector& Goal : {GetCrashBallGoalTransform(0).GetLocation(), GetCrashBallGoalTransform(1).GetLocation()})
+			{
+				bNear |= FVector::Dist2D(At, Goal) < CrashGoalClearRadius + It->PadDiameter * 0.5f;
+			}
+			if (bNear)
+			{
+				It->SetAside(bEnable);
+			}
+		}
+	}
 	if (HasAuthority()) { ForceNetUpdate(); }
+}
+
+bool AChaosImpactStageBase::IsInCrashGoalArea(const UStaticMeshComponent* Part) const
+{
+	// Something standing up off the floor (over a step's height), small (never the stage's floor or its outer walls),
+	// within reach of a goal's pedestal and its pull.
+	if (!Part || Part->ComponentHasTag(TEXT("CI.CrashRoute")) || !Part->GetStaticMesh())
+	{
+		return false;
+	}
+	const FBox Box = Part->Bounds.GetBox();
+	const FVector Extent = Box.GetExtent();
+	if (FMath::Max(Extent.X, Extent.Y) > 1800.0f)
+	{
+		return false;
+	}
+	for (const FVector& Goal : {GetCrashBallGoalTransform(0).GetLocation(), GetCrashBallGoalTransform(1).GetLocation()})
+	{
+		const FVector2D Closest(FMath::Clamp(Goal.X, Box.Min.X, Box.Max.X), FMath::Clamp(Goal.Y, Box.Min.Y, Box.Max.Y));
+		if (FVector2D::Distance(Closest, FVector2D(Goal)) < CrashGoalClearRadius && Box.Max.Z > Goal.Z + 30.0f)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 void AChaosImpactStageBase::OnRep_CrashLayout()

@@ -109,18 +109,19 @@ AChaosImpactCrashGoal::AChaosImpactCrashGoal()
 	FlatMaterial = FlatFinder.Object;
 	GlowMaterial = GlowFinder.Succeeded() ? GlowFinder.Object : FlatFinder.Object;
 
-	ThresholdPad = CreateGoalPart(TEXT("ThresholdPad"), CubeMesh, false);
-	GoalLineBeam = CreateGoalPart(TEXT("GoalLineBeam"), CubeMesh, false);
-	LeftPost = CreateGoalPart(TEXT("LeftPost"), CylinderMesh, true);
-	RightPost = CreateGoalPart(TEXT("RightPost"), CylinderMesh, true);
-	LeftFunnelBumper = CreateGoalPart(TEXT("LeftFunnelBumper"), CubeMesh, true);
-	RightFunnelBumper = CreateGoalPart(TEXT("RightFunnelBumper"), CubeMesh, true);
-	Crossbar = CreateGoalPart(TEXT("Crossbar"), CubeMesh, true);
-	BackWall = CreateGoalPart(TEXT("BackWall"), CubeMesh, true);
-	LeftSideWall = CreateGoalPart(TEXT("LeftSideWall"), CubeMesh, true);
-	RightSideWall = CreateGoalPart(TEXT("RightSideWall"), CubeMesh, true);
-	RoofGuard = CreateGoalPart(TEXT("RoofGuard"), CubeMesh, true);
-	EnergyNet = CreateGoalPart(TEXT("EnergyNet"), CubeMesh, false);
+	// (The parts keep their old names; the goal is a pedestal now, nothing of it solid: the ball rolls onto it.)
+	ThresholdPad = CreateGoalPart(TEXT("ThresholdPad"), CylinderMesh, false);
+	GoalLineBeam = CreateGoalPart(TEXT("GoalLineBeam"), CylinderMesh, false);
+	LeftPost = CreateGoalPart(TEXT("LeftPost"), CylinderMesh, false);
+	RightPost = CreateGoalPart(TEXT("RightPost"), CylinderMesh, false);
+	LeftFunnelBumper = CreateGoalPart(TEXT("LeftFunnelBumper"), CylinderMesh, false);
+	RightFunnelBumper = CreateGoalPart(TEXT("RightFunnelBumper"), CylinderMesh, false);
+	Crossbar = CreateGoalPart(TEXT("Crossbar"), CylinderMesh, false);
+	BackWall = CreateGoalPart(TEXT("BackWall"), CylinderMesh, false);
+	LeftSideWall = CreateGoalPart(TEXT("LeftSideWall"), CylinderMesh, false);
+	RightSideWall = CreateGoalPart(TEXT("RightSideWall"), CylinderMesh, false);
+	RoofGuard = CreateGoalPart(TEXT("RoofGuard"), CubeMesh, false);
+	EnergyNet = CreateGoalPart(TEXT("EnergyNet"), CylinderMesh, false);
 	CrestCenter = CreateGoalPart(TEXT("CrestCenter"), ConeMesh, false);
 	CrestWingLeft = CreateGoalPart(TEXT("CrestWingLeft"), CubeMesh, false);
 	CrestWingRight = CreateGoalPart(TEXT("CrestWingRight"), CubeMesh, false);
@@ -203,99 +204,62 @@ void AChaosImpactCrashGoal::BeginPlay()
 
 void AChaosImpactCrashGoal::RebuildGoalGeometry()
 {
-	const float HalfW = FMath::Max(160.0f, OpeningWidth * 0.5f);
-	const float H = FMath::Max(240.0f, OpeningHeight);
-	const float D = FMath::Max(160.0f, GoalDepth);
-	constexpr float PostRadius = 42.0f;
-	constexpr float WallThickness = 48.0f;
-
-	// Local +X points out of the goal mouth toward the stage center.
-	// Local -X is inside the goal pocket toward the backstop wall.
-	if (ThresholdPad)
+	const float R = PedestalRadius;
+	const auto Disc = [](UStaticMeshComponent* Part, const float Radius, const float Height, const float Z)
 	{
-		ThresholdPad->SetRelativeLocation(FVector(-D * 0.45f, 0.0f, 3.0f));
-		ThresholdPad->SetRelativeScale3D(FVector((D + 80.0f) / 100.0f, (OpeningWidth + 140.0f) / 100.0f, 0.06f));
-	}
-	if (GoalLineBeam)
+		if (Part)
+		{
+			Part->SetRelativeLocation(FVector(0.0f, 0.0f, Z));
+			Part->SetRelativeRotation(FRotator::ZeroRotator);
+			Part->SetRelativeScale3D(FVector(Radius / 50.0f, Radius / 50.0f, Height / 100.0f));
+			Part->SetVisibility(true);
+		}
+	};
+	// The pedestal: a low drum, a glowing rim round it, its top, a target ring and a bullseye in the middle.
+	Disc(BackWall, R, 20.0f, 10.0f);
+	Disc(GoalLineBeam, R + 14.0f, 8.0f, 17.0f);
+	Disc(ThresholdPad, R - 22.0f, 4.0f, 21.0f);
+	Disc(LeftSideWall, ScoreRadius + 10.0f, 2.0f, 23.5f);
+	Disc(RightSideWall, ScoreRadius - 12.0f, 2.2f, 24.0f);
+	Disc(EnergyNet, 48.0f, 2.6f, 24.5f);
+	// Four short pylons round the rim, a light on each.
+	UStaticMeshComponent* Pylons[] = {LeftPost, RightPost, LeftFunnelBumper, RightFunnelBumper};
+	for (int32 Index = 0; Index < 4; ++Index)
 	{
-		GoalLineBeam->SetRelativeLocation(FVector(12.0f, 0.0f, 6.5f));
-		GoalLineBeam->SetRelativeScale3D(FVector(0.22f, OpeningWidth / 100.0f, 0.08f));
+		if (UStaticMeshComponent* Pylon = Pylons[Index])
+		{
+			const float Angle = FMath::DegreesToRadians(45.0f + Index * 90.0f);
+			Pylon->SetRelativeLocation(FVector(FMath::Cos(Angle) * (R + 60.0f), FMath::Sin(Angle) * (R + 60.0f), 55.0f));
+			Pylon->SetRelativeRotation(FRotator::ZeroRotator);
+			Pylon->SetRelativeScale3D(FVector(0.4f, 0.4f, 1.1f));
+			Pylon->SetVisibility(true);
+		}
 	}
-	if (LeftPost)
-	{
-		LeftPost->SetRelativeLocation(FVector(0.0f, -HalfW - PostRadius * 0.7f, H * 0.5f));
-		LeftPost->SetRelativeScale3D(FVector(PostRadius * 2.0f / 100.0f, PostRadius * 2.0f / 100.0f, H / 100.0f));
-	}
-	if (RightPost)
-	{
-		RightPost->SetRelativeLocation(FVector(0.0f, HalfW + PostRadius * 0.7f, H * 0.5f));
-		RightPost->SetRelativeScale3D(FVector(PostRadius * 2.0f / 100.0f, PostRadius * 2.0f / 100.0f, H / 100.0f));
-	}
-	// Angled front funnel bumpers guide a grazing Giant Ball smoothly into the goal mouth or away from the outer post corner.
-	if (LeftFunnelBumper)
-	{
-		LeftFunnelBumper->SetRelativeLocation(FVector(36.0f, -HalfW - 62.0f, H * 0.45f));
-		LeftFunnelBumper->SetRelativeRotation(FRotator(0.0f, -28.0f, 0.0f));
-		LeftFunnelBumper->SetRelativeScale3D(FVector(1.1f, 0.42f, H * 0.9f / 100.0f));
-	}
-	if (RightFunnelBumper)
-	{
-		RightFunnelBumper->SetRelativeLocation(FVector(36.0f, HalfW + 62.0f, H * 0.45f));
-		RightFunnelBumper->SetRelativeRotation(FRotator(0.0f, 28.0f, 0.0f));
-		RightFunnelBumper->SetRelativeScale3D(FVector(1.1f, 0.42f, H * 0.9f / 100.0f));
-	}
-	if (Crossbar)
-	{
-		Crossbar->SetRelativeLocation(FVector(-10.0f, 0.0f, H + 28.0f));
-		Crossbar->SetRelativeScale3D(FVector(0.95f, (OpeningWidth + PostRadius * 4.2f) / 100.0f, 0.58f));
-	}
-	// Solid side walls, roof, and backstop wall prevent the Giant Ball from ever getting wedged behind the goal.
-	if (BackWall)
-	{
-		BackWall->SetRelativeLocation(FVector(-D - WallThickness * 0.5f, 0.0f, (H + 40.0f) * 0.5f));
-		BackWall->SetRelativeScale3D(FVector(WallThickness / 100.0f, (OpeningWidth + PostRadius * 4.0f) / 100.0f, (H + 40.0f) / 100.0f));
-	}
-	if (LeftSideWall)
-	{
-		LeftSideWall->SetRelativeLocation(FVector(-D * 0.5f, -HalfW - PostRadius * 0.9f, H * 0.5f));
-		LeftSideWall->SetRelativeScale3D(FVector((D + WallThickness) / 100.0f, WallThickness / 100.0f, H / 100.0f));
-	}
-	if (RightSideWall)
-	{
-		RightSideWall->SetRelativeLocation(FVector(-D * 0.5f, HalfW + PostRadius * 0.9f, H * 0.5f));
-		RightSideWall->SetRelativeScale3D(FVector((D + WallThickness) / 100.0f, WallThickness / 100.0f, H / 100.0f));
-	}
+	// A slim light column in the middle (seen from afar), the old roof gone.
+	Disc(Crossbar, 18.0f, 520.0f, 290.0f);
 	if (RoofGuard)
 	{
-		RoofGuard->SetRelativeLocation(FVector(-D * 0.5f, 0.0f, H + 26.0f));
-		RoofGuard->SetRelativeScale3D(FVector((D + WallThickness) / 100.0f, (OpeningWidth + PostRadius * 3.5f) / 100.0f, 0.36f));
+		RoofGuard->SetVisibility(false);
 	}
-	if (EnergyNet)
-	{
-		EnergyNet->SetRelativeLocation(FVector(-D * 0.32f, 0.0f, H * 0.48f));
-		EnergyNet->SetRelativeScale3D(FVector(0.08f, OpeningWidth * 0.96f / 100.0f, H * 0.92f / 100.0f));
-	}
-
-	// Distinct crest silhouettes per team so teams are identifiable by shape as well as color:
-	// Team 0 (Red): sharp upward striker horns & vertical spire.
-	// Team 1 (Blue): wide horizontal guardian wings & angled shield diamond.
+	// The team's crest floating over it (red's spire and horns, blue's shield and wings).
+	const float H = 560.0f;
 	if (TeamIndex == 0)
 	{
 		if (CrestCenter)
 		{
-			CrestCenter->SetRelativeLocation(FVector(14.0f, 0.0f, H + 96.0f));
+			CrestCenter->SetRelativeLocation(FVector(0.0f, 0.0f, H + 96.0f));
 			CrestCenter->SetRelativeRotation(FRotator(0.0f, 0.0f, 0.0f));
 			CrestCenter->SetRelativeScale3D(FVector(1.15f, 1.15f, 1.35f));
 		}
 		if (CrestWingLeft)
 		{
-			CrestWingLeft->SetRelativeLocation(FVector(8.0f, -150.0f, H + 86.0f));
+			CrestWingLeft->SetRelativeLocation(FVector(0.0f, -150.0f, H + 86.0f));
 			CrestWingLeft->SetRelativeRotation(FRotator(0.0f, 0.0f, -34.0f));
 			CrestWingLeft->SetRelativeScale3D(FVector(0.36f, 1.85f, 0.32f));
 		}
 		if (CrestWingRight)
 		{
-			CrestWingRight->SetRelativeLocation(FVector(8.0f, 150.0f, H + 86.0f));
+			CrestWingRight->SetRelativeLocation(FVector(0.0f, 150.0f, H + 86.0f));
 			CrestWingRight->SetRelativeRotation(FRotator(0.0f, 0.0f, 34.0f));
 			CrestWingRight->SetRelativeScale3D(FVector(0.36f, 1.85f, 0.32f));
 		}
@@ -304,32 +268,31 @@ void AChaosImpactCrashGoal::RebuildGoalGeometry()
 	{
 		if (CrestCenter)
 		{
-			CrestCenter->SetRelativeLocation(FVector(14.0f, 0.0f, H + 88.0f));
+			CrestCenter->SetRelativeLocation(FVector(0.0f, 0.0f, H + 88.0f));
 			CrestCenter->SetRelativeRotation(FRotator(90.0f, 0.0f, 0.0f));
 			CrestCenter->SetRelativeScale3D(FVector(1.30f, 1.30f, 0.85f));
 		}
 		if (CrestWingLeft)
 		{
-			CrestWingLeft->SetRelativeLocation(FVector(8.0f, -195.0f, H + 68.0f));
+			CrestWingLeft->SetRelativeLocation(FVector(0.0f, -195.0f, H + 68.0f));
 			CrestWingLeft->SetRelativeRotation(FRotator(0.0f, 12.0f, -10.0f));
 			CrestWingLeft->SetRelativeScale3D(FVector(0.42f, 2.30f, 0.28f));
 		}
 		if (CrestWingRight)
 		{
-			CrestWingRight->SetRelativeLocation(FVector(8.0f, 195.0f, H + 68.0f));
+			CrestWingRight->SetRelativeLocation(FVector(0.0f, 195.0f, H + 68.0f));
 			CrestWingRight->SetRelativeRotation(FRotator(0.0f, -12.0f, 10.0f));
 			CrestWingRight->SetRelativeScale3D(FVector(0.42f, 2.30f, 0.28f));
 		}
 	}
-
 	if (GoalTriggerBox)
 	{
-		GoalTriggerBox->SetRelativeLocation(FVector(-D * 0.45f, 0.0f, H * 0.5f));
-		GoalTriggerBox->SetBoxExtent(FVector(D * 0.48f, HalfW * 0.92f, H * 0.48f));
+		GoalTriggerBox->SetRelativeLocation(FVector(0.0f, 0.0f, 150.0f));
+		GoalTriggerBox->SetBoxExtent(FVector(ScoreRadius, ScoreRadius, 150.0f));
 	}
 	if (GoalLight)
 	{
-		GoalLight->SetRelativeLocation(FVector(45.0f, 0.0f, H * 0.62f));
+		GoalLight->SetRelativeLocation(FVector(0.0f, 0.0f, 260.0f));
 	}
 }
 
@@ -339,21 +302,21 @@ void AChaosImpactCrashGoal::ApplyTeamVisuals(const float PulseAlpha)
 	const FLinearColor AccentCol = TeamIndex == 0
 		? FLinearColor(1.0f, 0.62f, 0.12f, 1.0f)
 		: FLinearColor(0.18f, 0.92f, 1.0f, 1.0f);
-	const FLinearColor FrameDark = FMath::Lerp(FLinearColor(0.04f, 0.05f, 0.09f, 1.0f), TeamCol, 0.22f);
+	const FLinearColor Drum = FMath::Lerp(FLinearColor(0.05f, 0.06f, 0.10f, 1.0f), TeamCol, 0.30f);
+	const FLinearColor Top = FMath::Lerp(FLinearColor(0.10f, 0.11f, 0.15f, 1.0f), TeamCol, 0.18f);
 	const float GlowBoost = 2.4f + PulseAlpha * 3.8f;
 
-	ApplyMeshTint(ThresholdPad, FlatMaterial, FrameDark, 0.0f, 0.45f);
+	ApplyMeshTint(BackWall, FlatMaterial, Drum, 0.0f, 0.4f);
 	ApplyMeshTint(GoalLineBeam, GlowMaterial, AccentCol, GlowBoost + 1.2f, 0.15f);
-	ApplyMeshTint(LeftPost, FlatMaterial, TeamCol, 0.0f, 0.25f);
-	ApplyMeshTint(RightPost, FlatMaterial, TeamCol, 0.0f, 0.25f);
-	ApplyMeshTint(LeftFunnelBumper, GlowMaterial, AccentCol, GlowBoost * 0.7f, 0.25f);
-	ApplyMeshTint(RightFunnelBumper, GlowMaterial, AccentCol, GlowBoost * 0.7f, 0.25f);
-	ApplyMeshTint(Crossbar, FlatMaterial, TeamCol, 0.0f, 0.22f);
-	ApplyMeshTint(BackWall, FlatMaterial, FrameDark, 0.0f, 0.5f);
-	ApplyMeshTint(LeftSideWall, FlatMaterial, FrameDark, 0.0f, 0.5f);
-	ApplyMeshTint(RightSideWall, FlatMaterial, FrameDark, 0.0f, 0.5f);
-	ApplyMeshTint(RoofGuard, FlatMaterial, FrameDark, 0.0f, 0.5f);
-	ApplyMeshTint(EnergyNet, GlowMaterial, FMath::Lerp(TeamCol, AccentCol, 0.45f), 1.4f + PulseAlpha * 3.0f, 0.1f);
+	ApplyMeshTint(ThresholdPad, FlatMaterial, Top, 0.0f, 0.35f);
+	ApplyMeshTint(LeftSideWall, GlowMaterial, TeamCol, 1.6f + PulseAlpha * 3.0f, 0.15f);
+	ApplyMeshTint(RightSideWall, FlatMaterial, Top, 0.0f, 0.35f);
+	ApplyMeshTint(EnergyNet, GlowMaterial, AccentCol, GlowBoost + 1.0f, 0.1f);
+	ApplyMeshTint(LeftPost, GlowMaterial, TeamCol, GlowBoost, 0.2f);
+	ApplyMeshTint(RightPost, GlowMaterial, TeamCol, GlowBoost, 0.2f);
+	ApplyMeshTint(LeftFunnelBumper, GlowMaterial, TeamCol, GlowBoost, 0.2f);
+	ApplyMeshTint(RightFunnelBumper, GlowMaterial, TeamCol, GlowBoost, 0.2f);
+	ApplyMeshTint(Crossbar, GlowMaterial, FMath::Lerp(TeamCol, AccentCol, 0.4f), 1.2f + PulseAlpha * 4.0f, 0.1f);
 	ApplyMeshTint(CrestCenter, GlowMaterial, AccentCol, GlowBoost + 1.5f, 0.15f);
 	ApplyMeshTint(CrestWingLeft, GlowMaterial, TeamCol, GlowBoost, 0.2f);
 	ApplyMeshTint(CrestWingRight, GlowMaterial, TeamCol, GlowBoost, 0.2f);
@@ -387,7 +350,7 @@ void AChaosImpactCrashGoal::Tick(const float DeltaSeconds)
 		if (const AChaosImpactCrashBall* Ball = GS->GetCrashBall())
 		{
 			const float Dist = FVector::Dist2D(GetActorLocation(), Ball->GetActorLocation());
-			ProximityAlpha = FMath::Clamp(1.0f - (Dist - 350.0f) / 1400.0f, 0.0f, 1.0f);
+			ProximityAlpha = FMath::Clamp(1.0f - (Dist - ScoreRadius) / (PullRadius - ScoreRadius), 0.0f, 1.0f);
 		}
 	}
 	const double Now = FPlatformTime::Seconds();
@@ -409,21 +372,12 @@ bool AChaosImpactCrashGoal::IsBallScored(const AChaosImpactCrashBall* Ball) cons
 {
 	if (!IsValid(Ball) || Ball->IsRecovering())
 	{
-		bApproachObserved = false;
 		return false;
 	}
-
+	// Drawn onto the middle of the pedestal, resting on it (not flying over it).
 	const FVector LocalBall = GetActorTransform().InverseTransformPositionNoScale(Ball->GetActorLocation());
 	const float Radius = Ball->GetBallRadius();
-	const float HalfW = OpeningWidth * 0.5f;
-
-	// Local +X points out of the goal mouth into the stage; scoring requires the ball center to cross past the front threshold line
-	// into the goal pocket while laterally and vertically inside the goal opening.
-	if (LocalBall.X > Radius) { bApproachObserved = true; }
-	const bool bInsideWidth = FMath::Abs(LocalBall.Y) <= FMath::Max(1.0f, HalfW - Radius + 8.f);
-	const bool bInsideHeight = LocalBall.Z >= Radius - 15.f && LocalBall.Z <= OpeningHeight - Radius + 8.f;
-	const bool bCrossedGoalLine = LocalBall.X <= 12.0f && LocalBall.X >= -(GoalDepth + Radius * 0.6f);
-	return bApproachObserved && bInsideWidth && bInsideHeight && bCrossedGoalLine;
+	return FVector2D(LocalBall.X, LocalBall.Y).Size() <= ScoreRadius && LocalBall.Z >= Radius - 60.0f && LocalBall.Z <= Radius + 140.0f;
 }
 
 // ============================================================================
@@ -611,10 +565,11 @@ bool AChaosImpactCrashBall::ApplyBallHit(AChaosImpactBall* IncomingBall, const F
 	switch (BallType)
 	{
 	case EChaosImpactBallType::Fire:
-		PushSpeed *= 1.15f;
+		// A blast: the biggest shove a single ball gives.
+		PushSpeed *= 1.5f;
 		break;
 	case EChaosImpactBallType::Thunder:
-		PushSpeed *= 1.08f;
+		PushSpeed *= 1.25f;
 		break;
 	case EChaosImpactBallType::Snow:
 		PushSpeed *= FMath::Clamp(0.9f + 0.35f * IncomingBall->GetSnowScale(), 0.9f, 1.45f);
@@ -626,6 +581,17 @@ bool AChaosImpactCrashBall::ApplyBallHit(AChaosImpactBall* IncomingBall, const F
 		PushSpeed = FMath::Max(PushSpeed, SpecialDirectPushSpeed * 1.15f);
 		break;
 	case EChaosImpactBallType::Ice:
+		// Freezes it where it is for a moment: nothing moves it until it thaws (the defence's trump card).
+		if (World)
+		{
+			NetState.FrozenUntil = static_cast<float>(GetServerNow()) + IceFreezeSeconds;
+			Velocity = FVector::ZeroVector;
+			++NetState.HitRevision;
+			NetState.bLastHitCharged = true;
+			ForceNetUpdate();
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation(), 1.4f, .6f);
+		}
+		return true;
 	case EChaosImpactBallType::Smoke:
 	case EChaosImpactBallType::Prison:
 		// Utility/control balls still push slightly on impact, but never freeze/capture/delete the Giant Ball.
@@ -637,6 +603,14 @@ bool AChaosImpactCrashBall::ApplyBallHit(AChaosImpactBall* IncomingBall, const F
 
 	const int32 ThrowerTeam = ResolvePawnTeamIndex(IncomingBall->GetThrowingPawn());
 	PushSpeed *= GetTerritoryPushScale(ThrowerTeam);
+	// The team's hits in quick succession build a combo: each one shoves harder.
+	if (IsFrozen())
+	{
+		return true;
+	}
+	ComboCount = (ThrowerTeam == LastHitTeamIndex && ThrowerTeam != INDEX_NONE && Now - LastHitServerTime <= ComboWindowSeconds) ? ComboCount + 1 : 1;
+	PushSpeed *= FMath::Min(1.0f + ComboStepScale * (ComboCount - 1), ComboMaxScale);
+	NetState.Combo = static_cast<uint8>(FMath::Min(ComboCount, 9));
 	const bool bChargedHit = ChargeAlpha >= 0.55f || BallType == EChaosImpactBallType::Nova || BallType == EChaosImpactBallType::Fire;
 	RecordPushImpulse(FlightDir2D * PushSpeed, ThrowerTeam, bChargedHit);
 	if (World)
@@ -647,6 +621,43 @@ bool AChaosImpactCrashBall::ApplyBallHit(AChaosImpactBall* IncomingBall, const F
 		}
 	}
 	return true;
+}
+
+void AChaosImpactCrashBall::ShakeNearbyPlayers() const
+{
+	// A charged hit (or a combo) shakes the screens of the players near it, more for a bigger one.
+	if (!bClientLastHitCharged && NetState.Combo < 2)
+	{
+		return;
+	}
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		AChaosImpactCharacter* Viewer = PC && PC->IsLocalController() ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+		if (!Viewer)
+		{
+			continue;
+		}
+		const float Distance = static_cast<float>(FVector::Dist(Viewer->GetActorLocation(), GetActorLocation()));
+		const float Near = 1.0f - FMath::Clamp((Distance - 600.0f) / 2400.0f, 0.0f, 1.0f);
+		if (Near > 0.0f)
+		{
+			const float Strength = (bClientLastHitCharged ? 0.32f : 0.16f) + 0.06f * FMath::Clamp(NetState.Combo - 1, 0, 4);
+			Viewer->AddCameraShake(Strength * Near, 0.28f);
+		}
+	}
+}
+
+double AChaosImpactCrashBall::GetServerNow() const
+{
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	return GameState ? GameState->GetServerWorldTimeSeconds() : World ? World->GetTimeSeconds() : 0.0;
 }
 
 float AChaosImpactCrashBall::GetTerritoryPushScale(const int32 TeamIndex) const
@@ -667,7 +678,7 @@ float AChaosImpactCrashBall::GetTerritoryPushScale(const int32 TeamIndex) const
 bool AChaosImpactCrashBall::ApplySpecialEffectPush(AActor* SourceActor, APawn* InstigatorPawn,
 	const FVector& WorldOrigin, const FVector& PreferredDirection, const float StrengthScale, const bool bIsContinuousZone)
 {
-	if (!HasAuthority() || IsRecovering())
+	if (!HasAuthority() || IsRecovering() || IsFrozen())
 	{
 		return false;
 	}
@@ -778,6 +789,7 @@ PostVelocityUpdate:
 	bClientLastHitCharged = bCharged;
 	ClientSeenHitRevision = NetState.HitRevision;
 	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation(), bCharged ? 1.3f : .8f, bCharged ? .75f : .95f);
+	ShakeNearbyPlayers();
 
 }
 
@@ -834,7 +846,9 @@ void AChaosImpactCrashBall::OnRep_NetState()
 		ClientSeenHitRevision = NetState.HitRevision;
 		ClientHitFlashAt = FPlatformTime::Seconds();
 		bClientLastHitCharged = NetState.bLastHitCharged;
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, FVector(NetState.Location), bClientLastHitCharged ? 1.3f : .8f, .85f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, FVector(NetState.Location), bClientLastHitCharged ? 1.3f : .8f,
+			FMath::Max(.85f - 0.06f * FMath::Max(NetState.Combo - 1, 0), .55f));
+		ShakeNearbyPlayers();
 	}
 	if (NetState.RecoveryRevision != ClientSeenRecoveryRevision)
 	{
@@ -844,8 +858,55 @@ void AChaosImpactCrashBall::OnRep_NetState()
 	}
 }
 
+void AChaosImpactCrashBall::SetPullGoals(const TArray<AChaosImpactCrashGoal*>& Goals)
+{
+	PullGoals.Reset();
+	for (AChaosImpactCrashGoal* Goal : Goals)
+	{
+		PullGoals.Add(Goal);
+	}
+}
+
+bool AChaosImpactCrashBall::IsFrozen() const
+{
+	return NetState.FrozenUntil > 0.0f && GetServerNow() < NetState.FrozenUntil;
+}
+
 void AChaosImpactCrashBall::StepServerPhysics(const float DeltaSeconds)
 {
+	if (IsFrozen())
+	{
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+	// Near a goal's pedestal it is drawn in, the harder the nearer, and settles onto its middle.
+	if (RecoveryFreezeRemaining <= 0.0f)
+	{
+		for (const TWeakObjectPtr<AChaosImpactCrashGoal>& Goal : PullGoals)
+		{
+			if (!Goal.IsValid())
+			{
+				continue;
+			}
+			FVector ToGoal = Goal->GetActorLocation() - GetActorLocation();
+			ToGoal.Z = 0.0f;
+			const float Distance = static_cast<float>(ToGoal.Size());
+			if (Distance >= AChaosImpactCrashGoal::PullRadius || Distance < 1.0f)
+			{
+				continue;
+			}
+			const float Near = 1.0f - Distance / AChaosImpactCrashGoal::PullRadius;
+			const float Pull = FMath::Lerp(AChaosImpactCrashGoal::PullAtEdge, AChaosImpactCrashGoal::PullAtCentre, Near * Near);
+			const FVector Toward = ToGoal / Distance;
+			Velocity += Toward * Pull * DeltaSeconds;
+			// Its sideways drift dies away as it closes in, so it ends up in the middle rather than circling.
+			const FVector Along = Toward * FVector::DotProduct(FVector(Velocity.X, Velocity.Y, 0.0f), Toward);
+			const FVector Side = FVector(Velocity.X, Velocity.Y, 0.0f) - Along;
+			const FVector Damped = Side * FMath::Max(0.0f, 1.0f - Near * 3.0f * DeltaSeconds);
+			Velocity.X = Along.X + Damped.X;
+			Velocity.Y = Along.Y + Damped.Y;
+		}
+	}
 	if (RecoveryFreezeRemaining > 0.0f)
 	{
 		RecoveryFreezeRemaining = FMath::Max(0.0f, RecoveryFreezeRemaining - DeltaSeconds);
@@ -1066,6 +1127,25 @@ void AChaosImpactCrashBall::ResolveCharacterOverlaps()
 		const FVector Delta2D(CharLoc.X - BallLoc.X, CharLoc.Y - BallLoc.Y, 0.0f);
 		const float Dist2D = Delta2D.Size();
 		const float MinSeparation = BallRadius + CharRadius + 4.0f;
+		// Rolling fast into an opponent of the team that sent it: knocked flying (the ball is a weapon too).
+		const float Speed2D = FVector(Velocity.X, Velocity.Y, 0.0f).Size();
+		const int32 Team = ResolvePawnTeamIndex(Character);
+		if (Dist2D < MinSeparation + 20.0f && Speed2D >= KnockMinSpeed && (LastHitTeamIndex == 0 || LastHitTeamIndex == 1) && (Team == 0 || Team == 1)
+			&& Team != LastHitTeamIndex && !Character->IsDashing())
+		{
+			const double Now = GetServerNow();
+			const FObjectKey Key(Character);
+			const double* Last = LastKnockBySource.Find(Key);
+			const FVector Ahead = FVector(Velocity.X, Velocity.Y, 0.0f).GetSafeNormal();
+			if ((!Last || Now - *Last > 1.0) && FVector::DotProduct(Ahead, Delta2D.GetSafeNormal()) > -0.2f)
+			{
+				LastKnockBySource.Add(Key, Now);
+				const FVector Away = (Delta2D.GetSafeNormal() * 0.5f + Ahead * 0.5f).GetSafeNormal();
+				Character->ApplyBlastKnockback(Away * FMath::Clamp(500.0f + Speed2D * 0.75f, 700.0f, 1500.0f) + FVector(0.0f, 0.0f, 520.0f));
+				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, CharLoc, 1.2f, .7f);
+				continue;
+			}
+		}
 		if (Dist2D < MinSeparation)
 		{
 			// Gently push the character aside horizontally without dealing any contact damage or letting body contact push the Giant Ball.
@@ -1298,8 +1378,13 @@ void AChaosImpactCrashBall::UpdateVisuals(const float DeltaSeconds)
 	const FLinearColor TeamColor = (LastHitTeamIndex == 0 || LastHitTeamIndex == 1)
 		? ChaosImpactMatch::GetTeamColor(LastHitTeamIndex)
 		: NeutralGold;
-	const FLinearColor BandColor = FMath::Lerp(TeamColor, FLinearColor::White, FMath::Max(HitFlash * 0.75f, RecoveryFlash * 0.85f));
-	const FLinearColor CoreColor = FMath::Lerp(FLinearColor(0.08f, 0.10f, 0.18f, 1.0f), TeamColor, 0.28f + HitFlash * 0.45f);
+	// Frozen by an ice ball: pale ice blue all over, the bands shimmering, until it thaws.
+	const bool bFrozenLook = IsFrozen();
+	const FLinearColor Ice(0.55f, 0.88f, 1.0f, 1.0f);
+	const FLinearColor BandColor = bFrozenLook ? FMath::Lerp(Ice, FLinearColor::White, 0.3f + 0.3f * FMath::Sin(static_cast<float>(Now) * 9.0f))
+		: FMath::Lerp(TeamColor, FLinearColor::White, FMath::Max(HitFlash * 0.75f, RecoveryFlash * 0.85f));
+	const FLinearColor CoreColor = bFrozenLook ? FLinearColor(0.42f, 0.62f, 0.78f, 1.0f)
+		: FMath::Lerp(FLinearColor(0.08f, 0.10f, 0.18f, 1.0f), TeamColor, 0.28f + HitFlash * 0.45f);
 	const float GlowPower = 2.8f + HitFlash * (bClientLastHitCharged ? 6.5f : 3.5f) + RecoveryFlash * 5.0f;
 
 	ApplyMeshTint(CoreSphereMesh, FlatMaterial, CoreColor, 0.0f, 0.22f);
@@ -1319,7 +1404,9 @@ void AChaosImpactCrashBall::UpdateVisuals(const float DeltaSeconds)
 		{
 			ShockwaveRingMesh->SetHiddenInGame(false);
 			const float T = RecoveryFlash > 0.01f ? (1.0f - RecoveryFlash) : (1.0f - HitFlash);
-			const float MaxRingScale = RecoveryFlash > 0.01f ? 4.8f : (bClientLastHitCharged ? 4.4f : 3.1f);
+			// A combo's hits ring wider each time.
+			const float MaxRingScale = RecoveryFlash > 0.01f ? 4.8f
+				: (bClientLastHitCharged ? 4.4f : 3.1f) + 0.55f * FMath::Clamp(static_cast<int32>(NetState.Combo) - 1, 0, 4);
 			const float RingScale = FMath::Lerp((BallRadius * 2.0f) / 100.0f, MaxRingScale, T);
 			ShockwaveRingMesh->SetRelativeScale3D(FVector(RingScale, RingScale, 0.18f * (1.0f - T * 0.7f)));
 			const FLinearColor RingCol = RecoveryFlash > 0.01f ? FLinearColor(0.35f, 0.95f, 1.0f, 1.0f) : BandColor;

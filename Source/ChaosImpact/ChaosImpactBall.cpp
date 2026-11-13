@@ -2459,6 +2459,14 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 
 void AChaosImpactBall::ApplyBallTypePresentation()
 {
+	// A normal ball: glossy black with bands of light-blue light.
+	if (BallType == EChaosImpactBallType::Normal && BallMesh && GetNetMode() != NM_DedicatedServer)
+	{
+		if (UMaterialInterface* Look = ChaosImpactBallTypes::GetNormalBallMaterial())
+		{
+			BallMesh->SetMaterial(0, Look);
+		}
+	}
 	if (bTypePresentationBuilt || !IsSpecialBall() || !BallMesh || GetNetMode() == NM_DedicatedServer)
 	{
 		return;

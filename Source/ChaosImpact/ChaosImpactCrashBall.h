@@ -18,6 +18,8 @@ class UStaticMesh;
 class UStaticMeshComponent;
 
 /** Network snapshot replicated from server to clients for smooth Giant Ball rendering. */
+class AChaosImpactCrashGoal;
+
 USTRUCT()
 struct FChaosImpactCrashBallNetState
 {
@@ -47,6 +49,14 @@ struct FChaosImpactCrashBallNetState
 	UPROPERTY()
 	uint16 RecoveryRevision = 0;
 
+	/** How many hits in a row the team that pushed last has made (1 = a lone hit): the bigger, the bigger the ring. */
+	UPROPERTY()
+	uint8 Combo = 0;
+
+	/** Frozen by an ice ball: it cannot move or be pushed until then (server time). */
+	UPROPERTY()
+	float FrozenUntil = 0.0f;
+
 	FChaosImpactCrashBallNetState()
 		: bLastHitCharged(false)
 		, bRecovering(false)
@@ -55,10 +65,10 @@ struct FChaosImpactCrashBallNetState
 };
 
 /**
- * Team Goal Gate for Crash Ball mode.
- * Team 0 (Red) and Team 1 (Blue) each defend their own home goal and try to push the Giant Ball into the opponent's goal.
- * Built with distinct team color + crest geometry, side funnel bumpers, and a physical backstop wall so the Giant Ball
- * cannot slip behind the goal.
+ * A team's goal in クラッシュボール: a round pedestal in its corner of the stage (the two goals stand at opposite
+ * corners). The Giant Ball pushed near it is drawn in (the nearer, the harder: the defenders must knock it back out in
+ * time); on top of it, in its middle, it is a knockout. Team colour rim, a target in the middle, four marker pylons,
+ * the team's crest floating over it.
  */
 UCLASS()
 class AChaosImpactCrashGoal : public AActor
@@ -83,8 +93,16 @@ public:
 	/** World location of the center of the goal mouth opening on the floor. */
 	FVector GetGoalMouthLocation() const { return GetActorLocation(); }
 
-	/** True when the Giant Ball has entered the front goal opening and crossed the scoring threshold. */
+	/** True when the Giant Ball has been drawn onto the middle of the pedestal (a knockout). */
 	bool IsBallScored(const AChaosImpactCrashBall* Ball) const;
+
+	/** The pedestal's radius, how far out it draws the Giant Ball in, and how near its middle the ball scores. */
+	static constexpr float PedestalRadius = 330.0f;
+	static constexpr float PullRadius = 950.0f;
+	static constexpr float ScoreRadius = 150.0f;
+	/** How hard it draws the ball in at the edge of its pull and right by it (cm/s^2). */
+	static constexpr float PullAtEdge = 520.0f;
+	static constexpr float PullAtCentre = 1500.0f;
 
 	/** Triggers the goal explosion flash when a KO victory is scored in this goal. */
 	UFUNCTION(NetMulticast, Reliable)
@@ -230,11 +248,11 @@ public:
 
 	/** Maximum horizontal speed of the Giant Ball in cm/s. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="400.0", ClampMax="3000.0"))
-	float MaxSpeed = 1150.0f;
+	float MaxSpeed = 1450.0f;
 
 	/** Ground rolling deceleration in cm/s^2 so the ball stops instead of rolling forever. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="100.0", ClampMax="2000.0"))
-	float RollingDeceleration = 600.0f;
+	float RollingDeceleration = 520.0f;
 
 	/** Air horizontal drag deceleration in cm/s^2. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="20.0", ClampMax="1000.0"))
@@ -258,11 +276,11 @@ public:
 
 	/** Push speed added by an uncharged throw (ChargeAlpha = 0). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="80.0", ClampMax="1200.0"))
-	float MinThrowPushSpeed = 240.0f;
+	float MinThrowPushSpeed = 330.0f;
 
 	/** Push speed added by a fully charged throw (ChargeAlpha = 1). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="200.0", ClampMax="1800.0"))
-	float MaxChargeThrowPushSpeed = 540.0f;
+	float MaxChargeThrowPushSpeed = 820.0f;
 
 	/** Base push speed added by a direct special ball detonation or beam hit. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="100.0", ClampMax="1200.0"))
@@ -270,15 +288,40 @@ public:
 
 	/** Base push speed added per pulse by a continuous hazard zone, tornado, or summon. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="60.0", ClampMax="800.0"))
-	float SpecialZonePushSpeed = 190.0f;
+	float SpecialZonePushSpeed = 250.0f;
 
 	/** Push multiplier for a team with the ball right in front of its own goal (defending). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="1.0", ClampMax="2.0"))
-	float DeepDefencePushScale = 1.3f;
+	float DeepDefencePushScale = 1.2f;
 
 	/** Push multiplier for a team with the ball right in front of the opponents' goal (attacking). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="0.4", ClampMax="1.0"))
-	float DeepAttackPushScale = 0.8f;
+	float DeepAttackPushScale = 0.88f;
+
+	/** A team's hits on it within this many seconds of each other build a combo, each pushing harder (up to ComboMaxScale). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="0.3", ClampMax="4.0"))
+	float ComboWindowSeconds = 1.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="0.0", ClampMax="0.6"))
+	float ComboStepScale = 0.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="1.0", ClampMax="2.5"))
+	float ComboMaxScale = 1.6f;
+
+	/** How long an ice ball freezes it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="0.0", ClampMax="5.0"))
+	float IceFreezeSeconds = 2.0f;
+
+	/** Rolling at least this fast into an opponent of the team that pushed it last, it knocks them flying. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="100.0", ClampMax="1500.0"))
+	float KnockMinSpeed = 380.0f;
+
+	/** Frozen by an ice ball now. */
+	bool IsFrozen() const;
+	/** The goals that draw it in when it comes near (set when the match is set up). */
+	void SetPullGoals(const TArray<AChaosImpactCrashGoal*>& Goals);
+	/** The combo the team that pushed last is on (1 = a lone hit; 0 = none yet). */
+	int32 GetCombo() const { return NetState.Combo; }
 
 	/** Cooldown in seconds before the same thrown ball actor can push the Giant Ball again. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos Impact|Crash Ball", meta=(ClampMin="0.08", ClampMax="2.0"))
@@ -311,6 +354,8 @@ protected:
 	bool IsLocationSafeOnFloor(const FVector& CandidateCenter, FVector& OutSnappedCenter) const;
 	void RecordPushImpulse(const FVector& HorizontalDeltaVelocity, int32 TeamIndex, bool bCharged);
 	void UpdateVisuals(float DeltaSeconds);
+	void ShakeNearbyPlayers() const;
+	double GetServerNow() const;
 
 	UPROPERTY(VisibleAnywhere, Category="Chaos Impact|Crash Ball")
 	TObjectPtr<USphereComponent> CollisionSphere;
@@ -359,6 +404,9 @@ protected:
 	bool bGrounded = true;
 
 	int32 LastHitTeamIndex = INDEX_NONE;
+	int32 ComboCount = 0;
+	TArray<TWeakObjectPtr<AChaosImpactCrashGoal>> PullGoals;
+	TMap<FObjectKey, double> LastKnockBySource;
 	double LastHitServerTime = -100.0;
 	double LastTeamHitServerTime[2] = {-100.0, -100.0};
 

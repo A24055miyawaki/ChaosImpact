@@ -27,6 +27,8 @@ enum class EChaosImpactAction : uint8
 	Tackle, // Append only: profile/action IDs must remain stable.
 	LobbyTeam,
 	OverviewMap,
+	/** Online room: the decided rules in full over the screen (while waiting for the match). */
+	RuleCard,
 	Count
 };
 
@@ -223,6 +225,13 @@ namespace ChaosImpactSettings
 	/** 0 when unlimited. */
 	CHAOSIMPACT_API int32 GetFrameRateLimit();
 	CHAOSIMPACT_API void SetFrameRateLimit(int32 Limit);
+	/**
+	 * While this machine is in an online room (its lobby, matches and results) everyone runs at no more than 60 fps, so
+	 * nobody's screen judges touches and hits finer than another's and the host keeps headroom; the frame rate limit
+	 * the player chose comes back once they leave. Called every frame (the game viewport's tick).
+	 */
+	CHAOSIMPACT_API void UpdateOnlineFrameCap(const UWorld* World);
+	inline constexpr int32 OnlineFrameCap = 60;
 	/** 0-3 (low to epic), or -1 when the groups are set differently (custom). */
 	CHAOSIMPACT_API int32 GetOverallQuality();
 	CHAOSIMPACT_API void SetOverallQuality(int32 Level);

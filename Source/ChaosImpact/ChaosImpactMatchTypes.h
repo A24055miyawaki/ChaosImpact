@@ -64,8 +64,17 @@ struct FChaosImpactMatchRules
 	/** ボールスイッチ: the special balls switched off for this match (bit N: EChaosImpactBallType N; 0: every one on). */
 	UPROPERTY()
 	int32 OffBalls = 0;
+	/**
+	 * パーティルール (free-for-all only): 0 none, ChaosImpactMatch::PartyRuby ルビーラッシュ (collect the rubies lying
+	 * about; hits shake some loose), ChaosImpactMatch::PartyCrown クラウンキープ (hold the crown for its counts).
+	 */
+	UPROPERTY()
+	uint8 PartyRule = 0;
 
 	bool IsTeamBattle() const { return !bDuel && (bCrashBall || TeamCount >= 2); }
+	bool IsRubyRush() const { return PartyRule == 1 && !bDuel && !bBattleRoyale && !bTournament; }
+	bool IsCrownKeep() const { return PartyRule == 2 && !bDuel && !bBattleRoyale && !bTournament; }
+	bool IsParty() const { return IsRubyRush() || IsCrownKeep(); }
 	bool IsCrashBall() const { return bCrashBall; }
 	bool IsDuel() const { return bDuel; }
 };
@@ -228,7 +237,29 @@ namespace ChaosImpactMatch
 		return Rules.bSpectate ? 0 : FMath::Max(Humans, 1);
 	}
 
-	inline constexpr int32 CrashBallMinutes = 5;
+	inline constexpr int32 CrashBallMinutes = 3;
+
+	// ---- パーティルール
+	inline constexpr uint8 PartyRuby = 1;
+	inline constexpr uint8 PartyCrown = 2;
+	/** ルビーラッシュ: a ball hit shakes this share of the rubies loose (at least one); a knockout half of them. */
+	inline constexpr float RubyHitDropShare = 0.2f;
+	/** クラウンキープ: counts to hold the crown for (30 seconds in all); each count takes a little more than a second. */
+	inline constexpr int32 CrownGoalCounts = 24;
+	inline constexpr float CrownCountSeconds = 1.25f;
+	/** クラウンキープ is played over three or five minutes. */
+	inline constexpr int32 CrownMinuteChoices[] = {3, 5};
+	inline int32 SanitizeCrownMinutes(const int32 Minutes) { return Minutes >= 4 ? 5 : 3; }
+
+	/** How many rubies a hit (or a knockout) shakes loose from Held. */
+	inline int32 GetRubyDrop(const int32 Held, const bool bKnockout)
+	{
+		if (Held <= 0)
+		{
+			return 0;
+		}
+		return bKnockout ? (Held + 1) / 2 : FMath::Clamp(FMath::RoundToInt(Held * RubyHitDropShare), 1, Held);
+	}
 	/** Overtime: how long the trailing team may go without hitting the giant ball (the HUD drains it). */
 	inline constexpr float CrashOvertimeGraceSeconds = 4.0f;
 
@@ -237,6 +268,7 @@ namespace ChaosImpactMatch
 		if (Rules.bTournament)
 		{
 			// Every match a duel; the CPUs listed in the tournament's set-up (at most to 32 entrants in all).
+			Rules.PartyRule = 0;
 			Rules.bDuel = true;
 			Rules.bBattleRoyale = false;
 			Rules.bCrashBall = false;
@@ -259,6 +291,7 @@ namespace ChaosImpactMatch
 		}
 		if (Rules.bBattleRoyale)
 		{
+			Rules.PartyRule = 0;
 			Rules.bDuel = false;
 			Rules.bCrashBall = false;
 			Rules.Minutes = 2;
@@ -281,6 +314,7 @@ namespace ChaosImpactMatch
 		if (Rules.bDuel)
 		{
 			// Two players and nobody else (a lone player gets a CPU to face).
+			Rules.PartyRule = 0;
 			Rules.bCrashBall = false;
 			Rules.bSpectate = false;
 			Rules.TeamCount = 0;
@@ -290,10 +324,15 @@ namespace ChaosImpactMatch
 			return Rules;
 		}
 		Humans = GetCompetingHumans(Rules, Humans);
-		Rules.Minutes = Rules.bCrashBall ? CrashBallMinutes : SanitizeMinutes(Rules.Minutes);
+		// The party rules are everyone for themselves (and never クラッシュボール).
+		Rules.PartyRule = Rules.PartyRule == PartyRuby || Rules.PartyRule == PartyCrown ? Rules.PartyRule : 0;
+		Rules.bCrashBall = Rules.bCrashBall && Rules.PartyRule == 0;
+		Rules.Minutes = Rules.bCrashBall ? CrashBallMinutes : Rules.PartyRule == PartyCrown ? SanitizeCrownMinutes(Rules.Minutes)
+			: SanitizeMinutes(Rules.Minutes);
 		Rules.StageIndex = SanitizeStage(Rules.StageIndex);
 		Rules.CPULevel = SanitizeCPULevel(Rules.CPULevel);
-		Rules.TeamCount = Rules.bCrashBall ? 2 : (Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0);
+		Rules.TeamCount = Rules.bCrashBall ? 2 : Rules.PartyRule != 0 ? 0
+			: (Rules.TeamCount >= 2 ? FMath::Clamp(Rules.TeamCount, 2, MaxTeams) : 0);
 		Rules.CPUCount = FMath::Clamp(Rules.CPUCount, GetMinCPUCount(Humans, Rules.TeamCount), GetMaxCPUCount(Humans));
 		return Rules;
 	}
@@ -344,15 +383,23 @@ namespace ChaosImpactMatch
 		{
 			return FString::Printf(TEXT("1対1  %d本先取"), DuelRoundsToWin);
 		}
+		if (Rules.IsRubyRush())
+		{
+			return TEXT("ルビーラッシュ  個人戦");
+		}
+		if (Rules.IsCrownKeep())
+		{
+			return TEXT("クラウンキープ  個人戦");
+		}
 		return Rules.bCrashBall ? FString(TEXT("クラッシュボール  2チーム")) : DescribeTeams(Rules.TeamCount);
 	}
 
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d?CIOffBalls=%d"),
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d?CIOffBalls=%d?CIParty=%d"),
 			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0,
-			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0, Rules.OffBalls);
+			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0, Rules.OffBalls, static_cast<int32>(Rules.PartyRule));
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -371,6 +418,7 @@ namespace ChaosImpactMatch
 		OutRules.bDuel = FCString::Atoi(URL.GetOption(TEXT("CIDuel="), TEXT("0"))) != 0;
 		OutRules.bBattleRoyale = FCString::Atoi(URL.GetOption(TEXT("CIBattleRoyale="), TEXT("0"))) != 0;
 		OutRules.OffBalls = FCString::Atoi(URL.GetOption(TEXT("CIOffBalls="), TEXT("0")));
+		OutRules.PartyRule = static_cast<uint8>(FMath::Clamp(FCString::Atoi(URL.GetOption(TEXT("CIParty="), TEXT("0"))), 0, 2));
 		if (OutRules.bCrashBall)
 		{
 			OutRules.TeamCount = 2;

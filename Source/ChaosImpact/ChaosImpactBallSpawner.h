@@ -35,6 +35,11 @@ public:
 	bool PutOutNovaPart(EChaosImpactNovaPart Part);
 	/** Server: a ball out on this pad now if it has none (a new round starting), its usual wait starting over. */
 	void SpawnNow();
+	/**
+	 * Server: the ball lying on this pad swapped for a new one when its kind can no longer come out here (a duel's draw
+	 * just done with the normal ball switched off: the normal balls put out before it go).
+	 */
+	void ReplaceBallIfUnwanted();
 	AChaosImpactNovaPart* GetNovaPart() const { return ActiveNovaPart.Get(); }
 
 	/** How likely (0-1) a new ball from this pad is of this kind, from the weights. */

@@ -20,6 +20,7 @@
 #include "ChaosImpactScreen.h"
 #include "ChaosImpactStageBase.h"
 #include "EngineUtils.h"
+#include "Camera/CameraActor.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
 
@@ -30,10 +31,10 @@ bool FCrashRulesTest::RunTest(const FString&)
 	FChaosImpactMatchRules Rules;
 	Rules.bCrashBall = true;
 	Rules.TeamCount = 4;
-	Rules.Minutes = 3;
+	Rules.Minutes = 5;
 	Rules = ChaosImpactMatch::Sanitize(Rules, 1);
 	TestEqual(TEXT("Objective is always two teams"), Rules.TeamCount, 2);
-	TestEqual(TEXT("Objective is five minutes"), Rules.Minutes, 5);
+	TestEqual(TEXT("Objective is three minutes"), Rules.Minutes, ChaosImpactMatch::CrashBallMinutes);
 	FChaosImpactMatchRules Decoded;
 	const FURL URL(nullptr, *FString::Printf(TEXT("/Game/Test?%s"), *ChaosImpactMatch::ToOptions(Rules)), TRAVEL_Absolute);
 	TestTrue(TEXT("Rule URL reads"), ChaosImpactMatch::ReadOptions(URL, Decoded));
@@ -91,6 +92,7 @@ bool FCrashRoutesTest::RunTest(const FString&)
 			Goal->FinishSpawning(Transform);
 			auto* Ball = World->SpawnActor<AChaosImpactCrashBall>(AChaosImpactCrashBall::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params);
 			Ball->ResetToStartLocation(Stage->GetCrashBallStartFloorLocation(), Stage);
+			Ball->SetPullGoals({Goal});
 			// Exercise actual sweeps, slopes, steps, floor recovery and physical goal geometry.
 			// Repeated simulated impacts supply normal push forces; no teleport along the route.
 			bool bScored = false;
@@ -135,6 +137,7 @@ namespace
 			auto* GM = World ? World->GetAuthGameMode<AChaosImpactGameMode>() : nullptr;
 			auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
 			if (!GM || !Match) { Test->AddError(TEXT("Requires a game world")); return true; }
+			if (APlayerController* Pausing = World->GetFirstPlayerController(); Pausing && Pausing->IsPaused()) { Pausing->SetPause(false); }
 			if (FPlatformTime::Seconds() - Started > 100.) { Test->AddError(TEXT("Match flow timed out")); return true; }
 			if (Step == 0)
 			{
@@ -227,6 +230,8 @@ namespace
 			auto* GM = World ? World->GetAuthGameMode<AChaosImpactGameMode>() : nullptr;
 			auto* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
 			if (!GM || !Match) { Test->AddError(TEXT("Requires a game world")); return true; }
+			// (Started from the level's menu, which pauses the world: the opening never ends while it is paused.)
+			if (APlayerController* Pausing = World->GetFirstPlayerController(); Pausing && Pausing->IsPaused()) { Pausing->SetPause(false); }
 			const double Now = FPlatformTime::Seconds();
 			if (Now - StageStarted > 420.0)
 			{
@@ -335,6 +340,8 @@ namespace
 			if (!GM || !Match || !PC) { Test->AddError(TEXT("Requires a game world")); return true; }
 			const double Now = FPlatformTime::Seconds();
 			if (Now - Started > 200.0) { Test->AddError(TEXT("UI shots timed out")); return true; }
+			// (While the overview is shot, held on the test's own camera every frame: the game puts the view back otherwise.)
+			if (Camera && (Step == 31 || Step == 32 || Step == 33) && PC->GetViewTarget() != Camera) { PC->SetViewTarget(Camera); }
 			if (Now < NextAt) { return false; }
 			switch (Step)
 			{
@@ -372,9 +379,46 @@ namespace
 				if (Match->Phase == EChaosImpactOnlinePhase::Match && Match->GetPhaseElapsedSeconds() > 5.0f)
 				{
 					CrashShot(TEXT("UI_HudStart.png"));
-					NextAt = Now + 20.0;
-					++Step;
+					NextAt = Now + 0.6;
+					Step = 30;
 				}
+				return false;
+			case 30:
+			{
+				// The whole stage from straight above (the two pedestal goals at opposite corners), then one goal close up.
+				if (!Camera) { Camera = World->SpawnActor<ACameraActor>(); }
+				Camera->SetActorLocationAndRotation(FVector(Match->StageCenter) + FVector(0.0f, 0.0f, 9000.0f), FRotator(-90.0f, 0.0f, 0.0f));
+				PC->SetViewTarget(Camera);
+				NextAt = Now + 1.2;
+				Step = 31;
+				return false;
+			}
+			case 31:
+			{
+				CrashShot(TEXT("UI_Overview.png"));
+				NextAt = Now + 0.6;
+				Step = 33;
+				return false;
+			}
+			case 33:
+			{
+				for (TActorIterator<AChaosImpactCrashGoal> It(World); It; ++It)
+				{
+					const FVector Goal = It->GetActorLocation();
+					const FVector Out = (Goal - FVector(Match->StageCenter)).GetSafeNormal2D();
+					const FVector Eye = Goal - Out * 1500.0f + FVector(0.0f, 0.0f, 1300.0f);
+					Camera->SetActorLocationAndRotation(Eye, (Goal - Eye).Rotation());
+					break;
+				}
+				NextAt = Now + 1.0;
+				Step = 32;
+				return false;
+			}
+			case 32:
+				CrashShot(TEXT("UI_GoalClose.png"));
+				PC->SetViewTarget(PC->GetPawn());
+				NextAt = Now + 18.0;
+				Step = 4;
 				return false;
 			case 4:
 				CrashShot(TEXT("UI_HudMid.png"));
@@ -445,6 +489,7 @@ namespace
 			}
 		}
 
+	ACameraActor* Camera = nullptr;
 	private:
 		FAutomationTestBase* Test;
 		int32 Step = 0;

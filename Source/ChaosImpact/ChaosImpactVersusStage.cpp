@@ -53,6 +53,8 @@ namespace
 AChaosImpactVersusStage::AChaosImpactVersusStage()
 {
 	CrashBallStartOffset = FVector(0, 0, 40);
+	// クラッシュボール: the goals (pedestals) at opposite corners (the ground round them is cleared), and the ways round to them.
+	SetCrashDiagonalGoals(FVector(-2400, -2400, 0), FVector(2400, 2400, 0), {FVector(150, 150, 40), FVector(1200, 150, 0), FVector(1650, 300, 0), FVector(2400, 1050, 0), FVector(2700, 1800, 0), FVector(2400, 2250, 0)}, {FVector(-150, -150, 40), FVector(-1200, -150, 0), FVector(-1650, -300, 0), FVector(-2400, -1050, 0), FVector(-2700, -1800, 0), FVector(-2400, -2250, 0)});
 	CrashRemovedObstaclePrefixes = {TEXT("PillarE"), TEXT("PillarW")};
 	CrashBallExtraBallOffsets = {FVector(-900, 400, 0), FVector(900, -400, 0)};
 	PrimaryActorTick.bCanEverTick = false;

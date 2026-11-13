@@ -8,6 +8,8 @@
 #include "ChaosImpactGameState.generated.h"
 
 class AChaosImpactCrashBall;
+class AChaosImpactRubyField;
+class AChaosImpactCrown;
 
 /** One replicated snapshot keeps the objective, score and result consistent on clients. */
 USTRUCT()
@@ -304,6 +306,13 @@ public:
 	float GetRoyaleTeamHealth(int32 Team) const;
 	UPROPERTY(Replicated)
 	FChaosImpactCrashMatchState Crash;
+	/** パーティルール: ルビーラッシュ's rubies, クラウンキープ's crown (null in other matches). */
+	UPROPERTY(Replicated)
+	TObjectPtr<AChaosImpactRubyField> RubyField;
+	UPROPERTY(Replicated)
+	TObjectPtr<AChaosImpactCrown> PartyCrown;
+	bool IsRubyRush() const { return bVersusMatch && Rules.IsRubyRush(); }
+	bool IsCrownKeep() const { return bVersusMatch && Rules.IsCrownKeep(); }
 	AChaosImpactCrashBall* GetCrashBall() const { return Crash.Ball; }
 	int32 GetCrashCount(int32 Team) const { return Team == 0 ? Crash.RedCount : Crash.BlueCount; }
 	int32 GetCrashLeader() const { return Crash.RedCount == Crash.BlueCount ? INDEX_NONE : (Crash.RedCount < Crash.BlueCount ? 0 : 1); }

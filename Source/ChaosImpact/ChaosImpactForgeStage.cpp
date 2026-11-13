@@ -84,6 +84,8 @@ AChaosImpactForgeStage::AChaosImpactForgeStage()
 	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/M_StageMetalFloor.M_StageMetalFloor"));
 	Team0GoalOffset = FVector(-2990, 0, 0);
 	Team1GoalOffset = FVector(2990, 0, 0);
+	// クラッシュボール: the goals (pedestals) at opposite corners (the ground round them is cleared), and the ways round to them.
+	SetCrashDiagonalGoals(FVector(-2100, -2700, 0), FVector(2100, 2700, 0), {FVector(150, 150, 35), FVector(150, 1350, 0), FVector(900, 1500, 0)}, {FVector(-150, -150, 35), FVector(-150, -1350, 0), FVector(-900, -1500, 0)});
 	CrashRemovedObstaclePrefixes = {TEXT("BayContainer_Q0"), TEXT("BayContainer_Q2")};
 	CrashBallExtraBallOffsets = {FVector(-1100, 400, 0), FVector(1100, -400, 0), FVector(-2400, 600, 0), FVector(2400, -600, 0)};
 	PrimaryActorTick.bCanEverTick = true;

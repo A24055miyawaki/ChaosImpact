@@ -54,6 +54,8 @@ AChaosImpactSplashStage::AChaosImpactSplashStage()
 	CrashRouteMaterial = FSoftObjectPath(TEXT("/Game/ChaosImpact/Versus/Splash/M_CI_Concrete.M_CI_Concrete"));
 	Team0GoalOffset = FVector(-3450, 0, 260);
 	Team1GoalOffset = FVector(3450, 0, 260);
+	// クラッシュボール: the goals (pedestals) at opposite corners (the ground round them is cleared), and the ways round to them.
+	SetCrashDiagonalGoals(FVector(-2400, -2400, 0), FVector(2400, 2400, 0), {FVector(750, 0, 150), FVector(1200, 150, 29), FVector(1650, 600, 0), FVector(1950, 1050, 0), FVector(2250, 1500, 0), FVector(2250, 2250, 0)}, {FVector(-750, 0, 150), FVector(-1200, -150, 29), FVector(-1650, -600, 0), FVector(-1950, -1050, 0), FVector(-2250, -1500, 0), FVector(-2250, -2250, 0)});
 	CrashRemovedObstaclePrefixes = {TEXT("Fountain"), TEXT("Tower"), TEXT("Container_Q0"), TEXT("Container_Q2")};
 	CrashBallExtraBallOffsets = {FVector(-1300, 700, 0), FVector(1300, -700, 0), FVector(-2500, 650, 110), FVector(2500, -650, 110)};
 	for (const float Sign : {-1.f, 1.f})

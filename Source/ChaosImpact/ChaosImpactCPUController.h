@@ -52,6 +52,9 @@ protected:
 
 private:
 	bool UpdateCrashObjective(AChaosImpactCharacter* Self, AChaosImpactCharacter* Enemy, float Now, bool bEvading);
+	/** パーティルール: where to go (rubies to collect; the crown to take, or opponents to run from while wearing it). */
+	void UpdatePartyObjective(AChaosImpactCharacter* Self, float Now, bool bEvading);
+	float PartyTraceAt = 0.0f;
 	struct FShotPlan
 	{
 		bool bValid = false;

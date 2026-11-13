@@ -1,4 +1,5 @@
 #include "ChaosImpactCPUController.h"
+#include "ChaosImpactParty.h"
 #include "ChaosImpactCrashBall.h"
 #include "ChaosImpactGameMode.h"
 
@@ -340,6 +341,7 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 			{
 				UpdatePositioning(Self, Target, Now);
 			}
+			UpdatePartyObjective(Self, Now, bEvading);
 			Section(5);
 			}
 		}
@@ -442,6 +444,88 @@ bool AChaosImpactCPUController::UpdateCrashObjective(AChaosImpactCharacter* Self
 		NextThrowAt = Now + .45f;
 	}
 	return true;
+}
+
+void AChaosImpactCPUController::UpdatePartyObjective(AChaosImpactCharacter* Self, const float Now, const bool bEvading)
+{
+	const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+	if (!Match || !Match->bVersusMatch || !Match->Rules.IsParty() || bEvading || Now < EvadeUntil)
+	{
+		return;
+	}
+	const FVector At = Self->GetActorLocation();
+#if !UE_BUILD_SHIPPING
+	static const bool bTrace = FParse::Param(FCommandLine::Get(), TEXT("CIPartyTrace"));
+	if (bTrace && Now >= PartyTraceAt)
+	{
+		PartyTraceAt = Now + 2.0f;
+		const AChaosImpactRubyField* TraceField = AChaosImpactRubyField::Get(GetWorld());
+		const FChaosImpactRubyGem* Near = TraceField ? TraceField->FindNearestAvailable(At, 99999.0f, Self) : nullptr;
+		UE_LOG(LogTemp, Display, TEXT("PARTYTRACE %s at %s gem %s (%.0f) move %s scale %.2f charging %d stuck? vel %.0f"), *GetNameSafe(Self->GetPlayerState()),
+			*At.ToCompactString(), Near ? *FVector(Near->To).ToCompactString() : TEXT("-"), Near ? FVector::Dist(At, Near->To) : -1.0,
+			*DesiredMoveDirection.ToCompactString(), DesiredMoveScale, Self->IsChargingThrow() ? 1 : 0, Self->GetVelocity().Size2D());
+	}
+#endif
+	const auto GoTo = [this, Self, &At, Now](const FVector& Goal, const float Scale)
+	{
+		DesiredMoveDirection = SteerAroundObstacles(At, RouteToward(Self, Goal, Now), Now);
+		DesiredMoveScale = Scale;
+		TryTraverseObstacle(Self, DesiredMoveDirection, Now);
+	};
+	if (Match->Rules.IsRubyRush())
+	{
+		// The nearest ruby worth going for (a weaker CPU looks less far round it).
+		const float Range = Difficulty == ChaosImpactMatch::CPULevelWeak ? 900.0f : Difficulty == ChaosImpactMatch::CPULevelNormal ? 1400.0f : 2000.0f;
+		const AChaosImpactRubyField* Field = AChaosImpactRubyField::Get(GetWorld());
+		if (const FChaosImpactRubyGem* Gem = Field ? Field->FindNearestAvailable(At, Range, Self) : nullptr)
+		{
+			GoTo(Gem->To, 1.0f);
+		}
+		return;
+	}
+	const AChaosImpactCrown* Crown = AChaosImpactCrown::Get(GetWorld());
+	if (!Crown)
+	{
+		return;
+	}
+	const AChaosImpactCharacter* Holder = Crown->GetHolder();
+	if (!Holder)
+	{
+		// Lying on the floor: everyone runs for it.
+		GoTo(Crown->GetState().To, 1.0f);
+		return;
+	}
+	if (Holder == Self)
+	{
+		// Wearing it: keep away from the opponents (the nearer, the more), and away from the edges.
+		FVector Away = FVector::ZeroVector;
+		for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+		{
+			if (*It == Self || It->IsEliminated())
+			{
+				continue;
+			}
+			const FVector From = At - It->GetActorLocation();
+			const float Distance = FMath::Max(static_cast<float>(From.Size2D()), 100.0f);
+			if (Distance < 1800.0f)
+			{
+				Away += From.GetSafeNormal2D() * FMath::Square(1800.0f / Distance);
+			}
+		}
+		const FVector ToMiddle = Match->StageCenter - At;
+		const float Edge = FMath::Clamp((static_cast<float>(ToMiddle.Size2D()) - Match->StageHalfExtent * 0.55f) / (Match->StageHalfExtent * 0.35f), 0.0f, 1.0f);
+		Away = Away.GetSafeNormal2D() + ToMiddle.GetSafeNormal2D() * Edge * 1.5f;
+		if (!Away.IsNearlyZero())
+		{
+			GoTo(At + Away.GetSafeNormal2D() * 600.0f, 1.0f);
+		}
+		return;
+	}
+	// Somebody else wears it: close in on them (to within a good throw).
+	if (FVector::Dist2D(At, Holder->GetActorLocation()) > 750.0f)
+	{
+		GoTo(Holder->GetActorLocation(), 1.0f);
+	}
 }
 
 bool AChaosImpactCPUController::UpdateTeamBallForm(AChaosImpactCharacter* Self, const float Now, const bool bAllowStart)
@@ -1179,6 +1263,14 @@ AChaosImpactCharacter* AChaosImpactCPUController::SelectTarget(const AChaosImpac
 		// Stick with the current target unless another is clearly better, and focus human players.
 		Score += Candidate == CurrentTarget.Get() ? 0.6f : 0.0f;
 		Score -= Cast<AChaosImpactCPUController>(Candidate->GetController()) ? 0.3f : 0.0f;
+		// パーティルール: whoever wears the crown is the one to bring down; a player carrying many rubies is worth a hit.
+		if (const AChaosImpactGameState* PartyMatch = GetWorld()->GetGameState<AChaosImpactGameState>(); PartyMatch && PartyMatch->Rules.IsParty())
+		{
+			const AChaosImpactCrown* Crown = PartyMatch->Rules.IsCrownKeep() ? AChaosImpactCrown::Get(GetWorld()) : nullptr;
+			Score += Crown && Crown->GetHolder() == Candidate ? 3.0f : 0.0f;
+			const AChaosImpactPlayerState* Carrier = PartyMatch->Rules.IsRubyRush() ? Candidate->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+			Score += Carrier ? FMath::Min(Carrier->Points, 25) * 0.06f : 0.0f;
+		}
 		if (bPerfect)
 		{
 			// Whoever cannot dash away right now (or cannot move at all) is the one to hit.

@@ -89,18 +89,20 @@ namespace
 			case 6:
 				Shot(TEXT("rules.png"));
 				Test->TestEqual(TEXT("The rules have 7 entries (ボールスイッチ last)"), Menu->GetEntryCount(), 7);
+				// Up from the first row lands on 決定 (the bottom row reads 戻る, ボールスイッチ, 決定); one left is ボールスイッチ.
 				Menu->Navigate(EKeys::Up);
+				Menu->Navigate(EKeys::Left);
 				Stage = 7;
 				NextAt = Now + 0.5;
 				return false;
 			case 7:
-				Test->TestEqual(TEXT("Up from the first row reaches ボールスイッチ"), Menu->GetSelectedIndex(), 6);
+				Test->TestEqual(TEXT("Up, then left: ボールスイッチ"), Menu->GetSelectedIndex(), 6);
 				Menu->ConfirmSelection();
 				Stage = 8;
 				NextAt = Now + 0.8;
 				return false;
 			case 8:
-				Test->TestEqual(TEXT("ボールスイッチ: 14 balls + すべてオン + もどる"), Menu->GetEntryCount(), 16);
+				Test->TestEqual(TEXT("ボールスイッチ: 15 balls (normal first) + すべてオン + もどる + すべてオフ"), Menu->GetEntryCount(), 18);
 				Menu->ConfirmSelection();
 				Menu->Navigate(EKeys::Right);
 				Menu->ConfirmSelection();
@@ -110,22 +112,42 @@ namespace
 			case 9:
 			{
 				const FChaosImpactMatchRules& Rules = PC->GetPendingMatchRules();
+				Test->TestFalse(TEXT("Normal switched off"), ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Normal));
 				Test->TestFalse(TEXT("Fire switched off"), ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Fire));
-				Test->TestFalse(TEXT("Ice switched off"), ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Ice));
-				Test->TestTrue(TEXT("Thunder still on"), ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Thunder));
+				Test->TestTrue(TEXT("Ice still on"), ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Ice));
 				Shot(TEXT("ballswitch.png"));
+				// Down twice to the bottom row (もどる), right twice to すべてオフ, pressed; then back is refused.
+				Menu->Navigate(EKeys::Down);
+				Menu->Navigate(EKeys::Down);
+				Menu->Navigate(EKeys::Right);
+				Menu->Navigate(EKeys::Right);
+				Menu->ConfirmSelection();
+				Menu->GoBack();
 				Stage = 10;
 				NextAt = Now + 0.5;
 				return false;
 			}
 			case 10:
-				Menu->GoBack();
+				Test->TestEqual(TEXT("すべてオフ: every kind off"), ChaosImpactBallSwitch::CountOn(PC->GetPendingMatchRules()), 0);
+				Test->TestEqual(TEXT("Nothing on: back refused, still on the switch"), Menu->GetEntryCount(), 18);
+				Test->TestTrue(TEXT("Nothing on: もどる greyed out"), Menu->IsEntryDisabled(Menu->GetEntryCount() - 2));
+				Shot(TEXT("ballswitch_alloff.png"));
 				Stage = 11;
-				NextAt = Now + 0.8;
+				NextAt = Now + 0.5;
 				return false;
 			case 11:
-				Shot(TEXT("rules_after.png"));
+				// Left once: すべてオン, pressed; now back closes it.
+				Menu->Navigate(EKeys::Left);
+				Menu->ConfirmSelection();
+				Menu->GoBack();
 				Stage = 12;
+				NextAt = Now + 0.8;
+				return false;
+			case 12:
+				Test->TestEqual(TEXT("All on again"), ChaosImpactBallSwitch::CountOn(PC->GetPendingMatchRules()), ChaosImpactBallTypes::Count);
+				Test->TestEqual(TEXT("Back on the rules"), Menu->GetEntryCount(), 7);
+				Shot(TEXT("rules_after.png"));
+				Stage = 13;
 				NextAt = Now + 0.5;
 				return false;
 			default:

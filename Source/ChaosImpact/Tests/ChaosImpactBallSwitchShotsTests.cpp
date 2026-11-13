@@ -64,7 +64,7 @@ namespace
 				{
 					return false;
 				}
-				Test->TestEqual(TEXT("Every special ball off in the rules"), ChaosImpactBallSwitch::CountOn(Match->Rules), 0);
+				Test->TestEqual(TEXT("Every special ball off in the rules (the normal one on)"), ChaosImpactBallSwitch::CountOn(Match->Rules), 1);
 				Test->TestEqual(TEXT("No slot balls drawn"), Match->Duel.BallPicks.Num(), 0);
 				NextAt = Now + 1.0;
 				Stage = 1;
@@ -258,7 +258,7 @@ namespace
 				{
 					return false;
 				}
-				Test->TestEqual(TEXT("Every ball off in the tournament's rules"), ChaosImpactBallSwitch::CountOn(Match->Rules), 0);
+				Test->TestEqual(TEXT("Every special ball off in the tournament's rules (the normal one on)"), ChaosImpactBallSwitch::CountOn(Match->Rules), 1);
 				Test->TestEqual(TEXT("The tournament match draws no slot balls"), Drawing->Duel.BallPicks.Num(), 0);
 				NextAt = Now + 2.6;
 				Stage = 1;

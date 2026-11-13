@@ -212,16 +212,18 @@ public:
 	void OpenOnlineRecord();
 	/**
 	 * The rules screen's kinds of match, by number: 0 個人戦, 1-3 チーム戦 2-4チーム, 4 クラッシュボール, 5 1対1,
-	 * 6 バトルロイヤル 個人, 7-9 バトルロイヤル 2-4チーム, 10 トーナメント.
+	 * 6 バトルロイヤル 個人, 7-9 バトルロイヤル 2-4チーム, 10 トーナメント, 11 ルビーラッシュ, 12 クラウンキープ.
 	 */
-	static constexpr int32 MatchModeCount = 11;
+	static constexpr int32 MatchModeCount = 13;
 	static void ApplyMatchMode(FChaosImpactMatchRules& Rules, int32 Mode);
 	int32 GetMatchMode() const;
 	/** Why a kind cannot be chosen here (empty: it can). */
 	FString GetMatchModeBlocker(int32 Mode) const;
 	void SetMatchMode(int32 Mode);
-	/** The rules screen's list also offers トーナメント's two ways to run as two choices: 11 is トーナメント 同時進行. */
-	static constexpr int32 TournamentAllAtOnceChoice = 11;
+	/** The rules screen's list also offers トーナメント's two ways to run as two choices: 13 is トーナメント 同時進行. */
+	static constexpr int32 TournamentAllAtOnceChoice = 13;
+	/** A choice of the rules screen's list as a kind of match (トーナメント 同時進行 is the tournament). */
+	static int32 GetChoiceMode(const int32 Choice) { return Choice == TournamentAllAtOnceChoice ? 10 : Choice; }
 	int32 GetMatchModeChoice() const;
 	void SetMatchModeChoice(int32 Choice);
 	// ---- ローカルトーナメント (VS モードの「トーナメント」)
@@ -320,6 +322,14 @@ public:
 	bool CanChangeLobbyTeam() const;
 	/** The whole-stage map over the screen (its key opens and closes it; only while playing). */
 	bool IsOverviewMapOpen() const { return bOverviewMapOpen && IsGameplayActive(); }
+	/**
+	 * ルール確認: the room's decided rules in full over the screen, opened and closed with its key while the room waits for
+	 * the match (the countdown to the start); it closes by itself when the match begins.
+	 */
+	bool CanOpenRuleCard() const;
+	bool IsRuleCardOpen() const { return bRuleCardOpen && CanOpenRuleCard(); }
+	void SetRuleCardOpen(bool bOpen);
+	double GetRuleCardOpenedAt() const { return RuleCardOpenedAt; }
 	/** Online lobby: switch between playing and watching the next match (V / D-pad down). */
 	void ToggleSpectating();
 	bool CanToggleSpectating() const;
@@ -330,9 +340,10 @@ public:
 	/** Row 0 = minutes, 1 = free-for-all / teams, 2 = CPUs, 3 = CPU strength (only with CPUs). */
 	void AdjustMatchRule(int32 Row, int32 Direction);
 	const FChaosImpactMatchRules& GetPendingMatchRules() const { return PendingMatchRules; }
-	/** ボールスイッチ on the rules being chosen: one special ball on / off, or every one back on. */
+	/** ボールスイッチ on the rules being chosen: one ball on / off, or every one on / off. */
 	void SetBallSwitchOn(EChaosImpactBallType Type, bool bOn);
 	void SetAllBallsOn();
+	void SetAllBallsOff();
 	int32 GetMatchHumanCount() const;
 	/** Spectating: hides the whole-screen match UI (time, GO, results banner stay hidden until shown again). */
 	void SetGameplayUIHidden(bool bHide);
@@ -695,6 +706,8 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<class UChaosImpactTournamentWidget> TournamentWidget;
 	bool bOverviewMapOpen = false;
+	bool bRuleCardOpen = false;
+	double RuleCardOpenedAt = 0.0;
 	/** One player on this machine: every connected controller is given to them too (see ClaimEveryPadForSolePlayer). */
 	FTimerHandle SolePadTimer;
 	void ClaimEveryPadForSolePlayer();

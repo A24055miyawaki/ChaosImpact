@@ -390,10 +390,17 @@ void AChaosImpactCharacterPreview::BeginPaintView(const int32 Width, const int32
 	SavedBackdropRotation = Backdrop->GetComponentRotation();
 	SavedBackdropScale = Backdrop->GetRelativeScale3D();
 	Camera->FOVAngle = 30.0f;
-	// Held still, square to the camera's start.
+	// Held still, square to the camera's start: the idle's first frame, its animation stopped (the pose component
+	// ticks its own animation otherwise, and the body would keep moving under the pen).
 	FacingYaw = 0.0f;
 	SpinKick = 0.0f;
 	Pose->SetRelativeRotation(FRotator::ZeroRotator);
+	if (IdleAnimation)
+	{
+		Pose->PlayAnimation(IdleAnimation, true);
+	}
+	Pose->SetPosition(0.0f, false);
+	Pose->bPauseAnims = true;
 	Pose->TickAnimation(0.0f, false);
 	Pose->RefreshBoneTransforms();
 	FBox Box(ForceInit);
@@ -428,6 +435,8 @@ void AChaosImpactCharacterPreview::EndPaintView()
 		return;
 	}
 	bPaintView = false;
+	// Moving again (the idle carries on from where it stood).
+	Pose->bPauseAnims = false;
 	if (Picture && (Picture->SizeX != PictureWidth || Picture->SizeY != PictureHeight))
 	{
 		Picture->ResizeTarget(PictureWidth, PictureHeight);

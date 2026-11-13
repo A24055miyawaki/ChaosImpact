@@ -67,6 +67,10 @@ public:
 	/** 0-1 while the character charges on any pad (as seen on this machine), 0 otherwise. */
 	static float FindChargeProgress(const AActor* Character);
 
+	/** Out of play (クラッシュボール clears the ground round its goals): hidden, not solid, sends nobody and is sent to by nobody. */
+	void SetAside(bool bAside);
+	bool IsSetAside() const { return bSetAside; }
+
 	/** Pads only send players to other pads with the same group (and the same parent actor). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category="Chaos Impact|Warp")
 	int32 WarpGroup = 0;
@@ -94,6 +98,7 @@ public:
 	FLinearColor GlowColor = FLinearColor(0.12f, 0.72f, 1.0f);
 
 protected:
+	bool bSetAside = false;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 

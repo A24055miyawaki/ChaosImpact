@@ -164,6 +164,18 @@ void AChaosImpactBallSpawner::SpawnNow()
 	GetWorldTimerManager().SetTimer(SpawnTimer, this, &AChaosImpactBallSpawner::TrySpawnBall, RespawnInterval, true);
 }
 
+void AChaosImpactBallSpawner::ReplaceBallIfUnwanted()
+{
+	AChaosImpactBall* Ball = ActiveBall.Get();
+	if (!bInPlay || !HasAuthority() || !Ball || Ball->HasLeftSpawnPoint() || GetChance(Ball->GetBallType()) > 0.0f)
+	{
+		return;
+	}
+	ActiveBall.Reset();
+	Ball->Destroy();
+	SpawnNow();
+}
+
 void AChaosImpactBallSpawner::TrySpawnBall()
 {
 	// A ball carried away from the pad (by a tornado) no longer holds its place.

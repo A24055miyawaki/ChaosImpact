@@ -1,6 +1,8 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "ChaosImpactBodyPaint.h"
+#include "ChaosImpactCharacterPreview.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactColourEdit.h"
 #include "ChaosImpactCustomColour.h"
@@ -129,9 +131,22 @@ namespace
 				Test->TestTrue(TEXT("The model can be painted"), Studio->CanPaint());
 				Shot(TEXT("paint_01_open.png"));
 				UE_LOG(LogTemp, Display, TEXT("PAINTQA opened"));
+				// Held still while it is painted: a hand and the head where they were a moment ago.
+				if (const AChaosImpactCharacterPreview* Preview = Studio->GetPreviewForTests())
+				{
+					StillHand = Preview->GetPoseForTests()->GetBoneLocation(TEXT("hand_r"));
+					StillHead = Preview->GetPoseForTests()->GetBoneLocation(TEXT("head"));
+				}
 				return Next(0.8);
 			case 5:
 			{
+				if (const AChaosImpactCharacterPreview* Preview = Studio->GetPreviewForTests())
+				{
+					const FVector Hand = Preview->GetPoseForTests()->GetBoneLocation(TEXT("hand_r"));
+					const FVector Head = Preview->GetPoseForTests()->GetBoneLocation(TEXT("head"));
+					UE_LOG(LogTemp, Display, TEXT("PAINTQA still: hand moved %.2f, head moved %.2f"), FVector::Dist(Hand, StillHand), FVector::Dist(Head, StillHead));
+					Test->TestTrue(TEXT("The character stands still while painted"), FVector::Dist(Hand, StillHand) < 0.5f && FVector::Dist(Head, StillHead) < 0.5f);
+				}
 				// Strokes across the body: red, then a mirrored blue one off the middle.
 				const FVector2D C = Studio->GetModelCentreOnScreen();
 				Studio->SetColour(FColor(250, 250, 250));
@@ -317,6 +332,8 @@ namespace
 		double StartedAt = FPlatformTime::Seconds();
 		double NextAt = 0.0;
 		int32 Stage = 0;
+		FVector StillHand = FVector::ZeroVector;
+		FVector StillHead = FVector::ZeroVector;
 		int32 Guard = 0;
 		int32 Drawn = 0;
 		int32 Mirrored = 0;

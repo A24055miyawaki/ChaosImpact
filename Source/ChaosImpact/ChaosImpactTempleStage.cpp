@@ -68,6 +68,8 @@ AChaosImpactTempleStage::AChaosImpactTempleStage()
 	CrashBallStartOffset = FVector(0, 0, 105);
 	Team0GoalOffset = FVector(-3100, 0, 0);
 	Team1GoalOffset = FVector(3100, 0, 0);
+	// クラッシュボール: the goals (pedestals) at opposite corners (the ground round them is cleared), and the ways round to them.
+	SetCrashDiagonalGoals(FVector(-1800, -2250, 0), FVector(1800, 2250, 0), {FVector(450, 450, 30), FVector(300, 900, 0), FVector(750, 1800, 0), FVector(1650, 2250, 0)}, {FVector(-450, -450, 30), FVector(-300, -900, 0), FVector(-750, -1800, 0), FVector(-1650, -2250, 0)});
 	CrashBallExtraBallOffsets = {FVector(-1050, 250, 0), FVector(1050, -250, 0), FVector(-2550, 700, 0), FVector(2550, -700, 0)};
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;

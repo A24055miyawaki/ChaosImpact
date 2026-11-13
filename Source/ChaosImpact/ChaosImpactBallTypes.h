@@ -293,6 +293,8 @@ namespace ChaosImpactBallTypes
 	CHAOSIMPACT_API UMaterialInterface* GetAdditiveMaterial();
 	CHAOSIMPACT_API UMaterialInterface* GetEmissiveMaterial();
 	CHAOSIMPACT_API UMaterialInterface* GetIceMaterial();
+	/** The normal ball's own look: glossy black with bands of light-blue light (M_CI_NormalBall; null when missing). */
+	CHAOSIMPACT_API UMaterialInterface* GetNormalBallMaterial();
 	CHAOSIMPACT_API UMaterialInstanceDynamic* MakeAdditive(UObject* Outer, const FLinearColor& Color, float Intensity, float RimOnly = 0.0f);
 	CHAOSIMPACT_API UMaterialInstanceDynamic* MakeEmissive(UObject* Outer, const FLinearColor& Color, float Intensity);
 	CHAOSIMPACT_API UMaterialInstanceDynamic* MakeIce(UObject* Outer, const FLinearColor& Color, float Opacity, float Intensity = 1.4f);

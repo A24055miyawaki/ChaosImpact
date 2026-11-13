@@ -3,6 +3,7 @@
 #include "ChaosImpactCrashBall.h"
 #include "ChaosImpactStageBase.h"
 #include "Engine/World.h"
+#include "CollisionQueryParams.h"
 #include "GameFramework/Pawn.h"
 #include "TimerManager.h"
 
@@ -46,7 +47,11 @@ void AChaosImpactGameMode::SetupCrashMatch()
 	}
 	Match->Crash.Ball = GetWorld()->SpawnActor<AChaosImpactCrashBall>(AChaosImpactCrashBall::StaticClass(),
 		VersusStage->GetCrashBallStartFloorLocation(), FRotator::ZeroRotator, Params);
-	if (Match->Crash.Ball) { Match->Crash.Ball->ResetToStartLocation(VersusStage->GetCrashBallStartFloorLocation(), VersusStage); }
+	if (Match->Crash.Ball)
+	{
+		Match->Crash.Ball->ResetToStartLocation(VersusStage->GetCrashBallStartFloorLocation(), VersusStage);
+		Match->Crash.Ball->SetPullGoals(CrashGoals);
+	}
 	Match->ForceNetUpdate();
 }
 
@@ -59,9 +64,38 @@ TArray<FVector> AChaosImpactGameMode::GetCrashTeamSpawnPoints(const int32 Team) 
 {
 	TArray<FVector> All = VersusStage ? VersusStage->GetSpawnPoints() : TArray<FVector>();
 	if (!VersusStage || (Team != 0 && Team != 1)) { return All; }
-	// A team's half is the side of its own goal: it starts and comes back there, defending first.
+	// Always round its own goal: a fan of spots on the side facing the middle, a little outside the goal's pull
+	// (where it starts, and where it comes back).
 	const FVector Middle = VersusStage->GetCrashBallStartFloorLocation();
-	const FVector Home = (VersusStage->GetCrashBallGoalTransform(Team).GetLocation() - Middle).GetSafeNormal2D();
+	const FVector Goal = VersusStage->GetCrashBallGoalTransform(Team).GetLocation();
+	const FVector Inward = (Middle - Goal).GetSafeNormal2D();
+	TArray<FVector> Round;
+	if (UWorld* World = GetWorld(); World && !Inward.IsNearlyZero())
+	{
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(CrashSpawn), false);
+		for (const float Radius : {1150.0f, 1500.0f})
+		{
+			for (const float Angle : {0.0f, -35.0f, 35.0f, -70.0f, 70.0f})
+			{
+				const FVector At = Goal + Inward.RotateAngleAxis(Angle, FVector::UpVector) * Radius;
+				FHitResult Floor;
+				if (!World->LineTraceSingleByObjectType(Floor, At + FVector(0, 0, 800), At - FVector(0, 0, 1500), FCollisionObjectQueryParams(ECC_WorldStatic), Query)
+					|| Floor.ImpactNormal.Z < 0.7f || FMath::Abs(Floor.ImpactPoint.Z - Goal.Z) > 300.0f || VersusStage->IsOutside(Floor.ImpactPoint))
+				{
+					continue;
+				}
+				if (World->OverlapAnyTestByObjectType(Floor.ImpactPoint + FVector(0, 0, 104), FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+					FCollisionShape::MakeCapsule(46.0f, 96.0f), Query))
+				{
+					continue;
+				}
+				Round.Add(Floor.ImpactPoint);
+			}
+		}
+	}
+	if (Round.Num() >= 2) { return Round; }
+	// (Too little room round it: the team's half, as before.)
+	const FVector Home = (Goal - Middle).GetSafeNormal2D();
 	TArray<FVector> Own;
 	for (const FVector& Point : All)
 	{

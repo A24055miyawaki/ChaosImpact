@@ -1,4 +1,6 @@
 #include "ChaosImpactSettings.h"
+#include "ChaosImpact.h"
+#include "ChaosImpactGameState.h"
 
 #include "AudioDevice.h"
 #include "ChaosImpactLoadoutSubsystem.h"
@@ -61,7 +63,7 @@ namespace
 	{
 		static const TCHAR* const Tags[] = {TEXT("MoveUp"), TEXT("MoveDown"), TEXT("MoveLeft"), TEXT("MoveRight"),
 			TEXT("Throw"), TEXT("CancelThrow"), TEXT("Dash"), TEXT("Jump"), TEXT("SwapBall"), TEXT("DropBall"),
-			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle"), TEXT("LobbyTeam"), TEXT("OverviewMap")};
+			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle"), TEXT("LobbyTeam"), TEXT("OverviewMap"), TEXT("RuleCard")};
 		static_assert(UE_ARRAY_COUNT(Tags) == FChaosImpactProfile::ActionCount, "One tag per action");
 		return Tags[FMath::Clamp(static_cast<int32>(Action), 0, FChaosImpactProfile::ActionCount - 1)];
 	}
@@ -588,6 +590,7 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 		case EChaosImpactAction::LobbySpectate: return GetKey(Profile, Device, Action, Slot);
 		case EChaosImpactAction::LobbyTeam: return GetKey(Profile, Device, Action, Slot);
 		case EChaosImpactAction::OverviewMap: return GetKey(Profile, Device, Action, Slot);
+		case EChaosImpactAction::RuleCard: return GetKey(Profile, Device, Action, Slot);
 		default: return FKey();
 		}
 	}
@@ -600,6 +603,7 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 	case EChaosImpactAction::TrainingMenu: return EKeys::Gamepad_Special_Left;
 	case EChaosImpactAction::LobbyReady: case EChaosImpactAction::LobbySpectate: case EChaosImpactAction::LobbyTeam:
 	case EChaosImpactAction::OverviewMap:
+	case EChaosImpactAction::RuleCard:
 		return GetKey(Profile, Device, Action, Slot);
 	default: return FKey();
 	}
@@ -696,6 +700,7 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 		case EAction::LobbySpectate: return Slot == 0 ? EKeys::V : FKey();
 		case EAction::LobbyTeam: return Slot == 0 ? EKeys::C : FKey();
 		case EAction::OverviewMap: return Slot == 0 ? EKeys::M : FKey();
+		case EAction::RuleCard: return Slot == 0 ? EKeys::I : FKey();
 		default: return FKey();
 		}
 	}
@@ -720,6 +725,7 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 	case EAction::LobbySpectate: return Slot == 0 ? EKeys::Gamepad_DPad_Down : FKey();
 	case EAction::LobbyTeam: return Slot == 0 ? EKeys::Gamepad_DPad_Right : FKey();
 	case EAction::OverviewMap: return Slot == 0 ? EKeys::Gamepad_RightThumbstick : FKey();
+	case EAction::RuleCard: return Slot == 0 ? EKeys::Gamepad_LeftThumbstick : FKey();
 	default: return FKey();
 	}
 }
@@ -776,6 +782,7 @@ FString ChaosImpactSettings::GetActionName(const EChaosImpactAction Action)
 	case EAction::LobbySpectate: return TEXT("観戦する／やめる（部屋）");
 	case EAction::LobbyTeam: return TEXT("チームを変える（部屋）");
 	case EAction::OverviewMap: return TEXT("全体マップ");
+	case EAction::RuleCard: return TEXT("ルール確認（部屋）");
 	default: return FString();
 	}
 }
@@ -1496,6 +1503,8 @@ void ChaosImpactSettings::ApplyRenderScale()
 	{
 		Percent = FMath::Clamp(100.0f * Chosen.Y / Monitor.Y, 25.0f, 200.0f);
 	}
+	// 解像度スケール on top (this value is set by code, so it would otherwise hide the setting's own screen percentage).
+	Percent = FMath::Clamp(Percent * GetResolutionScale() / 100.0f, 25.0f, 200.0f);
 	if (IConsoleVariable* ScreenPercentage = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ScreenPercentage")))
 	{
 		ScreenPercentage->Set(Percent, ECVF_SetByCode);
@@ -1532,6 +1541,45 @@ void ChaosImpactSettings::SetFrameRateLimit(const int32 Limit)
 	}
 }
 
+void ChaosImpactSettings::UpdateOnlineFrameCap(const UWorld* World)
+{
+	static bool bCapped = false;
+	static double LastInRoom = -100.0;
+	if (!GEngine)
+	{
+		return;
+	}
+	const AChaosImpactGameState* Room = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+	const bool bInRoom = World && World->IsGameWorld() && World->GetNetMode() != NM_Standalone && Room && Room->bOnlineRoom;
+	const double Now = FPlatformTime::Seconds();
+	if (bInRoom)
+	{
+		LastInRoom = Now;
+	}
+	// (Moving between the room's levels it is briefly not there: held through that.)
+	const bool bWant = bInRoom || (bCapped && Now - LastInRoom < 6.0);
+	const int32 Chosen = GetFrameRateLimit();
+	if (bWant)
+	{
+		// A player who chose a lower limit keeps it.
+		const float Wanted = static_cast<float>(Chosen > 0 ? FMath::Min(Chosen, OnlineFrameCap) : OnlineFrameCap);
+		if (!FMath::IsNearlyEqual(GEngine->GetMaxFPS(), Wanted))
+		{
+			GEngine->SetMaxFPS(Wanted);
+		}
+		if (!bCapped)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Online room: frame rate held at %.0f fps"), Wanted);
+		}
+	}
+	else if (bCapped)
+	{
+		GEngine->SetMaxFPS(static_cast<float>(FMath::Max(Chosen, 0)));
+		UE_LOG(LogChaosImpact, Log, TEXT("Left the online room: frame rate limit back to %d"), Chosen);
+	}
+	bCapped = bWant;
+}
+
 int32 ChaosImpactSettings::GetOverallQuality()
 {
 	const UGameUserSettings* Settings = UserSettings();
@@ -1545,6 +1593,7 @@ void ChaosImpactSettings::SetOverallQuality(const int32 Level)
 	{
 		Settings->SetOverallScalabilityLevel(FMath::Clamp(Level, 0, 3));
 		SaveUserSettings(Settings, false);
+		ApplyRenderScale();
 	}
 }
 
@@ -1626,5 +1675,6 @@ void ChaosImpactSettings::SetResolutionScale(const int32 Percent)
 	{
 		Settings->SetResolutionScaleValueEx(static_cast<float>(FMath::Clamp(Percent, 50, 100)));
 		SaveUserSettings(Settings, false);
+		ApplyRenderScale();
 	}
 }

@@ -39,6 +39,7 @@ public:
 	/** Something was drawn, rubbed out or taken back since it opened. */
 	bool HasChanges() const { return bChanged; }
 	void Tick(float DeltaSeconds);
+	AChaosImpactCharacterPreview* GetPreviewForTests() const { return Preview; }
 	int32 Paint(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 	bool HandleKeyDown(const FKeyEvent& Event);
 	bool HandleKeyUp(const FKeyEvent& Event);

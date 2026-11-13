@@ -1,4 +1,6 @@
 #include "ChaosImpactMenuWidget.h"
+#include "ChaosImpactParty.h"
+#include "ChaosImpactRuleCard.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Engine/GameViewportClient.h"
@@ -49,14 +51,30 @@
 
 namespace
 {
-	const FLinearColor Ink(0.006f, 0.009f, 0.018f, 1.0f);
-	const FLinearColor Fire(1.0f, 0.055f, 0.12f, 1.0f);
-	const FLinearColor Ice(0.0f, 0.55f, 1.0f, 1.0f);
-	const FLinearColor Gold(1.0f, 0.68f, 0.06f, 1.0f);
-	const FLinearColor Paper(0.96f, 0.975f, 1.0f, 1.0f);
-	const FLinearColor Muted(0.48f, 0.54f, 0.64f, 1.0f);
-	const FLinearColor Violet(0.55f, 0.28f, 1.0f, 1.0f);
-	const FLinearColor PlayerAccents[] = {Ice, Fire, Gold, Violet};
+	// The shared colours and helpers (ChaosImpactPaint), named here so a unity build that puts this file beside one using
+	// ChaosImpactPaint sees one and the same thing, not two.
+	using ChaosImpactPaint::Ink;
+	using ChaosImpactPaint::Fire;
+	using ChaosImpactPaint::Ice;
+	using ChaosImpactPaint::Gold;
+	using ChaosImpactPaint::Paper;
+	using ChaosImpactPaint::Muted;
+	using ChaosImpactPaint::Violet;
+	using ChaosImpactPaint::PlayerAccents;
+	using ChaosImpactPaint::WithAlpha;
+	using ChaosImpactPaint::EaseOut;
+	using ChaosImpactPaint::MakeSkewed;
+	using ChaosImpactPaint::ETextAlign;
+
+	// The rules screen's list of kinds: four rows of tiles (バトル / バトルロイヤル / そのほか / パーティ).
+	constexpr int32 ModePickerRows = 4;
+	constexpr float ModePickerTop = 206.0f;
+	constexpr float ModePickerStep = 124.0f;
+	constexpr float ModePickerTile = 112.0f;
+	FLinearColor ModePickerRowColor(const int32 Row)
+	{
+		return Row == 0 ? Fire : Row == 1 ? Gold : Row == 2 ? Violet : FLinearColor(1.0f, 0.18f, 0.42f, 1.0f);
+	}
 
 	bool IsMenuKeyAllowed(const UChaosImpactMenuWidget* Widget, const FKey Key)
 	{
@@ -149,25 +167,6 @@ namespace
 			Geometry.GetLocalSize().Y / 900.0f));
 	}
 
-	FLinearColor WithAlpha(FLinearColor Color, const float Alpha)
-	{
-		Color.A *= FMath::Clamp(Alpha, 0.0f, 1.0f);
-		return Color;
-	}
-
-	float EaseOut(const float T)
-	{
-		return 1.0f - FMath::Pow(1.0f - FMath::Clamp(T, 0.0f, 1.0f), 3.0f);
-	}
-
-	/** A child space that leans forward ("/") and optionally scales about its center. */
-	FGeometry MakeSkewed(const FGeometry& Parent, const float X, const float Y, const float W,
-		const float H, const float Shear, const float Scale = 1.0f)
-	{
-		const FSlateRenderTransform Render(TMatrix2x2<float>(Scale, 0.0f, Scale * Shear, Scale));
-		return Parent.MakeChild(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y)),
-			Render, FVector2f(0.5f, 0.5f));
-	}
 
 	/** Tips shown one after another while waiting online (a few seconds each). */
 	const TCHAR* OnlineWaitTip(const float Time)
@@ -182,8 +181,6 @@ namespace
 		};
 		return Tips[FMath::FloorToInt(Time / 4.0f) % UE_ARRAY_COUNT(Tips)];
 	}
-
-	enum class ETextAlign : uint8 { Left, Center, Right };
 
 	struct FMenuPainter
 	{
@@ -272,7 +269,7 @@ namespace
 		P.Box(0.0f, 0.0f, W, H, FLinearColor(0.012f, 0.016f, 0.03f, 0.94f));
 		P.Box(0.0f, 0.0f, W, 8.0f, Violet);
 		P.Text(TEXT("クラッシュボール"), 26.0f, 18.0f, 28.0f, Paper);
-		P.Text(TEXT("2チーム ・ 5分"), 28.0f, 60.0f, 16.0f, Violet, ETextAlign::Left, TEXT("Bold"));
+		P.Text(FString::Printf(TEXT("2チーム ・ %d分"), ChaosImpactMatch::CrashBallMinutes), 28.0f, 60.0f, 16.0f, Violet, ETextAlign::Left, TEXT("Bold"));
 
 		// The field: red goal left, blue goal right, the giant ball rocking between them as throws land.
 		const FMenuPainter F{Card, Elements, Layer + 1, In};
@@ -588,6 +585,8 @@ namespace
 			: Mode == 5 ? TEXT("3回当てて倒す・2本先取")
 			: Mode == 6 ? TEXT("最後の1人になれば勝ち")
 			: Mode <= 9 ? TEXT("最後まで生き残ったチームの勝ち")
+			: Mode == 11 ? TEXT("ルビーを一番多く集めた人の勝ち")
+			: Mode == 12 ? TEXT("王冠を合計30秒持てば勝ち")
 			: Mode == AChaosImpactPlayerController::TournamentAllAtOnceChoice ? TEXT("全試合いっしょに・待ち時間は練習や観戦")
 			: TEXT("1試合ずつ順番に・みんなで観戦");
 		Top.Text(Line, 21.0f, H - 40.0f, CP::HudFit(Line, 16.0f, W - 42.0f, TEXT("Bold")), Blocker.IsEmpty() ? WithAlpha(Paper, 0.75f) : Fire,
@@ -604,75 +603,11 @@ namespace
 		}
 	}
 
-	/** The rules page's emblem for a kind of match (everyone for themselves, teams, 1 v 1, battle royale, tournament). */
+	/** The rules page's emblem for a kind of match (ChaosImpactRuleCard::PaintEmblem). */
 	void PaintModeEmblem(const ChaosImpactPaint::FPainter& Icon, const FChaosImpactMatchRules& Rules, const FVector2D& At, const float Unit,
 		const FLinearColor& Mark, const float Time)
 	{
-		namespace CP = ChaosImpactPaint;
-		if (Rules.bTournament)
-		{
-			const float L = At.X - Unit * 0.9f;
-			const float M = At.X - Unit * 0.2f;
-			const float R = At.X + Unit * 0.5f;
-			for (int32 Leaf = 0; Leaf < 4; ++Leaf)
-			{
-				const float Y = At.Y - Unit * 0.75f + Leaf * Unit * 0.5f;
-				Icon.Line(FVector2D(L, Y), FVector2D(M, Y), Mark, 5.0f);
-			}
-			for (int32 Pair = 0; Pair < 2; ++Pair)
-			{
-				const float Y0 = At.Y - Unit * 0.75f + Pair * Unit;
-				Icon.Line(FVector2D(M, Y0), FVector2D(M, Y0 + Unit * 0.5f), Mark, 5.0f);
-				Icon.Line(FVector2D(M, Y0 + Unit * 0.25f), FVector2D(R, Y0 + Unit * 0.25f), Mark, 5.0f);
-			}
-			Icon.Line(FVector2D(R, At.Y - Unit * 0.5f), FVector2D(R, At.Y + Unit * 0.5f), Mark, 5.0f);
-			Icon.Line(FVector2D(R, At.Y), FVector2D(R + Unit * 0.45f, At.Y), Gold, 6.0f);
-			Icon.Disc(FVector2D(R + Unit * 0.6f, At.Y), Unit * 0.17f, Gold);
-		}
-		else if (Rules.bDuel)
-		{
-			const float Bob = FMath::Sin(Time * 4.0f) * 4.0f;
-			Icon.Disc(At + FVector2D(-Unit * 0.62f, Bob), Unit * 0.34f, ChaosImpactMatch::GetTeamColor(1));
-			Icon.Disc(At + FVector2D(Unit * 0.62f, -Bob), Unit * 0.34f, ChaosImpactMatch::GetTeamColor(0));
-			Icon.Line(At + FVector2D(-Unit * 0.14f, -Unit * 0.42f), At + FVector2D(Unit * 0.1f, -Unit * 0.02f), Mark, 6.0f);
-			Icon.Line(At + FVector2D(Unit * 0.1f, -Unit * 0.02f), At + FVector2D(-Unit * 0.1f, Unit * 0.06f), Mark, 6.0f);
-			Icon.Line(At + FVector2D(-Unit * 0.1f, Unit * 0.06f), At + FVector2D(Unit * 0.14f, Unit * 0.46f), Mark, 6.0f);
-		}
-		else if (Rules.bBattleRoyale)
-		{
-			// A ring closing on the last ones standing.
-			Icon.Ring(At, Unit * (0.85f + 0.08f * FMath::Sin(Time * 2.0f)), Mark, 4.0f, 56);
-			for (int32 Seat = 0; Seat < 5; ++Seat)
-			{
-				const float Angle = Time * 0.6f + Seat * UE_TWO_PI / 5.0f;
-				Icon.Disc(At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.45f, Unit * 0.11f, Seat == 0 ? Gold : WithAlpha(Mark, 0.5f));
-			}
-		}
-		else if (Rules.IsTeamBattle())
-		{
-			// The teams' colours, a few each, facing.
-			const int32 Teams = FMath::Clamp(Rules.TeamCount, 2, 4);
-			for (int32 Team = 0; Team < Teams; ++Team)
-			{
-				const float Angle = Team * UE_TWO_PI / Teams + Time * 0.3f;
-				const FVector2D Home = At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.55f;
-				for (int32 Member = 0; Member < 3; ++Member)
-				{
-					const float Around = Angle + (Member - 1) * 0.5f;
-					Icon.Disc(Home + FVector2D(FMath::Cos(Around), FMath::Sin(Around)) * Unit * 0.24f, Unit * 0.14f, ChaosImpactMatch::GetTeamColor(Team));
-				}
-			}
-		}
-		else
-		{
-			// Everyone for themselves: players round a ball.
-			Icon.Disc(At, Unit * 0.26f, Mark);
-			for (int32 Seat = 0; Seat < 8; ++Seat)
-			{
-				const float Angle = Time * 0.5f + Seat * UE_TWO_PI / 8.0f;
-				Icon.Disc(At + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Unit * 0.75f, Unit * 0.11f, Mark);
-			}
-		}
+		ChaosImpactRuleCard::PaintEmblem(Icon, Rules, At, Unit, Mark, Time);
 	}
 
 	/**
@@ -3440,28 +3375,33 @@ void UChaosImpactMenuWidget::BuildEntries()
 	case EChaosImpactScreen::MatchRules:
 	if (bBallSwitch)
 	{
-		// ボールスイッチ: the special balls in two rows of seven (Number: the kind), then すべてオン and もどる.
+		// ボールスイッチ: every ball, the normal one first, in two rows of eight (Number: the kind), then すべてオン, もどる and
+		// すべてオフ (in that order after the tiles; drawn もどる, すべてオン, すべてオフ from the left).
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const TArray<EChaosImpactBallType> Kinds = ChaosImpactBallSwitch::GetSwitchable();
 		for (int32 Index = 0; Index < Kinds.Num(); ++Index)
 		{
-			const float Left = 110.0f + (Index % 7) * 199.0f - (Index / 7) * 22.0f * 0.06f;
-			const float Top = 214.0f + (Index / 7) * 222.0f;
+			const float Left = 110.0f + (Index % BallSwitchColumns) * 174.0f - (Index / BallSwitchColumns) * 22.0f * 0.06f;
+			const float Top = 214.0f + (Index / BallSwitchColumns) * 222.0f;
 			const bool bOn = !Controller || ChaosImpactBallSwitch::IsOn(Controller->GetPendingMatchRules(), Kinds[Index]);
-			Entries.Add({FSlateRect(Left, Top, Left + 181.0f, Top + 200.0f), ChaosImpactBallTypes::GetDisplayName(Kinds[Index]), TEXT("ball"),
+			Entries.Add({FSlateRect(Left, Top, Left + 160.0f, Top + 200.0f), ChaosImpactBallTypes::GetDisplayName(Kinds[Index]), TEXT("ball"),
 				FString::FromInt(static_cast<int32>(Kinds[Index])), bOn ? ChaosImpactBallTypes::GetColor(Kinds[Index]) : Muted});
 		}
 		Entries.Add({FSlateRect(430, 726, 800, 790), TEXT("すべてオン"), TEXT("all_on"), TEXT(""), Gold});
 		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("switch_back"), TEXT(""), Muted});
+		// With every ball off there is no way back: もどる greyed out (and B / Esc refused).
+		Entries.Last().bDisabled = Controller && ChaosImpactBallSwitch::IsNoneOn(Controller->GetPendingMatchRules());
+		Entries.Add({FSlateRect(830, 726, 1200, 790), TEXT("すべてオフ"), TEXT("all_off"), TEXT(""), Muted});
 		break;
 	}
 	if (bModePicker)
 	{
-		// Every kind of match, in rows by kind (バトル / バトルロイヤル / そのほか): Number its mode, greyed out with the
-		// reason when it cannot be chosen here.
+		// Every kind of match, in rows by kind (バトル / バトルロイヤル / そのほか / パーティ): Number its mode, greyed out with
+		// the reason when it cannot be chosen here.
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		static const int32 Grid[3][4] = {{0, 1, 2, 3}, {6, 7, 8, 9}, {4, 5, 10, AChaosImpactPlayerController::TournamentAllAtOnceChoice}};
-		for (int32 GridRow = 0; GridRow < 3; ++GridRow)
+		static const int32 Grid[ModePickerRows][4] = {{0, 1, 2, 3}, {6, 7, 8, 9}, {4, 5, 10, AChaosImpactPlayerController::TournamentAllAtOnceChoice},
+			{11, 12, -1, -1}};
+		for (int32 GridRow = 0; GridRow < ModePickerRows; ++GridRow)
 		{
 			for (int32 Column = 0; Column < 4; ++Column)
 			{
@@ -3472,15 +3412,16 @@ void UChaosImpactMenuWidget::BuildEntries()
 				}
 				FChaosImpactMatchRules Kind;
 				AChaosImpactPlayerController::ApplyMatchMode(Kind, Mode);
-				const float Left = 300.0f + Column * 300.0f - GridRow * 148.0f * 0.1f;
-				const float Top = 214.0f + GridRow * 158.0f;
+				const float Left = 300.0f + Column * 300.0f - GridRow * ModePickerStep * 0.1f;
+				const float Top = ModePickerTop + GridRow * ModePickerStep;
 				// (Short names: the row says which kind it is.)
 				static const TCHAR* Names[] = {TEXT("個人戦"), TEXT("2チーム"), TEXT("3チーム"), TEXT("4チーム"), TEXT("クラッシュボール"),
 					TEXT("デュエル 1対1"), TEXT("個人戦"), TEXT("2チーム"), TEXT("3チーム"), TEXT("4チーム"), TEXT("トーナメント 1試合ずつ"),
-					TEXT("トーナメント 同時進行")};
-				FMenuEntry Tile{FSlateRect(Left, Top, Left + 284.0f, Top + 140.0f), Names[Mode],
-					TEXT("mode"), FString::FromInt(Mode), GridRow == 0 ? Fire : GridRow == 1 ? Gold : Violet};
-				Tile.bDisabled = Controller && !Controller->GetMatchModeBlocker(FMath::Min(Mode, 10)).IsEmpty();
+					TEXT("ルビーラッシュ"), TEXT("クラウンキープ"), TEXT("トーナメント 同時進行")};
+				static_assert(UE_ARRAY_COUNT(Names) == AChaosImpactPlayerController::TournamentAllAtOnceChoice + 1);
+				FMenuEntry Tile{FSlateRect(Left, Top, Left + 284.0f, Top + ModePickerTile), Names[Mode],
+					TEXT("mode"), FString::FromInt(Mode), ModePickerRowColor(GridRow)};
+				Tile.bDisabled = Controller && !Controller->GetMatchModeBlocker(AChaosImpactPlayerController::GetChoiceMode(Mode)).IsEmpty();
 				Entries.Add(Tile);
 			}
 		}
@@ -3521,7 +3462,8 @@ void UChaosImpactMenuWidget::BuildEntries()
 		}
 		// 1: the rule itself.
 		Row(1, TEXT("ルール"), ChaosImpactMatch::DescribeRule(Rules).Replace(TEXT("  "), TEXT(" ")),
-			Rules.bTournament ? Violet : Rules.bDuel ? Ice : Rules.bCrashBall ? Violet : Rules.IsTeamBattle() ? Gold : Fire, false);
+			Rules.IsParty() ? ChaosImpactParty::GetRuleColor(Rules) : Rules.bTournament ? Violet : Rules.bDuel ? Ice : Rules.bCrashBall ? Violet
+				: Rules.IsTeamBattle() ? Gold : Fire, false);
 		// 2: the CPUs (the duel: one player faces a CPU, two face each other).
 		if (Rules.bTournament)
 		{
@@ -4505,7 +4447,8 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const int32 CPUs = Rules.bTournament ? Rules.Tournament.CPUs.Num() : Rules.CPUCount;
 			const int32 People = Rules.bTournament ? Controller->GetMatchHumanCount() : Humans;
 			const int32 Total = People + CPUs;
-			const FLinearColor ModeColor = Rules.bTournament || Rules.bCrashBall ? Violet : Rules.bDuel ? Ice : Rules.IsTeamBattle() ? Gold : Fire;
+			const FLinearColor ModeColor = Rules.IsParty() ? ChaosImpactParty::GetRuleColor(Rules) : Rules.bTournament || Rules.bCrashBall ? Violet
+				: Rules.bDuel ? Ice : Rules.IsTeamBattle() ? Gold : Fire;
 			// How the rows change, beside the title.
 			if (!bModePicker && !bBallSwitch)
 			{
@@ -4581,7 +4524,8 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 					CP::MakeFill(FMath::Lerp(ModeColor, Paper, 0.35f), ModeColor));
 				CU.Outline(0.0f, 0.0f, CW, CH, WithAlpha(Paper, 0.12f), 1.0f);
 				const CP::FPainter CT = CP::HudAbove(C, 3);
-				const FString English = Rules.bTournament ? TEXT("TOURNAMENT") : Rules.bDuel ? TEXT("DUEL") : Rules.bBattleRoyale ? TEXT("BATTLE ROYALE")
+				const FString English = Rules.IsRubyRush() ? TEXT("RUBY RUSH") : Rules.IsCrownKeep() ? TEXT("CROWN KEEP")
+					: Rules.bTournament ? TEXT("TOURNAMENT") : Rules.bDuel ? TEXT("DUEL") : Rules.bBattleRoyale ? TEXT("BATTLE ROYALE")
 					: Rules.IsTeamBattle() ? TEXT("TEAM BATTLE") : TEXT("FREE FOR ALL");
 				CT.Text(English, 34.0f, 26.0f, 18.0f, ModeColor, CP::ETextAlign::Left, TEXT("BlackItalic"));
 				const FString Kind = ChaosImpactMatch::DescribeRule(Rules).Replace(TEXT("  "), TEXT(" "));
@@ -4589,39 +4533,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				// The emblem.
 				PaintModeEmblem(CP::HudAbove(C, 2), Rules, FVector2D(CW * 0.5f, 196.0), 72.0f, WithAlpha(FMath::Lerp(ModeColor, Paper, 0.3f), 0.85f), T);
 				// How it goes, three points.
-				TArray<FString> Points;
-				if (Rules.bTournament)
-				{
-					Points.Add(Rules.Tournament.Mode == EChaosImpactTournamentMode::Simultaneous ? TEXT("同じ回戦の試合を全部いっしょに・CPU同士は裏で決着")
-						: TEXT("1試合ずつ順番に・CPU同士は観るかとばすか選べる"));
-					Points.Add(FString::Printf(TEXT("全試合1対1・%d本先取の勝ちぬき戦"), ChaosImpactMatch::DuelRoundsToWin));
-					Points.Add(TEXT("待ち時間は練習／観戦を自由に"));
-				}
-				else if (Rules.bDuel)
-				{
-					Points.Add(Rules.CPUCount > 0 ? FString::Printf(TEXT("あなた 対 CPU（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel))
-						: FString(TEXT("プレイヤー同士の1対1")));
-					Points.Add(FString::Printf(TEXT("%d本先取・体力3・特殊ボールはスロットで%d種類"), ChaosImpactMatch::DuelRoundsToWin, ChaosImpactMatch::DuelBallPicks));
-					Points.Add(FString::Printf(TEXT("時間切れは体力の多いほう、同じなら%d秒のサドンデス"), FMath::RoundToInt(ChaosImpactMatch::DuelSuddenDeathSeconds)));
-				}
-				else if (Rules.bBattleRoyale)
-				{
-					Points.Add(Rules.IsTeamBattle() ? TEXT("最後まで生き残ったチームの勝ち") : TEXT("最後の1人になれば勝利"));
-					Points.Add(Rules.IsTeamBattle() ? TEXT("時間切れは生存人数 → 残りHP合計で判定") : TEXT("時間切れは残りHPで判定"));
-					Points.Add(TEXT("同率首位だけでサドンデス・復活なし"));
-				}
-				else if (Rules.IsTeamBattle())
-				{
-					Points.Add(FString::Printf(TEXT("%dチーム・1チーム最大%d人"), Rules.TeamCount, ChaosImpactMatch::GetTeamCapacity(Rules.TeamCount, Total)));
-					Points.Add(TEXT("チームの合計ポイントで勝負"));
-					Points.Add(TEXT("敵に当てる +1pt ・ 撃破ボーナス +1pt"));
-				}
-				else
-				{
-					Points.Add(TEXT("ポイントが一番多い人の勝ち"));
-					Points.Add(TEXT("敵に当てる +1pt ・ 撃破ボーナス +1pt"));
-					Points.Add(FString::Printf(TEXT("%d分間の勝負"), Rules.Minutes));
-				}
+				const TArray<FString> Points = ChaosImpactRuleCard::GetPoints(Rules, Total);
 				for (int32 Index = 0; Index < Points.Num(); ++Index)
 				{
 					const float Y = 298.0f + Index * 42.0f;
@@ -4648,10 +4560,15 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				const float ChipX = 110.0f + CP::HudMeasure(TEXT("ボールスイッチ"), 54.0f) + 36.0f;
 				CP::RoundedBox(Head, ChipX, 112.0f, CP::HudMeasure(Count, 22.0f) + 36.0f, 40.0f, 20.0f, On > 0 ? FLinearColor(0.12f, 0.6f, 0.32f, 1.0f) : Fire);
 				CP::HudAbove(Head, 1).Text(Count, ChipX + 18.0f, 117.0f, 22.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
-				const FString Note = On == 0 ? TEXT("全部オフ：ふつうのボールだけになります")
-					: TEXT("オフにした特殊ボールは出てきません（デュエル・トーナメントのスロットにも）");
-				Head.Text(Note, 1490.0f, 112.0f, CP::HudFit(Note, 18.0f, 740.0f, TEXT("Bold")), On == 0 ? Gold : Muted, CP::ETextAlign::Right, TEXT("Bold"));
-				Head.Text(TEXT("十字 / 矢印：えらぶ　　A / Enter：オン・オフ　　B / Esc：もどる"), 1490.0f, 146.0f, 17.0f, Muted, CP::ETextAlign::Right,
+				// Leaving with nothing on was just refused: the note flashes.
+				const double Denied = FPlatformTime::Seconds() - BallSwitchDeniedAt;
+				const bool bNormalOff = !ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Normal);
+				const FString Note = On == 0 ? TEXT("すべてオフ：1種類以上オンにしないと戻れません")
+					: bNormalOff ? TEXT("ノーマルがオフ：オンにした特殊ボールだけが出てきます")
+					: TEXT("オフにしたボールは出てきません（デュエル・トーナメントのスロットにも）");
+				const FLinearColor NoteColor = On == 0 ? (Denied < 1.2 && FMath::Fmod(Denied, 0.3) < 0.15 ? Paper : Fire) : bNormalOff ? Gold : Muted;
+				Head.Text(Note, 1490.0f, 112.0f, CP::HudFit(Note, 18.0f, 740.0f, TEXT("Bold")), NoteColor, CP::ETextAlign::Right, TEXT("Bold"));
+				Head.Text(TEXT("十字 / 矢印：えらぶ　　A / Enter：オン・オフ　　B / Esc：もどる"), 1490.0f, 160.0f, 17.0f, Muted, CP::ETextAlign::Right,
 					TEXT("Bold"));
 			}
 			if (bModePicker)
@@ -4663,14 +4580,15 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				const CP::FPainter Head{DesignGeometry, OutDrawElements, BaseLayer + 8, Veil};
 				CP::HudText3D(Head, TEXT("ルールをえらぶ"), 110.0f, 100.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
 				Head.Text(TEXT("十字 / 矢印：えらぶ　　A / Enter：決定　　B / Esc：もどる"), 1490.0f, 128.0f, 17.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
-				const TCHAR* Kinds[] = {TEXT("バトル"), TEXT("バトルロイヤル"), TEXT("そのほか")};
-				const FLinearColor KindColors[] = {Fire, Gold, Violet};
-				for (int32 GridRow = 0; GridRow < 3; ++GridRow)
+				const TCHAR* Kinds[] = {TEXT("バトル"), TEXT("バトルロイヤル"), TEXT("そのほか"), TEXT("パーティ")};
+				static_assert(UE_ARRAY_COUNT(Kinds) == ModePickerRows);
+				for (int32 GridRow = 0; GridRow < ModePickerRows; ++GridRow)
 				{
-					const float Top = 214.0f + GridRow * 158.0f;
-					Head.Box(110.0f - GridRow * 15.0f, Top + 10.0f, 6.0f, 120.0f, KindColors[GridRow]);
-					Head.Text(Kinds[GridRow], 128.0f - GridRow * 15.0f, Top + 54.0f, CP::HudFit(Kinds[GridRow], 24.0f, 150.0f), KindColors[GridRow],
-						CP::ETextAlign::Left, TEXT("Black"));
+					const float Top = ModePickerTop + GridRow * ModePickerStep;
+					const float Shift = GridRow * ModePickerStep * 0.1f;
+					Head.Box(110.0f - Shift, Top + 8.0f, 6.0f, ModePickerTile - 16.0f, ModePickerRowColor(GridRow));
+					Head.Text(Kinds[GridRow], 128.0f - Shift, Top + ModePickerTile * 0.5f - 16.0f, CP::HudFit(Kinds[GridRow], 24.0f, 150.0f),
+						ModePickerRowColor(GridRow), CP::ETextAlign::Left, TEXT("Black"));
 				}
 			}
 		}
@@ -4761,7 +4679,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		}
 		else if (Screen == EChaosImpactScreen::MatchRules && bBallSwitch && Entry.Detail == TEXT("ball"))
 		{
-			// A special ball: its ball (greyed and struck through when off), its name, ON / OFF.
+			// A ball: its ball (greyed and struck through when off), its name, ON / OFF.
 			namespace CP = ChaosImpactPaint;
 			const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(FCString::Atoi(*Entry.Number));
 			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
@@ -4806,7 +4724,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		}
 		else if (Screen == EChaosImpactScreen::MatchRules && bBallSwitch)
 		{
-			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Entry.Title, Entry.Accent, Blend, bPressed, false, 1.0f, T);
+			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Entry.Title, Entry.Accent, Blend, bPressed, Entry.bDisabled, 1.0f, T);
 		}
 		else if (Screen == EChaosImpactScreen::MatchRules && bModePicker && Entry.Detail == TEXT("mode"))
 		{
@@ -4814,7 +4732,8 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 			const int32 Mode = FCString::Atoi(*Entry.Number);
 			PaintModeTile(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Mode, Entry.Title, Entry.Accent, Blend, bPressed, Entry.bDisabled,
-				Owner && Owner->GetMatchModeChoice() == Mode, Owner ? Owner->GetMatchModeBlocker(FMath::Min(Mode, 10)) : FString(), TileIn, T);
+				Owner && Owner->GetMatchModeChoice() == Mode, Owner ? Owner->GetMatchModeBlocker(AChaosImpactPlayerController::GetChoiceMode(Mode)) : FString(),
+				TileIn, T);
 		}
 		else if (Screen == EChaosImpactScreen::MatchRules && bModePicker)
 		{
@@ -4978,17 +4897,21 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	const bool bRight = Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right;
 	if (Screen == EChaosImpactScreen::MatchRules && bBallSwitch && Key != EKeys::Tab)
 	{
-		// Two rows of seven, then すべてオン (14) and もどる (15) along the bottom.
+		// Two rows of eight (the second one short), then もどる, すべてオン, すべてオフ along the bottom (entries Tiles + 1,
+		// Tiles, Tiles + 2).
 		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
-		const int32 Tiles = Entries.Num() - 2;
+		const int32 Tiles = Entries.Num() - 3;
+		const int32 Bottom[] = {Tiles + 1, Tiles, Tiles + 2};
+		constexpr int32 Columns = BallSwitchColumns;
 		if (SelectedIndex < Tiles)
 		{
-			const int32 Row = SelectedIndex / 7;
-			int32 Column = SelectedIndex % 7;
+			const int32 Row = SelectedIndex / Columns;
+			int32 Column = SelectedIndex % Columns;
 			if (bLeft || bRight)
 			{
-				Column = (Column + (bRight ? 1 : 6)) % 7;
-				SelectedIndex = FMath::Min(Row * 7 + Column, Tiles - 1);
+				const int32 RowLength = FMath::Min(Columns, Tiles - Row * Columns);
+				Column = (Column + (bRight ? 1 : RowLength - 1)) % RowLength;
+				SelectedIndex = Row * Columns + Column;
 			}
 			else if (bUp)
 			{
@@ -4996,7 +4919,7 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 			}
 			else
 			{
-				SelectedIndex = Row == 0 ? FMath::Min(7 + Column, Tiles - 1) : (Column <= 1 ? Tiles + 1 : Tiles);
+				SelectedIndex = Row == 0 ? FMath::Min(Columns + Column, Tiles - 1) : Bottom[Column <= 1 ? 0 : Column <= 3 ? 1 : 2];
 			}
 			if (SelectedIndex < Tiles)
 			{
@@ -5005,22 +4928,23 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		}
 		else if (bLeft || bRight)
 		{
-			SelectedIndex = SelectedIndex == Tiles ? Tiles + 1 : Tiles;
+			const int32 At = SelectedIndex == Tiles + 1 ? 0 : SelectedIndex == Tiles ? 1 : 2;
+			SelectedIndex = Bottom[(At + (bRight ? 1 : 2)) % 3];
 		}
 		else
 		{
-			SelectedIndex = bUp ? FMath::Clamp(LastBallSwitchTile >= 7 ? LastBallSwitchTile : LastBallSwitchTile + 7, 0, Tiles - 1)
-				: FMath::Clamp(LastBallSwitchTile % 7, 0, Tiles - 1);
+			SelectedIndex = bUp ? FMath::Clamp(LastBallSwitchTile >= Columns ? LastBallSwitchTile : LastBallSwitchTile + Columns, 0, Tiles - 1)
+				: FMath::Clamp(LastBallSwitchTile % Columns, 0, Tiles - 1);
 		}
 		return;
 	}
 	if (Screen == EChaosImpactScreen::MatchRules && bModePicker && Key != EKeys::Tab)
 	{
-		// Rows of 4 tiles, then もどる (index 12).
+		// Rows of 4 tiles (the party row has 2), then もどる (index 14).
 		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
-		const int32 RowStarts[] = {0, 4, 8, 12};
-		const int32 RowLengths[] = {4, 4, 4, 1};
-		int32 GridRow = SelectedIndex >= 12 ? 3 : SelectedIndex >= 8 ? 2 : SelectedIndex >= 4 ? 1 : 0;
+		const int32 RowStarts[] = {0, 4, 8, 12, 14};
+		const int32 RowLengths[] = {4, 4, 4, 2, 1};
+		int32 GridRow = SelectedIndex >= 14 ? 4 : SelectedIndex >= 12 ? 3 : SelectedIndex >= 8 ? 2 : SelectedIndex >= 4 ? 1 : 0;
 		int32 Column = SelectedIndex - RowStarts[GridRow];
 		if (bLeft || bRight)
 		{
@@ -5028,7 +4952,7 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		}
 		else
 		{
-			GridRow = (GridRow + (bUp ? -1 : 1) + 4) % 4;
+			GridRow = (GridRow + (bUp ? -1 : 1) + 5) % 5;
 			Column = FMath::Min(Column, RowLengths[GridRow] - 1);
 		}
 		SelectedIndex = RowStarts[GridRow] + Column;
@@ -5663,6 +5587,20 @@ void UChaosImpactMenuWidget::PaintDojoInvite(const FGeometry& Design, FSlateWind
 	}
 }
 
+bool UChaosImpactMenuWidget::CloseBallSwitchIfAnyOn()
+{
+	// Not with every ball switched off: told so (the note flashes) and kept open.
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (Controller && ChaosImpactBallSwitch::IsNoneOn(Controller->GetPendingMatchRules()))
+	{
+		BallSwitchDeniedAt = FPlatformTime::Seconds();
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiDeny);
+		return false;
+	}
+	OpenBallSwitch(false);
+	return true;
+}
+
 void UChaosImpactMenuWidget::OpenBallSwitch(const bool bOpen)
 {
 	bBallSwitch = bOpen;
@@ -5954,6 +5892,12 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 				ChaosImpactSfx::Play2D(this, bOn ? EChaosImpactSfx::UiBack : EChaosImpactSfx::UiConfirm);
 				BuildEntries();
 			}
+			else if (Choice == TEXT("all_off"))
+			{
+				Controller->SetAllBallsOff();
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiBack);
+				BuildEntries();
+			}
 			else if (Choice == TEXT("all_on"))
 			{
 				Controller->SetAllBallsOn();
@@ -5962,7 +5906,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			}
 			else
 			{
-				OpenBallSwitch(false);
+				CloseBallSwitchIfAnyOn();
 			}
 			break;
 		}
@@ -6433,7 +6377,7 @@ void UChaosImpactMenuWidget::GoBack()
 		case EChaosImpactScreen::MatchRules:
 			if (bBallSwitch)
 			{
-				OpenBallSwitch(false);
+				CloseBallSwitchIfAnyOn();
 				break;
 			}
 			if (bModePicker)

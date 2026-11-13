@@ -14,6 +14,7 @@ class AChaosImpactPlayerState;
 class AChaosImpactStageBase;
 class AChaosImpactSpectatorPawn;
 class AChaosImpactCrashGoal;
+class AChaosImpactCharacter;
 class AChaosImpactTrainingArena;
 class AChaosImpactCPUController;
 enum class EChaosImpactOnlinePhase : uint8;
@@ -72,6 +73,15 @@ public:
 	void ReportIntroFinished(APlayerState* Member, double IntroStartedAt);
 	/** Server: points for hitting or knocking out an opponent. Ignored outside the match phase. */
 	void AwardMatchPoints(APlayerState* Scorer, int32 Points, bool bKnockout);
+	/**
+	 * Server, パーティルール: Victim was hurt (a knockout, or knocked out for leaving the stage). ルビーラッシュ: rubies are
+	 * shaken loose; クラウンキープ: the crown falls (or, caught by a hook, goes to the hook's thrower).
+	 */
+	void NotifyPartyHit(AChaosImpactCharacter* Victim, AActor* DamageCauser, bool bKnockout, bool bLeftStage);
+	/** Tests: the whistle now (as if the time ran out). */
+	void EndMatchForTests() { EndMatch(); }
+	/** Server: the floor spots of this match's stage where rubies (and the crown) may lie. */
+	const TArray<FVector>& GetPartyFieldPoints() const { return PartyFieldPoints; }
 	/** The results' numbers (during a VS match only). */
 	void RecordThrow(APawn* Thrower, bool bSpecial);
 	void RecordHit(APawn* Source, APawn* Victim, const AActor* Causer);
@@ -221,6 +231,18 @@ private:
 	void SetupCrashMatch();
 	void ClearCrashMatch();
 	void UpdateCrashMatch();
+	// パーティルール (ChaosImpactPartyMatch.cpp)
+	void SetupPartyMatch();
+	void ClearPartyMatch();
+	void UpdatePartyMatch();
+	TArray<FVector> BuildPartyFieldPoints() const;
+	/** クラウンキープ's starts: Count spots round the edge of the open floor, evenly round the crown in the middle. */
+	TArray<FVector> GetPartyEdgeStarts(int32 Count) const;
+	FTimerHandle PartyMatchTimer;
+	TArray<FVector> PartyFieldPoints;
+	TMap<TWeakObjectPtr<AActor>, double> PartyHitDropAt;
+	FRandomStream PartyStream;
+	FVector PartyCrownLastHolderAt = FVector::ZeroVector;
 	void HandleMatchTimeExpired();
 	FTimerHandle CrashMatchTimer;
 	UPROPERTY(Transient) TArray<TObjectPtr<AChaosImpactCrashGoal>> CrashGoals;

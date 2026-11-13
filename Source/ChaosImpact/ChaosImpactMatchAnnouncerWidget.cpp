@@ -1,4 +1,6 @@
 #include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ChaosImpactParty.h"
+#include "ChaosImpactPlayerController.h"
 #include "ChaosImpactBallSwitch.h"
 #include "ChaosImpactSettings.h"
 
@@ -206,6 +208,54 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 	}
 }
 
+void UChaosImpactMatchAnnouncerWidget::PaintCrownPanel(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements,
+	const int32 BaseLayer, const AChaosImpactGameState& Match, const double ServerNow, const float Time) const
+{
+	using namespace ChaosImpactPaint;
+	const AChaosImpactCrown* Crown = AChaosImpactCrown::Get(GetWorld());
+	if (!Crown)
+	{
+		return;
+	}
+	const APlayerState* Holder = Crown->GetHolderState();
+	const AChaosImpactPlayerState* Member = Cast<AChaosImpactPlayerState>(Holder);
+	// A plate under the clock: the crown (its ring the count in progress), who wears it, and their counts left.
+	constexpr float W = 330.0f;
+	constexpr float H = 50.0f;
+	constexpr float Top = 90.0f;
+	const float Taken = Member ? FMath::Clamp(1.0f - static_cast<float>(ServerNow - Crown->GetState().TakenAt) / 0.6f, 0.0f, 1.0f) : 0.0f;
+	const FPainter Plate{TopCenter, OutDrawElements, BaseLayer + 2};
+	if (Taken > 0.0f)
+	{
+		RoundedBox(Plate, -W * 0.5f - 7.0f * Taken, Top - 7.0f * Taken, W + 14.0f * Taken, H + 14.0f * Taken, H * 0.5f + 7.0f * Taken,
+			WithAlpha(ChaosImpactParty::CrownColor, 0.45f * Taken));
+	}
+	RoundedBox(Plate, -W * 0.5f - 2.0f, Top - 2.0f, W + 4.0f, H + 4.0f, H * 0.5f + 2.0f, WithAlpha(Member ? ChaosImpactParty::CrownColor : Muted, Member ? 0.9f : 0.35f));
+	const FPainter Face = HudAbove(Plate, 1);
+	RoundedBox(Face, -W * 0.5f, Top, W, H, H * 0.5f, FLinearColor(0.02f, 0.025f, 0.06f, 0.92f));
+	const FPainter Front = HudAbove(Face, 1);
+	const FVector2D IconAt(-W * 0.5f + 30.0f, Top + H * 0.5f + 1.0f);
+	if (Member)
+	{
+		Front.Ring(IconAt, 19.0f, WithAlpha(ChaosImpactParty::CrownColor, 0.25f), 3.5f);
+		Front.Arc(IconAt, 19.0f, -90.0f, -90.0f + 360.0f * Crown->GetCountProgress(), ChaosImpactParty::CrownColor, 3.5f);
+	}
+	ChaosImpactParty::PaintCrown(HudAbove(Front, 1), IconAt, 13.0f, Time, Member ? 1.0f : 0.25f);
+	const FString Left = Member ? FString::FromInt(FMath::Max(0, ChaosImpactMatch::CrownGoalCounts - Member->Points)) : FString(TEXT("-"));
+	const float CountW = HudMeasure(Left, 34.0f, TEXT("BlackItalic"));
+	const FString Name = Member ? GetAnnouncerName(Member) : FString(TEXT("だれも持っていない"));
+	const float NameX = -W * 0.5f + 58.0f;
+	const float NameRoom = W - 58.0f - 26.0f - CountW - 44.0f;
+	HudText3D(HudAbove(Front, 3), Name, NameX, Top + 13.0f, HudFit(Name, 19.0f, NameRoom), Member ? Paper : Muted, ETextAlign::Left, TEXT("Black"), 1.5f);
+	if (Member)
+	{
+		HudText3D(HudAbove(Front, 3), TEXT("あと"), W * 0.5f - 22.0f - CountW - 6.0f, Top + 20.0f, 14.0f, WithAlpha(Paper, 0.8f), ETextAlign::Right,
+			TEXT("Black"), 1.0f);
+		const int32 Remaining = FMath::Max(0, ChaosImpactMatch::CrownGoalCounts - Member->Points);
+		HudText3D(HudAbove(Front, 3), Left, W * 0.5f - 22.0f, Top + 4.0f, 34.0f, Remaining <= 5 ? FireFill.Top : Gold, ETextAlign::Right, TEXT("BlackItalic"), 2.0f);
+	}
+}
+
 void UChaosImpactMatchAnnouncerWidget::PaintCrashScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements,
 	const int32 BaseLayer, const AChaosImpactGameState& Match, const double ServerNow, const float Time) const
 {
@@ -346,6 +396,19 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	{
 		OnlineRoomOverlay->PaintOnlineOverlay(AllottedGeometry, OutDrawElements, BaseLayer + 1);
 		BaseLayer += 20;
+	}
+	// ルール確認, opened by any player on this machine: over everything while it is open.
+	if (OnlineRoomOverlay && GetGameInstance())
+	{
+		for (ULocalPlayer* Local : GetGameInstance()->GetLocalPlayers())
+		{
+			const auto* Opener = Local ? Cast<AChaosImpactPlayerController>(Local->GetPlayerController(GetWorld())) : nullptr;
+			if (Opener && Opener->IsRuleCardOpen())
+			{
+				OnlineRoomOverlay->PaintRuleDetails(AllottedGeometry, OutDrawElements, BaseLayer + 30, Opener);
+				return BaseLayer + 80;
+			}
+		}
 	}
 	// The results (podium, numbers) take the whole screen once FINISH is over; online they stay into the lobby.
 	if (ResultsView && ResultsView->IsActive() && ResultsView->GetShowSeconds() >= 0.0f)
@@ -722,6 +785,45 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 				PaintCallout(TEXT("延長戦！"), 104.0f, 1.0f + 0.6f * FMath::Exp(-11.0f * Age),
 					EaseOut(Age / 0.12f) * (1.0f - FMath::Clamp((Age - 1.4f) / 0.4f, 0.0f, 1.0f)),
 					FMath::Lerp(ChaosImpactMatch::GetTeamColor(Match->Crash.OvertimeTeam), Paper, 0.2f), BaseLayer + 12);
+			}
+		}
+		if (Match->Rules.IsCrownKeep())
+		{
+			PaintCrownPanel(TopCenter, OutDrawElements, BaseLayer, *Match, ServerNow, Time);
+			// The crown changing hands, at once (a player alone at the screen reads it as their own), and the last five.
+			if (const AChaosImpactCrown* Crown = AChaosImpactCrown::Get(GetWorld()))
+			{
+				const FChaosImpactCrownState& CrownState = Crown->GetState();
+				const UGameInstance* GameInstance = GetGameInstance();
+				const bool bShared = GameInstance && GameInstance->GetLocalPlayers().Num() > 1;
+				const AChaosImpactPlayerState* Holder = Cast<AChaosImpactPlayerState>(CrownState.HolderState);
+				const double TakenAge = ServerNow - CrownState.TakenAt;
+				const double DroppedAge = ServerNow - CrownState.DroppedAt;
+				if (Holder && TakenAge >= 0.0 && TakenAge < 1.6)
+				{
+					const float Age = static_cast<float>(TakenAge);
+					const bool bMine = !bShared && GetOwningPlayer() && GetOwningPlayer()->PlayerState == Holder;
+					const FString Word = bMine ? FString(TEXT("王冠をうばった！")) : FString::Printf(TEXT("%sが王冠をとった！"), *GetAnnouncerName(Holder));
+					PaintCallout(Word, HudFit(Word, 80.0f, 1500.0f, TEXT("BlackItalic")), 1.0f + 0.35f * FMath::Exp(-11.0f * Age),
+						EaseOut(Age / 0.1f) * (1.0f - FMath::Clamp((Age - 1.2f) / 0.4f, 0.0f, 1.0f)), FMath::Lerp(ChaosImpactParty::CrownColor, Paper, 0.25f),
+						BaseLayer + 12);
+				}
+				else if (!Holder && DroppedAge >= 0.0 && DroppedAge < 1.2)
+				{
+					const float Age = static_cast<float>(DroppedAge);
+					PaintCallout(TEXT("王冠が落ちた！"), 64.0f, 1.0f + 0.25f * FMath::Exp(-11.0f * Age),
+						EaseOut(Age / 0.1f) * (1.0f - FMath::Clamp((Age - 0.8f) / 0.4f, 0.0f, 1.0f)), Paper, BaseLayer + 12);
+				}
+				else if (Holder && ChaosImpactMatch::CrownGoalCounts - Holder->Points == 5)
+				{
+					const float Age = static_cast<float>(ServerNow - CrownState.CountFrom);
+					if (Age >= 0.0f && Age < 1.2f)
+					{
+						const FString Word = FString::Printf(TEXT("%s あと5カウント！"), *GetAnnouncerName(Holder));
+						PaintCallout(Word, HudFit(Word, 72.0f, 1500.0f, TEXT("BlackItalic")), 1.0f + 0.3f * FMath::Exp(-11.0f * Age),
+							EaseOut(Age / 0.1f) * (1.0f - FMath::Clamp((Age - 0.8f) / 0.4f, 0.0f, 1.0f)), FireFill.Top, BaseLayer + 12);
+					}
+				}
 			}
 		}
 		if (bMinuteCall)

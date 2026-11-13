@@ -73,6 +73,8 @@ public:
 	void SetVictoryMotion(bool bOn);
 	/** The model as it is now (to hide or tint). */
 	class UChaosImpactPuppetComponent* GetModel() const { return Model; }
+	/** The skeleton the model copies its pose from (tests: is it still?). */
+	USkeletalMeshComponent* GetPoseForTests() const { return Pose; }
 
 	/** ペイント over the model's colours (one picture per layer, UChaosImpactPuppetComponent::SetPaintLayers; empty: none). */
 	void ShowPaint(const TArray<UTexture*>& Pictures);

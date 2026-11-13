@@ -5,12 +5,21 @@
 
 bool ChaosImpactBallSwitch::IsOff(const UWorld* World, const EChaosImpactBallType Type)
 {
-	if (!World || Type == EChaosImpactBallType::Normal)
+	if (!World)
 	{
 		return false;
 	}
 	const AChaosImpactGameState* Match = World->GetGameState<AChaosImpactGameState>();
-	return Match && !IsOn(Match->Rules, Type);
+	if (!Match)
+	{
+		return false;
+	}
+	// Rules with nothing on at all (never left so on the switch screen) play with normal balls.
+	if (Type == EChaosImpactBallType::Normal && IsNoneOn(Match->Rules))
+	{
+		return false;
+	}
+	return !IsOn(Match->Rules, Type);
 }
 
 TArray<uint8> ChaosImpactBallSwitch::DrawDuelBalls(const FChaosImpactMatchRules& Rules, const int32 Picks, TFunctionRef<int32(int32, int32)> Rand)
@@ -18,7 +27,7 @@ TArray<uint8> ChaosImpactBallSwitch::DrawDuelBalls(const FChaosImpactMatchRules&
 	TArray<uint8> Pool;
 	for (const EChaosImpactBallType Kind : GetSwitchable())
 	{
-		if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison && IsOn(Rules, Kind))
+		if (Kind != EChaosImpactBallType::Normal && Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison && IsOn(Rules, Kind))
 		{
 			Pool.Add(static_cast<uint8>(Kind));
 		}

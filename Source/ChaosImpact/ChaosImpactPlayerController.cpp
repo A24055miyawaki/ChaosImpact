@@ -843,7 +843,12 @@ void AChaosImpactPlayerController::HandleBoundKeyPressed(const FKey Key)
 	{
 		return;
 	}
-	if (IsActionKey(this, EChaosImpactAction::OverviewMap, Key) && IsGameplayActive())
+	if (IsActionKey(this, EChaosImpactAction::RuleCard, Key) && CanOpenRuleCard())
+	{
+		SetRuleCardOpen(!IsRuleCardOpen());
+		ChaosImpactSfx::Play2D(this, bRuleCardOpen ? EChaosImpactSfx::UiOpen : EChaosImpactSfx::UiBack);
+	}
+	else if (IsActionKey(this, EChaosImpactAction::OverviewMap, Key) && IsGameplayActive())
 	{
 		bOverviewMapOpen = !bOverviewMapOpen;
 		ChaosImpactSfx::Play2D(this, bOverviewMapOpen ? EChaosImpactSfx::UiSelect : EChaosImpactSfx::UiBack);
@@ -3944,6 +3949,22 @@ bool AChaosImpactPlayerController::IsSpectating() const
 	return Member && (Member->bSpectating || (Match && Match->IsRoyaleEliminated(Member)));
 }
 
+bool AChaosImpactPlayerController::CanOpenRuleCard() const
+{
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	return Room && Room->bOnlineRoom && Room->bRulesDecided && !Room->bRoomMatchLevel
+		&& (Room->Phase == EChaosImpactOnlinePhase::Lobby || Room->Phase == EChaosImpactOnlinePhase::Starting);
+}
+
+void AChaosImpactPlayerController::SetRuleCardOpen(const bool bOpen)
+{
+	if (bOpen && !bRuleCardOpen)
+	{
+		RuleCardOpenedAt = FPlatformTime::Seconds();
+	}
+	bRuleCardOpen = bOpen;
+}
+
 void AChaosImpactPlayerController::OpenMatchRules(const EChaosImpactScreen ReturnScreen)
 {
 	MatchRulesReturnScreen = ReturnScreen;
@@ -3995,7 +4016,12 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 		Rules = ChaosImpactMatch::Sanitize(Rules, Humans);
 		return;
 	}
-	if (Row == 0 && !Rules.bCrashBall && !Rules.bDuel && !Rules.bBattleRoyale)
+	if (Row == 0 && Rules.IsCrownKeep())
+	{
+		// クラウンキープ: three minutes or five.
+		Rules.Minutes = ChaosImpactMatch::SanitizeCrownMinutes(Rules.Minutes) == 3 ? 5 : 3;
+	}
+	else if (Row == 0 && !Rules.bCrashBall && !Rules.bDuel && !Rules.bBattleRoyale)
 	{
 		// 3 → 4 → 5 minutes (クラッシュボール is always five).
 		const int32 ChoiceCount = UE_ARRAY_COUNT(ChaosImpactMatch::MinuteChoices);
@@ -4051,8 +4077,10 @@ void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 
 
 void AChaosImpactPlayerController::ApplyMatchMode(FChaosImpactMatchRules& Rules, const int32 Mode)
 {
-	static constexpr int32 Teams[] = {0, 2, 3, 4, 2, 0, 0, 2, 3, 4, 0};
+	static constexpr int32 Teams[] = {0, 2, 3, 4, 2, 0, 0, 2, 3, 4, 0, 0, 0};
+	static_assert(UE_ARRAY_COUNT(Teams) == MatchModeCount);
 	const int32 Kind = FMath::Clamp(Mode, 0, MatchModeCount - 1);
+	Rules.PartyRule = Kind == 11 ? ChaosImpactMatch::PartyRuby : Kind == 12 ? ChaosImpactMatch::PartyCrown : 0;
 	Rules.bTournament = Kind == 10;
 	Rules.bCrashBall = Kind == 4;
 	Rules.bDuel = Kind == 5 || Kind == 10;
@@ -4063,7 +4091,8 @@ void AChaosImpactPlayerController::ApplyMatchMode(FChaosImpactMatchRules& Rules,
 int32 AChaosImpactPlayerController::GetMatchMode() const
 {
 	const FChaosImpactMatchRules& Rules = PendingMatchRules;
-	return Rules.bTournament ? 10 : Rules.bBattleRoyale ? (Rules.TeamCount >= 2 ? Rules.TeamCount + 5 : 6)
+	return Rules.bTournament ? 10 : Rules.IsRubyRush() ? 11 : Rules.IsCrownKeep() ? 12
+		: Rules.bBattleRoyale ? (Rules.TeamCount >= 2 ? Rules.TeamCount + 5 : 6)
 		: Rules.bDuel ? 5 : Rules.bCrashBall ? 4 : (Rules.TeamCount >= 2 ? Rules.TeamCount - 1 : 0);
 }
 
@@ -4154,6 +4183,11 @@ void AChaosImpactPlayerController::SetBallSwitchOn(const EChaosImpactBallType Ty
 void AChaosImpactPlayerController::SetAllBallsOn()
 {
 	PendingMatchRules.OffBalls = 0;
+}
+
+void AChaosImpactPlayerController::SetAllBallsOff()
+{
+	PendingMatchRules.OffBalls = ChaosImpactBallSwitch::AllBits();
 }
 
 void AChaosImpactPlayerController::ConfirmMatchRules()

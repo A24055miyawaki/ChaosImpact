@@ -66,6 +66,9 @@ public:
 	bool IsLastHealthWarningActive() const;
 	/** Shared full-window room HUD; personal HUDs keep their own combat panels. */
 	void PaintOnlineOverlay(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 BaseLayer) const;
+	/** ルール確認: the room's decided rules in full over the whole window (Opener: whose key opened it). */
+	void PaintRuleDetails(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 Layer,
+		const class AChaosImpactPlayerController* Opener) const;
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,

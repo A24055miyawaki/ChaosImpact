@@ -66,6 +66,10 @@
 			"PlatformAllowList": [
 				"Win64"
 			]
+		},
+		{
+			"Name": "NNEDenoiser",
+			"Enabled": false
 		}
 	]
 }

@@ -116,6 +116,16 @@ UMaterialInterface* ChaosImpactBallTypes::GetAdditiveMaterial()
 		TEXT("/Game/LevelPrototyping/Interactable/JumpPad/Assets/Materials/M_SimpleGlow.M_SimpleGlow"));
 }
 
+UMaterialInterface* ChaosImpactBallTypes::GetNormalBallMaterial()
+{
+	static TWeakObjectPtr<UMaterialInterface> Cached;
+	if (!Cached.IsValid())
+	{
+		Cached = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ChaosImpact/FX/M_CI_NormalBall.M_CI_NormalBall"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	}
+	return Cached.Get();
+}
+
 UMaterialInterface* ChaosImpactBallTypes::GetEmissiveMaterial()
 {
 	return LoadMaterialWithFallback(TEXT("/Game/ChaosImpact/FX/M_CI_Emissive.M_CI_Emissive"),
@@ -2572,7 +2582,7 @@ void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
 	const float Open = GetActiveSeconds();
 	const FVector Core(0.0f, 0.0f, BlackHoleCoreHeight);
 	const FLinearColor Magenta(0.95f, 0.25f, 1.0f);
-	const FLinearColor Violet(0.38f, 0.12f, 1.0f);
+	const FLinearColor HoleViolet(0.38f, 0.12f, 1.0f);
 	const FLinearColor Pale(0.95f, 0.8f, 1.0f);
 	// Every lasting piece holds steady while it is open and fades in its last moments.
 	const auto Lasting = [&](FChaosImpactFxPiece& Piece)
@@ -2588,7 +2598,7 @@ void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
 	Flash.Life = 0.22f;
 	Flash.SizeFrom = 200.0f;
 	Flash.SizeTo = 520.0f;
-	Flash.Color = Violet;
+	Flash.Color = HoleViolet;
 	Flash.CoreColor = Pale;
 	Flash.Intensity = 7.0f;
 	Flash.Attack = 0.05f;
@@ -2602,7 +2612,7 @@ void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
 	Shock.RingFrom = 0.1f;
 	Shock.RingTo = 0.92f;
 	Shock.RingWidth = 0.06f;
-	Shock.Color = Violet;
+	Shock.Color = HoleViolet;
 	Shock.CoreColor = Pale;
 	Shock.Intensity = 3.0f;
 	Shock.Attack = 0.05f;
@@ -2635,7 +2645,7 @@ void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
 	Lasting(Whirl);
 	Whirl.SizeFrom = Radius * 1.2f;
 	Whirl.SizeTo = Radius * 2.0f;
-	Whirl.Color = Violet;
+	Whirl.Color = HoleViolet;
 	Whirl.CoreColor = Magenta;
 	Whirl.Intensity = 1.6f;
 	Whirl.Arms = 5.0f;
@@ -2682,7 +2692,7 @@ void AChaosImpactHazardZone::BuildBlackHolePresentation(FRandomStream& Stream)
 	Lasting(Halo);
 	Halo.SizeFrom = 260.0f;
 	Halo.SizeTo = 620.0f;
-	Halo.Color = Violet;
+	Halo.Color = HoleViolet;
 	Halo.CoreColor = Magenta;
 	Halo.Intensity = 1.4f;
 	Halo.Softness = 1.0f;

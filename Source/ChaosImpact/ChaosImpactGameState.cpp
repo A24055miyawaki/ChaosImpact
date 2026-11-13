@@ -1,4 +1,5 @@
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactParty.h"
 #include "ChaosImpactCharacter.h"
 
 #include "Engine/World.h"
@@ -65,6 +66,8 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, bVersusMatch);
 	DOREPLIFETIME(AChaosImpactGameState, Rules);
 	DOREPLIFETIME(AChaosImpactGameState, Crash);
+	DOREPLIFETIME(AChaosImpactGameState, RubyField);
+	DOREPLIFETIME(AChaosImpactGameState, PartyCrown);
 	DOREPLIFETIME(AChaosImpactGameState, StageCenter);
 	DOREPLIFETIME(AChaosImpactGameState, StageHalfExtent);
 	DOREPLIFETIME(AChaosImpactGameState, ReadyStartedAt);
@@ -291,7 +294,9 @@ TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetRanking() const
 {
 	TArray<AChaosImpactPlayerState*> Ranking = GetCompetitors(true);
 	const bool bDuel = IsDuel();
-	Ranking.StableSort([this, bDuel](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B)
+	// クラウンキープ: level on counts, whoever wears the crown is ahead.
+	const APlayerState* CrownHolder = IsCrownKeep() && IsValid(PartyCrown) ? PartyCrown->GetHolderState() : nullptr;
+	Ranking.StableSort([this, bDuel, CrownHolder](const AChaosImpactPlayerState& A, const AChaosImpactPlayerState& B)
 	{
 		if (IsBattleRoyale())
 		{
@@ -310,6 +315,10 @@ TArray<AChaosImpactPlayerState*> AChaosImpactGameState::GetRanking() const
 		if (A.Points != B.Points)
 		{
 			return A.Points > B.Points;
+		}
+		if (CrownHolder && (&A == CrownHolder || &B == CrownHolder))
+		{
+			return &A == CrownHolder;
 		}
 		return A.Knockouts > B.Knockouts;
 	});

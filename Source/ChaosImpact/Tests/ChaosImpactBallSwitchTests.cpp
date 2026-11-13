@@ -52,14 +52,33 @@ bool FChaosImpactBallSwitchDrawTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The hook still comes up"), bSawHook);
 	TestTrue(TEXT("The anchor still comes up"), bSawAnchor);
 
-	// Every kind off: no slot balls at all (normal balls only).
+	// The normal ball is on the switch too (listed first); the last kind on can never be switched off.
+	TestEqual(TEXT("Every kind listed, normal first"), GetSwitchable().Num(), ChaosImpactBallTypes::Count);
+	TestTrue(TEXT("Normal listed first"), GetSwitchable()[0] == EChaosImpactBallType::Normal);
+	FChaosImpactMatchRules Off;
+	for (const EChaosImpactBallType Kind : GetSwitchable())
+	{
+		SetOn(Off, Kind, false);
+	}
+	TestTrue(TEXT("Every kind can be switched off (the screen keeps it from being left so)"), IsNoneOn(Off));
+	TestEqual(TEXT("All off: the bits"), Off.OffBalls, AllBits());
+
+	// Every special kind off: no slot balls at all (normal balls only).
 	FChaosImpactMatchRules None;
 	for (const EChaosImpactBallType Kind : GetSwitchable())
 	{
-		SetOn(None, Kind, false);
+		SetOn(None, Kind, Kind == EChaosImpactBallType::Normal);
 	}
-	TestEqual(TEXT("All off: nothing on"), CountOn(None), 0);
-	TestEqual(TEXT("All off: no slot balls"), DrawDuelBalls(None, 3, Rand).Num(), 0);
+	TestEqual(TEXT("Specials off: the normal ball on alone"), CountOn(None), 1);
+	TestTrue(TEXT("Specials off: normal on"), IsOn(None, EChaosImpactBallType::Normal));
+	TestEqual(TEXT("Specials off: no slot balls"), DrawDuelBalls(None, 3, Rand).Num(), 0);
+
+	// The normal ball off: never in a slot either way, the specials drawn as before.
+	FChaosImpactMatchRules NoNormal;
+	SetOn(NoNormal, EChaosImpactBallType::Normal, false);
+	TestFalse(TEXT("Normal off"), IsOn(NoNormal, EChaosImpactBallType::Normal));
+	TestEqual(TEXT("Normal off: three slots"), DrawDuelBalls(NoNormal, 3, Rand).Num(), 3);
+	TestFalse(TEXT("Normal never in a slot"), DrawDuelBalls(All, 3, Rand).Contains(static_cast<uint8>(EChaosImpactBallType::Normal)));
 
 	// Two kinds on: both drawn, one of them twice.
 	FChaosImpactMatchRules Two = None;
@@ -168,6 +187,19 @@ namespace
 					Test->TestTrue(TEXT("Fire comes out with the switch on"), Before > 0.0f);
 					Test->TestEqual(TEXT("Fire never comes out once switched off"), Pad->GetChance(EChaosImpactBallType::Fire), 0.0f);
 					Test->TestTrue(TEXT("Ice still comes out"), Pad->GetChance(EChaosImpactBallType::Ice) > 0.0f);
+					// The normal ball off: never from a pad, the specials on share it all.
+					Test->TestTrue(TEXT("Normal comes out with the switch on"), Pad->GetChance(EChaosImpactBallType::Normal) > 0.0f);
+					ChaosImpactBallSwitch::SetOn(Match->Rules, EChaosImpactBallType::Normal, false);
+					Test->TestEqual(TEXT("Normal never comes out once switched off"), Pad->GetChance(EChaosImpactBallType::Normal), 0.0f);
+					float Sum = 0.0f;
+					for (int32 Type = 0; Type < ChaosImpactBallTypes::Count; ++Type)
+					{
+						Sum += Pad->GetChance(static_cast<EChaosImpactBallType>(Type));
+					}
+					Test->TestTrue(TEXT("Normal off: the pad still puts out a ball every time"), FMath::IsNearlyEqual(Sum, 1.0f, 0.001f));
+					// Rules with nothing on still play: with normal balls.
+					Match->Rules.OffBalls = ChaosImpactBallSwitch::AllBits();
+					Test->TestEqual(TEXT("Nothing on: normal balls after all"), Pad->GetChance(EChaosImpactBallType::Normal), 1.0f);
 					Match->Rules.OffBalls = 0;
 				}
 				else

@@ -1,4 +1,5 @@
 #include "ChaosImpactHook.h"
+#include "ChaosImpactParty.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
@@ -170,8 +171,18 @@ void AChaosImpactHook::PlaceAnchor()
 	};
 	FHitResult Wall;
 	FVector Floor;
-	if (World->SweepSingleByObjectType(Wall, From, Tip, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
-		FCollisionShape::MakeSphere(HeadRadius), Query))
+	bool bWall = World->SweepSingleByObjectType(Wall, From, Tip, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+		FCollisionShape::MakeSphere(HeadRadius), Query);
+	// A post made to be thrown at (tagged CI.AnchorPassNear, the crane yard's) right by the hand: the thrower is standing
+	// at it, having just come by it, and throws on past it.
+	for (int32 Pass = 0; Pass < 3 && bWall && Wall.GetComponent() && Wall.GetComponent()->ComponentHasTag(TEXT("CI.AnchorPassNear"))
+		&& FVector::Dist2D(Wall.Location, From) < 260.0f; ++Pass)
+	{
+		Query.AddIgnoredComponent(Wall.GetComponent());
+		bWall = World->SweepSingleByObjectType(Wall, From, Tip, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+			FCollisionShape::MakeSphere(HeadRadius), Query);
+	}
+	if (bWall)
 	{
 		// Into the wall, where it met it; the thrower lands on the floor just in front of it.
 		AnchorPoint = Wall.ImpactPoint;
@@ -418,6 +429,21 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
 	}
 	if (HasAuthority())
 	{
+		// クラウンキープ: the crown lying on the floor is caught like a ball, and reeled in to the thrower (who holds it).
+		if (AChaosImpactCrown* Crown = AChaosImpactCrown::Get(World); Crown && !bAnchor && Crown->IsOnFloor() && Crown->CanBeHooked(SourcePawn))
+		{
+			const FVector Lying = Crown->GetShownLocation();
+			const FVector Near = HookClosestOnSegment(FVector(Lying.X, Lying.Y, From.Z), From, FVector(End.X, End.Y, From.Z));
+			if (FVector::Dist2D(Near, Lying) <= BallCatchRadius + 40.0f && FMath::Abs(Lying.Z - From.Z) <= BallCatchHeight + 120.0f)
+			{
+				Head = Lying;
+				bLatchedHere = true;
+				Crown->TakeByHook(Cast<AChaosImpactCharacter>(SourcePawn), Lying);
+				MulticastLatch(Lying, false);
+				GoBack();
+				return;
+			}
+		}
 		// A ball lying on the floor: reeled in to the hand.
 		for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
 		{

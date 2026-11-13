@@ -1,4 +1,6 @@
 #include "ChaosImpactResults.h"
+#include "ChaosImpactPaintCache.h"
+#include "ChaosImpactSettings.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
@@ -201,6 +203,7 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 	Data.bCrashBall = Match->Rules.bCrashBall;
 	Data.bDuel = Match->IsDuel();
 	Data.bBattleRoyale = Match->IsBattleRoyale();
+	Data.PartyRule = Match->Rules.IsParty() ? Match->Rules.PartyRule : 0;
 	Data.bCrashKnockout = Match->Crash.bKnockout;
 	TArray<const APlayerState*, TInlineAllocator<4>> LocalStates;
 	const UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
@@ -224,6 +227,9 @@ FChaosImpactResultsData FChaosImpactResultsData::Capture(const AChaosImpactGameS
 		Entry.Colour = Character ? Character->GetShownColour() : FMath::Max(Member->ColourChoice, 0);
 		Entry.CustomColours = Character ? Character->GetShownCustomColours()
 			: Member->IsABot() ? TArray<uint8>() : Member->CustomColours;
+		// ペイント as in the match: for the character it was drawn on, someone else's only when the settings show them.
+		Entry.PaintKey = !Member->IsABot() && Member->CharacterIndex == Entry.Character
+			&& (LocalStates.Contains(Member) || ChaosImpactSettings::IsOthersPaintShown()) ? Member->PaintKey : 0;
 		Entry.Team = Member->TeamIndex;
 		Entry.bBot = Member->IsABot();
 		Entry.LocalIndex = LocalStates.IndexOfByKey(Member);
@@ -736,6 +742,14 @@ void AChaosImpactPodiumStage::BuildNextFigure()
 		{
 			Actor->ShowLoadout(Entry.Character, Entry.Colour, PlaceColors[0]);
 			Actor->ShowCustomColours(Entry.CustomColours);
+			if (Entry.PaintKey != 0)
+			{
+				TArray<UTexture*> Pictures;
+				UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(Actor);
+				Figure.bPaintPending = !(Cache && Cache->GetTextures(Entry.PaintKey, Pictures));
+				Figure.PaintKey = Entry.PaintKey;
+				Actor->ShowPaintKey(Entry.PaintKey);
+			}
 			Actor->UseAsFigure();
 			// Turned a touch toward the camera, which films from the left (the open side, where the headline goes).
 			Actor->SetFacing(8.0f, 7.0f);
@@ -872,6 +886,16 @@ void AChaosImpactPodiumStage::UpdateShow(const float Seconds, const float DeltaS
 		if (!IsValid(Actor))
 		{
 			continue;
+		}
+		// Pictures that were still on their way when it was made.
+		if (Figure.bPaintPending)
+		{
+			TArray<UTexture*> Pictures;
+			if (UChaosImpactPaintCache* Cache = UChaosImpactPaintCache::Get(Actor); Cache && Cache->GetTextures(Figure.PaintKey, Pictures))
+			{
+				Actor->ShowPaint(Pictures);
+				Figure.bPaintPending = false;
+			}
 		}
 		if (bWarming)
 		{
@@ -1421,6 +1445,10 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 				: Data.bDuel ? FString::Printf(TEXT("ROUND  %d - %d"), Data.Entries[0].RoundsWon, Data.Entries.Num() > 1 ? Data.Entries[1].RoundsWon : 0)
 				: Data.bCrashBall && Data.TeamTotals.Num() > 1 ? FString::Printf(TEXT("%s  %d : %d"), Data.bCrashKnockout ? TEXT("KNOCKOUT") : TEXT("カウント"),
 				100 - Data.TeamTotals[0].Value, 100 - Data.TeamTotals[1].Value) : Data.bTeams ? FString::Printf(TEXT("TEAM %d pt"), Points)
+				: Data.PartyRule == ChaosImpactMatch::PartyRuby ? FString::Printf(TEXT("RUBY RUSH  ・  ルビー %d こ"), Points)
+				: Data.PartyRule == ChaosImpactMatch::PartyCrown ? (Points >= ChaosImpactMatch::CrownGoalCounts
+					? FString::Printf(TEXT("CROWN KEEP  ・  %dカウント達成！"), ChaosImpactMatch::CrownGoalCounts)
+					: FString::Printf(TEXT("CROWN KEEP  ・  %d / %d カウント"), Points, ChaosImpactMatch::CrownGoalCounts))
 				: FString::Printf(TEXT("%d pt   KO %d"), Points, Data.Entries[0].Knockouts);
 			N.Text(Line, 140.0f, 124.0f, ResultsPaint::HudFit(Line, 26.0f, TextRight - 180.0f, TEXT("BlackItalic")), ResultsPaint::Paper,
 				ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 2.0f, ResultsPaint::Ink);
@@ -1686,7 +1714,9 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	const double Now = FPlatformTime::Seconds();
 	const ResultsPaint::FPainter P{Design, Elements, Layer, Alpha};
 	P.Text(TEXT("MATCH STATS"), 60.0f + Slide, 34.0f, 46.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, Data.WinnerColor);
-	P.Text(Data.bBattleRoyale ? TEXT("生存順位と体力の流れ") : Data.bDuel ? TEXT("獲得ラウンドと対戦成績") : TEXT("成績とポイントの流れ"), 64.0f + Slide, 92.0f, 18.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
+	P.Text(Data.bBattleRoyale ? TEXT("生存順位と体力の流れ") : Data.bDuel ? TEXT("獲得ラウンドと対戦成績")
+		: Data.PartyRule == ChaosImpactMatch::PartyRuby ? TEXT("成績とルビーの流れ") : Data.PartyRule == ChaosImpactMatch::PartyCrown ? TEXT("成績と王冠カウントの流れ")
+		: TEXT("成績とポイントの流れ"), 64.0f + Slide, 92.0f, 18.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
 
 	// ---- Table (left) ----
 	struct FColumn { const TCHAR* Title; float X; };
@@ -1698,7 +1728,8 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	P.Text(TEXT("なまえ"), 120.0f + Slide, TableTop + 5.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Left, TEXT("Bold"));
 	for (const FColumn& Column : Columns)
 	{
-		const TCHAR* Title = Column.X == 430.f ? (Data.bBattleRoyale ? TEXT("") : Data.bDuel ? TEXT("勝数") : TEXT("pt")) : Column.Title;
+		const TCHAR* Title = Column.X == 430.f ? (Data.bBattleRoyale ? TEXT("") : Data.bDuel ? TEXT("勝数")
+			: Data.PartyRule == ChaosImpactMatch::PartyRuby ? TEXT("ルビー") : Data.PartyRule == ChaosImpactMatch::PartyCrown ? TEXT("王冠") : TEXT("pt")) : Column.Title;
 		P.Text(Title, Column.X + Slide, TableTop + 5.0f, 15.0f, ResultsPaint::Muted, ResultsPaint::ETextAlign::Right, TEXT("Bold"));
 	}
 	const int32 Count = Data.Entries.Num();
@@ -1768,7 +1799,9 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	// A scale of whole numbers on each of the four lines.
 	Highest = FMath::Max(4, FMath::DivideAndRoundUp(Highest, 4) * 4);
 	const ResultsPaint::FPainter G{Design, Elements, Layer + 1, Alpha};
-	G.Text(Data.bBattleRoyale ? TEXT("残りHPの流れ") : Data.bDuel ? TEXT("獲得ラウンドの流れ") : TEXT("ポイントの流れ"), 850.0f + Slide, 140.0f, 22.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
+	G.Text(Data.bBattleRoyale ? TEXT("残りHPの流れ") : Data.bDuel ? TEXT("獲得ラウンドの流れ")
+		: Data.PartyRule == ChaosImpactMatch::PartyRuby ? TEXT("ルビーの流れ") : Data.PartyRule == ChaosImpactMatch::PartyCrown ? TEXT("王冠カウントの流れ")
+		: TEXT("ポイントの流れ"), 850.0f + Slide, 140.0f, 22.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
 	if (bOne)
 	{
 		const FChaosImpactResultEntry& Item = Data.Entries[GraphFocus];

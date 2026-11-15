@@ -14,6 +14,7 @@ static_assert(ChaosImpactTournament::OpeningSeconds == ChaosImpactMatch::Flyover
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactDuelStage.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactMusic.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSessionSubsystem.h"
@@ -268,6 +269,8 @@ void AChaosImpactGameMode::StartTournamentRound()
 	{
 		return;
 	}
+	// Each round of the bracket its own battle music (the same on every machine).
+	Match->BattleSong = UChaosImpactMusic::PickNextBattleSong();
 	FChaosImpactTournamentState& Tournament = Match->Tournament;
 	if (Tournament.Round >= Tournament.Rounds)
 	{
@@ -549,6 +552,9 @@ APawn* AChaosImpactGameMode::BringEntrantToArena(const int32 Entrant, const int3
 			State->SetPlayerName(Who.Name);
 			State->CharacterIndex = Who.Character;
 			State->ColourChoice = Who.Colour;
+			// Playing in this arena, as a person bringing their own character is (so the match's spectators can follow it).
+			State->TournamentRole = EChaosImpactTournamentRole::Competitor;
+			State->TournamentArena = Arena;
 			State->ForceNetUpdate();
 		}
 		APawn* Pawn = SpawnDefaultPawnAtTransform(CPU, FTransform(Facing, Floor + FVector(0.0f, 0.0f, 110.0f)));

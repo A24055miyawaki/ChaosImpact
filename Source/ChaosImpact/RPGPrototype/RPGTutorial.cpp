@@ -9,6 +9,7 @@
 #include "RPGTreasureChest.h"
 #include "RPGWorldLayout.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactTackleComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -23,16 +24,17 @@ namespace RPGTutorial
 const TArray<FStep>& ControlsSteps()
 {
 	static const TArray<FStep> Steps{
-		{TEXT("歩いてみよう"), TEXT("W A S D で歩く"), TEXT("左スティックで歩く"), ETry::Walk},
-		{TEXT("ジャンプ"), TEXT("Space でジャンプ"), TEXT("A（下のボタン）でジャンプ"), ETry::Jump},
-		{TEXT("ダッシュ"), TEXT("Shift でダッシュ。ゲージを使い、ダッシュ中は攻撃を受けない"), TEXT("B（右のボタン）でダッシュ。ゲージを使い、ダッシュ中は攻撃を受けない"), ETry::Dash},
-		{TEXT("投げる"), TEXT("左クリックを長押ししてため、離して投げる"), TEXT("RT を長押ししてため、離して投げる"), ETry::Throw},
-		{TEXT("タックル"), TEXT("右クリックでタックル（近くの敵を突き飛ばす）"), TEXT("Y（上のボタン）でタックル（近くの敵を突き飛ばす）"), ETry::Tackle},
-		{TEXT("依頼の記録"), TEXT("J で依頼の記録を開く（閉じるのは Esc）"), TEXT("十字キー↓で依頼の記録を開く（閉じるのは B）"), ETry::Journal},
-		{TEXT("マップ"), TEXT("M でまわりの地図、もう一度で全体の地図、もう一度で閉じる"), TEXT("十字キー→でまわりの地図、もう一度で全体の地図、もう一度で閉じる"), ETry::Map},
-		{TEXT("案内の光"), TEXT("N で目的地への光のラインをオン／オフ"), TEXT("R3（右スティック押し込み）で目的地への光のラインをオン／オフ"), ETry::Guide},
-		{TEXT("バッグ"), TEXT("Tab でバッグ（装備・強化・設定）を開く"), TEXT("−（ビュー）ボタンでバッグ（装備・強化・設定）を開く"), ETry::Bag},
-		{TEXT("依頼を受ける"), TEXT("掲示板か「！」の人の前で E を押して話す"), TEXT("掲示板か「！」の人の前で Y（上のボタン）を押して話す"), ETry::TalkBoard},
+		// (Keys in the words: Words() puts in the names of the device being played with; {act:...} what is set for it.)
+		{TEXT("歩いてみよう"), TEXT("W A S D で歩く"), TEXT("{act:Move}で歩く"), ETry::Walk},
+		{TEXT("ジャンプ"), TEXT("{act:Jump} でジャンプ"), TEXT("{act:Jump+}でジャンプ"), ETry::Jump},
+		{TEXT("ダッシュ"), TEXT("{act:Dash} でダッシュ。ゲージを使い、ダッシュ中は攻撃を受けない"), TEXT("{act:Dash+}でダッシュ。ゲージを使い、ダッシュ中は攻撃を受けない"), ETry::Dash},
+		{TEXT("投げる"), TEXT("{act:Throw}を長押ししてため、離して投げる"), TEXT("{act:Throw} を長押ししてため、離して投げる"), ETry::Throw},
+		{TEXT("タックル"), TEXT("{act:Tackle}でタックル（近くの敵を突き飛ばす）"), TEXT("{act:Tackle+}でタックル（近くの敵を突き飛ばす）"), ETry::Tackle},
+		{TEXT("依頼の記録"), TEXT("J で依頼の記録を開く（閉じるのは Esc）"), TEXT("{Down}で依頼の記録を開く（閉じるのは {B}）"), ETry::Journal},
+		{TEXT("マップ"), TEXT("M でまわりの地図、もう一度で全体の地図、もう一度で閉じる"), TEXT("{Right}でまわりの地図、もう一度で全体の地図、もう一度で閉じる"), ETry::Map},
+		{TEXT("案内の光"), TEXT("N で目的地への光のラインをオン／オフ"), TEXT("{R3}で目的地への光のラインをオン／オフ"), ETry::Guide},
+		{TEXT("バッグ"), TEXT("Tab でバッグ（装備・強化・設定）を開く"), TEXT("{Select}でバッグ（装備・強化・設定）を開く"), ETry::Bag},
+		{TEXT("依頼を受ける"), TEXT("掲示板か「！」の人の前で E を押して話す"), TEXT("掲示板か「！」の人の前で {Y}（上のボタン）を押して話す"), ETry::TalkBoard},
 	};
 	return Steps;
 }
@@ -42,23 +44,23 @@ const TArray<FLesson>& Lessons()
 	static const TArray<FLesson> List{
 		{ControlsId, TEXT("基本の操作"), TEXT("歩く・ジャンプ・ダッシュ・投げる・タックル、依頼の記録、マップと案内の光、バッグ、依頼の受け方。メニューからもう一度やり直せる。"), nullptr, nullptr, ETry::None},
 		{TEXT("Combat"), TEXT("戦い方"), TEXT("敵は赤い円や線で攻撃を予告してくる。予告が満ちる前に外へ出よう。ダッシュ中は攻撃を受けない。爆弾役・突進役・狙撃役、ひとまわり大きい精鋭に気をつけよう。"),
-			TEXT("戦いの最中にダッシュでかわしてみよう"), TEXT("戦いの最中にダッシュ（B）でかわしてみよう"), ETry::DashInFight},
-		{TEXT("Map"), TEXT("マップと案内"), TEXT("M（十字→）を押すたびに、まわりの地図→全体の地図→閉じる。N（R3）で、追跡中の依頼まで一番近い道を光のラインが導く。"),
-			TEXT("M を押して地図を開いてみよう"), TEXT("十字→ を押して地図を開いてみよう"), ETry::Map},
+			TEXT("戦いの最中にダッシュでかわしてみよう"), TEXT("戦いの最中にダッシュ（{act:Dash}）でかわしてみよう"), ETry::DashInFight},
+		{TEXT("Map"), TEXT("マップと案内"), TEXT("{Right|M}を押すたびに、まわりの地図→全体の地図→閉じる。{R3|N}で、追跡中の依頼まで一番近い道を光のラインが導く。"),
+			TEXT("M を押して地図を開いてみよう"), TEXT("{Right} を押して地図を開いてみよう"), ETry::Map},
 		{TEXT("Workshop"), TEXT("工房（強化とチューン）"), TEXT("ルビー商人の前で話しかけると工房が開く。強化はルビー、チューンはルビーとチューンの欠片を使う。欠片はレベルアップやボス、金・銀の宝箱で手に入る。強化は +10 に近づくほど高くなる。"),
 			TEXT("装備を1回強化するか、チューンを付けてみよう"), TEXT("装備を1回強化するか、チューンを付けてみよう"), ETry::Upgrade},
 		{TEXT("Shop"), TEXT("ショップ（ボールを買う）"), TEXT("商人と行商の隊商ではボールを買える。品ぞろえはときどき入れかわる（隊商は来るたびに別の品）。商人に払ったルビーが増えると商人のレベルが上がり、レアなボールが並ぶようになる。"),
 			TEXT("ショップでボールを1つ買ってみよう"), TEXT("ショップでボールを1つ買ってみよう"), ETry::Buy},
 		{TEXT("Beacon"), TEXT("休息の灯りとファストトラベル"), TEXT("灯りに触れるとともり、倒れたときにそこから再開できる。ともした灯りへは、灯りの前か全体の地図からファストトラベルできる。"),
-			TEXT("灯りの前で E を押してファストトラベルを開いてみよう"), TEXT("灯りの前で Y を押してファストトラベルを開いてみよう"), ETry::Travel},
+			TEXT("灯りの前で E を押してファストトラベルを開いてみよう"), TEXT("灯りの前で {Y} を押してファストトラベルを開いてみよう"), ETry::Travel},
 		{TEXT("Chest"), TEXT("宝箱"), TEXT("宝箱は話しかけるボタンで開く。中身は飛び出すので拾おう（ルビーは近づくだけで集まる）。金の宝箱にはチューンの欠片も入っている。"), nullptr, nullptr, ETry::None},
 		{TEXT("Special"), TEXT("特殊球"), TEXT("炎・氷・雷などの特殊球はバッグで装備し、持ち替えて投げる。投げるとしばらく待ち時間がある。"),
-			TEXT("1〜3 で特殊球に持ち替えて投げてみよう"), TEXT("LB で特殊球に持ち替えて投げてみよう"), ETry::Special},
+			TEXT("1〜3 で特殊球に持ち替えて投げてみよう"), TEXT("{act:SwapBall} で特殊球に持ち替えて投げてみよう"), ETry::Special},
 		{TEXT("Boss"), TEXT("ボス戦"), TEXT("ボスは大技を予告してから放つ。予告の外へ逃げ、技のあとのすきに攻撃しよう。倒すと強化版に挑めるようになる。人数が多いほどボスも硬くなる。"), nullptr, nullptr, ETry::None},
 		{TEXT("Down"), TEXT("ダウンと復活"), TEXT("2人以上で遊んでいるとき、倒れるとすぐには戻らずダウンになる。近くの仲間が話しかけるボタンの長押しで起こせる。待たずに戻るときも長押し。"),
 			TEXT("仲間を起こすか、長押しで復活地点から戻ってみよう"), TEXT("仲間を起こすか、長押しで復活地点から戻ってみよう"), ETry::Revive},
 		{TEXT("Defeat"), TEXT("倒れたとき"), TEXT("倒れて復活地点に戻ると、持っているルビーの2割を失う。ためたルビーは工房や道場で早めに使おう。2人以上なら、ダウン中に仲間に起こしてもらえば失わない。"), nullptr, nullptr, ETry::None},
-		{TEXT("Multi"), TEXT("マルチプレイ"), TEXT("O（十字←）で仲間の様子と合言葉を確認できる。地図には仲間の位置が出る。マルチ専用の依頼もあり、ボスは人数に合わせて強くなる。"), nullptr, nullptr, ETry::None},
+		{TEXT("Multi"), TEXT("マルチプレイ"), TEXT("{Left|O}で仲間の様子と合言葉を確認できる。地図には仲間の位置が出る。マルチ専用の依頼もあり、ボスは人数に合わせて強くなる。"), nullptr, nullptr, ETry::None},
 		{TEXT("Dojo"), TEXT("道場と能力"), TEXT("コロニーの道場で師範ゴウに話しかけると、タックルとダッシュを鍛えられる。鍛えるほど、行ける場所が増えていく。"),
 			TEXT("修行を1つ受けてみよう"), TEXT("修行を1つ受けてみよう"), ETry::Learn},
 		{TEXT("Gates"), TEXT("能力で開く道"), TEXT("ひびの入った大岩は鍛えたタックルで、氷の壁は炎の球で、谷は跳躍台からのダッシュで越えられる。奥には秘宝が眠っている。"), nullptr, nullptr, ETry::None},
@@ -72,6 +74,58 @@ const TArray<FLesson>& Lessons()
 }
 
 const FLesson* FindLesson(FName Id) { return Lessons().FindByPredicate([Id](const FLesson& L) { return L.Id == Id; }); }
+
+FString ActionKey(const APlayerController* Player, const EChaosImpactDevice Device, const EChaosImpactAction Action, const bool bWhere)
+{
+	const int32 Profile = Player ? ChaosImpactSettings::GetPlayerProfile(Player) : 0;
+	for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
+	{
+		const FKey Key = ChaosImpactSettings::GetActiveKey(Profile, Device, Action, Slot);
+		if (!Key.IsValid()) { continue; }
+		// (Escape as the other hints write it.)
+		FString Name = Key == EKeys::Escape ? FString(TEXT("Esc")) : ChaosImpactSettings::GetKeyName(Key, Device);
+		// Where the face button is (the same place on every controller, whatever its letter).
+		const TCHAR* Where = !bWhere ? nullptr : Key == EKeys::Gamepad_FaceButton_Bottom ? TEXT("下") : Key == EKeys::Gamepad_FaceButton_Right ? TEXT("右")
+			: Key == EKeys::Gamepad_FaceButton_Left ? TEXT("左") : Key == EKeys::Gamepad_FaceButton_Top ? TEXT("上") : nullptr;
+		if (Where) { Name += FString::Printf(TEXT("（%sのボタン）"), Where); }
+		return Name;
+	}
+	return FString(TEXT("－"));
+}
+
+FString Words(const APlayerController* Player, const FString& Template)
+{
+	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Player);
+	// {act:...} first (what this player has set), then the template's own names.
+	FString Out;
+	int32 From = 0;
+	for (int32 At = Template.Find(TEXT("{act:"), ESearchCase::CaseSensitive); At != INDEX_NONE; At = Template.Find(TEXT("{act:"), ESearchCase::CaseSensitive, ESearchDir::FromStart, From))
+	{
+		const int32 Close = Template.Find(TEXT("}"), ESearchCase::CaseSensitive, ESearchDir::FromStart, At);
+		if (Close == INDEX_NONE) { break; }
+		Out += Template.Mid(From, At - From);
+		FString Name = Template.Mid(At + 5, Close - At - 5);
+		const bool bWhere = Name.RemoveFromEnd(TEXT("+"));
+		if (Name == TEXT("Move"))
+		{
+			// The moving stick: the right one when this player has swapped them (normal controls only).
+			const bool bSwap = Player && ChaosImpactSettings::GetPlayerControlScheme(Player) == EChaosImpactControlScheme::Normal
+				&& ChaosImpactSettings::GetProfile(ChaosImpactSettings::GetPlayerProfile(Player)).bSwapSticks;
+			Out += ChaosImpactHints::IsPad(Device) ? (bSwap ? TEXT("右スティック") : TEXT("左スティック")) : TEXT("W A S D");
+		}
+		else
+		{
+			static const TMap<FString, EChaosImpactAction> Actions = {
+				{TEXT("Jump"), EChaosImpactAction::Jump}, {TEXT("Dash"), EChaosImpactAction::Dash}, {TEXT("Throw"), EChaosImpactAction::Throw},
+				{TEXT("Tackle"), EChaosImpactAction::Tackle}, {TEXT("SwapBall"), EChaosImpactAction::SwapBall}, {TEXT("Pause"), EChaosImpactAction::Pause}};
+			const EChaosImpactAction* Action = Actions.Find(Name);
+			Out += Action ? ActionKey(Player, Device, *Action, bWhere) : Name;
+		}
+		From = Close + 1;
+	}
+	Out += Template.Mid(From);
+	return ChaosImpactHints::Text(Device, Out);
+}
 
 const TArray<TPair<EMenu, const TCHAR*>>& MenuEntries()
 {

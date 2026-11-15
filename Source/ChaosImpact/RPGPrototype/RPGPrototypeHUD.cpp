@@ -4,7 +4,9 @@
 #include "RPGPrototypeUIKit.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSettings.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactShoulderCameraComponent.h"
+#include "RPGTutorial.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/CanvasPanel.h"
@@ -109,6 +111,9 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
     const auto* Player=Cast<ARPGPrototypeCharacter>(GetOwningPlayerPawn());
     const auto* PC=Cast<AChaosImpactPlayerController>(GetOwningPlayer());
     if(!Player || !PC || !PC->IsGameplayActive()) { return Base; }
+    // Key hints: in the names of what this player plays with now only (keyboard, Xbox, PlayStation or Switch).
+    const EChaosImpactDevice Device=ChaosImpactHints::GetDevice(PC); const bool bHintPad=ChaosImpactHints::IsPad(Device);
+    const auto HintKey=[Device](const TCHAR* Template) { return ChaosImpactHints::Text(Device,Template); };
     const double Now=GetWorld()->GetTimeSeconds();
     const float Time=FMath::Fmod(Now,3600.0);
     const FVector2D Size=Geometry.GetLocalSize();
@@ -149,7 +154,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
                 // Beaten: next time it is its strong version.
                 if(Boss->CanRetry(Player))
                 {
-                    InteractionPrompt(Design,Elements,Base+3,W,H-280,PC->IsUsingGamepad()?TEXT("上ボタン"):TEXT("E"),FString::Printf(TEXT("強化版 Lv.%d に挑む"),Boss->GetRPGLevel()),Gold);
+                    InteractionPrompt(Design,Elements,Base+3,W,H-280,HintKey(TEXT("{Y|E}")),FString::Printf(TEXT("強化版 Lv.%d に挑む"),Boss->GetRPGLevel()),Gold);
                 }
                 continue;
             }
@@ -314,15 +319,19 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
                 if(Player->IsChargingThrow()) { WorldPaint.Arc(At,13*Scale,-90,-90+360*Player->GetThrowChargeAlpha(),Gold,3*Scale); }
             }
         }
+        // The two buttons' keys: the bag {Select|Tab}, the menu the Pause action's own (Esc / メニュー …). Long names
+        // ("クリエイト バッグ", "オプション ポーズ") are drawn smaller to stay in their cards.
+        const auto CardText=[&](const FString& CardLine,float CardX,float CardRoom)
+        { const float Shown=RPGPrototypeUI::FitSize(CardLine,CardRoom,19,TEXT("Bold"),0.6f); Front.Text(RPGPrototypeUI::Fit(CardLine,CardRoom,Shown),CardX,27+(19-Shown)*.45f,Shown,Paper,ETextAlign::Center,TEXT("Bold")); };
         Card(P,W-300,18,132,42,Gold);
-        Front.Text(PC->IsUsingGamepad()?TEXT("－ バッグ"):TEXT("バッグ Tab"),W-234,27,19,Paper,ETextAlign::Center,TEXT("Bold"));
+        CardText(HintKey(TEXT("{pad:{Select} バッグ}{kb:バッグ Tab}")),W-234,112);
         if(Player->GetUnseenCount()>0)
         {
             RPGPrototypeUI::FCanvas Badge; Badge.Geometry=&Design; Badge.Elements=&Elements; Badge.Layer=Base+3;
             RPGPrototypeUI::Chip(Badge,1,FString::Printf(TEXT("NEW %d"),Player->GetUnseenCount()),W-170,8,RPGPrototypeUI::NewColor,11,true,ETextAlign::Right);
         }
         Card(P,W-150,18,128,42,Ice);
-        Front.Text(PC->IsUsingGamepad()?TEXT("＋ ポーズ"):TEXT("ポーズ P"),W-86,27,19,Paper,ETextAlign::Center,TEXT("Bold"));
+        CardText(RPGTutorial::Words(PC,TEXT("{pad:{act:Pause} ポーズ}{kb:ポーズ {act:Pause}}")),W-86,108);
         if(!PC->IsUsingGamepad())
         {
             Card(P,W-162,H-238,136,40,Ice);
@@ -405,7 +414,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
             Card(P,At.X-43,At.Y+49,86,24,Accent);
             Front.Text(Item.Name(),At.X,At.Y+51,15,Paper,ETextAlign::Center,TEXT("Bold"));
             Front.Text(FString::Printf(TEXT("パワー %.0f"),Player->GetDisplayedPower(Item)),At.X,At.Y+78,14,Gold,ETextAlign::Center,TEXT("Bold"),2);
-            if(!PC->IsUsingGamepad()) { Keycap(Front,At+FVector2D(Radius-5,-Radius+3),FString::FromInt(AttackSlot+1)); }
+            if(!bHintPad) { Keycap(Front,At+FVector2D(Radius-5,-Radius+3),FString::FromInt(AttackSlot+1)); }
         }
         const FString Swap=ChaosImpactSettings::DescribeAction(PC,EChaosImpactAction::SwapBall);
         Front.Text(Swap+TEXT(" 切替"),W-350,H-215,15,Paper,ETextAlign::Center,TEXT("Bold"),2);
@@ -425,9 +434,13 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
             namespace UI=RPGPrototypeUI;
             const auto& I=Loot->Item; const float X=W*.5f-215,Y=H-182,CardW=430;
             UI::FCanvas C; C.Geometry=&Design; C.Elements=&Elements; C.Layer=Base+3; C.Time=Time;
+            // Picking up: d-pad up on a controller, F on the keyboard. A long name ("十字ボタン↑") moves the key left; the item's name keeps clear of it.
+            const FString PickKey=HintKey(TEXT("{Up|F}"));
+            const float PickKeyW=FMath::Max(30.0f,UI::Measure(PickKey,30*.58f)+30*.6f);
+            const float PickKeyX=X+CardW-92-FMath::Max(0.0f,PickKeyW-30);
             UI::Panel(C,0,X,Y,CardW,82,UI::EStyle::Card,UI::RarityColor(I.Rarity),UI::RarityColor(I.Rarity));
             UI::ItemIcon(C,0,FVector2D(X+46,Y+41),22,I);
-            UI::LabelFit(C,0,I.Name(),X+86,Y+8,220,21,I.Rarity==ERPGPrototypeRarity::Normal?UI::TextMain:UI::RarityColor(I.Rarity));
+            UI::LabelFit(C,0,I.Name(),X+86,Y+8,FMath::Min(220.0f,PickKeyX-X-94),21,I.Rarity==ERPGPrototypeRarity::Normal?UI::TextMain:UI::RarityColor(I.Rarity));
             float ChipX=X+86;
             ChipX+=UI::Chip(C,0,UI::RarityName(I.Rarity),ChipX,Y+44,UI::RarityColor(I.Rarity),12,true)+5;
             ChipX+=UI::Chip(C,0,FString::Printf(TEXT("Lv.%d"),I.Level),ChipX,Y+44,UI::TextSub,12)+5;
@@ -442,7 +455,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
                 else { UI::Label(C,0,TEXT("空き枠あり"),ChipX+2,Y+44,13,UI::Good); }
             }
             else { UI::Chip(C,0,RPGEquipment::KindName(I.Kind),ChipX,Y+44,UI::TextSub,12); }
-            UI::Keycap(C,0,PC->IsUsingGamepad()?TEXT("↑"):TEXT("F"),X+CardW-92,Y+14,30);
+            UI::Keycap(C,0,PickKey,PickKeyX,Y+14,30);
             UI::Label(C,0,TEXT("拾う"),X+CardW-26,Y+18,19,UI::TextMain,ETextAlign::Right);
         }
         {
@@ -452,7 +465,7 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
         }
         if(auto* Merchant=Player->FindMerchant();Merchant && !Player->IsEliminated() && !Player->IsBagOpen())
         {
-            InteractionPrompt(Design,Elements,Base+3,W,H-280,PC->IsUsingGamepad()?TEXT("上ボタン"):TEXT("E"),TEXT("ルビー工房（強化・チューン）"),Gold);
+            InteractionPrompt(Design,Elements,Base+3,W,H-280,HintKey(TEXT("{Y|E}")),TEXT("ルビー工房（強化・チューン）"),Gold);
         }
         for(TActorIterator<ARPGPrototypeLoot> It(GetWorld());It;++It)
         {
@@ -513,7 +526,10 @@ int32 URPGPrototypeHUD::NativePaint(const FPaintArgs& Args,const FGeometry& Geom
         if(const auto* Mode=GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>();Mode && Mode->IsJoinPromptShown())
         {
             RPGPrototypeUI::FCanvas Join; Join.Geometry=&Design; Join.Elements=&Elements; Join.Layer=Base+40;
-            const FString Hint=FString::Printf(TEXT("＋ボタンで参加（%dP）"),Mode->GetLocalPlayerCount()+1);
+            // Joining is that pad's menu button (Start): named as on its own kind of controller (メニュー / オプション / ＋).
+            FString Start=ChaosImpactSettings::GetKeyName(EKeys::Gamepad_Special_Right,ChaosImpactSettings::DetectPadDeviceForInput(Mode->GetJoinPromptInput()));
+            if(!Start.EndsWith(TEXT("ボタン"))) { Start+=TEXT("ボタン"); }
+            const FString Hint=FString::Printf(TEXT("%sで参加（%dP）"),*Start,Mode->GetLocalPlayerCount()+1);
             const float JW=HudMeasure(Hint,16,TEXT("Bold"))+44,JY=H-48;
             RPGPrototypeUI::Panel(Join,0,W*.5f-JW*.5f,JY,JW,32,RPGPrototypeUI::EStyle::Card,RPGPrototypeUI::Cyan);
             Join.At(0,6).Text(Hint,W*.5f,JY+6,16,Paper,ETextAlign::Center,TEXT("Bold"));

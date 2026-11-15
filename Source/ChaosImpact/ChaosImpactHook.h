@@ -102,8 +102,11 @@ private:
 	/** The head's flight out: where it is TimeOut seconds after leaving the hand. */
 	FVector OutPosition(float TimeOut) const;
 	bool CanCatch(const AActor* Victim) const;
-	/** Contact with the stretch the head moved along this frame (From to To): characters, balls, walls. */
-	void CatchAlong(const FVector& From, const FVector& To);
+	/**
+	 * Contact with the stretch the head moved along this frame (From to To): characters, balls, walls. On the way back
+	 * (bReturning: it has caught nothing yet) it catches the same, but no wall stops it (it comes back the way it went).
+	 */
+	void CatchAlong(const FVector& From, const FVector& To, bool bReturning = false);
 	/** Server: hook Victim (one hit, then reeled in). */
 	void CatchCharacter(AChaosImpactCharacter* Victim);
 	/** Server: hook a lying ball (reeled in to the hand). */

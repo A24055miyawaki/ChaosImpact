@@ -6,6 +6,7 @@
 
 #include "ChaosImpactDojo.h"
 #include "ChaosImpactHook.h"
+#include "ChaosImpactGadget.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallSpawner.h"
@@ -13,6 +14,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCPUController.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactMusic.h"
 #include "ChaosImpactCrashBall.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactLoadingScreen.h"
@@ -1057,7 +1059,33 @@ APawn* AChaosImpactGameMode::SpawnDefaultPawnFor_Implementation(AController* New
 	}
 	if (!IsOnlineRoom() || !StartSpot || !GetWorld())
 	{
-		return Super::SpawnDefaultPawnFor_Implementation(NewPlayer, StartSpot);
+		if (APawn* Pawn = Super::SpawnDefaultPawnFor_Implementation(NewPlayer, StartSpot))
+		{
+			return Pawn;
+		}
+		// No room where the level starts players (a stage level with no player start: the world's origin, inside the
+		// middle of the stage). On one of the stage's own start points instead, never without a character.
+		if (!GetWorld())
+		{
+			return nullptr;
+		}
+		FVector Location = StartSpot ? StartSpot->GetActorLocation() : FVector::ZeroVector;
+		for (TActorIterator<AChaosImpactStageBase> It(GetWorld()); It; ++It)
+		{
+			const TArray<FVector> Starts = It->GetSpawnPoints();
+			if (!Starts.IsEmpty())
+			{
+				Location = Starts[0] + FVector(0.0f, 0.0f, 110.0f);
+				break;
+			}
+		}
+		FActorSpawnParameters Parameters;
+		Parameters.Instigator = GetInstigator();
+		Parameters.ObjectFlags |= RF_Transient;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+		UE_LOG(LogChaosImpact, Log, TEXT("No room at the level's start: the player starts at %s"), *Location.ToCompactString());
+		return GetWorld()->SpawnActor<APawn>(GetDefaultPawnClassForController(NewPlayer),
+			FTransform(FRotator(0.0f, StartSpot ? StartSpot->GetActorRotation().Yaw : 0.0f, 0.0f), Location), Parameters);
 	}
 	if (!bHasRoomAnchor)
 	{
@@ -1498,6 +1526,8 @@ void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& In
 	Match->Rules = Rules;
 	SetupCrashMatch();
 	SetupPartyMatch();
+	// The battle music: picked here (before anyone loads the match), the same on every machine of the room.
+	Match->BattleSong = UChaosImpactMusic::PickNextBattleSong();
 	Match->StageCenter = VersusStage->GetCenter();
 	Match->StageHalfExtent = VersusStage->GetHalfExtent();
 	for (TActorIterator<AChaosImpactTrainingTarget> It(GetWorld()); It; ++It)
@@ -1832,6 +1862,8 @@ void AChaosImpactGameMode::StartMatchIntro()
 	DestroyStageBallSpawners();
 	TArray<FVector> SupplyPoints = VersusStage->GetBallPoints();
 	if (Match->Rules.bCrashBall) { SupplyPoints.Append(VersusStage->GetCrashBallExtraBallPoints()); }
+	// クラウンキープ: twice the pads (the crown's chase wants balls to hand).
+	if (Match->Rules.IsCrownKeep()) { SupplyPoints.Append(GetPartyExtraBallPoints(SupplyPoints)); }
 	for (const FVector& Point : SupplyPoints)
 	{
 		const FTransform SpawnTransform(FRotator::ZeroRotator, Point + FVector(0.0f, 0.0f, 3.0f));
@@ -2160,6 +2192,7 @@ void AChaosImpactGameMode::ClearMatchBalls()
 	{
 		It->Destroy();
 	}
+	AChaosImpactGadget::ClearAll(GetWorld());
 	for (TActorIterator<AChaosImpactTornado> It(GetWorld()); It; ++It)
 	{
 		It->Destroy();

@@ -78,10 +78,16 @@ public:
 	 * shaken loose; クラウンキープ: the crown falls (or, caught by a hook, goes to the hook's thrower).
 	 */
 	void NotifyPartyHit(AChaosImpactCharacter* Victim, AActor* DamageCauser, bool bKnockout, bool bLeftStage);
+	/** Server, ルビーラッシュ: Victim was tackled (no damage): a small share of their rubies is shaken loose. */
+	void NotifyPartyTackle(AChaosImpactCharacter* Victim);
+	/** クラウンキープ: more ball pads, in the open floor between those the stage has (away from the crown). */
+	TArray<FVector> GetPartyExtraBallPoints(const TArray<FVector>& Existing) const;
 	/** Tests: the whistle now (as if the time ran out). */
 	void EndMatchForTests() { EndMatch(); }
 	/** Server: the floor spots of this match's stage where rubies (and the crown) may lie. */
 	const TArray<FVector>& GetPartyFieldPoints() const { return PartyFieldPoints; }
+	/** The stage of this VS match (null outside one). */
+	const AChaosImpactStageBase* GetVersusStage() const { return VersusStage; }
 	/** The results' numbers (during a VS match only). */
 	void RecordThrow(APawn* Thrower, bool bSpecial);
 	void RecordHit(APawn* Source, APawn* Victim, const AActor* Causer);

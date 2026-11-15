@@ -528,7 +528,7 @@ void AChaosImpactBuddyBall::PlayPop(const UObject* WorldContext, const FVector& 
 			}
 		}
 	}
-	ChaosImpactSfx::PlayAt(World, bUncurl ? EChaosImpactSfx::SmokePoof : EChaosImpactSfx::CharSwap, At);
+	ChaosImpactSfx::PlayAt(World, bUncurl ? EChaosImpactSfx::FormUncurl : EChaosImpactSfx::FormCurl, At);
 }
 
 void AChaosImpactBuddyBall::ReleasePassenger()

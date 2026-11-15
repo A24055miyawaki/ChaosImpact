@@ -282,11 +282,29 @@ bool ChaosImpactParty::IsStandingRoom(const UWorld* World, const FVector& Floor)
 		FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeCapsule(34.0f, 62.0f), Query);
 }
 
+bool ChaosImpactParty::IsOnField(const TArray<FVector>& Points, const FVector& Floor)
+{
+	if (Points.IsEmpty())
+	{
+		return true;
+	}
+	// (The field's spots are a grid 230 cm apart: any walkable floor has one this near, on its own level.)
+	for (const FVector& Point : Points)
+	{
+		if (FMath::Abs(Point.Z - Floor.Z) < 45.0f && FVector::DistSquared2D(Point, Floor) < FMath::Square(250.0f))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 FVector ChaosImpactParty::FindLandSpot(UWorld* World, const AChaosImpactStageBase* Stage, const TArray<FVector>& Points,
 	const FVector& Origin, const float MinDistance, const float MaxDistance, FRandomStream& Stream)
 {
 	FVector Base = Origin;
-	const bool bOnFloor = FindFloor(World, Origin, 60.0f, 900.0f, Base) && (!Stage || !Stage->IsOutside(Base));
+	// From the walkable floor under it (knocked loose up on a ledge or a wall's top: from the field's nearest spot).
+	const bool bOnFloor = FindFloor(World, Origin, 60.0f, 900.0f, Base) && (!Stage || !Stage->IsOutside(Base)) && IsOnField(Points, Base);
 	if (!bOnFloor)
 	{
 		Base = NearestPoint(Points, Origin);
@@ -298,8 +316,9 @@ FVector ChaosImpactParty::FindLandSpot(UWorld* World, const AChaosImpactStageBas
 		const float Distance = Stream.FRandRange(MinDistance, MaxDistance) * (Try < 6 ? 1.0f : 0.6f);
 		const FVector Try2D = Base + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Distance;
 		FVector Floor;
-		if (!FindFloor(World, Try2D, 260.0f, 520.0f, Floor) || FMath::Abs(Floor.Z - Base.Z) > 230.0f || (Stage && Stage->IsOutside(Floor))
-			|| !IsStandingRoom(World, Floor))
+		// (Never up on a ledge nobody can climb, nor down off the field.)
+		if (!FindFloor(World, Try2D, 260.0f, 520.0f, Floor) || Floor.Z - Base.Z > ClimbableRise || Base.Z - Floor.Z > 230.0f
+			|| (Stage && Stage->IsOutside(Floor)) || !IsStandingRoom(World, Floor) || !IsOnField(Points, Floor))
 		{
 			continue;
 		}
@@ -821,6 +840,12 @@ void AChaosImpactRubyField::Claim(AChaosImpactCharacter* Character, const int32 
 	}
 	const double Now = GetNow();
 	FChaosImpactRubyGem* Gem = FindGem(Id);
+	// Already theirs (their own hook gathered it as they touched it): yes.
+	if (Gem && Gem->IsCollected() && Gem->Collector == Character)
+	{
+		PRAnswer(this, Character, Id, true);
+		return;
+	}
 	// Generous reach: a guest's copy here trails their own screen by up to a round trip.
 	const float Reach = Character ? FMath::Min(ChaosImpactParty::RubyReach + 230.0f
 		+ static_cast<float>(Character->GetVelocity().Size2D()) * (Character->GetNetworkRoundTripSeconds() + 0.1f), 720.0f) : 0.0f;
@@ -828,6 +853,10 @@ void AChaosImpactRubyField::Claim(AChaosImpactCharacter* Character, const int32 
 		&& CanTake(*Gem, Character, TouchTime) && FVector::Dist2D(Character->GetActorLocation(), Gem->To) <= Reach;
 	if (!bOk)
 	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Party: ruby %d refused to %s (%s; %.0f cm away, reach %.0f)"), Id, *GetNameSafe(Character),
+			!Gem ? TEXT("gone") : !PRInMatch(GetWorld()) ? TEXT("no match") : !PRCanPickUp(Character) ? TEXT("cannot pick up")
+			: Gem->IsCollected() ? TEXT("taken") : Now < Gem->GetLandedAt() - 0.25 ? TEXT("not landed") : !CanTake(*Gem, Character, TouchTime) ? TEXT("own drop")
+			: TEXT("too far"), Gem && Character ? FVector::Dist2D(Character->GetActorLocation(), Gem->To) : 0.0, Reach);
 		PRAnswer(this, Character, Id, false);
 		return;
 	}
@@ -843,6 +872,47 @@ void AChaosImpactRubyField::Claim(AChaosImpactCharacter* Character, const int32 
 	}
 	Entry.Claimers.AddUnique(Character);
 	SettleClaims(Now, false);
+}
+
+int32 AChaosImpactRubyField::CollectAlong(AChaosImpactCharacter* Character, const FVector& From, const FVector& To, const float Reach, const float Height)
+{
+	if (!HasAuthority() || !PRInMatch(GetWorld()) || !PRCanPickUp(Character))
+	{
+		return 0;
+	}
+	const double Now = GetNow();
+	const FVector Flat0(From.X, From.Y, 0.0);
+	const FVector Flat1(To.X, To.Y, 0.0);
+	int32 Taken = 0;
+	for (FChaosImpactRubyGem& Gem : Gems.Items)
+	{
+		// (One someone is already picking up is left to them.)
+		if (!IsAvailable(Gem, Now) || Now < Gem.GetLandedAt() || !CanTake(Gem, Character, Now) || Claims.Contains(Gem.Id)
+			|| FMath::Abs(Gem.To.Z - From.Z) > Height)
+		{
+			continue;
+		}
+		const FVector Lying(Gem.To.X, Gem.To.Y, 0.0);
+		if (FVector::Dist2D(FMath::ClosestPointOnSegment(Lying, Flat0, Flat1), Lying) > Reach + PRGemRadius(Gem.Value))
+		{
+			continue;
+		}
+		Gem.Collector = Character;
+		Gem.CollectedAt = Now;
+		Gems.MarkItemDirty(Gem);
+		Taken += Gem.Value;
+	}
+	if (Taken > 0)
+	{
+		if (AChaosImpactPlayerState* Member = Character->GetPlayerState<AChaosImpactPlayerState>())
+		{
+			Member->Points += Taken;
+			Member->ForceNetUpdate();
+		}
+		ForceNetUpdate();
+		UE_LOG(LogChaosImpact, Log, TEXT("Party: %s's hook gathered %d rubies"), *Character->GetName(), Taken);
+	}
+	return Taken;
 }
 
 void AChaosImpactRubyField::SettleClaims(const double Now, const bool bForce)
@@ -1267,15 +1337,15 @@ void AChaosImpactRubyField::PlayPickupEffect(const FVector& At, const uint8 Valu
 		PickupStreak = Now - PickupStreakAt < 1.4 ? PickupStreak + 1 : 0;
 		PickupStreakAt = Now;
 		const float Pitch = 1.0f + 0.06f * FMath::Min(PickupStreak, 10);
-		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MiniScore, bBig ? 0.75f : 0.55f, Pitch);
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::RubyPick, bBig ? 1.0f : 0.8f, Pitch);
 		if (bBig)
 		{
-			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MiniBig, bHuge ? 0.8f : 0.5f, bHuge ? 0.95f : 1.1f);
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::RubyBig, bHuge ? 1.0f : 0.7f, bHuge ? 0.9f : 1.05f);
 		}
 	}
 	else
 	{
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::MiniScore, At, bBig ? 0.45f : 0.3f, 1.15f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::RubyPick, At, bBig ? 0.7f : 0.5f, 1.1f);
 	}
 }
 
@@ -1339,7 +1409,7 @@ void AChaosImpactRubyField::UpdateVisuals(const double Now, const float DeltaSec
 	}
 	if (bLandSound && !Cameras.IsEmpty())
 	{
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::MiniTap, Cameras[0], 0.14f, 1.7f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::RubyLand, Cameras[0], 0.6f);
 	}
 	// Gone without being taken here (expired, or the news of who took it never came): a last glint.
 	for (auto It = Shown.CreateIterator(); It; ++It)
@@ -1973,11 +2043,11 @@ void AChaosImpactCrown::PlayTakeEffect(const FVector& At, const bool bOwn)
 	}
 	if (bOwn)
 	{
-		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MiniBig, 0.8f, 1.0f);
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::CrownTake);
 	}
 	else
 	{
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::MiniBig, At, 0.7f, 1.0f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CrownTake, At, 0.85f);
 	}
 }
 
@@ -1997,7 +2067,7 @@ void AChaosImpactCrown::PlayDropEffect(const FVector& At)
 			Fx->Add(Spark);
 		}
 	}
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::MiniMiss, At, 0.75f, 0.9f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CrownDrop, At);
 }
 
 void AChaosImpactCrown::UpdateVisuals(const double Now, const float DeltaSeconds)

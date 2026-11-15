@@ -1,9 +1,11 @@
 #include "ChaosImpactTournamentWidget.h"
 
+#include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSfx.h"
@@ -299,6 +301,27 @@ void UChaosImpactTournamentWidget::NativeTick(const FGeometry& MyGeometry, const
 	{
 		OpenPanel(EPanel::Bracket);
 	}
+	// Development (-CITourWatch): waiting, watch the match being played; once watching a while, the bracket opened over it.
+	static const bool bDevWatch = FParse::Param(FCommandLine::Get(), TEXT("CITourWatch"));
+	if (bDevWatch && Me && Panel == EPanel::None)
+	{
+		if (Me->TournamentRole == EChaosImpactTournamentRole::Practice && !GetLiveMatches().IsEmpty() && LocalTime - DevWatchAskedAt > 5.0f)
+		{
+			DevWatchAskedAt = LocalTime;
+			UE_LOG(LogChaosImpact, Log, TEXT("Development: watching the match being played"));
+			ChooseWait(EChaosImpactTournamentWait::Spectate, INDEX_NONE);
+		}
+		else if (Me->TournamentRole == EChaosImpactTournamentRole::Spectator && DevWatchSince < 0.0f)
+		{
+			DevWatchSince = LocalTime;
+		}
+		else if (Me->TournamentRole == EChaosImpactTournamentRole::Spectator && LocalTime - DevWatchSince > 8.0f && !bDevWatchBracket)
+		{
+			bDevWatchBracket = true;
+			UE_LOG(LogChaosImpact, Log, TEXT("Development: the bracket opened while watching"));
+			OpenPanel(EPanel::Bracket);
+		}
+	}
 #endif
 }
 
@@ -329,10 +352,15 @@ void UChaosImpactTournamentWidget::HandleInput()
 		return;
 	}
 	const FChaosImpactTournamentState& Tournament = Match->Tournament;
+	// A controller decides with its bottom button and goes back with its right one (swapped on a Switch controller with
+	// "confirm on the right" on, as in every menu).
+	const bool bSwap = ChaosImpactHints::GetDevice(Owner) == EChaosImpactDevice::Switch && ChaosImpactSettings::IsSwitchConfirmRight();
+	const FKey PadOk = bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom;
+	const FKey PadBack = bSwap ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right;
 	// The champion's screen: Enter / A (or a click) ends it for everyone when it is the host's (or a local tournament's);
 	// anyone else just puts it away.
 	if (Tournament.bFinished && !bChampionDismissed && GetNow() - Tournament.FinishedAt > 1.5
-		&& WasPressed({EKeys::Enter, EKeys::SpaceBar, EKeys::Gamepad_FaceButton_Bottom, EKeys::LeftMouseButton}))
+		&& WasPressed({EKeys::Enter, EKeys::SpaceBar, PadOk, EKeys::LeftMouseButton}))
 	{
 		bChampionDismissed = true;
 		if (Me->bRoomHost || Match->bLocalTournament)
@@ -348,7 +376,7 @@ void UChaosImpactTournamentWidget::HandleInput()
 	{
 		if (WasPressed({EKeys::Left, EKeys::A, EKeys::Gamepad_DPad_Left})) { AskCursor = (AskCursor + 2) % 3; }
 		if (WasPressed({EKeys::Right, EKeys::D, EKeys::Gamepad_DPad_Right})) { AskCursor = (AskCursor + 1) % 3; }
-		if (WasPressed({EKeys::Enter, EKeys::SpaceBar, EKeys::Gamepad_FaceButton_Bottom}))
+		if (WasPressed({EKeys::Enter, EKeys::SpaceBar, PadOk}))
 		{
 			if (AChaosImpactPlayerController* Controller = GetOwner())
 			{
@@ -413,11 +441,11 @@ void UChaosImpactTournamentWidget::HandleInput()
 	{
 		MoveCursor(Columns, Rows);
 	}
-	if (WasPressed({EKeys::Enter, EKeys::SpaceBar, EKeys::Gamepad_FaceButton_Bottom}))
+	if (WasPressed({EKeys::Enter, EKeys::SpaceBar, PadOk}))
 	{
 		Confirm();
 	}
-	else if (WasPressed({EKeys::BackSpace, EKeys::Gamepad_FaceButton_Right}))
+	else if (WasPressed({EKeys::BackSpace, PadBack}))
 	{
 		Back();
 	}
@@ -942,8 +970,8 @@ int32 UChaosImpactTournamentWidget::NativePaint(const FPaintArgs& Args, const FG
 		const FPainter Hint{Design, OutDrawElements, Layer + 20};
 		// (Top left, clear of the player's own HP and name at the bottom.)
 		RoundedBox(Hint, 24.0f, 96.0f, 330.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
-		Hint.Text(TEXT("Tab / View：トーナメントメニュー"), 40.0f, 104.0f, HudFit(TEXT("Tab / View：トーナメントメニュー"), 17.0f, 300.0f, TEXT("Bold")),
-			WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
+		const FString MenuHint = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Select|Tab}：トーナメントメニュー"));
+		Hint.Text(MenuHint, 40.0f, 104.0f, HudFit(MenuHint, 17.0f, 300.0f, TEXT("Bold")), WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
 	}
 	// Not in a panel: a small strip with where things stand.
 	if (Panel == EPanel::None && !bCalled && !bInArena)
@@ -1155,7 +1183,8 @@ void UChaosImpactTournamentWidget::PaintStatus(const FGeometry& Design, FSlateWi
 	P.Text(Status, 104.0f, 62.0f, 19.0f, WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
 	// Bottom-left: how to open the menu.
 	RoundedBox(P, 24.0f, 838.0f, 330.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
-	P.Text(TEXT("Tab / View：トーナメントメニュー"), 40.0f, 846.0f, 17.0f, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
+	const FString MenuHint = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Select|Tab}：トーナメントメニュー"));
+	P.Text(MenuHint, 40.0f, 846.0f, HudFit(MenuHint, 17.0f, 300.0f, TEXT("Bold")), WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
 }
 
 void UChaosImpactTournamentWidget::PaintRoundBanner(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
@@ -1449,9 +1478,12 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 	// Hints along the bottom.
 	const FPainter Hint{Design, Elements, Layer + 12, Alpha};
 	Hint.Box(0.0f, 842.0f, DesignWidth, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.8f));
-	Hint.Text(DesignWidth < 1400.0f ? TEXT("十字：えらぶ　A：LIVEを観戦　B：メニュー　Tab / View：とじる")
-		: TEXT("十字 / 矢印：試合をえらぶ　　A / Enter：LIVEの試合を観戦　　B：メニュー　　Tab / View：とじる"), (DesignWidth * 0.5f), 858.0f, 18.0f,
-		WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Bold"));
+	// (In the names of what this player is holding: the keyboard's arrows, Enter, BackSpace and Tab.)
+	const FString Keys = ChaosImpactHints::Text(GetOwningPlayer(), DesignWidth < 1400.0f
+		? TEXT("{DPad}：えらぶ　{Confirm}：LIVEを観戦　{Back|BackSpace}：メニュー　{Select|Tab}：とじる")
+		: TEXT("{DPad}：試合をえらぶ　　{Confirm}：LIVEの試合を観戦　　{Back|BackSpace}：メニュー　　{Select|Tab}：とじる"));
+	Hint.Text(Keys, (DesignWidth * 0.5f), 858.0f, HudFit(Keys, 18.0f, DesignWidth - 40.0f, TEXT("Bold")), WithAlpha(Paper, 0.85f), ETextAlign::Center,
+		TEXT("Bold"));
 }
 
 void UChaosImpactTournamentWidget::PaintPlacementStrip(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
@@ -1556,7 +1588,8 @@ void UChaosImpactTournamentWidget::PaintChampion(const FGeometry& Design, FSlate
 	const float Left = FMath::Max(0.0f, ChaosImpactTournament::ChampionSeconds - T);
 	const AChaosImpactPlayerState* Me = GetMe();
 	const bool bCanEnd = (Me && Me->bRoomHost) || Match->bLocalTournament;
-	const FString Foot = FString::Printf(TEXT("%d秒後にロビーへ戻ります　　Enter / A：%s"), FMath::CeilToInt(Left), bCanEnd ? TEXT("すぐ戻る") : TEXT("とじる"));
+	const FString Foot = FString::Printf(TEXT("%d秒後にロビーへ戻ります　　%s：%s"), FMath::CeilToInt(Left),
+		*ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}")), bCanEnd ? TEXT("すぐ戻る") : TEXT("とじる"));
 	P.Text(Foot, (DesignWidth * 0.5f), 760.0f, HudFit(Foot, 20.0f, 900.0f, TEXT("Bold")), WithAlpha(Paper, 0.75f), ETextAlign::Center, TEXT("Bold"));
 	// 順位決定戦: everyone's place, down the right.
 	if (Tournament.Settings.bPlacementMatches)
@@ -1624,8 +1657,9 @@ void UChaosImpactTournamentWidget::PaintMenu(const FGeometry& Design, FSlateWind
 				static_cast<float>(R.GetSize().Y) + 6.0f, WithAlpha(Gold, Pulse), 3.0f);
 		}
 	}
-	P.Text(TEXT("十字 / 矢印：えらぶ　　A / Enter：決定　　B / Tab / View：とじる"), (DesignWidth * 0.5f), 760.0f, 18.0f, WithAlpha(Paper, 0.7f),
-		ETextAlign::Center, TEXT("Bold"));
+	const FString Keys = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad}：えらぶ　　{Confirm}：決定　　{Back|BackSpace} / {Select|Tab}：とじる"));
+	P.Text(Keys, (DesignWidth * 0.5f), 760.0f, HudFit(Keys, 18.0f, DesignWidth - 80.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), ETextAlign::Center,
+		TEXT("Bold"));
 }
 
 void UChaosImpactTournamentWidget::PaintWatchList(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
@@ -1676,7 +1710,8 @@ void UChaosImpactTournamentWidget::PaintWatchList(const FGeometry& Design, FSlat
 				static_cast<float>(R.GetSize().X) + 6.0f, static_cast<float>(R.GetSize().Y) + 6.0f, WithAlpha(Gold, Pulse), 3.0f);
 		}
 	}
-	P.Text(TEXT("A / Enter：観戦する　　B：もどる"), (DesignWidth * 0.5f), (DesignWidth * 0.5f), 18.0f, WithAlpha(Paper, 0.7f), ETextAlign::Center, TEXT("Bold"));
+	P.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}：観戦する　　{Back|BackSpace}：もどる")), (DesignWidth * 0.5f), (DesignWidth * 0.5f), 18.0f,
+		WithAlpha(Paper, 0.7f), ETextAlign::Center, TEXT("Bold"));
 }
 
 bool UChaosImpactTournamentWidget::CoversPlay() const
@@ -1871,7 +1906,8 @@ void UChaosImpactTournamentWidget::PaintArena(const FGeometry& Design, FSlateWin
 	if (const AChaosImpactPlayerState* Me = GetMe(); Me && Me->TournamentRole == EChaosImpactTournamentRole::Spectator)
 	{
 		RoundedBox(P, DesignWidth - 420.0f, 838.0f, 396.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
-		T.Text(TEXT("観戦中　・　Tab / View：ほかの試合・練習"), DesignWidth - 404.0f, 846.0f, 17.0f, WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
+		const FString Watching = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("観戦中　・　{Select|Tab}：ほかの試合・練習"));
+		T.Text(Watching, DesignWidth - 404.0f, 846.0f, HudFit(Watching, 17.0f, 370.0f, TEXT("Bold")), WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
 	}
 }
 

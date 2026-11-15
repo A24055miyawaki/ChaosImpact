@@ -67,6 +67,9 @@ float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Prison: return &PrisonBallChance;
 	case EChaosImpactBallType::Hook: return &HookBallChance;
 	case EChaosImpactBallType::Anchor: return &AnchorBallChance;
+	case EChaosImpactBallType::Swap: return &SwapBallChance;
+	case EChaosImpactBallType::Barrier: return &BarrierBallChance;
+	case EChaosImpactBallType::Mine: return &MineBallChance;
 	default: return nullptr;
 	}
 }
@@ -74,13 +77,13 @@ float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
 float AChaosImpactBallSpawner::GetChance(const EChaosImpactBallType Type) const
 {
 	const bool bAllowPrison = !GetWorld() || !GetWorld()->IsGameWorld() || ChaosImpactBallTypes::IsPrisonMode(GetWorld());
-	if (Type==EChaosImpactBallType::Prison && !bAllowPrison) { return 0.f; }
+	if (ChaosImpactBallTypes::IsVersusOnly(Type) && !bAllowPrison) { return 0.f; }
 	// ボールスイッチ: a kind the host switched off never comes out.
 	if (ChaosImpactBallSwitch::IsOff(GetWorld(), Type)) { return 0.f; }
 	float Total = 0.0f;
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
 	{
-		if (Index==static_cast<int32>(EChaosImpactBallType::Prison) && !bAllowPrison) { continue; }
+		if (ChaosImpactBallTypes::IsVersusOnly(static_cast<EChaosImpactBallType>(Index)) && !bAllowPrison) { continue; }
 		if (ChaosImpactBallSwitch::IsOff(GetWorld(), static_cast<EChaosImpactBallType>(Index))) { continue; }
 		const float* Weight = WeightFor(static_cast<EChaosImpactBallType>(Index));
 		Total += Weight ? FMath::Max(0.0f, *Weight) : 0.0f;

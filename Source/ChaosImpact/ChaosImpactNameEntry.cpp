@@ -1,9 +1,11 @@
 #include "ChaosImpactNameEntry.h"
 #include "ChaosImpactSfx.h"
 
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactSettings.h"
 #include "Engine/Engine.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/GameViewportClient.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GenericPlatform/GenericWindow.h"
@@ -263,6 +265,11 @@ void FChaosImpactNameEntry::Open(const FString& Initial, const FString& InTitle,
 	Result = EResult::None;
 	Message.Reset();
 	StartIme();
+}
+
+void FChaosImpactNameEntry::SetHintPlayer(const APlayerController* Player)
+{
+	HintPlayer = Player;
 }
 
 void FChaosImpactNameEntry::Close()
@@ -1075,7 +1082,10 @@ int32 FChaosImpactNameEntry::Paint(const FGeometry& Design, FSlateWindowElementL
 				ETextAlign::Center, TEXT("Black"));
 		}
 	}
-	const FString Help = TEXT("A：えらぶ　B：けす（空ならやめる）　LB/RB：もじの種類　RT：大文字　START：おわり　／　キーボード：そのまま入力（半角/全角キーで日本語・変換）　Enter：おわり　Esc：やめる");
+	// Only the keys of what is being typed with (the keys come menu-translated, so A is the menus' decide).
+	const FString Help = ChaosImpactHints::Text(HintPlayer.Get(),
+		TEXT("{pad:{Confirm}：えらぶ　{Back}：けす（空ならやめる）　{LB}/{RB}：もじの種類　{RT}：大文字　{Start}：おわり}")
+		TEXT("{kb:キーボードでそのまま入力（半角/全角キーで日本語・変換）　Enter：おわり　Esc：やめる}"));
 	// (Inside the panel, under the keys: the screen behind never shows through it.)
 	V.Text(Help, 800.0f, 780.0f + Lift, HudFit(Help, 16.0f, 1100.0f, TEXT("Bold")), WithAlpha(Paper, 0.75f), ETextAlign::Center, TEXT("Bold"));
 	return Layer + 4;

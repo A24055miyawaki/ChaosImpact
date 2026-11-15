@@ -61,7 +61,11 @@ enum class EChaosImpactDojoGoal : uint8
 	/** Stay inside the shrinking circle (sudden death) for the count in seconds. */
 	StayInZone,
 	/** Pick up the nova's three parts, then hit the CPU with the nova they make (count: 3 parts + 1 hit). */
-	NovaBuild
+	NovaBuild,
+	/** Change places with the CPU (the swap ball). */
+	SwapPlace,
+	/** Stop the CPU's throws with a barrier (each wall broken by a CPU's ball counts). */
+	BarrierBlock
 };
 
 /** How a lesson's CPUs behave (set by AChaosImpactDojo; their own brains are off unless Fighter). */

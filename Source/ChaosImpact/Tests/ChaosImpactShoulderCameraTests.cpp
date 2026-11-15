@@ -10,6 +10,7 @@
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactTrainingArena.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
+#include "Camera/CameraComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
@@ -36,6 +37,14 @@ bool FShoulderMathTest::RunTest(const FString&)
 	TestTrue(TEXT("Resting pad noise never rotates view"),Camera::PadLookDegrees(FVector2D(.1f,-.1f),1,.2f,160,100).IsNearlyZero());
 	TestTrue(TEXT("Stick speed is frame-rate independent"),Camera::PadLookDegrees(FVector2D(.6f,.4f),.5f,.2f,160,100)
 		.Equals(Camera::PadLookDegrees(FVector2D(.6f,.4f),1,.2f,160,100) * .5,0.001));
+	{
+		const FVector P = Camera::MakeConvergencePoint(FVector(0,0,300),0,100,FVector(400,70,0),600);
+		TestTrue(TEXT("Convergence is never nearer than a short throw"),P.X >= 999.99);
+		TestTrue(TEXT("Convergence lies on the view's own line"),FMath::IsNearlyZero(P.Y) && FMath::IsNearlyZero(P.Z));
+		TestTrue(TEXT("A far point stays where the view met it"),FMath::IsNearlyEqual(Camera::MakeConvergencePoint(FVector(0,0,300),0,2500,FVector(400,70,0),600).X,2500.0));
+		TestTrue(TEXT("A small pad tilt turns finer than a linear stick"),Camera::PadLookDegrees(FVector2D(.4f,0),1,.2f,160,100).X < 160 * .25f);
+		TestTrue(TEXT("A full tilt still turns at the full rate"),FMath::IsNearlyEqual(Camera::PadLookDegrees(FVector2D(1,0),1,.2f,160,100).X,160.0,.01));
+	}
 	for (float Yaw : {-179.f,-90.f,0.f,45.f,179.f})
 	{
 		const FVector View(400,-250,300);
@@ -161,12 +170,16 @@ namespace
 				Test->TestTrue(TEXT("Shoulder camera collides with walls"),Player->GetCameraBoom()->bDoCollisionTest);
 				Test->TestTrue(TEXT("Shoulder camera moves closer"),Player->GetCameraBoom()->TargetArmLength < 510);
 				Test->TestFalse(TEXT("No cursor obstructing shoulder gameplay"),PC->bShowMouseCursor);
+				Test->TestFalse(TEXT("Switching in has finished easing round"),Camera->IsBlendingIn());
+				BaseFov = Player->GetFollowCamera()->FieldOfView;
 				Camera->AddLookDegrees(90 - Camera->GetViewRotation().Yaw,5);
 				Test->TestTrue(TEXT("Explicit yaw change points right in world space"),Camera->GetFlatAimDirection().Equals(FVector(0,1,0),.03));
 				return Next(.2);
 			case 3:
 				// Real mouse events may arrive during the wait; check the current camera, not an old yaw.
-				Test->TestTrue(TEXT("Aim follows horizontal camera yaw"),Player->GetAimDirection().Equals(Camera->GetFlatAimDirection(),.03));
+				Test->TestTrue(TEXT("Aim goes where the crosshair converges"),Player->GetAimDirection().Equals(Camera->GetThrowAimDirection(Player->GetActorLocation()),.03));
+				Test->TestTrue(TEXT("Convergence stays near the camera yaw"),FVector::DotProduct(Player->GetAimDirection(),Camera->GetFlatAimDirection())
+					> FMath::Cos(FMath::DegreesToRadians(Camera->MaxConvergeDegrees + 1)));
 				Test->TestTrue(TEXT("Camera pitch never tilts throws"),FMath::Abs(Player->GetAimDirection().Z) < .001);
 				Start = Player->GetActorLocation(); MoveForward = Camera->GetFlatAimDirection();
 				bMove = true; if (!bPad) { Key(ActionKey(EChaosImpactAction::MoveUp),IE_Pressed); }
@@ -178,14 +191,36 @@ namespace
 			case 5:
 				bLook = false;
 				Test->TestTrue(TEXT("Real mouse / right-stick input rotates right, not left"),FRotator::NormalizeAxis(Camera->GetViewRotation().Yaw - LookYaw) > 1);
+				// An enemy straight ahead of the crosshair (level view).
+				Camera->AddLookDegrees(0,-5 - Camera->GetViewRotation().Pitch);
+				for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+				{
+					if (It->GetCPUNumber() > 0)
+					{
+						FVector View; FRotator Rotation; PC->GetPlayerViewPoint(View,Rotation);
+						Enemy = *It;
+						const FVector At = View + Camera->GetFlatAimDirection() * (FVector::Dist2D(View,Player->GetActorLocation()) + 1000);
+						Enemy->SetActorLocation(FVector(At.X,At.Y,Player->GetActorLocation().Z),false,nullptr,ETeleportType::TeleportPhysics);
+						break;
+					}
+				}
 				Give(EChaosImpactBallType::Normal); Give(EChaosImpactBallType::Fire);
 				Key(ActionKey(EChaosImpactAction::Throw),IE_Pressed); return Next(.3);
 			case 6:
 				Test->TestTrue(TEXT("Existing throw button charges in shoulder view"),Player->IsChargingThrow());
+				Test->TestTrue(TEXT("Charging closes the view in to aim"),Player->GetCameraBoom()->TargetArmLength < Camera->ArmLength - 40);
+				Test->TestTrue(TEXT("Charging narrows the view a little"),Player->GetFollowCamera()->FieldOfView < BaseFov - 4);
+				if (Enemy.IsValid())
+				{
+					Test->TestTrue(TEXT("The crosshair locks onto the enemy it is on"),Camera->GetAimTarget() == Enemy.Get());
+					Test->TestTrue(TEXT("The throw goes at that enemy"),FVector::DotProduct(Player->GetAimDirection(),
+						(Enemy->GetActorLocation() - Player->GetActorLocation()).GetSafeNormal2D()) > .999);
+				}
 				if (!bChargeShotTaken) { Shot(TEXT("02-Charging.png")); bChargeShotTaken = true; NextAt = Now + .15; return false; }
 				Key(ActionKey(EChaosImpactAction::Throw),IE_Released); return Next(.35);
 			case 7:
 				Test->TestEqual(TEXT("Release actually throws one held ball"),Player->GetCarriedBallCount(),1);
+				if (Enemy.IsValid()) { Enemy->SetActorLocation(Origin + FVector(-900,-900,0),false,nullptr,ETeleportType::TeleportPhysics); }
 				ClearBalls();
 				// Compare real ball launch parameters for every kind, three charges and two pitches.
 				{
@@ -235,7 +270,7 @@ namespace
 			case 13:
 				Test->TestEqual(TEXT("Simple hold still drops one ball"),Player->GetCarriedBallCount(),1);
 				Key(ActionKey(EChaosImpactAction::SwapBall),IE_Released);
-				StaminaBefore = Player->GetStamina(); Key(ActionKey(EChaosImpactAction::Dash),IE_Pressed); return Next(.05);
+				StaminaBefore = Player->GetStamina(); Key(ActionKey(EChaosImpactAction::Dash),IE_Pressed); return Next(.15); // (Simple waits .07 s for a tackle chord.)
 			case 14:
 				Key(ActionKey(EChaosImpactAction::Dash),IE_Released);
 				Test->TestTrue(TEXT("Existing dash button still consumes stamina"),Player->GetStamina() < StaminaBefore - .5f);
@@ -243,6 +278,11 @@ namespace
 			case 15:
 				Key(ActionKey(EChaosImpactAction::Throw),IE_Pressed); return Next(.75);
 			case 16:
+				if (!Player->IsChargingNova())
+				{
+					Test->AddInfo(FString::Printf(TEXT("Nova diag: carried %d type0 %d charging %d dashing %d"),Player->GetCarriedBallCount(),
+						static_cast<int32>(Player->GetCarriedBallType(0)),Player->IsChargingThrow() ? 1 : 0,Player->IsDashing() ? 1 : 0));
+				}
 				Test->TestTrue(TEXT("Nova charge runs"),Player->IsChargingNova());
 				Test->TestFalse(TEXT("Nova temporarily overrides shoulder"),Player->IsShoulderViewActive());
 				Test->TestTrue(TEXT("Nova uses stage-wide overhead view"),Player->GetCameraBoom()->GetComponentRotation().Pitch < -75);
@@ -301,6 +341,7 @@ namespace
 				Test->TestFalse(TEXT("Can revert to top-down immediately"),Player->IsShoulderViewActive());
 				Test->TestTrue(TEXT("Original top-down rotation restored"),Player->GetCameraBoom()->GetComponentRotation().Equals(OriginalRotation,1));
 				Test->TestTrue(TEXT("Original top-down distance restored"),FMath::Abs(Player->GetCameraBoom()->TargetArmLength - OriginalArm) < 3);
+				Test->TestTrue(TEXT("The character is seen again in top-down"),!Player->GetMesh()->bOwnerNoSee);
 				Cleanup(PC); return true;
 			}
 			return false;
@@ -333,7 +374,8 @@ namespace
 		TArray<FString> OriginalNames;
 		FVector Origin, Start, MoveForward, DriveDirection;
 		FRotator OriginalRotation;
-		float OriginalArm = 0, LookYaw = 0, StaminaBefore = 0, TimeBeforeMenu = 0;
+		float OriginalArm = 0, LookYaw = 0, StaminaBefore = 0, TimeBeforeMenu = 0, BaseFov = 90;
+		TWeakObjectPtr<AChaosImpactCharacter> Enemy;
 	};
 }
 

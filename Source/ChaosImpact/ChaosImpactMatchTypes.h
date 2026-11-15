@@ -244,8 +244,8 @@ namespace ChaosImpactMatch
 	inline constexpr uint8 PartyCrown = 2;
 	/** ルビーラッシュ: a ball hit shakes this share of the rubies loose (at least one); a knockout half of them. */
 	inline constexpr float RubyHitDropShare = 0.2f;
-	/** クラウンキープ: counts to hold the crown for (30 seconds in all); each count takes a little more than a second. */
-	inline constexpr int32 CrownGoalCounts = 24;
+	/** クラウンキープ: counts to hold the crown for (each count takes a little more than a second). */
+	inline constexpr int32 CrownGoalCounts = 30;
 	inline constexpr float CrownCountSeconds = 1.25f;
 	/** クラウンキープ is played over three or five minutes. */
 	inline constexpr int32 CrownMinuteChoices[] = {3, 5};
@@ -259,6 +259,12 @@ namespace ChaosImpactMatch
 			return 0;
 		}
 		return bKnockout ? (Held + 1) / 2 : FMath::Clamp(FMath::RoundToInt(Held * RubyHitDropShare), 1, Held);
+	}
+	/** ルビーラッシュ: a tackle shakes this share loose (at least one). */
+	inline constexpr float RubyTackleDropShare = 0.05f;
+	inline int32 GetRubyTackleDrop(const int32 Held)
+	{
+		return Held <= 0 ? 0 : FMath::Clamp(FMath::RoundToInt(Held * RubyTackleDropShare), 1, Held);
 	}
 	/** Overtime: how long the trailing team may go without hitting the giant ball (the HUD drains it). */
 	inline constexpr float CrashOvertimeGraceSeconds = 4.0f;

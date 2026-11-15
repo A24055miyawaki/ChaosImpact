@@ -61,17 +61,42 @@ enum class EChaosImpactBallType : uint8
 	 * wall on its way, or in the floor at its full reach, and the thrower is whisked there through the air on the chain
 	 * (a dash stops it). It goes through characters and balls: it is for getting about, not for hitting.
 	 */
-	Anchor UMETA(DisplayName="Anchor")
+	Anchor UMETA(DisplayName="Anchor"),
+	/** VS/training only. No damage: whoever it strikes changes places with its thrower on the spot. */
+	Swap UMETA(DisplayName="Swap"),
+	/**
+	 * VS/training only. Where it lands a low wall of light stands across its way for a few seconds
+	 * (AChaosImpactGadget): balls stop at it, people walk through, and the first ball to strike it breaks it.
+	 */
+	Barrier UMETA(DisplayName="Barrier"),
+	/**
+	 * VS/training only. Where it lands it lies as a mine in plain sight (AChaosImpactGadget): an opponent coming near
+	 * sets it off, and after a short fuse it bursts (1 damage, a push; a dash gets clear).
+	 */
+	Mine UMETA(DisplayName="Mine")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 15;
+	constexpr int32 Count = 18;
 	constexpr float PrisonSeconds = 5.0f;
 	constexpr float PrisonImmunitySeconds = 3.0f;
 	constexpr float PrisonReleaseProtection = 0.65f;
 	/** False in solo/RPG, even when a map was opened directly with training options. */
 	bool IsPrisonMode(const UWorld* World);
+	/**
+	 * バリア and マイン are set down, not thrown at someone: lobbed onto the floor ahead whatever the player's throw setting,
+	 * a tap just in front and a full charge about eleven metres away.
+	 */
+	constexpr float GadgetThrowMinSpeed = 380.0f;
+	constexpr float GadgetThrowMaxSpeed = 1500.0f;
+	constexpr float GadgetThrowUpSpeed = 260.0f;
+	/** The kinds that only come out in VS and training (IsPrisonMode). */
+	inline bool IsVersusOnly(const EChaosImpactBallType Type)
+	{
+		return Type == EChaosImpactBallType::Prison || Type == EChaosImpactBallType::Swap || Type == EChaosImpactBallType::Barrier
+			|| Type == EChaosImpactBallType::Mine;
+	}
 
 	/** Simae flock: twelve tightly turning birds; each enemy can be pecked twice and dash out between hits. */
 	constexpr int32 SimaeBirdCount = 12;
@@ -211,6 +236,9 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Prison: return FLinearColor(1.0f, 0.25f, 0.07f, 1.0f);
 		case EChaosImpactBallType::Hook: return FLinearColor(0.08f, 0.95f, 0.78f, 1.0f);
 		case EChaosImpactBallType::Anchor: return FLinearColor(0.66f, 1.0f, 0.06f, 1.0f);
+		case EChaosImpactBallType::Swap: return FLinearColor(0.5f, 0.42f, 1.0f, 1.0f);
+		case EChaosImpactBallType::Barrier: return FLinearColor(0.22f, 0.6f, 1.0f, 1.0f);
+		case EChaosImpactBallType::Mine: return FLinearColor(1.0f, 0.1f, 0.24f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -233,6 +261,9 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Prison: return TEXT("プリズン");
 		case EChaosImpactBallType::Hook: return TEXT("フック");
 		case EChaosImpactBallType::Anchor: return TEXT("アンカー");
+		case EChaosImpactBallType::Swap: return TEXT("スワップ");
+		case EChaosImpactBallType::Barrier: return TEXT("バリア");
+		case EChaosImpactBallType::Mine: return TEXT("マイン");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -256,32 +287,35 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Prison: return TEXT("Prison");
 		case EChaosImpactBallType::Hook: return TEXT("Hook");
 		case EChaosImpactBallType::Anchor: return TEXT("Anchor");
+		case EChaosImpactBallType::Swap: return TEXT("Swap");
+		case EChaosImpactBallType::Barrier: return TEXT("Barrier");
+		case EChaosImpactBallType::Mine: return TEXT("Mine");
 		default: return TEXT("Normal");
 		}
 	}
 
 	/**
-	 * Carried inventory is packed four bits per slot (up to 16 types), slot 0 first (the right hand, thrown next); a
-	 * player carries at most two balls, so both fit one byte. Small enough to send with every ordered pickup/throw answer.
+	 * Carried inventory is packed a byte per slot (room for 256 types), slot 0 first (the right hand, thrown next); a
+	 * player carries at most two balls, so both fit sixteen bits. Small enough to send with every ordered pickup/throw answer.
 	 */
-	constexpr int32 PackedBitsPerSlot = 4;
-	constexpr int32 PackedSlotMask = 0xF;
+	constexpr int32 PackedBitsPerSlot = 8;
+	constexpr int32 PackedSlotMask = 0xFF;
 	constexpr int32 MaxPackedSlots = 2;
 
-	inline EChaosImpactBallType GetPackedSlot(const uint8 Packed, const int32 Slot)
+	inline EChaosImpactBallType GetPackedSlot(const uint16 Packed, const int32 Slot)
 	{
 		return FromIndex((Packed >> (Slot * PackedBitsPerSlot)) & PackedSlotMask);
 	}
 
-	inline uint8 SetPackedSlot(const uint8 Packed, const int32 Slot, const EChaosImpactBallType Type)
+	inline uint16 SetPackedSlot(const uint16 Packed, const int32 Slot, const EChaosImpactBallType Type)
 	{
 		const int32 Shift = FMath::Clamp(Slot, 0, MaxPackedSlots - 1) * PackedBitsPerSlot;
-		return static_cast<uint8>((Packed & ~(PackedSlotMask << Shift)) | (static_cast<int32>(Type) << Shift));
+		return static_cast<uint16>((Packed & ~(PackedSlotMask << Shift)) | (static_cast<int32>(Type) << Shift));
 	}
 
-	inline uint8 Pack(const TConstArrayView<EChaosImpactBallType> Types)
+	inline uint16 Pack(const TConstArrayView<EChaosImpactBallType> Types)
 	{
-		uint8 Packed = 0;
+		uint16 Packed = 0;
 		for (int32 Slot = 0; Slot < FMath::Min(Types.Num(), MaxPackedSlots); ++Slot)
 		{
 			Packed = SetPackedSlot(Packed, Slot, Types[Slot]);

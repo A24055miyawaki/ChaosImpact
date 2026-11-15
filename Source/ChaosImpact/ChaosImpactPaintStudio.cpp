@@ -2,6 +2,7 @@
 
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCustomColour.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactPuppetComponent.h"
@@ -1146,7 +1147,9 @@ void UChaosImpactPaintStudio::HandleMouseMove(const FVector2D& Point)
 	}
 	if (bTurning)
 	{
-		SetView(ViewYaw - static_cast<float>(Delta.X) * 0.4f, ViewPitch + static_cast<float>(Delta.Y) * 0.3f, ViewZoom, ViewPan);
+		// (The camera goes round the model, so it goes the other way to the drag: the model turns with the hand, its near
+		// side following the mouse, as on the カラーエディット.)
+		SetView(ViewYaw + static_cast<float>(Delta.X) * 0.4f, ViewPitch + static_cast<float>(Delta.Y) * 0.3f, ViewZoom, ViewPan);
 	}
 	else if (bSliding)
 	{
@@ -1237,7 +1240,8 @@ void UChaosImpactPaintStudio::Tick(const float DeltaSeconds)
 	{
 		if (RightStick.Size() > 0.2f)
 		{
-			ViewYaw -= static_cast<float>(RightStick.X) * 150.0f * Step;
+			// (As the mouse: the model's near side goes the way the stick is pushed, as on the カラーエディット.)
+			ViewYaw += static_cast<float>(RightStick.X) * 150.0f * Step;
 			ViewPitch = FMath::Clamp(ViewPitch - static_cast<float>(RightStick.Y) * 100.0f * Step, -80.0f, 80.0f);
 			bViewMoved = true;
 		}
@@ -1357,6 +1361,10 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 	const FPainter Over{Design, Elements, Layer + 2};
 	const FPainter Top{Design, Elements, Layer + 3};
 	const int32 Hover = HitTest(Cursor);
+	// Hints: the controller's names (its kind) while it moves the cursor, the keyboard and mouse's otherwise.
+	const EChaosImpactDevice LastUsed = ChaosImpactHints::GetDevice(Controller.Get());
+	const EChaosImpactDevice Device = bPadCursor && ChaosImpactHints::IsPad(LastUsed) ? LastUsed : EChaosImpactDevice::KeyboardMouse;
+	const bool bPadHints = ChaosImpactHints::IsPad(Device);
 	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, StBack);
 	P.Text(TEXT("ペイント"), 40.0f, 22.0f, 40.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"));
 	P.Text(TEXT("キャラに直接、自由にえがこう"), 40.0f + HudMeasure(TEXT("ペイント"), 40.0f, TEXT("BlackItalic")) + 28.0f, 42.0f, 18.0f, Muted,
@@ -1426,8 +1434,12 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 		StToolIcon(P, static_cast<ETool>(Index), FVector2D(R.GetCenter().X, R.Min.Y + 30.0f), bOn ? Paper : WithAlpha(Paper, 0.8f), StShown(Brush.Colour));
 		StText(P, StToolNames[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.Max.Y) - 27.0f, 16.0f, 110.0f,
 			Paper, ETextAlign::Center, TEXT("Black"));
-		P.Text(StToolKeys[Index], static_cast<float>(R.Max.X) - 8.0f, static_cast<float>(R.Min.Y) + 4.0f, 12.0f, WithAlpha(Muted, 0.9f),
-			ETextAlign::Right, TEXT("Bold"));
+		if (!bPadHints)
+		{
+			// (The keyboard's; a controller goes round them with LB / RB.)
+			P.Text(StToolKeys[Index], static_cast<float>(R.Max.X) - 8.0f, static_cast<float>(R.Min.Y) + 4.0f, 12.0f, WithAlpha(Muted, 0.9f),
+				ETextAlign::Right, TEXT("Bold"));
+		}
 		if (bOn)
 		{
 			StFrame(Top, StGrow(R, 2.0f), WithAlpha(Gold, Pulse), 3.0f);
@@ -1456,8 +1468,11 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 		Over.Disc(Knob, bActive ? 11.0f : 9.0f, Paper);
 		Over.Ring(Knob, bActive ? 11.0f : 9.0f, Ink, 2.0f, 24);
 	}
-	P.Text(TEXT("[ ]・十字←→"), StLeft + 56.0f, SliderTrack(0).Min.Y - 20.0f, 11.0f, WithAlpha(Muted, 0.85f), ETextAlign::Left, TEXT("Bold"));
-	P.Text(TEXT("十字↑↓"), StLeft + 56.0f, SliderTrack(2).Min.Y - 20.0f, 11.0f, WithAlpha(Muted, 0.85f), ETextAlign::Left, TEXT("Bold"));
+	// (The keyboard has no key for the strength.)
+	P.Text(ChaosImpactHints::Text(Device, TEXT("{kb:[ ]}{pad:{DPad}←→}")), StLeft + 56.0f, SliderTrack(0).Min.Y - 20.0f, 11.0f,
+		WithAlpha(Muted, 0.85f), ETextAlign::Left, TEXT("Bold"));
+	P.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{DPad}↑↓}")), StLeft + 56.0f, SliderTrack(2).Min.Y - 20.0f, 11.0f,
+		WithAlpha(Muted, 0.85f), ETextAlign::Left, TEXT("Bold"));
 
 	// 左右対称.
 	{
@@ -1465,7 +1480,9 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 		StRound(Back, R, 10.0f, Brush.bMirror ? StCardOn : StCard);
 		StText(P, TEXT("左右対称"), static_cast<float>(R.Min.X) + 14.0f, static_cast<float>(R.Min.Y) + 11.0f, 18.0f, 120.0f, Paper,
 			ETextAlign::Left, TEXT("Black"));
-		P.Text(TEXT("M"), static_cast<float>(R.Min.X) + 132.0f, static_cast<float>(R.Min.Y) + 15.0f, 12.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		// (Fitted between the name and the switch: クリエイト is wider than M.)
+		StText(P, ChaosImpactHints::Text(Device, TEXT("{Select|M}")), static_cast<float>(R.Min.X) + 132.0f, static_cast<float>(R.Min.Y) + 15.0f, 12.0f,
+			static_cast<float>(R.GetSize().X) - 210.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 		const FBox2D Pill(FVector2D(R.Max.X - 74.0f, R.Min.Y + 10.0f), FVector2D(R.Max.X - 12.0f, R.Max.Y - 10.0f));
 		StRound(P, Pill, 14.0f, Brush.bMirror ? Gold : FLinearColor(0.12f, 0.15f, 0.24f, 1.0f));
 		P.Disc(FVector2D(Brush.bMirror ? Pill.Max.X - 14.0f : Pill.Min.X + 14.0f, Pill.GetCenter().Y), 11.0f, Paper);
@@ -1489,13 +1506,13 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 		}
 	}
 	{
-		// Their keys in the corner (keyboard / controller).
-		static const TCHAR* const Keys[4] = {TEXT("Z・X"), TEXT("Y"), TEXT(""), TEXT("F・R3")};
+		// Their keys in the corner (the keyboard's or the controller's).
+		static const TCHAR* const Keys[4] = {TEXT("{X|Ctrl+Z}"), TEXT("{Y|Ctrl+Y}"), TEXT(""), TEXT("{R3|F}")};
 		for (int32 Index = 0; Index < 4; ++Index)
 		{
 			const FBox2D R = ButtonRect(Index);
-			P.Text(Keys[Index], static_cast<float>(R.Max.X) - 6.0f, static_cast<float>(R.Min.Y) + 2.0f, 10.0f, WithAlpha(Muted, 0.9f),
-				ETextAlign::Right, TEXT("Bold"));
+			StText(P, ChaosImpactHints::Text(Device, Keys[Index]), static_cast<float>(R.Max.X) - 6.0f, static_cast<float>(R.Min.Y) + 2.0f, 10.0f,
+				static_cast<float>(R.GetSize().X) - 12.0f, WithAlpha(Muted, 0.9f), ETextAlign::Right, TEXT("Bold"));
 		}
 	}
 
@@ -1525,14 +1542,18 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 			StFrame(Top, StGrow(R, 1.0f), WithAlpha(Ice, 0.9f), 2.0f);
 		}
 	}
-	P.Text(TEXT("T"), static_cast<float>(TabRect(false).Min.X) - 8.0f, 115.0f, 14.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	if (!bPadHints)
+	{
+		// (T is the keyboard's only.)
+		P.Text(TEXT("T"), static_cast<float>(TabRect(false).Min.X) - 8.0f, 115.0f, 14.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	}
 	{
 		const FBox2D Now2(FVector2D(StRight, 148.0f), FVector2D(StRight + 110.0f, 208.0f));
 		StRound(P, Now2, 12.0f, StShown(Brush.Colour));
 		StFrame(Over, Now2, WithAlpha(Paper, 0.5f), 2.0f);
 		P.Text(FString::Printf(TEXT("#%02X%02X%02X"), Brush.Colour.R, Brush.Colour.G, Brush.Colour.B), StRight + 124.0f, 152.0f, 20.0f, Paper,
 			ETextAlign::Left, TEXT("Black"));
-		StText(P, TEXT("スポイト（I・Alt+クリック）でキャラの色もひろえる"), StRight + 124.0f, 184.0f, 12.0f, StRightWidth - 124.0f, Muted);
+		StText(P, ChaosImpactHints::Text(Device, TEXT("スポイト{kb:（I・Alt+クリック）}でキャラの色もひろえる")), StRight + 124.0f, 184.0f, 12.0f, StRightWidth - 124.0f, Muted);
 	}
 	if (!bFine)
 	{
@@ -1708,14 +1729,14 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 
 	// The keys along the bottom (the controller's when it was used last).
 	Back.Box(0.0f, StBarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
-	const FString Guide = bLeaveMenu
-		? FString(bPadCursor ? TEXT("↑↓：えらぶ　　A：決定　　B：つづける") : TEXT("クリック・↑↓ Enter：えらぶ　　Esc：つづける"))
-		: bPadCursor && IsColourControl(Hover)
-			? FString(TEXT("A（おしたまま動かす）：色をえらぶ　　十字：こまかく調整（長押しで速く）　　LB / RB：どうぐ　　X：もどす　　Y：やりなおす　　B：おわる"))
-		: FString(bPadCursor
-			? TEXT("A：描く　　右スティック：回す　　LT / RT：拡大縮小　　LB / RB：どうぐ　　X：もどす　　Y：やりなおす　　十字：太さ・こさ　　View：左右対称　　B：おわる")
-			: TEXT("左ドラッグ：描く　　右ドラッグ：回す　　中ドラッグ：ずらす　　ホイール：拡大縮小　　Ctrl+Z：もどす　　[ ]：太さ　　B E G I：どうぐ　　Esc：おわる"));
-	StText(P, Guide, 800.0f, StBarTop + 16.0f, 17.0f, 1560.0f, Paper, ETextAlign::Center);
+	const TCHAR* const GuideLine = bLeaveMenu
+		? (bPadHints ? TEXT("↑↓：えらぶ　　{Confirm}：決定　　{Back}：つづける") : TEXT("クリック・↑↓ Enter：えらぶ　　Esc：つづける"))
+		: bPadHints && IsColourControl(Hover)
+			? TEXT("{Confirm}（おしたまま動かす）：色をえらぶ　　{DPad}：こまかく調整（長押しで速く）　　{LB} / {RB}：どうぐ　　{X}：もどす　　{Y}：やりなおす　　{Back}：おわる")
+		: bPadHints
+			? TEXT("{Confirm}：描く　　{RStick}：回す　　{LT} / {RT}：拡大縮小　　{LB} / {RB}：どうぐ　　{X}：もどす　　{Y}：やりなおす　　{DPad}：太さ・こさ　　{Select}：左右対称　　{Back}：おわる")
+			: TEXT("左ドラッグ：描く　　右ドラッグ：回す　　中ドラッグ：ずらす　　ホイール：拡大縮小　　Ctrl+Z：もどす　　[ ]：太さ　　B E G I：どうぐ　　Esc：おわる");
+	StText(P, ChaosImpactHints::Text(Device, GuideLine), 800.0f, StBarTop + 16.0f, 17.0f, 1560.0f, Paper, ETextAlign::Center);
 
 	// Leaving: keep, throw away, or go on drawing.
 	if (bLeaveMenu)

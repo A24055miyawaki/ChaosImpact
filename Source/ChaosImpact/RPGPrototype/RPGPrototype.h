@@ -968,6 +968,8 @@ public:
 	/** Adds a local player who uses this pad (they then pick a hero on their own screen). */
 	bool JoinWithPad(int32 InputDeviceId);
 	bool IsJoinPromptShown() const;
+	/** The input device of the pad that brought the join hint up (its kind names the button in the hint). */
+	int32 GetJoinPromptInput() const { return JoinPromptInput; }
 	void SetSharedScreen(bool Enabled);
 	bool IsSharedScreenRequested() const { return bSharedScreen; }
 	bool UsesSharedScreen() const { return bSharedScreen && GetLocalPlayerCount()>1; }
@@ -990,6 +992,7 @@ private:
 	bool bResetPending = false;
 	int32 DesiredLocalPlayers=1;
 	double JoinPromptUntil=0;
+	int32 JoinPromptInput=INDEX_NONE;
 	bool bSharedScreen=false;
 	UPROPERTY(Transient) TObjectPtr<ACameraActor> SharedCamera;
 	TMap<TWeakObjectPtr<ARPGPrototypeCharacter>,double> SharedWarpAt;

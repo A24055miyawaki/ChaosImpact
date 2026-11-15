@@ -65,6 +65,7 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, bRecruitmentClosed);
 	DOREPLIFETIME(AChaosImpactGameState, bVersusMatch);
 	DOREPLIFETIME(AChaosImpactGameState, Rules);
+	DOREPLIFETIME(AChaosImpactGameState, BattleSong);
 	DOREPLIFETIME(AChaosImpactGameState, Crash);
 	DOREPLIFETIME(AChaosImpactGameState, RubyField);
 	DOREPLIFETIME(AChaosImpactGameState, PartyCrown);

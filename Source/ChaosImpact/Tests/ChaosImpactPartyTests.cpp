@@ -2,6 +2,7 @@
 // パーティルール (ルビーラッシュ / クラウンキープ): the rules, a whole match of each on this machine, the screens, and a guest's
 // view of a host's match (ChaosImpact.Party.Online, run in a second process joined to a listen host).
 #include "Misc/AutomationTest.h"
+#include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactGameState.h"
@@ -440,8 +441,20 @@ namespace
 							Furthest = FMath::Max(Furthest, Distance);
 						}
 					}
-					UE_LOG(LogTemp, Display, TEXT("PARTYTEST crown starts: %.0f - %.0f from the crown"), Nearest, Furthest);
-					Test->TestTrue(FString::Printf(TEXT("Everyone starts out at the edge (nearest %.0f)"), Nearest), Nearest > 1300.0f);
+					// About six tenths of the way out to the furthest floor: away from the crown, not right at the edge.
+					float Edge = 0.0f;
+					for (const FVector& Point : GM->GetPartyFieldPoints())
+					{
+						Edge = FMath::Max(Edge, static_cast<float>(FVector::Dist2D(Point, Crown->GetState().To)));
+					}
+					UE_LOG(LogTemp, Display, TEXT("PARTYTEST crown starts: %.0f - %.0f from the crown (floor to %.0f)"), Nearest, Furthest, Edge);
+					Test->TestTrue(FString::Printf(TEXT("Everyone starts well away from the crown (nearest %.0f)"), Nearest), Nearest > 900.0f);
+					Test->TestTrue(FString::Printf(TEXT("...but not right at the edge (furthest %.0f of %.0f)"), Furthest, Edge), Furthest < Edge * 0.8f);
+					// More ball pads than the stage's own.
+					int32 Pads = 0;
+					for (TActorIterator<AChaosImpactBallSpawner> It(World); It; ++It) { ++Pads; }
+					UE_LOG(LogTemp, Display, TEXT("PARTYTEST crown ball pads: %d"), Pads);
+					Test->TestTrue(FString::Printf(TEXT("Twice the ball pads (%d)"), Pads), Pads >= 12);
 				}
 				// The CPUs held back for the checks (they would run for it).
 				for (AChaosImpactCharacter* CPU : PTCPUs(World))

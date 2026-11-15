@@ -102,7 +102,7 @@ namespace
 				NextAt = Now + 0.8;
 				return false;
 			case 8:
-				Test->TestEqual(TEXT("ボールスイッチ: 15 balls (normal first) + すべてオン + もどる + すべてオフ"), Menu->GetEntryCount(), 18);
+				Test->TestEqual(TEXT("ボールスイッチ: every ball (normal first) + すべてオン + もどる + すべてオフ"), Menu->GetEntryCount(), ChaosImpactBallTypes::Count + 3);
 				Menu->ConfirmSelection();
 				Menu->Navigate(EKeys::Right);
 				Menu->ConfirmSelection();
@@ -129,7 +129,7 @@ namespace
 			}
 			case 10:
 				Test->TestEqual(TEXT("すべてオフ: every kind off"), ChaosImpactBallSwitch::CountOn(PC->GetPendingMatchRules()), 0);
-				Test->TestEqual(TEXT("Nothing on: back refused, still on the switch"), Menu->GetEntryCount(), 18);
+				Test->TestEqual(TEXT("Nothing on: back refused, still on the switch"), Menu->GetEntryCount(), ChaosImpactBallTypes::Count + 3);
 				Test->TestTrue(TEXT("Nothing on: もどる greyed out"), Menu->IsEntryDisabled(Menu->GetEntryCount() - 2));
 				Shot(TEXT("ballswitch_alloff.png"));
 				Stage = 11;

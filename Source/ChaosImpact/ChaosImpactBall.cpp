@@ -2,6 +2,7 @@
 
 #include "ChaosImpactBall.h"
 #include "ChaosImpactHook.h"
+#include "ChaosImpactGadget.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactPrisonBall.h"
@@ -747,6 +748,20 @@ void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& Imp
 		// No hit of its own: it bursts where it is, and the blast hits everyone in reach (this victim too) alike.
 		Detonate(GetActorLocation(), nullptr);
 		return;
+	}
+	if (BallType == EChaosImpactBallType::Swap)
+	{
+		// No damage: the two change places (anything that is not a player takes an ordinary hit instead).
+		AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ThrowingPawn.Get());
+		if (AChaosImpactCharacter* Victim = Cast<AChaosImpactCharacter>(OtherActor); Victim && Thrower)
+		{
+			if (Thrower->SwapPlacesWith(Victim))
+			{
+				Thrower->RecoverStaminaFromBallHit();
+			}
+			Detonate(ImpactPoint, OtherActor);
+			return;
+		}
 	}
 	const float AppliedDamage = UGameplayStatics::ApplyDamage(
 		OtherActor, Damage, GetInstigatorController(), this, nullptr);
@@ -1644,6 +1659,7 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 		return;
 	}
 	const FVector HorizontalDirection(Direction.X, Direction.Y, 0.0f);
+	LaunchHeading = HorizontalDirection.GetSafeNormal();
 	// Thunder and beam balls always fly straight at their own speed, however the throw was charged or aimed.
 	const bool bThunder = BallType == EChaosImpactBallType::Thunder;
 	const bool bBeam = BallType == EChaosImpactBallType::Beam;
@@ -2103,6 +2119,11 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 	{
 		return;
 	}
+	if (AChaosImpactGadget* Wall = Cast<AChaosImpactGadget>(ImpactResult.GetActor()); Wall && !bCosmeticPrediction && !bIsPickup)
+	{
+		// A barrier takes one ball, whatever that ball then does (rebounds, bursts).
+		Wall->AbsorbBall(ThrowingPawn.Get());
+	}
 	if (auto* Captive = Cast<AChaosImpactBuddyBall>(this); Captive && Captive->IsPrisonBall()
 		&& Captive->IsLaunched() && !IsPickup() && ImpactResult.ImpactNormal.Z < .65f
 		&& (!ImpactResult.GetActor() || !ImpactResult.GetActor()->IsA<AChaosImpactBall>()) && ImpactVelocity.Size2D()>650.f)
@@ -2445,6 +2466,34 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 		MulticastDriveBurst(Location, DirectVictim != nullptr);
 		DetonationZone = nullptr;
 	}
+	else if (BallType == EChaosImpactBallType::Swap)
+	{
+		// The swap (if it struck someone) is its whole effect.
+		MulticastContactBurst(Location, FRotator::ZeroRotator);
+		DetonationZone = nullptr;
+	}
+	else if (BallType == EChaosImpactBallType::Barrier || BallType == EChaosImpactBallType::Mine)
+	{
+		// Struck someone: an ordinary hit, nothing left behind. Landed: its wall (facing its thrower) or its mine there.
+		MulticastContactBurst(Location, FRotator::ZeroRotator);
+		DetonationZone = nullptr;
+		// A barrier stands just where its thrower's preview showed (when the ball came down there, as it does unless
+		// something loose was in the way); always across the way it was thrown, wherever the thrower has gone since.
+		FVector Floor;
+		const bool bPlanned = bGadgetPlan && BallType == EChaosImpactBallType::Barrier
+			&& FVector::Dist2D(Location, GadgetPlanFloor) < 350.0f && FMath::Abs(Location.Z - GadgetPlanFloor.Z) < 400.0f;
+		if (bPlanned)
+		{
+			Floor = GadgetPlanFloor;
+		}
+		if (!DirectVictim && (bPlanned || AChaosImpactGadget::FindFloor(GetWorld(), Location, Floor)))
+		{
+			const APawn* Thrower = ThrowingPawn.Get();
+			const FVector Heading = bGadgetPlan ? GadgetPlanHeading : !LaunchHeading.IsNearlyZero() ? LaunchHeading
+				: Thrower ? Location - Thrower->GetActorLocation() : FVector::ZeroVector;
+			AChaosImpactGadget::Place(GetWorld(), BallType, Floor, Heading, ThrowingPawn.Get());
+		}
+	}
 	else
 	{
 		DetonationZone = AChaosImpactHazardZone::Detonate(GetWorld(), BallType, Location, ThrowingPawn.Get(), DirectVictim,
@@ -2666,14 +2715,18 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		ChaosImpactDrive::BuildLook(this, BallMesh, DriveLook);
 		LightIntensity = 0.0f;
 	}
-	else if (BallType == EChaosImpactBallType::Hook || BallType == EChaosImpactBallType::Anchor)
+	else if (BallType == EChaosImpactBallType::Hook || BallType == EChaosImpactBallType::Anchor || BallType == EChaosImpactBallType::Swap
+		|| BallType == EChaosImpactBallType::Barrier || BallType == EChaosImpactBallType::Mine)
 	{
 		// Its shape round the ball, held up facing the camera so it reads at a glance and never as another kind (nor as
 		// each other): hook: a J-shaped hook (a shank up to its eye, one curve round under the ball to a barbed point);
 		// anchor: an anchor (a shank through the ball, the stock across the top, two arms below with their flukes).
 		// Dark steel against the floor, the points in the kind's colour, the glow kept low so the outline shows.
 		const bool bAnchorBall = BallType == EChaosImpactBallType::Anchor;
-		BallMesh->SetMaterial(0, MakeEmissive(this, bAnchorBall ? FLinearColor(0.5f, 0.85f, 0.05f) : FLinearColor(0.08f, 0.75f, 0.62f), 1.2f));
+		BallMesh->SetMaterial(0, MakeEmissive(this, bAnchorBall ? FLinearColor(0.5f, 0.85f, 0.05f)
+			: BallType == EChaosImpactBallType::Swap ? FLinearColor(0.34f, 0.28f, 0.85f)
+			: BallType == EChaosImpactBallType::Barrier ? FLinearColor(0.1f, 0.38f, 0.8f)
+			: BallType == EChaosImpactBallType::Mine ? FLinearColor(0.2f, 0.03f, 0.05f) : FLinearColor(0.08f, 0.75f, 0.62f), 1.2f));
 		TypeGlowMaterial = MakeAdditive(this, GetColor(BallType), 0.45f, 1.0f);
 		TypeGlow = AttachShell(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")), TypeGlowMaterial);
 		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
@@ -2718,6 +2771,52 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 				Rod(Steel, Foot, End, 8.0f);
 				Part(Cone, Tip, End + FVector(0.0f, Side * 3.0f, 9.0f), FVector(0.0f, Side * 0.45f, 1.0f), 22.0f, 17.0f);
 			}
+		}
+		else if (BallType == EChaosImpactBallType::Swap)
+		{
+			// Two arrows chasing each other round the ball: one in its colour, one white.
+			UMaterialInstanceDynamic* White = MakeEmissive(this, FLinearColor(0.92f, 0.95f, 1.0f), 2.2f);
+			constexpr float Round = 40.0f;
+			for (int32 Arrow = 0; Arrow < 2; ++Arrow)
+			{
+				UMaterialInterface* Look = Arrow == 0 ? Tip : White;
+				const float Start = Arrow * 180.0f + 20.0f;
+				FVector Last(0.0f, FMath::Cos(FMath::DegreesToRadians(Start)) * Round, FMath::Sin(FMath::DegreesToRadians(Start)) * Round);
+				FVector Way = Up;
+				for (int32 Step = 1; Step <= 5; ++Step)
+				{
+					const float Angle = FMath::DegreesToRadians(Start + Step * 25.0f);
+					const FVector Next(0.0f, FMath::Cos(Angle) * Round, FMath::Sin(Angle) * Round);
+					Rod(Look, Last, Next, 8.0f);
+					Way = Next - Last;
+					Last = Next;
+				}
+				Part(Cone, Look, Last + Way.GetSafeNormal() * 7.0f, Way, 22.0f, 20.0f);
+			}
+		}
+		else if (BallType == EChaosImpactBallType::Barrier)
+		{
+			// A shield round the ball: a six-sided frame in its colour, a steel bar across.
+			constexpr float Round = 42.0f;
+			for (int32 Side = 0; Side < 6; ++Side)
+			{
+				const float A = FMath::DegreesToRadians(30.0f + Side * 60.0f);
+				const float B = FMath::DegreesToRadians(30.0f + (Side + 1) * 60.0f);
+				Rod(Tip, FVector(0.0f, FMath::Cos(A) * Round, FMath::Sin(A) * Round), FVector(0.0f, FMath::Cos(B) * Round, FMath::Sin(B) * Round), 7.0f);
+			}
+			Rod(Steel, FVector(0.0f, -36.0f, 0.0f), FVector(0.0f, 36.0f, 0.0f), 6.0f);
+		}
+		else if (BallType == EChaosImpactBallType::Mine)
+		{
+			// A sea mine: dark, with red-tipped spikes all round, and a red lamp on top.
+			for (int32 Spike = 0; Spike < 8; ++Spike)
+			{
+				const float Angle = FMath::DegreesToRadians(22.5f + Spike * 45.0f);
+				const FVector Out(0.0f, FMath::Cos(Angle), FMath::Sin(Angle));
+				Rod(Steel, Out * 24.0f, Out * 36.0f, 9.0f);
+				Part(Sphere, Tip, Out * 40.0f, Out, 10.0f, 10.0f);
+			}
+			Part(Sphere, Tip, FVector(6.0f, 0.0f, 0.0f), Up, 20.0f, 20.0f);
 		}
 		else
 		{

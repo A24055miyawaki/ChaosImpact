@@ -12,6 +12,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Misc/App.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Kismet/GameplayStatics.h"
 
 namespace
 {
@@ -229,11 +231,31 @@ namespace
 				{
 					SectionsAtStart[Index] = AChaosImpactCPUController::DevSectionSeconds[Index];
 				}
+				for (int32 Index = 0; Index < 10; ++Index)
+				{
+					PartsAtStart[Index] = AChaosImpactCPUController::DevPartSeconds[Index];
+				}
 				ThinkAtStart = AChaosImpactCPUController::DevThinkSeconds;
+				LastThink = ThinkAtStart;
+				for (int32 Index = 0; Index < 10; ++Index) { LastPart[Index] = AChaosImpactCPUController::DevPartSeconds[Index]; }
+				for (int32 Index = 0; Index < 6; ++Index) { LastSection[Index] = AChaosImpactCPUController::DevSectionSeconds[Index]; }
 				FramesAtStart = GFrameCounter;
 				return false;
 			}
 			SlowestFrame = FMath::Max(SlowestFrame, static_cast<float>(FApp::GetDeltaTime()));
+			// The most the CPUs thought in one frame (a frame's hitch from them, or from something else).
+			MostThinkFrame = FMath::Max(MostThinkFrame, AChaosImpactCPUController::DevThinkSeconds - LastThink);
+			LastThink = AChaosImpactCPUController::DevThinkSeconds;
+			for (int32 Index = 0; Index < 10; ++Index)
+			{
+				MostPart[Index] = FMath::Max(MostPart[Index], AChaosImpactCPUController::DevPartSeconds[Index] - LastPart[Index]);
+				LastPart[Index] = AChaosImpactCPUController::DevPartSeconds[Index];
+			}
+			for (int32 Index = 0; Index < 6; ++Index)
+			{
+				MostSection[Index] = FMath::Max(MostSection[Index], AChaosImpactCPUController::DevSectionSeconds[Index] - LastSection[Index]);
+				LastSection[Index] = AChaosImpactCPUController::DevSectionSeconds[Index];
+			}
 			if (Now - MeasureFrom < 40.0)
 			{
 				return false;
@@ -246,6 +268,21 @@ namespace
 				(AChaosImpactCPUController::DevSectionSeconds[3] - SectionsAtStart[3]) * 1000.0 / Frames,
 				(AChaosImpactCPUController::DevSectionSeconds[4] - SectionsAtStart[4]) * 1000.0 / Frames,
 				(AChaosImpactCPUController::DevSectionSeconds[5] - SectionsAtStart[5]) * 1000.0 / Frames);
+			{
+				static const TCHAR* const Names[] = {TEXT("PlanSureShot"), TEXT("CollectExactThreats"), TEXT("EvaluateEscape"), TEXT("UpdateEvasion"),
+					TEXT("ChooseSafeDirection"), TEXT("GetHazardAt"), TEXT("FindVantagePoint"), TEXT("RouteToward"), TEXT("SelectPickup"), TEXT("UpdateLearning")};
+				FString Line;
+				for (int32 Index = 0; Index < 10; ++Index)
+				{
+					Line += FString::Printf(TEXT(" %s %.3f"), Names[Index], (AChaosImpactCPUController::DevPartSeconds[Index] - PartsAtStart[Index]) * 1000.0 / Frames);
+				}
+				UE_LOG(LogTemp, Display, TEXT("CPUWEIGHT detail (ms a frame):%s"), *Line);
+			}
+			UE_LOG(LogTemp, Display, TEXT("CPUWEIGHT most thought in one frame: %.2f ms"), MostThinkFrame * 1000.0);
+			UE_LOG(LogTemp, Display, TEXT("CPUWEIGHT most in one frame: parts %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f / sections %.1f %.1f %.1f %.1f %.1f %.1f"),
+				MostPart[0] * 1000.0, MostPart[1] * 1000.0, MostPart[2] * 1000.0, MostPart[3] * 1000.0, MostPart[4] * 1000.0, MostPart[5] * 1000.0,
+				MostPart[6] * 1000.0, MostPart[7] * 1000.0, MostPart[8] * 1000.0, MostPart[9] * 1000.0, MostSection[0] * 1000.0, MostSection[1] * 1000.0,
+				MostSection[2] * 1000.0, MostSection[3] * 1000.0, MostSection[4] * 1000.0, MostSection[5] * 1000.0);
 			UE_LOG(LogTemp, Display, TEXT("CPUWEIGHT think %.3f ms a frame (all CPUs); frame %.2f ms, slowest %.1f ms"),
 				(AChaosImpactCPUController::DevThinkSeconds - ThinkAtStart) * 1000.0 / Frames, (Now - MeasureFrom) * 1000.0 / Frames,
 				SlowestFrame * 1000.0f);
@@ -258,9 +295,239 @@ namespace
 		double MeasureFrom = 0.0;
 		double ThinkAtStart = -1.0;
 		double SectionsAtStart[6] = {};
+		double PartsAtStart[10] = {};
+		double LastThink = 0.0;
+		double MostThinkFrame = 0.0;
+		double LastPart[10] = {};
+		double MostPart[10] = {};
+		double LastSection[6] = {};
+		double MostSection[6] = {};
 		uint64 FramesAtStart = 0;
 		float SlowestFrame = 0.0f;
 	};
+}
+
+namespace
+{
+	/**
+	 * How strong さいきょう is: one さいきょう against three つよい in a VS match the player only watches (the same options as
+	 * CPUWeight, ?CIMatchCPU=4), sped up twice; the points each side made over two minutes of play.
+	 */
+	class FCPUStrengthCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FCPUStrengthCommand(FAutomationTestBase* InTest) : Test(InTest) {}
+
+		virtual bool Update() override
+		{
+			const double Now = FPlatformTime::Seconds();
+			UWorld* World = nullptr;
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				if (Context.World() && Context.World()->IsGameWorld()) { World = Context.World(); }
+			}
+			const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+			if (Now - StartedAt > 260.0)
+			{
+				Test->AddError(TEXT("The match never got going."));
+				return true;
+			}
+			if (!Match || Match->Phase != EChaosImpactOnlinePhase::Match)
+			{
+				return false;
+			}
+			if (!bSet)
+			{
+				bSet = true;
+				int32 Index = 0;
+				for (TActorIterator<AChaosImpactCPUController> It(World); It; ++It, ++Index)
+				{
+					It->SetDifficulty(Index == 0 ? ChaosImpactMatch::CPULevelStrongest : ChaosImpactMatch::CPULevelStrong);
+					if (Index == 0) { Strongest = *It; }
+				}
+				UGameplayStatics::SetGlobalTimeDilation(World, 2.0f);
+				EndAt = World->GetTimeSeconds() + 120.0;
+				return false;
+			}
+			if (World->GetTimeSeconds() < EndAt)
+			{
+				return false;
+			}
+			UGameplayStatics::SetGlobalTimeDilation(World, 1.0f);
+			int32 Mine = 0;
+			int32 Others = 0;
+			int32 OtherCount = 0;
+			for (TActorIterator<AChaosImpactCPUController> It(World); It; ++It)
+			{
+				const AChaosImpactPlayerState* State = It->GetPlayerState<AChaosImpactPlayerState>();
+				const int32 Points = State ? State->Points : 0;
+				if (*It == Strongest.Get()) { Mine = Points; }
+				else { Others += Points; ++OtherCount; }
+			}
+			const float Average = OtherCount ? static_cast<float>(Others) / OtherCount : 0.0f;
+			UE_LOG(LogTemp, Display, TEXT("CPUSTRENGTH さいきょう %d points, つよい average %.1f (x%.2f)"), Mine, Average, Average > 0.0f ? Mine / Average : 0.0f);
+			Test->TestTrue(TEXT("さいきょう outscores つよい"), Mine > Average);
+			return true;
+		}
+
+	private:
+		FAutomationTestBase* Test;
+		double StartedAt = FPlatformTime::Seconds();
+		bool bSet = false;
+		double EndAt = 0.0;
+		TWeakObjectPtr<AChaosImpactCPUController> Strongest;
+	};
+}
+
+namespace
+{
+	/**
+	 * さいきょう in a duel: one さいきょう against one つよい (?CIMatch=1?CIDuel=1?CIMatchCPU=2?CISpectate=1), sped up twice; the
+	 * rounds each won and who won the duel.
+	 */
+	/**
+	 * A duel between two CPUs (a duel is a player against one CPU: the player's own side is handed to a CPU as well), sped
+	 * up twice. Side BossSide (-CIDuelBossSide=, 0 by default) is さいきょう; the other is つよい, or さいきょう too with
+	 * bMirror. Its duel play (bDuelBoss) as in a match, or with bMirror the boss side only (-CIDuelNoBoss: neither).
+	 */
+	class FCPUDuelStrengthCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FCPUDuelStrengthCommand(FAutomationTestBase* InTest, const bool bInMirror = false) : Test(InTest), bMirror(bInMirror) {}
+
+		virtual bool Update() override
+		{
+			const double Now = FPlatformTime::Seconds();
+			UWorld* World = nullptr;
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				if (Context.World() && Context.World()->IsGameWorld()) { World = Context.World(); }
+			}
+			AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+			if (Now - StartedAt > 600.0)
+			{
+				Test->AddError(TEXT("The duel never finished."));
+				return true;
+			}
+			if (!Match || !Match->IsDuel() || (Match->Phase != EChaosImpactOnlinePhase::Match && Match->Phase != EChaosImpactOnlinePhase::Results))
+			{
+				return false;
+			}
+			if (!bSet)
+			{
+				APlayerState* Members[2] = {Match->Duel.Sides[0].Get(), Match->Duel.Sides[1].Get()};
+				if (!Members[0] || !Members[1] || !Members[0]->GetPawn() || !Members[1]->GetPawn())
+				{
+					return false;
+				}
+				AChaosImpactCPUController* Brains[2] = {nullptr, nullptr};
+				for (int32 Side = 0; Side < 2; ++Side)
+				{
+					Brains[Side] = Cast<AChaosImpactCPUController>(Members[Side]->GetOwningController());
+					if (Brains[Side])
+					{
+						continue;
+					}
+					APawn* Body = Members[Side]->GetPawn();
+					if (APlayerController* Player = Cast<APlayerController>(Members[Side]->GetOwningController()))
+					{
+						Player->UnPossess();
+						Player->SetViewTarget(Body);
+					}
+					FActorSpawnParameters Params;
+					Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+					Brains[Side] = World->SpawnActor<AChaosImpactCPUController>(AChaosImpactCPUController::StaticClass(),
+						Body->GetActorLocation(), Body->GetActorRotation(), Params);
+					Brains[Side]->MarkAsMatchCPU();
+					Brains[Side]->Possess(Body);
+					Match->Duel.Sides[Side] = Brains[Side]->GetPlayerState<APlayerState>();
+				}
+				int32 BossSide = 0;
+				FParse::Value(FCommandLine::Get(), TEXT("CIDuelBossSide="), BossSide);
+				BossSide = FMath::Clamp(BossSide, 0, 1);
+				const bool bNoBoss = FParse::Param(FCommandLine::Get(), TEXT("CIDuelNoBoss"));
+				for (int32 Side = 0; Side < 2; ++Side)
+				{
+					Brains[Side]->SetDifficulty(Side == BossSide || bMirror ? ChaosImpactMatch::CPULevelStrongest : ChaosImpactMatch::CPULevelStrong);
+					Brains[Side]->SetDuelBossForTests(bMirror || bNoBoss ? TOptional<bool>(Side == BossSide && !bNoBoss) : TOptional<bool>());
+				}
+				Strongest = Match->Duel.Sides[BossSide];
+				Other = Match->Duel.Sides[1 - BossSide];
+				bSet = true;
+				UE_LOG(LogTemp, Display, TEXT("CPUDUEL set: side %d さいきょう%s, side %d %s"), BossSide, bNoBoss ? TEXT("") : TEXT(" (duel play)"),
+					1 - BossSide, bMirror ? TEXT("さいきょう") : TEXT("つよい"));
+				UGameplayStatics::SetGlobalTimeDilation(World, 2.0f);
+				return false;
+			}
+			// Hits each side takes (its health going down).
+			for (const TWeakObjectPtr<APlayerState>& Who : {Strongest, Other})
+			{
+				const AChaosImpactCharacter* Body = Who.IsValid() ? Cast<AChaosImpactCharacter>(Who->GetPawn()) : nullptr;
+				if (!Body)
+				{
+					continue;
+				}
+				const float Health = Body->IsEliminated() ? 0.0f : Body->GetHealth();
+				float& Last = LastHealth.FindOrAdd(Who.Get(), Health);
+				if (Health < Last)
+				{
+					HitsTaken.FindOrAdd(Who.Get()) += FMath::Max(1, FMath::RoundToInt(Last - Health));
+				}
+				Last = Health;
+			}
+			if (Match->Duel.Step != EChaosImpactDuelStep::Finished && Match->Phase != EChaosImpactOnlinePhase::Results)
+			{
+				return false;
+			}
+			UGameplayStatics::SetGlobalTimeDilation(World, 1.0f);
+			const int32 Side = Match->Duel.SideOf(Strongest.Get());
+			const int32 Mine = Side != INDEX_NONE ? Match->Duel.Wins[Side] : 0;
+			const int32 Theirs = Side != INDEX_NONE ? Match->Duel.Wins[1 - Side] : 0;
+			const TCHAR* Result = Match->Duel.MatchWinner == INDEX_NONE ? TEXT("draw") : Match->Duel.MatchWinner == Side ? TEXT("won") : TEXT("lost");
+			UE_LOG(LogTemp, Display, TEXT("CPUDUEL result: さいきょう (side %d) %s %d - %d against %s (%d rounds; hits taken %d, dealt %d; %.0f s)"),
+				Side, Result, Mine, Theirs, bMirror ? TEXT("さいきょう") : TEXT("つよい"), Match->Duel.Round,
+				HitsTaken.FindRef(Strongest.Get()), HitsTaken.FindRef(Other.Get()), Now - StartedAt);
+			Test->TestTrue(TEXT("Who played which side is known"), Side != INDEX_NONE);
+			return true;
+		}
+
+	private:
+		FAutomationTestBase* Test;
+		double StartedAt = FPlatformTime::Seconds();
+		bool bSet = false;
+		bool bMirror = false;
+		TWeakObjectPtr<APlayerState> Strongest;
+		TWeakObjectPtr<APlayerState> Other;
+		TMap<APlayerState*, float> LastHealth;
+		TMap<APlayerState*, int32> HitsTaken;
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactCPUDuelStrengthTest, "ChaosImpact.Versus.CPUDuelStrength",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactCPUDuelStrengthTest::RunTest(const FString& Parameters)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FCPUDuelStrengthCommand(this));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactCPUDuelBossTest, "ChaosImpact.Versus.CPUDuelBoss",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactCPUDuelBossTest::RunTest(const FString& Parameters)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FCPUDuelStrengthCommand(this, true));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactCPUStrengthTest, "ChaosImpact.Versus.CPUStrength",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FChaosImpactCPUStrengthTest::RunTest(const FString& Parameters)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FCPUStrengthCommand(this));
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FChaosImpactCPUChaseTest, "ChaosImpact.Versus.CPUChase",

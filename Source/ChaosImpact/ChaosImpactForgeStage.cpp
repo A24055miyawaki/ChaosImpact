@@ -813,7 +813,7 @@ void AChaosImpactForgeStage::OnRep_VentState()
 			if (IsVentInPair(Vent, ActiveVentPair))
 			{
 				const FVector At = GetActorTransform().TransformPosition(GetVentOffset(Vent));
-				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, At, 0.55f, 1.15f);
+				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageCharge, At, 0.9f, 0.95f);
 			}
 		}
 	}
@@ -832,13 +832,12 @@ void AChaosImpactForgeStage::MulticastVentErupt_Implementation(const int32 Pair)
 			continue;
 		}
 		const FVector At = GetActorTransform().TransformPosition(GetVentOffset(Vent));
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBurst, At, 0.9f, 0.72f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageErupt, At);
 		// It erupts: a column of fire for as long as it blows, the blast at its foot, smoke after, a ring of heat spreading.
 		PlayStageEffect(ChaosImpactBallTypes::Effects::Fire, At + FVector(0.0f, 0.0f, 10.0f), FVector(2.4f, 2.4f, 3.2f), VentEruptSeconds);
 		PlayStageEffect(ChaosImpactBallTypes::Effects::Explosion, At + FVector(0.0f, 0.0f, 40.0f), FVector(1.3f), 0.0f);
 		PlayStageEffect(ChaosImpactBallTypes::Effects::Smoke, At + FVector(0.0f, 0.0f, 20.0f), FVector(1.2f), VentEruptSeconds + 1.2f);
 		PlayFloorRing(At, FLinearColor(1.0f, 0.45f, 0.06f), VentRadius * 0.9f, VentRadius * 2.6f, 0.65f, 14.0f, 14.0f);
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, At, 0.85f, 0.68f);
 		if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::WarpIn))
 		{
 			if (UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
@@ -860,7 +859,7 @@ void AChaosImpactForgeStage::MulticastBallSuperheated_Implementation(const FVect
 	{
 		return;
 	}
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, At, 0.8f, 1.4f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageBounce, At, 1.0f, 0.9f);
 	if (UNiagaraSystem* Sparks = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::SparkBurst))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, At, FRotator::ZeroRotator, FVector(1.8f));

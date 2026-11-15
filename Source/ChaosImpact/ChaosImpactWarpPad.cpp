@@ -4,6 +4,7 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactParty.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SceneComponent.h"
@@ -245,11 +246,14 @@ void AChaosImpactWarpPad::Tick(const float DeltaSeconds)
 	// Charging runs on every machine for the effects; only the server sends anyone.
 	TArray<AChaosImpactCharacter*, TInlineAllocator<8>> OnPad;
 	TArray<AChaosImpactCharacter*, TInlineAllocator<4>> Ready;
+	// クラウンキープ: whoever wears the crown cannot warp (pad after pad, nobody could ever catch them).
+	const AChaosImpactCrown* Crown = AChaosImpactCrown::Get(World);
+	const AChaosImpactCharacter* CrownHolder = Crown ? Crown->GetHolder() : nullptr;
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
 		AChaosImpactCharacter* Character = *It;
 		if (Character->IsEliminated() || Character->IsMatchInputLocked() || ArrivedAt.Contains(Character)
-			|| !IsStandingOnPad(Character))
+			|| Character == CrownHolder || !IsStandingOnPad(Character))
 		{
 			continue;
 		}

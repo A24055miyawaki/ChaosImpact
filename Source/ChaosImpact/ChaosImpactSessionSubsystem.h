@@ -324,9 +324,9 @@ public:
 	const FChaosImpactRecords& GetRecords() const { return Records; }
 	bool IsRecordsPending() const { return bRecordsPending; }
 	/** The 1v1 just played, for this machine's player ("win", "lose" or "draw"): into the records once per game. */
-	void ReportDuelRecord(const FString& Result);
+	void ReportDuelRecord(const FString& Result, TSharedPtr<FJsonObject> Detail = nullptr);
 	/** The 8-player match just played: this machine's first player's place out of how many. */
-	void ReportRandomRecord(int32 Place, int32 Of);
+	void ReportRandomRecord(int32 Place, int32 Of, TSharedPtr<FJsonObject> Detail = nullptr);
 	/** The rating the last ランダムマッチ game reported moved (or is still being worked out on the relay). */
 	const FChaosImpactRateReport& GetRateReport() const { return RateReport; }
 

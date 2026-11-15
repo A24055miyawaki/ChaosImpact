@@ -1,5 +1,6 @@
 #include "ChaosImpactSoloTitleWidget.h"
 
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSoloTitle.h"
@@ -79,11 +80,9 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 	const float Time = T->GetAge();
 	const EStep Step = T->GetStep();
 	const float StepAge = T->GetStepAge();
-	const bool bPad = [this]()
-	{
-		const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		return PC && PC->IsUsingGamepad();
-	}();
+	// Hints in the names of what is being played with right now (the title reads the face buttons by where they are).
+	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(GetOwningPlayer());
+	const bool bPad = ChaosImpactHints::IsPad(Device);
 	const FHudFill Glow = MakeFill(FLinearColor(1.0f, 0.97f, 0.82f), FLinearColor(1.0f, 0.66f, 0.2f));
 	const FLinearColor Dusk(0.06f, 0.04f, 0.16f);
 
@@ -134,7 +133,7 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 		const float Blink = 0.55f + 0.45f * FMath::Sin(Time * 3.2f);
 		const FPainter Press{Plan, OutDrawElements, Base + 30, EaseOut((Time - 1.6f) / 0.6f)};
 		HudText3D(Press, TEXT("PRESS START"), 800.0f, 640.0f, 40.0f, WithAlpha(FLinearColor(1.0f, 0.9f, 0.6f), Blink), ETextAlign::Center);
-		Press.Text(bPad ? TEXT("A ボタン") : TEXT("クリック / Enter"), 800.0f, 700.0f, 18.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.85f), ETextAlign::Center,
+		Press.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{A} ボタン}{kb:クリック / Enter}")), 800.0f, 700.0f, 18.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.85f), ETextAlign::Center,
 			TEXT("Black"), 2.0f, Navy);
 	}
 
@@ -203,13 +202,13 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 				const bool bHover = T->IsEraseHovered();
 				HudShard(HudAbove(Words, 2), {At(EL + 6.0f, ET), At(EL + 126.0f, ET - 2.0f), At(EL + 120.0f, ET + 42.0f), At(EL, ET + 44.0f)},
 					bHover ? FireFill : MakeFill(FLinearColor(0.5f, 0.12f, 0.2f, 0.95f), FLinearColor(0.25f, 0.04f, 0.1f, 0.95f)), 2.5f, FVector2D(3.0, 4.0));
-				HudAbove(Words, 6).Text(bPad ? TEXT("Y：けす") : TEXT("けす"), EL + 63.0f, ET + 8.0f, 17.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f,
+				HudAbove(Words, 6).Text(ChaosImpactHints::Text(Device, TEXT("{pad:{Y}：}けす")), EL + 63.0f, ET + 8.0f, 17.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f,
 					Navy);
 			}
 		}
 		// What the buttons do.
-		const FString Hint = bPad ? TEXT("左右：えらぶ　A：はじめる　Y：けす　B：もどる")
-			: TEXT("←→ / クリック：えらぶ　Enter / クリック：はじめる　Delete：けす　Esc：もどる");
+		const FString Hint = bPad ? ChaosImpactHints::Text(Device, TEXT("左右：えらぶ　{A}：はじめる　{Y}：けす　{B}：もどる"))
+			: FString(TEXT("←→ / クリック：えらぶ　Enter / クリック：はじめる　Delete：けす　Esc：もどる"));
 		FPainter{Plan, OutDrawElements, Base + 80, In}.Text(Hint, 800.0f, 852.0f, 16.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.9f), ETextAlign::Center,
 			TEXT("Black"), 2.0f, Navy);
 	}

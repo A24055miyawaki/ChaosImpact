@@ -29,6 +29,23 @@ enum class EChaosImpactSfx : uint8
 	StageWarp, StageBallSpawn, StageTargetHit, SoloDoorClose, SoloDoorOpen, SoloBoss, SoloClear,
 	// The loading screen's little games
 	MiniTap, MiniScore, MiniBig, MiniMiss,
+	// (Added after: each has its own sound where another's used to be borrowed. New ones go at the end: the RPG sends these by number.)
+	// スワップ / バリア / マイン
+	SwapWarp, BarrierUp, BarrierBreak, BarrierFade, MineSet, MineArm, MineAlarm, MineBlast,
+	// The hook and the anchor
+	HookFire, AnchorFire, HookCatch, HookGrab, HookClank, AnchorStick, AnchorZip, AnchorRam,
+	// Bodies: the tackle, the weight under a hit, a throw's swish, a revive, the ball form, a snowball run over someone, ice letting go
+	TackleStart, TackleHit, CharThud, CharWhoosh, CharRevive, FormCurl, FormUncurl, SnowCrush, IceThaw,
+	// The crash ball, the party rules' rubies and crown
+	CrashHit, CrashBump, RubyPick, RubyBig, RubyLand, CrownTake, CrownDrop,
+	// The nova's parts and end, a ball coming from off the screen
+	NovaPart, NovaLand, NovaBreak, BallWarn,
+	// Stage hazards: the warning, a gate forming, a bounce off one, a vent erupting, a pillar of light
+	StageCharge, StageGate, StageBounce, StageErupt, StageSmite,
+	// The dojo's rings, a treasure chest, coins
+	DojoRing, ChestOpen, CoinPick,
+	// The duel's own calls: a tournament match's opening, the ball slot, ROUND, FIGHT!, SUDDEN DEATH, a round decided, WIN
+	DuelOpening, DuelReelSpin, DuelReelStop, DuelReelDone, DuelRound, DuelFight, DuelSudden, DuelRoundOver, DuelWin,
 	Count
 };
 

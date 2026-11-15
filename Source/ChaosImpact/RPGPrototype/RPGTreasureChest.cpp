@@ -186,8 +186,7 @@ bool ARPGTreasureChest::Open(ARPGPrototypeCharacter* Player)
     }
     for(auto& View:Views) { if(View.Key.Get()==Player && View.Value.IsValid()) { View.Value->PlayOpen(); } }
     Player->Notice=TEXT("宝箱を開けた！　飛び出したルビーと品物を拾おう"); Player->NoticeUntil=GetWorld()->GetTimeSeconds()+3;
-    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::UiReveal,GetActorLocation(),.8f);
-    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::SoloDoorOpen,GetActorLocation(),.45f,1.3f);
+    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::ChestOpen,GetActorLocation());
     return true;
 }
 void ARPGTreasureChest::Tick(float DeltaSeconds)
@@ -292,7 +291,7 @@ bool ARPGRubyGem::Collect(ARPGPrototypeCharacter* Player)
 {
     if(bCollected || !IsValid(Player) || !IsFor(Player)) { return false; }
     bCollected=true; Player->PickUpRubies(Value);
-    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::CharPickup,GetActorLocation(),.32f,1.25f+FMath::Min(Value,50)*.008f);
+    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::CoinPick,GetActorLocation(),.8f,1.0f+FMath::Min(Value,50)*.008f);
     Destroy(); return true;
 }
 int32 ARPGRubyGem::CollectAllFor(ARPGPrototypeCharacter* Player)

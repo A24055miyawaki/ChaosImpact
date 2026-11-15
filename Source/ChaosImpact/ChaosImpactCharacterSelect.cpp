@@ -5,6 +5,7 @@
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCustomColour.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
@@ -1172,6 +1173,15 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 
 	// ---- Guide bar / start --------------------------------------------------------------------
 	const float BarIn = EaseOut((T - 0.25f) / 0.3f);
+	// The bar is shared: it names the keys of whatever was pressed last (alone: with the nickname's controller kind; a device
+	// no one here holds: 1P's).
+	EChaosImpactDevice GuideDevice = Owner && Owner->FollowsLastDevice() ? ChaosImpactHints::GetDevice(Owner)
+		: ChaosImpactHints::GetLastDevice();
+	if (Owner && !Owner->FollowsLastDevice() && Slots.Num() > 0
+		&& !Slots.ContainsByPredicate([bPad = ChaosImpactHints::IsPad(GuideDevice)](const FSlot& S) { return S.bKeyboard != bPad; }))
+	{
+		GuideDevice = ChaosImpactHints::GetDevice(LocalPlayerController(Owner, 0));
+	}
 	if (AreAllReady() || bStarting)
 	{
 		const float Since = static_cast<float>(Now - AllReadyAt);
@@ -1197,7 +1207,7 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		{
 			B.Text(TEXT("READY TO BATTLE!"), 44.0f, -1.0f, 52.0f, Ink, ETextAlign::Left, TEXT("BlackItalic"));
 			RoundBox(B, 1040.0f, 14.0f, 424.0f, 50.0f, 18.0f, WithAlpha(Ink, 0.88f));
-			B.Text(Owner && Owner->IsKeyboardMouseJoined() ? TEXT("A / Enter でスタート!") : TEXT("Aボタンでスタート!"),
+			B.Text(ChaosImpactHints::Text(GuideDevice, TEXT("{pad:{Confirm}ボタン}{kb:Enter }でスタート!")),
 				1252.0f, 18.0f, 30.0f, FMath::Lerp(Gold, Paper, Pulse * 0.5f), ETextAlign::Center, TEXT("Black"));
 		}
 	}
@@ -1209,15 +1219,20 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		RoundBox(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
 		RoundFrame(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.14f, 0.3f, 0.62f, 0.45f), 2.0f);
 		struct FGuide { FString Key; FString Label; };
-		TArray<FGuide> Guides = {{TEXT("十字 / WASD"), TEXT("いどう")}, {TEXT("A / Enter"), TEXT("けってい")},
-			{TEXT("B / Esc"), TEXT("もどる")}, {TEXT("Y / N"), TEXT("ニックネーム")}};
+		TArray<FGuide> Guides = {{TEXT("{DPad|矢印 / WASD}"), TEXT("いどう")}, {TEXT("{Confirm}"), TEXT("けってい")},
+			{TEXT("{Back}"), TEXT("もどる")}, {TEXT("{Y|N}"), TEXT("ニックネーム")}};
 		if (Slots.ContainsByPredicate([](const FSlot& S) { return S.Step == EStep::Colour; }))
 		{
-			Guides.Add({TEXT("← → / LB RB"), TEXT("カスタムカラー")});
+			Guides.Add({TEXT("← → / {LB|Q} {RB|E}"), TEXT("カスタムカラー")});
 		}
-		if (GetMousePlayer() != INDEX_NONE)
+		// The mouse only for the keyboard.
+		if (GetMousePlayer() != INDEX_NONE && !ChaosImpactHints::IsPad(GuideDevice))
 		{
 			Guides.Add({TEXT("マウス"), TEXT("クリックでえらぶ・右クリックでもどる")});
+		}
+		for (FGuide& Guide : Guides)
+		{
+			Guide.Key = ChaosImpactHints::Text(GuideDevice, Guide.Key);
 		}
 		// Everything at one size that fits the bar.
 		constexpr float Gap = 40.0f;
@@ -1279,9 +1294,8 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		RoundFrame(C, 92.0f, 12.0f, TagW, 38.0f, 12.0f, WithAlpha(Accent, bGuest ? 0.25f : 0.6f), 1.5f);
 		TagText.Text(ChaosImpactSettings::GetProfile(Slot.Profile).Name, 104.0f, 16.0f, 20.0f, bGuest ? Muted : Paper,
 			ETextAlign::Left, TEXT("Black"));
-		// Which button opens the list: N on a keyboard, the top face button (Y / △ / X) on a controller.
-		const FString Hint = Slot.bKeyboard ? FString(TEXT("N")) : ChaosImpactSettings::GetKeyName(EKeys::Gamepad_FaceButton_Top,
-			ChaosImpactSettings::DetectPadDevice(LocalPlayerController(Controller.Get(), Player)));
+		// Which button opens the list: N on a keyboard, the top face button (Y / △ / X) on this player's controller.
+		const FString Hint = ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player), TEXT("{Y|N}"));
 		RoundBox(TagText, 92.0f + TagW - 34.0f, 18.0f, 26.0f, 26.0f, 8.0f, WithAlpha(Paper, 0.9f));
 		const FPainter HintText{Space, Elements, Layer + 4, In};
 		HintText.Text(Hint, 92.0f + TagW - 21.0f, 19.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
@@ -1289,7 +1303,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	if (bWide || W > 400.0f)
 	{
 		RoundBox(C, W - 148.0f, 15.0f, 132.0f, 32.0f, 10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
-		C.Text(Slot.bKeyboard ? TEXT("キーボード") : TEXT("コントローラー"), W - 82.0f, 19.0f, 15.0f, Muted,
+		// (What this player is using now: alone, whatever was pressed last; several, their own.)
+		const bool bPadNow = ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(LocalPlayerController(Controller.Get(), Player)));
+		C.Text(bPadNow ? TEXT("コントローラー") : TEXT("キーボード"), W - 82.0f, 19.0f, 15.0f, Muted,
 			ETextAlign::Center, TEXT("Bold"));
 	}
 
@@ -1416,14 +1432,15 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		{
 			RoundBox(Back, W * 0.5f - 110.0f, HintY - 4.0f, 220.0f, 32.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 		}
-		C.Text(bOnLockedTile ? FString() : Slot.bKeyboard ? FString(TEXT("Enter でけってい"))
-			: FString(TEXT("A でけってい")), W * 0.5f, HintY, 17.0f,
+		C.Text(bOnLockedTile ? FString() : ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player),
+			TEXT("{Confirm} でけってい")), W * 0.5f, HintY, 17.0f,
 			WithAlpha(Paper, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Now) * 4.0f)), ETextAlign::Center, TEXT("Bold"));
 	}
 	else if (bWide && Slot.Step == EStep::Character && !bOnLockedTile)
 	{
 		RoundBox(Back, NameX - 6.0f, H - 50.0f, 210.0f, 34.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
-		C.Text(Slot.bKeyboard ? TEXT("Enter でけってい") : TEXT("A でけってい"), NameX + 99.0f, H - 46.0f, 17.0f,
+		C.Text(ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player), TEXT("{Confirm} でけってい")),
+			NameX + 99.0f, H - 46.0f, 17.0f,
 			WithAlpha(Paper, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Now) * 4.0f)), ETextAlign::Center, TEXT("Bold"));
 	}
 
@@ -1483,7 +1500,9 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 		const TArray<FChaosImpactColourPreset>& Presets = Colours->GetPresets(Slot.Character);
 		const bool bWorn = Presets.IsValidIndex(Slot.Preset);
-		const bool bMouseHere = GetMousePlayer() == Player && !bStarting && NamePickerOwner == INDEX_NONE && !NameEntry.IsOpen();
+		// (No hover marks from a cursor put away while this player is on a controller.)
+		const bool bMouseHere = GetMousePlayer() == Player && !bStarting && NamePickerOwner == INDEX_NONE && !NameEntry.IsOpen()
+			&& !ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(LocalPlayerController(Controller.Get(), Player)));
 		const float RowH = static_cast<float>(RowBox.GetSize().Y);
 		const bool bCompact = RowH < 90.0f;
 		RoundBox(Row, RowX, RowY, RowW, RowH, bCompact ? 14.0f : 22.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.96f));
@@ -1641,6 +1660,7 @@ void UChaosImpactCharacterSelect::PickName(const int32 Choice)
 	if (Choice >= ChaosImpactSettings::GetProfileCount())
 	{
 		NameEntry.Open(FString(), FString::Printf(TEXT("%dP のニックネーム"), Player + 1), Player);
+		NameEntry.SetHintPlayer(LocalPlayerController(Controller.Get(), Player));
 		NamePickerOwner = INDEX_NONE;
 		return;
 	}

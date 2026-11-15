@@ -1,5 +1,6 @@
 #include "ChaosImpactWorldMapWidget.h"
 
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSoloStages.h"
@@ -26,6 +27,9 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 	{
 		return BaseLayer;
 	}
+	// Hints in the names of what is being played with right now (the map reads the face buttons by where they are).
+	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(PC);
+	const bool bPad = ChaosImpactHints::IsPad(Device);
 	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.45f, 1.5f);
 	const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
 	const bool bDark = World->MapIndex == 2;
@@ -160,7 +164,7 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 		if (!Prompt.IsEmpty())
 		{
 			// A key cap, then the action.
-			const FString Key = PC && PC->IsUsingGamepad() ? TEXT("A") : TEXT("決定");
+			const FString Key = ChaosImpactHints::Text(Device, TEXT("{A|決定}"));
 			const float KeyWidth = HudMeasure(Key, 16.0f) + 26.0f;
 			const float Y = B - 50.0f;
 			const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 5.0f);
@@ -225,11 +229,16 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 	if (!World->IsRevealing())
 	{
 		const FGeometry Corner = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
-		const bool bPad = PC && PC->IsUsingGamepad();
+		// (The pause button said as a button: メニューボタン, オプションボタン, ＋ボタン.)
+		FString StartButton = ChaosImpactHints::Text(Device, TEXT("{Start}"));
+		if (!StartButton.EndsWith(TEXT("ボタン")))
+		{
+			StartButton += TEXT("ボタン");
+		}
 		const FString Hint = World->IsOverview()
-			? (bPad ? TEXT("Y / B：もどる") : TEXT("M / ホイール：もどる　クリック：そのステージへ歩く"))
-			: bPad ? TEXT("左スティック：道を歩く　A：出撃　Y：全体マップ　START：メニュー")
-			: TEXT("移動：道を歩く　クリック：そこまで歩く　決定：出撃　M / ホイール：全体マップ　Esc：メニュー");
+			? (bPad ? ChaosImpactHints::Text(Device, TEXT("{Y} / {B}：もどる")) : FString(TEXT("M / ホイール：もどる　クリック：そのステージへ歩く")))
+			: bPad ? ChaosImpactHints::Text(Device, TEXT("{LStick}：道を歩く　{A}：出撃　{Y}：全体マップ　")) + StartButton + TEXT("：メニュー")
+			: FString(TEXT("移動：道を歩く　クリック：そこまで歩く　決定：出撃　M / ホイール：全体マップ　Esc：メニュー"));
 #if !UE_BUILD_SHIPPING
 		if (!World->IsOverview() && World->GetFocusedNode())
 		{

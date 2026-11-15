@@ -843,7 +843,7 @@ void AChaosImpactSnowStage::OnRep_WindState()
 {
 	if (WindDirectionIndex >= 0 && GetNetMode() != NM_DedicatedServer)
 	{
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, GetActorLocation() + FVector(0.0f, 0.0f, 180.0f), 0.5f, 1.55f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageCharge, GetActorLocation() + FVector(0.0f, 0.0f, 180.0f), 0.8f, 1.3f);
 	}
 }
 
@@ -853,7 +853,7 @@ void AChaosImpactSnowStage::MulticastWindGust_Implementation(const int32 WindDir
 	{
 		return;
 	}
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageWarp, GetActorLocation() + FVector(0.0f, 0.0f, 180.0f), 0.8f, 0.9f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::WindGust, GetActorLocation() + FVector(0.0f, 0.0f, 180.0f), 1.0f, 0.8f);
 }
 
 void AChaosImpactSnowStage::TickWindServer(const double Now, const float DeltaSeconds)

@@ -194,7 +194,7 @@ void AChaosImpactNovaPart::BeginPlay()
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		BuildLook();
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageWarp, GetActorLocation(), 0.8f, 1.2f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaPart, GetActorLocation());
 	}
 }
 

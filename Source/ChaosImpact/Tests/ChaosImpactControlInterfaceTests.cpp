@@ -38,7 +38,8 @@ namespace
 				if (Profile <= 0) { Test->AddError(TEXT("No spare test profile")); return true; }
 				OriginalBall = PC->GetTrainingSummonBallType();
 				PC->TogglePauseMenu(); PC->OpenSettings(); Settings->SetTab(Screen::ETab::Controls); Settings->EditControls(Profile,EChaosImpactDevice::KeyboardMouse);
-				Test->TestTrue(TEXT("Controls has a visible diagram picker entry"),Settings->FindRow(Screen::RowControlPreview) == 0);
+				// (The controls start with their headings now: the picker is a row among them, not the first.)
+				Test->TestTrue(TEXT("Controls has a visible diagram picker entry"),Settings->FindRow(Screen::RowControlPreview) != INDEX_NONE);
 				Settings->SelectRow(Settings->FindRow(Screen::RowControlPreview)); Settings->Activate();
 				Test->TestTrue(TEXT("Picker opens"),Settings->IsControlStylePickerOpen());
 				Settings->HandleMouseMove(FVector2D(300,672));
@@ -73,7 +74,7 @@ namespace
 				Test->TestTrue(TEXT("Live training menu opens"),PC->IsTrainingOverlayOpen());
 				WorldTime = PC->GetWorld()->GetTimeSeconds();
 				Menu->OpenTrainingBallPicker();
-				Test->TestEqual(TEXT("All twelve balls plus back appear together"),Menu->GetEntryCount(),ChaosImpactBallTypes::Count + 1);
+				Test->TestEqual(TEXT("Every ball plus back appear together"),Menu->GetEntryCount(),ChaosImpactBallTypes::Count + 1);
 				return Next(0.7);
 			case 5:
 				Test->TestTrue(TEXT("The ball list does not pause world time"),PC->GetWorld()->GetTimeSeconds() > WorldTime);
@@ -89,12 +90,20 @@ namespace
 					Test->TestFalse(TEXT("Picking a ball returns to training options"),Menu->IsTrainingBallPickerOpen());
 					Test->TestEqual(TEXT("Selection returns to the list button"),Menu->GetSelectedIndex(),4);
 				}
-				Menu->OpenTrainingBallPicker(); Menu->Navigate(EKeys::Gamepad_DPad_Left);
-				Test->TestEqual(TEXT("Grid left stays on its row"),Menu->GetSelectedIndex(),10);
-				Menu->Navigate(EKeys::Gamepad_DPad_Up);
-				Test->TestEqual(TEXT("Grid up moves one row"),Menu->GetSelectedIndex(),7);
-				Menu->GoBack();
-				Test->TestTrue(TEXT("Backing out keeps the selected ball"),PC->GetTrainingSummonBallType() == EChaosImpactBallType::Drive);
+				{
+					// (Four a row; the last kind picked is the list's last tile.)
+					constexpr int32 Columns = 4;
+					const int32 Last = ChaosImpactBallTypes::Count - 1;
+					const int32 RowStart = (Last / Columns) * Columns;
+					const int32 InRow = FMath::Min(Columns, ChaosImpactBallTypes::Count - RowStart);
+					const int32 Left = RowStart + (Last - RowStart + InRow - 1) % InRow;
+					Menu->OpenTrainingBallPicker(); Menu->Navigate(EKeys::Gamepad_DPad_Left);
+					Test->TestEqual(TEXT("Grid left stays on its row"),Menu->GetSelectedIndex(),Left);
+					Menu->Navigate(EKeys::Gamepad_DPad_Up);
+					Test->TestEqual(TEXT("Grid up moves one row"),Menu->GetSelectedIndex(),Left - Columns);
+					Menu->GoBack();
+					Test->TestTrue(TEXT("Backing out keeps the selected ball"),PC->GetTrainingSummonBallType() == ChaosImpactBallTypes::FromIndex(Last));
+				}
 				Cleanup(PC); return true;
 			default: Cleanup(PC); return true;
 			}

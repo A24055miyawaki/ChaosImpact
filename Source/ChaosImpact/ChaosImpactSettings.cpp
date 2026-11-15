@@ -1,7 +1,10 @@
 #include "ChaosImpactSettings.h"
+#include "ChaosImpactHints.h"
+#include "ChaosImpactMusic.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
 
+#include "Algo/Compare.h"
 #include "AudioDevice.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactPlayerController.h"
@@ -34,6 +37,8 @@ namespace
 	{
 		TArray<FChaosImpactProfile> Profiles;
 		int32 Volume = 100;
+		/** BGMの音量 (percent): the music only. */
+		int32 Music = 80;
 		int32 Shake = 2;
 		int32 Brightness = 5;
 		bool bSwitchConfirmRight = true;
@@ -108,6 +113,8 @@ namespace
 		{
 			GConfig->SetInt(*Section, *FString::Printf(TEXT("%s_ControlScheme"), DeviceTag(static_cast<EDevice>(Device))),
 				static_cast<int32>(Profile.Schemes[Device]), GGameUserSettingsIni);
+			GConfig->SetBool(*Section, *FString::Printf(TEXT("%s_ThrowToMove"), DeviceTag(static_cast<EDevice>(Device))),
+				Profile.bThrowToMove[Device], GGameUserSettingsIni);
 			for (int32 Axis = 0; Axis < 2; ++Axis)
 			{
 				GConfig->SetInt(*Section, *FString::Printf(TEXT("%s_ShoulderSensitivity%s"),
@@ -134,6 +141,7 @@ namespace
 			return;
 		}
 		GConfig->SetInt(SettingsSection, TEXT("Volume"), S.Volume, GGameUserSettingsIni);
+		GConfig->SetInt(SettingsSection, TEXT("MusicVolume"), S.Music, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("CameraShake"), S.Shake, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
@@ -176,6 +184,7 @@ namespace
 		if (GConfig)
 		{
 			GConfig->GetInt(SettingsSection, TEXT("Volume"), S.Volume, GGameUserSettingsIni);
+			GConfig->GetInt(SettingsSection, TEXT("MusicVolume"), S.Music, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("CameraShake"), S.Shake, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
@@ -192,6 +201,7 @@ namespace
 			GConfig->GetInt(SettingsSection, TEXT("ProfileCount"), Count, GGameUserSettingsIni);
 		}
 		S.Volume = FMath::Clamp(S.Volume, 0, 100);
+		S.Music = FMath::Clamp(S.Music, 0, 100);
 		S.Shake = FMath::Clamp(S.Shake, 0, 3);
 		S.Brightness = FMath::Clamp(S.Brightness, 1, 10);
 		S.LastFullscreenMode = 1;
@@ -217,6 +227,8 @@ namespace
 					Scheme, GGameUserSettingsIni);
 				Profile.Schemes[Device] = static_cast<EChaosImpactControlScheme>(FMath::Clamp(Scheme, 0,
 					Device == 0 ? static_cast<int32>(EChaosImpactControlScheme::MouseHold) : 1));
+				GConfig->GetBool(*Section, *FString::Printf(TEXT("%s_ThrowToMove"), DeviceTag(static_cast<EDevice>(Device))),
+					Profile.bThrowToMove[Device], GGameUserSettingsIni);
 				for (int32 Axis = 0; Axis < 2; ++Axis)
 				{
 					int32& Sensitivity = Profile.ShoulderSensitivity[Device][Axis];
@@ -518,6 +530,35 @@ void ChaosImpactSettings::SetControlScheme(const int32 Profile, const EChaosImpa
 	GConfig->Flush(false, GGameUserSettingsIni);
 }
 
+namespace
+{
+#if !UE_BUILD_SHIPPING
+	int32 NormalControlsOnlyForTests = INDEX_NONE;
+#endif
+}
+
+bool ChaosImpactSettings::IsNormalControlsOnly()
+{
+#if !UE_BUILD_SHIPPING
+	if (NormalControlsOnlyForTests != INDEX_NONE)
+	{
+		return NormalControlsOnlyForTests == 1;
+	}
+	if (GIsAutomationTesting)
+	{
+		return false;
+	}
+#endif
+	return true;
+}
+
+#if !UE_BUILD_SHIPPING
+void ChaosImpactSettings::SetNormalControlsOnlyForTests(const int32 Mode)
+{
+	NormalControlsOnlyForTests = Mode;
+}
+#endif
+
 EChaosImpactControlScheme ChaosImpactSettings::GetControlScheme(const int32 Profile, const EChaosImpactDevice Device)
 {
 #if !UE_BUILD_SHIPPING
@@ -537,6 +578,10 @@ EChaosImpactControlScheme ChaosImpactSettings::GetControlScheme(const int32 Prof
 		return static_cast<EChaosImpactControlScheme>(Forced);
 	}
 #endif
+	if (IsNormalControlsOnly())
+	{
+		return EChaosImpactControlScheme::Normal;
+	}
 	return GetProfile(Profile).Schemes[FMath::Clamp(static_cast<int32>(Device), 0, FChaosImpactProfile::DeviceCount - 1)];
 }
 
@@ -559,6 +604,22 @@ void ChaosImpactSettings::SetMouseDoubleClickDash(const int32 Profile, const boo
 	S.Profiles[Profile].bMouseDoubleClickDash = bOn;
 	SaveProfile(Profile);
 	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ChaosImpactSettings::SetThrowToMove(const int32 Profile, const EChaosImpactDevice Device, const bool bOn)
+{
+	FSettingsStore& S = Store();
+	const int32 D = static_cast<int32>(Device);
+	if (!S.Profiles.IsValidIndex(Profile) || D < 0 || D >= FChaosImpactProfile::DeviceCount) { return; }
+	S.Profiles[Profile].bThrowToMove[D] = bOn;
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+bool ChaosImpactSettings::GetThrowToMove(const int32 Profile, const EChaosImpactDevice Device)
+{
+	const int32 D = static_cast<int32>(Device);
+	return D >= 0 && D < FChaosImpactProfile::DeviceCount && GetProfile(Profile).bThrowToMove[D];
 }
 
 FKey ChaosImpactSettings::GetActiveKey(const int32 Profile, const EChaosImpactDevice Device,
@@ -673,6 +734,7 @@ void ChaosImpactSettings::ResetDevice(const int32 Profile, const EChaosImpactDev
 		S.Profiles[Profile].bSwapSticks = false;
 		S.Profiles[Profile].bAimAssist = true;
 	}
+	S.Profiles[Profile].bThrowToMove[D] = false;
 	SaveProfile(Profile);
 	GConfig->Flush(false, GGameUserSettingsIni);
 }
@@ -973,7 +1035,16 @@ EChaosImpactDevice ChaosImpactSettings::GetPlayerDevice(const APlayerController*
 	case EChaosImpactPadChoice::Xbox: return EDevice::Xbox;
 	case EChaosImpactPadChoice::PlayStation: return EDevice::PlayStation;
 	case EChaosImpactPadChoice::Switch: return EDevice::Switch;
-	default: return DetectPadDevice(Player);
+	default:
+		// Alone on the machine: the kind of controller last pressed (with two kinds plugged in, the one in use).
+		if (Controller->FollowsLastDevice())
+		{
+			if (const EDevice Last = ChaosImpactHints::GetLastDevice(); Last != EDevice::KeyboardMouse)
+			{
+				return Last;
+			}
+		}
+		return DetectPadDevice(Player);
 	}
 }
 
@@ -1104,6 +1175,19 @@ bool ChaosImpactSettings::IsAimAssistOn(const APlayerController* Player)
 	return GetProfile(GetPlayerProfile(Player)).bAimAssist;
 }
 
+bool ChaosImpactSettings::IsThrowToMoveOn(const APlayerController* Player)
+{
+	if (!Player)
+	{
+		return false;
+	}
+	// (Only in the normal style: the pads' simple style already aims where it moves, and the mouse-only styles move
+	// toward the cursor.)
+	const int32 Profile = GetPlayerProfile(Player);
+	const EChaosImpactDevice Device = GetPlayerDevice(Player);
+	return GetControlScheme(Profile, Device) == EChaosImpactControlScheme::Normal && GetThrowToMove(Profile, Device);
+}
+
 FString ChaosImpactSettings::DescribeAction(const APlayerController* Player, const EChaosImpactAction Action)
 {
 	const int32 Profile = GetPlayerProfile(Player);
@@ -1147,6 +1231,18 @@ void ChaosImpactSettings::SetMasterVolume(const int32 Percent)
 			Audio->SetTransientPrimaryVolume(Store().Volume / 100.0f);
 		}
 	}
+}
+
+int32 ChaosImpactSettings::GetMusicVolume()
+{
+	return Store().Music;
+}
+
+void ChaosImpactSettings::SetMusicVolume(const int32 Percent)
+{
+	Store().Music = FMath::Clamp(Percent, 0, 100);
+	SaveOptions();
+	UChaosImpactMusic::RefreshVolume();
 }
 
 int32 ChaosImpactSettings::GetCameraShakeLevel()
@@ -1677,4 +1773,201 @@ void ChaosImpactSettings::SetResolutionScale(const int32 Percent)
 		SaveUserSettings(Settings, false);
 		ApplyRenderScale();
 	}
+}
+
+// =====================================================================================================================
+// The settings screen's 保存: what was set when it opened, to go back to
+
+namespace
+{
+	struct FSettingsEdit
+	{
+		FSettingsStore Store;
+		int32 WindowMode = 1;
+		FIntPoint WindowSize = FIntPoint::ZeroValue;
+		bool bVSync = false;
+		int32 FrameRate = 0;
+		int32 Quality[ChaosImpactSettings::QualityGroupCount] = {};
+		int32 Scale = 100;
+		bool bRumble = true;
+	};
+	TOptional<FSettingsEdit> EditStart;
+
+	FSettingsEdit CaptureSettings()
+	{
+		using namespace ChaosImpactSettings;
+		FSettingsEdit Now;
+		Now.Store = Store();
+		Now.WindowMode = GetWindowMode();
+		const UGameUserSettings* Settings = UserSettings();
+		Now.WindowSize = Settings ? Settings->GetScreenResolution() : FIntPoint::ZeroValue;
+		Now.bVSync = IsVSyncOn();
+		Now.FrameRate = GetFrameRateLimit();
+		for (int32 Group = 0; Group < QualityGroupCount; ++Group)
+		{
+			Now.Quality[Group] = GetQualityGroup(Group);
+		}
+		Now.Scale = GetResolutionScale();
+		Now.bRumble = AChaosImpactPlayerController::IsRumbleEnabled();
+		return Now;
+	}
+
+	bool SameProfile(const FChaosImpactProfile& A, const FChaosImpactProfile& B)
+	{
+		if (A.Name != B.Name || A.Pad != B.Pad || A.bSwapSticks != B.bSwapSticks || A.bAimAssist != B.bAimAssist
+			|| A.bMouseDoubleClickDash != B.bMouseDoubleClickDash || A.CameraDistance != B.CameraDistance)
+		{
+			return false;
+		}
+		for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
+		{
+			if (A.Schemes[Device] != B.Schemes[Device] || A.bThrowToMove[Device] != B.bThrowToMove[Device]
+				|| A.ShoulderSensitivity[Device][0] != B.ShoulderSensitivity[Device][0]
+				|| A.ShoulderSensitivity[Device][1] != B.ShoulderSensitivity[Device][1])
+			{
+				return false;
+			}
+			for (int32 Action = 0; Action < FChaosImpactProfile::ActionCount; ++Action)
+			{
+				for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
+				{
+					if (A.Keys[Device][Action][Slot] != B.Keys[Device][Action][Slot])
+					{
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	bool SameSettings(const FSettingsEdit& A, const FSettingsEdit& B)
+	{
+		const FSettingsStore& X = A.Store;
+		const FSettingsStore& Y = B.Store;
+		if (X.Profiles.Num() != Y.Profiles.Num() || X.Volume != Y.Volume || X.Music != Y.Music || X.Shake != Y.Shake
+			|| X.Brightness != Y.Brightness || X.bSwitchConfirmRight != Y.bSwitchConfirmRight || X.bButtonHints != Y.bButtonHints
+			|| X.bOthersPaint != Y.bOthersPaint || X.HudSize != Y.HudSize || X.bTrainingTutorial != Y.bTrainingTutorial
+			|| X.FullscreenResolution != Y.FullscreenResolution)
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index < X.Profiles.Num(); ++Index)
+		{
+			if (!SameProfile(X.Profiles[Index], Y.Profiles[Index]))
+			{
+				return false;
+			}
+		}
+		// (The window's size counts only in a window: fullscreen is always the monitor's.)
+		if (A.WindowMode != B.WindowMode || (A.WindowMode == 2 && A.WindowSize != B.WindowSize) || A.bVSync != B.bVSync
+			|| A.FrameRate != B.FrameRate || A.Scale != B.Scale || A.bRumble != B.bRumble)
+		{
+			return false;
+		}
+		for (int32 Group = 0; Group < ChaosImpactSettings::QualityGroupCount; ++Group)
+		{
+			if (A.Quality[Group] != B.Quality[Group])
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+}
+
+void ChaosImpactSettings::BeginSettingsEdit()
+{
+	EditStart = CaptureSettings();
+}
+
+bool ChaosImpactSettings::HasUnsavedSettings()
+{
+	return EditStart.IsSet() && !SameSettings(EditStart.GetValue(), CaptureSettings());
+}
+
+void ChaosImpactSettings::SaveSettingsEdit()
+{
+	// (Every change was written as it was made: from now on this is what there is to go back to.)
+	EditStart = CaptureSettings();
+	UE_LOG(LogChaosImpact, Log, TEXT("Settings saved"));
+}
+
+void ChaosImpactSettings::EndSettingsEdit()
+{
+	EditStart.Reset();
+}
+
+void ChaosImpactSettings::RevertSettingsEdit()
+{
+	if (!EditStart.IsSet())
+	{
+		return;
+	}
+	const FSettingsEdit Then = EditStart.GetValue();
+	const FSettingsEdit Now = CaptureSettings();
+	if (SameSettings(Then, Now))
+	{
+		return;
+	}
+	// The screen and picture first (setting them also notes the window's size and mode in the store, which is put
+	// back whole after).
+	if (Now.WindowMode != Then.WindowMode)
+	{
+		if (Then.WindowMode == 2)
+		{
+			Store().WindowedResolution = Then.Store.WindowedResolution;
+		}
+		SetWindowMode(Then.WindowMode);
+	}
+	if (Then.WindowMode == 2 && Then.WindowSize.X > 0 && GetResolution() != Then.WindowSize)
+	{
+		SetResolution(Then.WindowSize);
+	}
+	if (Now.bVSync != Then.bVSync)
+	{
+		SetVSync(Then.bVSync);
+	}
+	if (Now.FrameRate != Then.FrameRate)
+	{
+		SetFrameRateLimit(Then.FrameRate);
+	}
+	for (int32 Group = 0; Group < QualityGroupCount; ++Group)
+	{
+		if (GetQualityGroup(Group) != Then.Quality[Group])
+		{
+			SetQualityGroup(Group, Then.Quality[Group]);
+		}
+	}
+	if (Now.Scale != Then.Scale)
+	{
+		SetResolutionScale(Then.Scale);
+	}
+	if (Now.bRumble != Then.bRumble && GConfig)
+	{
+		// (The same place AChaosImpactPlayerController keeps it.)
+		if (UWorld* World = GEngine && GEngine->GameViewport ? GEngine->GameViewport->GetWorld() : nullptr)
+		{
+			if (AChaosImpactPlayerController* Player = Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController()))
+			{
+				Player->ToggleRumbleEnabled();
+			}
+		}
+	}
+	// Then the nicknames, their controls and the options, all at once, written and applied.
+	const bool bPlayersChanged = Now.Store.Profiles.Num() != Then.Store.Profiles.Num()
+		|| !Algo::Compare(Now.Store.Profiles, Then.Store.Profiles, [](const FChaosImpactProfile& A, const FChaosImpactProfile& B) { return A.Name == B.Name; });
+	Store() = Then.Store;
+	Store().bLoaded = true;
+	SaveOptions();
+	SaveAllProfiles();
+	if (bPlayersChanged)
+	{
+		MarkPlayersChanged();
+	}
+	SetMasterVolume(Then.Store.Volume);
+	SetMusicVolume(Then.Store.Music);
+	SetBrightness(Then.Store.Brightness);
+	ApplyRenderScale();
+	UE_LOG(LogChaosImpact, Log, TEXT("Settings not saved: put back as they were"));
 }

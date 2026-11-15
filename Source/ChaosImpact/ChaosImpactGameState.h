@@ -398,6 +398,13 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
 	FChaosImpactMatchRules Rules;
 
+	/**
+	 * The battle music (UChaosImpactMusic's battle songs, in turn), picked by the host as each match is set up: every
+	 * machine of an online room plays the same one (each from its own start). INDEX_NONE: not picked.
+	 */
+	UPROPERTY(Replicated)
+	int32 BattleSong = INDEX_NONE;
+
 	UPROPERTY(Replicated)
 	FVector_NetQuantize StageCenter = FVector::ZeroVector;
 

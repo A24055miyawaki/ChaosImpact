@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ChaosImpactSettings.h"
 #include "RPGNavigation.generated.h"
 
 class ARPGPrototypeCharacter;
@@ -44,12 +45,13 @@ namespace RPGNav
 
 namespace RPGMap
 {
+	// Device: what the player plays with now; the key hints are in its names only (ChaosImpactHints).
 	/** The minimap in the top right corner (design units: the HUD's W x H). */
-	void PaintMini(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, bool bPad);
+	void PaintMini(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, EChaosImpactDevice Device);
 	/** The surroundings over the middle of the screen, see-through, moving with the player (who plays on). */
-	void PaintNearby(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, bool bPad);
+	void PaintNearby(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, EChaosImpactDevice Device);
 	/** The whole map over the screen, half see-through. */
-	void PaintFull(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, bool bPad);
+	void PaintFull(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, EChaosImpactDevice Device);
 }
 
 /**

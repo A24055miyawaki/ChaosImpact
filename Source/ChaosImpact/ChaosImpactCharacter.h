@@ -32,6 +32,7 @@ class UChaosImpactTackleComponent;
 enum class EChaosImpactNovaPart : uint8;
 class AChaosImpactTornado;
 class AChaosImpactHook;
+class AChaosImpactGadget;
 class AChaosImpactHazardZone;
 class UChaosImpactPuppetComponent;
 enum class EChaosImpactBallFlightMode : uint8;
@@ -136,7 +137,7 @@ public:
 	{
 		return ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, Slot);
 	}
-	uint8 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
+	uint16 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
 	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
 	virtual void RequestBallSwap();
 	/** 訓練場's filming: this player's aim and actions come from the script, not the keys and the mouse. */
@@ -188,6 +189,12 @@ public:
 	 * and how wide an area it covers there (a nova: its blast; a snowball: its size). False when it would fly off.
 	 */
 	bool PredictThrowLanding(float ChargeAlpha, FVector& OutGround, float& OutRadius) const;
+	/** The ball in hand's flight if thrown now: where it first touches the stage (its centre), and the path (OutArc). */
+	bool PredictThrowContact(float ChargeAlpha, FVector& OutContact, TArray<FVector>* OutArc = nullptr) const;
+	/** A barrier ball in hand: the floor its wall would stand on and the way it would face (the throw), and the path. */
+	bool PredictBarrierPlacement(float ChargeAlpha, FVector& OutFloor, FVector& OutHeading, TArray<FVector>* OutArc = nullptr) const;
+	/** Tests: whether the barrier preview is showing. */
+	bool IsBarrierPreviewShown() const;
 	/** Selects a nova's ground target. The point is clamped and projected onto the playable stage. */
 	bool SetNovaTargetPoint(const FVector& WorldPoint);
 	bool HasNovaTargetPoint() const { return bNovaTargetValid; }
@@ -324,6 +331,9 @@ public:
 	/** Client: this player's own screen saw Attacker's tackle (started at Started) reach it; the server checks it. */
 	UFUNCTION(Server, Reliable)
 	void ServerReportTackleHit(AChaosImpactCharacter* Attacker, double Started);
+	/** Client: this player's own screen saw Attacker's rolled snowball run it over; the server checks and applies it. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportSnowRunOver(AChaosImpactCharacter* Attacker);
 	/** Client: this player's own screen saw a burst catch it (not dashing there); the server checks and applies it. */
 	UFUNCTION(Server, Reliable)
 	void ServerReportBlastHit(AChaosImpactHazardZone* Zone);
@@ -358,11 +368,31 @@ public:
 	void SetStageCameraScale(const float Scale) { StageCameraScale = FMath::Max(Scale, 0.1f); }
 	/** Flying to its own anchor on its chain (where this character is moved). */
 	bool IsAnchorZipping() const { return bAnchorZipping; }
+	/** Every machine: flying along its anchor's line now (the trail shows; it rams whoever it meets). */
+	bool IsAnchorZipShown() const { return bAnchorZipShown; }
+	/** Server: this character, flying on its anchor, rams Victim (1 damage, knocked along; once a flight). False if not now. */
+	bool TryAnchorRam(AChaosImpactCharacter* Victim, bool bReported);
+	/** How far past the flyer's body a ram reaches (cm). */
+	static constexpr float AnchorRamReach = 40.0f;
 	/** Where the chain of this character's hook starts on this screen (the right palm). False when not drawn. */
 	bool GetHookHandLocation(FVector& OutLocation) const;
 	/** Client: this player's own screen saw a hook catch it; the server checks and applies the hit. */
 	UFUNCTION(Server, Reliable)
 	void ServerReportHookHit(AChaosImpactHook* Hook);
+	/** Client: this player's own screen was in a mine's blast; the server checks and applies it. */
+	void ReportGadgetBlastFromClient(AChaosImpactGadget* Gadget) { ServerReportGadgetBlast(Gadget); }
+	UFUNCTION(Server, Reliable)
+	void ServerReportGadgetBlast(AChaosImpactGadget* Gadget);
+	/** Server: this character's swap ball struck Other: the two change places (feet on each other's floor). False if not now. */
+	bool SwapPlacesWith(AChaosImpactCharacter* Other);
+	/** Server: how many times this character's swap balls have changed its place (the dojo counts them). */
+	int32 GetSwapPlacesCount() const { return SwapPlacesCount; }
+	/** Every machine: the blow of someone flying on an anchor meeting this character (its sound). */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastAnchorRam(FVector_NetQuantize At);
+	/** Every machine: the flash at both ends of a swap. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastSwapShown(FVector_NetQuantize From, FVector_NetQuantize To);
 	virtual bool IsMoveInputIgnored() const override;
 	static constexpr float WindCarrySeconds = 1.1f;
 	/** Client: this player's own screen touched a pickup; predicted now, confirmed by the server. */
@@ -468,7 +498,20 @@ protected:
 	void ServerStartCharge();
 	UFUNCTION(Server, Reliable)
 	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
-		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget);
+		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget, uint8 Sequence);
+	/**
+	 * The same throw sent beside it on the quick way (it may be lost; the reliable one above is resent, a round trip
+	 * later on a lossy line). Whichever arrives first is the throw: this one only when it is the next in order and the
+	 * hand here holds what the thrower's screen threw (ExpectedCount, ExpectedType), else the reliable one is waited for.
+	 */
+	UFUNCTION(Server, Unreliable)
+	void ServerReleaseThrowEarly(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
+		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget, uint8 Sequence, uint8 ExpectedCount, uint8 ExpectedType);
+	void HandleReleaseThrow(float ChargeAlpha, const FVector& Aim, const FVector& ClientLocation, const FVector& ClientNovaTarget,
+		bool bHasClientNovaTarget);
+	/** The owner's machine: the number of its last throw. The host: the last one carried out (0: none yet). */
+	uint8 ThrowSequenceSent = 0;
+	uint8 ThrowSequenceDone = 0;
 	UFUNCTION(Server, Reliable)
 	void ServerStartDash(FVector_NetQuantizeNormal Direction);
 	UFUNCTION(Server, Unreliable)
@@ -499,6 +542,12 @@ protected:
 	void ClientShowKnockout(const FString& VictimName);
 	UFUNCTION(Server, Reliable)
 	void ServerReportBallHit(AChaosImpactBall* Ball, FVector_NetQuantize HitLocation);
+	/** The same report on the quick way (it may be lost): a ball's hit is counted once, whichever arrives first. */
+	UFUNCTION(Server, Unreliable)
+	void ServerReportBallHitEarly(AChaosImpactBall* Ball, FVector_NetQuantize HitLocation);
+	void HandleReportedBallHit(AChaosImpactBall* Ball, const FVector& HitLocation);
+	/** Server: the balls this player has reported being hit by (each once), and when. */
+	TMap<TWeakObjectPtr<AChaosImpactBall>, double> HandledBallReports;
 	/** Server moved this player (respawn, start point); the owner's trusted position must follow. */
 	UFUNCTION(Client, Reliable)
 	void ClientTeleportTo(FVector_NetQuantize Location, FRotator Rotation);
@@ -506,13 +555,13 @@ protected:
 	void ServerClaimPickup(AChaosImpactBall* Ball);
 	/** Answer to a pickup claimed from this player's screen; a refusal adopts the server's ball count. */
 	UFUNCTION(Client, Reliable)
-	void ClientPickupResolved(bool bAccepted, int32 ServerBallCount, uint8 ServerBallTypes, AChaosImpactBall* Ball);
+	void ClientPickupResolved(bool bAccepted, int32 ServerBallCount, uint16 ServerBallTypes, AChaosImpactBall* Ball);
 	/** Answer to a throw released on this player's screen; a refusal also removes the preview. */
 	UFUNCTION(Client, Reliable)
-	void ClientThrowResolved(bool bAccepted, int32 ServerBallCount, uint8 ServerBallTypes);
+	void ClientThrowResolved(bool bAccepted, int32 ServerBallCount, uint16 ServerBallTypes);
 	/** A server-side change of this player's ball count (elimination, respawn, match start). */
 	UFUNCTION(Client, Reliable)
-	void ClientBallCountReset(int32 ServerBallCount, uint8 ServerBallTypes);
+	void ClientBallCountReset(int32 ServerBallCount, uint16 ServerBallTypes);
 	UFUNCTION(Server, Reliable)
 	void ServerSwapBalls();
 	UFUNCTION(Server, Reliable)
@@ -522,7 +571,7 @@ protected:
 	void ServerCancelCharge();
 	/** Answer to a swap made on this player's screen; resolves it in the same ordered queue as pickups and throws. */
 	UFUNCTION(Client, Reliable)
-	void ClientSwapResolved(int32 ServerBallCount, uint8 ServerBallTypes);
+	void ClientSwapResolved(int32 ServerBallCount, uint16 ServerBallTypes);
 	/** Stamina is owned by each player's own machine; the server only sends changes it causes. */
 	UFUNCTION(Client, Reliable)
 	void ClientAddStamina(float Amount);
@@ -660,7 +709,7 @@ protected:
 
 	/** EChaosImpactBallType per carried slot, packed by ChaosImpactBallTypes::Pack; slot 0 is thrown first. */
 	UPROPERTY(VisibleInstanceOnly, ReplicatedUsing=OnRep_CarriedBallCount, Category="Chaos Impact|Ball Inventory")
-	uint8 CarriedBallTypes = 0;
+	uint16 CarriedBallTypes = 0;
 
 	/** Set by the game mode when a CPU is spawned, so every machine can label it. */
 	UPROPERTY(Replicated)
@@ -697,6 +746,37 @@ protected:
 	float BaseMaxWalkSpeed = 0.0f;
 	/** The right-hand snowball is held up over the head (a spirit bomb), grown, slowly turning. */
 	void UpdateSnowRollPresentation();
+public:
+	/**
+	 * The right-hand snowball being rolled along the ground in front (not carried in the hand, not lifted for a throw):
+	 * its centre and radius. bShown: where this screen draws its carrier (else where it really is).
+	 */
+	bool GetRolledSnowball(bool bShown, FVector& OutCenter, float& OutRadius) const;
+	/** Whether Victim (standing where it is here) is under this character's rolled snowball. */
+	bool IsUnderRolledSnowball(const AChaosImpactCharacter* Victim, bool bShown) const;
+	/** Server: Victim is run over by this character's rolled snowball (1 damage, knocked away). False if not now. */
+	bool TryRunOverWithSnowball(AChaosImpactCharacter* Victim, bool bReported);
+	/** Rolling a snowball faster than this (cm/s) runs people over. */
+	static constexpr float SnowRunOverMinSpeed = 140.0f;
+	/** The same person is run over at most once in this long. */
+	static constexpr float SnowRunOverCooldownSeconds = 1.0f;
+	/** Running someone over breaks the snowball up on this many (one: the first run-over is its last). */
+	static constexpr int32 SnowRunOverBreakHits = 1;
+	/** How big (growth 0-1) a snowball can grow again after each run-over (none, one, two). */
+	static float GetSnowGrowthCap(int32 Hits) { return Hits <= 0 ? 1.0f : Hits == 1 ? 0.66f : 0.33f; }
+	/** Tests: a carried snowball's size, and how many have been run over with it. */
+	void SetSnowGrowthForTests(const int32 Slot, const float Growth) { SetSlotSnowGrowth(Slot, Growth); }
+	int32 GetSnowRunOverHits(const int32 Slot) const { return Slot >= 0 && Slot < 2 ? SnowRunOverHits[Slot] : 0; }
+protected:
+	/** Every machine: a rolled snowball runs opponents over (the host judges its own and CPUs, a guest its own player). */
+	void UpdateSnowRunOver();
+	TMap<TWeakObjectPtr<AChaosImpactCharacter>, double> SnowRunOverAt;
+	TMap<TWeakObjectPtr<AChaosImpactCharacter>, double> SnowRunOverReportedAt;
+	/** Server: how many each carried snowball has run over (it shrinks each time, breaking on the third). */
+	int32 SnowRunOverHits[2] = {0, 0};
+	/** Every screen: the snowball bursts where it ran someone over (bBroke: it broke up entirely). */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastSnowRunOver(FVector_NetQuantize At, float Scale, bool bBroke);
 	float SnowRollBob = 0.0f;
 
 	UPROPERTY(Transient)
@@ -746,6 +826,10 @@ protected:
 	TObjectPtr<UMaterialInstanceDynamic> HeldHookMaterial;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldAnchorMaterial;
+	/** The newer kinds' (スワップ, バリア, マイン), made when first held. */
+	UPROPERTY(Transient)
+	TMap<EChaosImpactBallType, TObjectPtr<UMaterialInstanceDynamic>> HeldKindMaterials;
+	int32 SwapPlacesCount = 0;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> HeldPrisonMaterial;
 	UPROPERTY(Transient)
@@ -855,6 +939,25 @@ protected:
 	EChaosImpactBallType LandingPreviewType = EChaosImpactBallType::Normal;
 	float LandingPreviewRadius = 0.0f;
 
+	/**
+	 * Charging a barrier ball, for this player only: its flight as a dashed line and the wall as it will stand where it
+	 * comes down (the throw puts it just there).
+	 */
+	void UpdateBarrierPreview();
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> BarrierPreviewLines;
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> BarrierPreviewPane;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BarrierPreviewLineMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BarrierPreviewPaneMaterial;
+	/** The top-down camera moves over toward where the barrier will stand, so it is in view. */
+	FVector BarrierCameraLead = FVector::ZeroVector;
+	/** Server: where a guest's own preview had its barrier (sent with the throw). */
+	FVector PendingBarrierClientFloor = FVector::ZeroVector;
+	bool bPendingBarrierClientFloor = false;
+
 	/** Both arms raised over the head (charging a nova, lifting a big snowball), 0-1. */
 	float ArmsRaisedWeight = 0.0f;
 	/** Drive ball poses: cupped in both hands while charged, then the arm reaching after it (see the puppet). */
@@ -885,7 +988,7 @@ protected:
 	bool bSoundChargeFull = false;
 	float SoundFallSpeed = 0.0f;
 	int32 SoundBallCount = -1;
-	uint8 SoundBallTypes = 0;
+	uint16 SoundBallTypes = 0;
 	float SoundHealth = -1.0f;
 	/** A nova swelling up over the head hums as it grows. */
 	UPROPERTY(Transient)
@@ -901,6 +1004,9 @@ protected:
 	void PlayHitFeel(bool bKnockout);
 	float FovKick = 0.0f;
 	float FovKickVelocity = 0.0f;
+	/** Over the shoulder, charging: the view narrows a little to aim (sprung in and out). */
+	float ShoulderFovOffset = 0.0f;
+	float ShoulderFovVelocity = 0.0f;
 	float BaseFieldOfView = -1.0f;
 	/** The charge of this screen's own last throw (how hard the camera kicks and the throw whooshes). */
 	float FeelThrowCharge = 0.0f;
@@ -1102,6 +1208,29 @@ protected:
 	float ZipDuration = 0.0f;
 	void UpdateAnchorZip(float DeltaSeconds);
 	void EndAnchorZip(bool bArrived);
+	/** Flying on its anchor, as every machine sees (the flyer's machine moves it and says so through the host). */
+	UPROPERTY(Replicated)
+	bool bAnchorZipShown = false;
+	void SetAnchorZipShown(bool bOn);
+	UFUNCTION(Server, Reliable)
+	void ServerSetAnchorZipShown(bool bOn);
+	/** Client: this screen's player was rammed by Attacker flying on its anchor; the host checks it. */
+	UFUNCTION(Server, Reliable)
+	void ServerReportAnchorRam(AChaosImpactCharacter* Attacker);
+	/** Every machine: the host rams the people it judges, a guest reports its own player, every screen draws the trail. */
+	void UpdateAnchorRam(float DeltaSeconds);
+	void UpdateAnchorZipPresentation();
+	/** Server: who this flight has rammed already, where it was last checked, when it ended (late reports). */
+	TSet<TWeakObjectPtr<AChaosImpactCharacter>> AnchorRamHit;
+	FVector AnchorRamLast = FVector::ZeroVector;
+	bool bAnchorRamTracked = false;
+	double AnchorZipEndedAt = -100.0;
+	/** A guest's own player: the flyers it has reported ramming it (until they land). */
+	TSet<TWeakObjectPtr<AChaosImpactCharacter>> AnchorRamReported;
+	/** The trail's effect, and when its next pieces are due. */
+	TWeakObjectPtr<class AChaosImpactFxKit> ZipFx;
+	double ZipFxNextAt = 0.0;
+	bool bZipFxWasOn = false;
 	float HookSpinWeight = 0.0f;
 	float HookSpinAngle = 0.0f;
 	float HookChainWeight = 0.0f;
@@ -1247,6 +1376,9 @@ protected:
 	 */
 	void UpdatePresentationLead(float DeltaSeconds);
 	static constexpr float MaxPresentationLeadSeconds = 0.4f;
+	/** ...and for a slow line (a round trip of a second): led by up to this long and this far. */
+	static constexpr float SlowLinePresentationLeadSeconds = 0.65f;
+	static constexpr float SlowLinePresentationLeadDistance = 420.0f;
 	/** How much of a remote player's round trip their drawn body is led ahead by. */
 	static constexpr float PresentationLeadShareOfPing = 0.3f;
 	/** Host, online: a CPU's own recent path (GetPastLocation). */
@@ -1257,6 +1389,32 @@ protected:
 	int32 ShownPaintKey = 0;
 	TWeakObjectPtr<UChaosImpactPuppetComponent> ShownPaintOn;
 	static constexpr float MaxPresentationLeadDistance = 260.0f;
+	/**
+	 * Online, a rough line: the news of where another player is comes in bunches (nothing for a third of a second, then
+	 * several at once), which showed as stopping and lurching. Each position is kept with the time it was true at its
+	 * sender (the player's own move time on the host; the host's time on a guest), and the body is drawn from them a
+	 * little behind, by as much as the line has been late lately: evenly, as it really moved. A steady line is not held
+	 * back at all.
+	 */
+	struct FNetPathSample
+	{
+		double SourceTime = 0.0;
+		FVector Location = FVector::ZeroVector;
+	};
+	TArray<FNetPathSample> NetPath;
+	double NetPathLastSource = -1.0;
+	/** This machine's clock less the sender's, at the quickest delivery seen (the line's steady delay). */
+	double NetPathClockOffset = 0.0;
+	bool bNetPathClockValid = false;
+	/** How late the news has been running lately beyond that (falls back slowly), and how far behind it is drawn now. */
+	float NetPathLateness = 0.0f;
+	float NetPathDelay = 0.0f;
+	FVector PresentationBufferWorld = FVector::ZeroVector;
+	void UpdateNetPathBuffer(float DeltaSeconds, bool bDrawnFromNetwork);
+	static constexpr float MaxNetPathDelay = 0.35f;
+	/** Host: its clock when this character last moved, sent with its position (a guest's buffer orders by it). */
+	UPROPERTY(Replicated)
+	float NetPathServerTime = 0.0f;
 	static constexpr float PresentationLeadBlendSpeed = 9.0f;
 	/** The fastest the lead may swing round (cm per second). */
 	static constexpr float MaxPresentationLeadChangeSpeed = 500.0f;
@@ -1282,10 +1440,10 @@ protected:
 	 */
 	TArray<int8> PendingBallActions;
 	int32 ServerAnsweredBallCount = 0;
-	uint8 ServerAnsweredBallTypes = 0;
+	uint16 ServerAnsweredBallTypes = 0;
 	/** Pickups are stored as 1 + EChaosImpactBallType, throws as -1, swaps of the two hands as -2. */
 	void RefreshPredictedBallCount();
-	void ResolveOldestBallAction(int32 ServerBallCount, uint8 ServerBallTypes);
+	void ResolveOldestBallAction(int32 ServerBallCount, uint16 ServerBallTypes);
 	int32 GetPendingPickupCount() const;
 	/** Client: for each pickup still waiting for its answer (oldest first), whether it was contested. */
 	TArray<bool> PendingPickupContested;

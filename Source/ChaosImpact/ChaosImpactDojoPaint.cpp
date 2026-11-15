@@ -2,6 +2,7 @@
 
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactDojoVideo.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSuddenDeathZone.h"
@@ -123,14 +124,18 @@ namespace
 		return Out;
 	}
 
+	/** The dojo's decide and back buttons, named as this player's device has them (a Switch controller with "confirm on the
+	 *  right" on swaps the bottom and right buttons; the keyboard decides with Enter and goes back with BackSpace). */
 	FString DojoConfirmKey(const AChaosImpactPlayerController* Controller)
 	{
-		return Controller && Controller->IsUsingGamepad() ? FString(TEXT("A")) : FString(TEXT("Enter"));
+		const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller);
+		return ChaosImpactHints::Key(Device, ChaosImpactHints::ConfirmKey(Device), TEXT("Enter"));
 	}
 
 	FString DojoBackKey(const AChaosImpactPlayerController* Controller)
 	{
-		return Controller && Controller->IsUsingGamepad() ? FString(TEXT("B")) : FString(TEXT("BackSpace"));
+		const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller);
+		return ChaosImpactHints::Key(Device, ChaosImpactHints::BackKey(Device), TEXT("BackSpace"));
 	}
 
 	// ----------------------------------------------------------------------------------------------- The pictures
@@ -511,12 +516,12 @@ void AChaosImpactDojo::PaintSlides(const FPainter& P, const float W, const float
 		const FString Next = bLast ? TEXT("課題へ") : TEXT("つぎへ");
 		X -= HudMeasure(Next, 24.0f * S) ;
 		HudAbove(Foot, 2).Text(Next, X, FY, 24.0f * S, WithAlpha(bLast ? Gold : Paper, 0.75f + 0.25f * Pulse), ETextAlign::Left, TEXT("Black"));
-		const FString Key = Viewer && Viewer->IsUsingGamepad() ? TEXT("A") : TEXT("Enter");
+		const FString Key = DojoConfirmKey(Viewer);
 		X -= DojoKeyCapWidth(Key, 17.0f * S) + 10.0f * S;
 		DojoKeyCap(HudAbove(Foot, 2), X, FY + 2.0f * S, Key, 17.0f * S);
 		if (Slide > 0)
 		{
-			const FString BackKey = Viewer && Viewer->IsUsingGamepad() ? TEXT("B") : TEXT("BackSpace");
+			const FString BackKey = DojoBackKey(Viewer);
 			const float BX = PX + 48.0f * S;
 			const float CapW = DojoKeyCap(HudAbove(Foot, 2), BX, FY + 2.0f * S, BackKey, 15.0f * S);
 			HudAbove(Foot, 2).Text(TEXT("もどる"), BX + CapW + 10.0f * S, FY + 2.0f * S, 20.0f * S, WithAlpha(Paper, 0.7f), ETextAlign::Left, TEXT("Black"));
@@ -657,11 +662,11 @@ void AChaosImpactDojo::PaintTask(const FPainter& P, const AChaosImpactPlayerCont
 			FVector2D(BX, BY + 58.0f * S)};
 		HudPoly(Card, HudInflate(Button, (4.0f + 6.0f * Pulse) * S), SolidFill(WithAlpha(Accent, 0.2f + 0.25f * Pulse)), 1);
 		HudShard(HudAbove(Card, 1), Button, MakeFill(Accent * 1.1f, Accent * 0.55f), 2.5f, FVector2D(4.0, 5.0), Paper);
-		const FString Key = Viewer && Viewer->IsUsingGamepad() ? TEXT("A") : TEXT("Enter");
+		const FString Key = DojoConfirmKey(Viewer);
 		const float CapW = DojoKeyCap(HudAbove(Card, 6), BX + 34.0f * S, BY + 14.0f * S, Key, 17.0f * S);
 		HudAbove(Card, 6).Text(Missing.IsEmpty() ? TEXT("はじめる！") : TEXT("とばす"), BX + 46.0f * S + CapW, BY + 10.0f * S, 28.0f * S, Paper,
 			ETextAlign::Left, TEXT("Black"));
-		const FString BackKey = Viewer && Viewer->IsUsingGamepad() ? TEXT("B") : TEXT("BackSpace");
+		const FString BackKey = DojoBackKey(Viewer);
 		const float AgainY = BY + 72.0f * S;
 		const float AgainCap = DojoKeyCapWidth(BackKey, 13.0f * S);
 		const FString Again = TEXT("説明をもう一度");

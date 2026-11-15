@@ -1031,7 +1031,7 @@ void UChaosImpactResultsView::Start(const AChaosImpactGameState* Match, APlayerC
 	bRatingSoundPlayed = false;
 	RatingDigitTicks = 0;
 #if !UE_BUILD_SHIPPING
-	// Development: -CIDevRatedResults=duel|ffa|measuring|measured|pending|floor|void shows the rating card on a local match's
+	// Development: -CIDevRatedResults=duel|ffa|measuring|measured|pending|floor|void|streak shows the rating card on a local match's
 	// results, with that made-up answer coming a moment after the winner lands (screenshots of each).
 	if (FString Kind; FParse::Value(FCommandLine::Get(), TEXT("CIDevRatedResults="), Kind))
 	{
@@ -1049,6 +1049,14 @@ void UChaosImpactResultsView::Start(const AChaosImpactGameState* Match, APlayerC
 			Fake.Delta = Kind == TEXT("measured") ? 16 : Kind == TEXT("floor") ? -3 : Kind == TEXT("ffa") ? -12 : Kind == TEXT("measuring") ? 21 : 18;
 			Fake.After = Fake.Before + Fake.Delta;
 			Fake.bFloor = Kind == TEXT("floor");
+			// streak: the 5th 1v1 win in a row (the bonus doubling the gain).
+			if (Kind == TEXT("streak"))
+			{
+				Fake.Delta = 26;
+				Fake.After = Fake.Before + Fake.Delta;
+				Fake.Streak = 5;
+				Fake.StreakBonus = 2.0f;
+			}
 			// (Its answer comes in a moment after the winner has landed.)
 			Fake.ChangedAt = StartedAtReal + AChaosImpactPodiumStage::LandAt + 2.2;
 			Sessions->SetRateReportForTests(Fake);
@@ -1141,7 +1149,8 @@ namespace
 		namespace RP = ResultsPaint;
 		const int32 Count = RatingDigits(From, To);
 		const float Advance = RP::HudMeasure(TEXT("8"), Size, TEXT("BlackItalic")) * 1.04f;
-		const float LineH = Size * 1.18f;
+		// (Tall enough for the outlined italic digits' whole height: they were cut at the bottom.)
+		const float LineH = Size * 1.42f;
 		const FString FromText = FString::FromInt(FMath::Max(From, 0)).LeftPad(Count).Replace(TEXT(" "), TEXT("0"));
 		const FString ToText = FString::FromInt(FMath::Max(To, 0)).LeftPad(Count).Replace(TEXT(" "), TEXT("0"));
 		const FString ToShown = FString::FromInt(FMath::Max(To, 0));
@@ -1649,6 +1658,20 @@ int32 UChaosImpactResultsView::PaintRating(const FGeometry& Design, FSlateWindow
 	if (Report.bFloor)
 	{
 		U.Text(TEXT("下限 500"), W - 30.0f, 108.0f, 16.0f, RP::Muted, RP::ETextAlign::Right, TEXT("Bold"));
+	}
+	// 1v1: the win streak's bonus, a gold tag under the change from when it comes up.
+	if (Report.bDuel && Report.StreakBonus > 1.001f && Report.Delta > 0)
+	{
+		const float TagIn = RP::EaseOut((Anim - 0.15f) / 0.3f);
+		const FString Times = FMath::IsNearlyEqual(Report.StreakBonus, FMath::RoundToFloat(Report.StreakBonus))
+			? FString::Printf(TEXT("×%d"), FMath::RoundToInt(Report.StreakBonus)) : FString::Printf(TEXT("×%.1f"), Report.StreakBonus);
+		const FString Tag = FString::Printf(TEXT("%d連勝ボーナス %s"), Report.Streak, *Times);
+		const float TagSize = RP::HudFit(Tag, 16.0f, 230.0f, TEXT("Black"));
+		const float TagW = RP::HudMeasure(Tag, TagSize, TEXT("Black")) + 22.0f;
+		const RP::FPainter T{Space, Elements, Layer + 2, In * TagIn};
+		RP::RoundedBox(T, W - 30.0f - TagW, 104.0f + (1.0f - TagIn) * 8.0f, TagW, 30.0f, 9.0f, RP::Gold);
+		RP::FPainter{Space, Elements, Layer + 3, In * TagIn}.Text(Tag, W - 30.0f - TagW * 0.5f, 107.0f + (1.0f - TagIn) * 8.0f, TagSize, RP::Ink,
+			RP::ETextAlign::Center, TEXT("Black"));
 	}
 	(void)bSettled;
 	return Layer + 4;

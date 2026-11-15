@@ -1945,7 +1945,7 @@ void UChaosImpactSessionSubsystem::RefreshRecords()
 	});
 }
 
-void UChaosImpactSessionSubsystem::ReportDuelRecord(const FString& Result)
+void UChaosImpactSessionSubsystem::ReportDuelRecord(const FString& Result, TSharedPtr<FJsonObject> Detail)
 {
 	if (MatchmadeMode != EChaosImpactQueueMode::Duel)
 	{
@@ -1953,10 +1953,15 @@ void UChaosImpactSessionSubsystem::ReportDuelRecord(const FString& Result)
 	}
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetStringField(TEXT("result"), Result);
+	// (What the 対戦履歴 shows of it: the stage, the characters, the rounds.)
+	if (Detail.IsValid())
+	{
+		Message->SetObjectField(TEXT("detail"), Detail);
+	}
 	SendRecordReport(Message);
 }
 
-void UChaosImpactSessionSubsystem::ReportRandomRecord(const int32 Place, const int32 Of)
+void UChaosImpactSessionSubsystem::ReportRandomRecord(const int32 Place, const int32 Of, TSharedPtr<FJsonObject> Detail)
 {
 	if (MatchmadeMode != EChaosImpactQueueMode::Random)
 	{
@@ -1965,6 +1970,10 @@ void UChaosImpactSessionSubsystem::ReportRandomRecord(const int32 Place, const i
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetNumberField(TEXT("place"), Place);
 	Message->SetNumberField(TEXT("of"), Of);
+	if (Detail.IsValid())
+	{
+		Message->SetObjectField(TEXT("detail"), Detail);
+	}
 	SendRecordReport(Message);
 }
 
@@ -2039,6 +2048,10 @@ void UChaosImpactSessionSubsystem::SendRateReport()
 			Report.After = static_cast<int32>((*Rating)->GetNumberField(TEXT("after")));
 			Report.Delta = static_cast<int32>((*Rating)->GetNumberField(TEXT("delta")));
 			Report.bFloor = (*Rating)->GetBoolField(TEXT("floor"));
+			// (The relay says the win streak's bonus when there was one; an older relay says nothing.)
+			double Number = 0.0;
+			Report.Streak = (*Rating)->TryGetNumberField(TEXT("streak"), Number) ? static_cast<int32>(Number) : 0;
+			Report.StreakBonus = (*Rating)->TryGetNumberField(TEXT("streak_bonus"), Number) ? static_cast<float>(Number) : 1.0f;
 			Report.ChangedAt = FPlatformTime::Seconds();
 			UE_LOG(LogChaosImpact, Log, TEXT("Rating (%s) %d -> %d%s"), Report.bDuel ? TEXT("1v1") : TEXT("8 players"), Report.Before, Report.After,
 				Report.bMeasured ? TEXT("") : TEXT(" (measuring)"));

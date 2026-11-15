@@ -1898,7 +1898,7 @@ void AChaosImpactHazardZone::BuildNovaPresentation(FRandomStream& Stream)
 		Later.Scale = Stream.FRandRange(0.9f, 1.6f) * FMath::Clamp(Size, 0.6f, 1.8f);
 	}
 	// It lands spinning up.
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, Base, 0.8f, 1.4f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaLand, Base);
 }
 
 void AChaosImpactHazardZone::PlayNovaKit(const FVector& Center)
@@ -2103,7 +2103,7 @@ void AChaosImpactHazardZone::UpdateNovaPresentation(const float Age)
 	if (AnimTime >= ChaosImpactNova::FireBreakAt && !bNovaBroken)
 	{
 		bNovaBroken = true;
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharIceShatter, Center, 1.0f, 0.6f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaBreak, Center);
 	}
 }
 
@@ -2983,7 +2983,7 @@ void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 		{
 			bThawPlayed = true;
 			ChaosImpactBallTypes::PlayIceShatter(this, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f), 0.6f, 1.0f);
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharIceShatter, GetActorLocation(), 0.55f, 1.15f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::IceThaw, GetActorLocation());
 		}
 		for (const TWeakObjectPtr<USceneComponent>& Sheet : IceSheets)
 		{

@@ -4,6 +4,7 @@
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCustomColour.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPaintCache.h"
 #include "ChaosImpactPlayerController.h"
@@ -1468,6 +1469,8 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 	const FPainter P{Design, Elements, Layer + 1};
 	const FPainter Over{Design, Elements, Layer + 2};
 	const FPainter Top{Design, Elements, Layer + 3};
+	// Hints in the names of what is being played with right now.
+	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller.Get());
 	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, GaBack);
 	// A soft wash of colour behind, slowly drifting (the gallery's own light).
 	for (int32 Blob = 0; Blob < 3; ++Blob)
@@ -1497,7 +1500,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			GaText(P, GaTabNames[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 11.0f, 20.0f,
 				static_cast<float>(R.GetSize().X) - 16.0f, bOn ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
 		}
-		P.Text(TEXT("LB / RB ・ Q / E"), TabRect(0).Min.X, TabRect(0).Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
+		P.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E}")), TabRect(0).Min.X, TabRect(0).Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
 		{
 			const FBox2D R = FilterRect();
 			if (Focus == 103)
@@ -1510,7 +1513,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 				Paper, ETextAlign::Left, TEXT("Black"));
 			P.Text(TEXT("◀"), static_cast<float>(R.Min.X) + 14.0f, static_cast<float>(R.Min.Y) + 12.0f, 16.0f, WithAlpha(Paper, 0.7f), ETextAlign::Left, TEXT("Black"));
 			P.Text(TEXT("▶"), static_cast<float>(R.Max.X) - 14.0f, static_cast<float>(R.Min.Y) + 12.0f, 16.0f, WithAlpha(Paper, 0.7f), ETextAlign::Right, TEXT("Black"));
-			P.Text(TEXT("LT / RT ・ [ ]"), R.Min.X, R.Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
+			P.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{LT} / {RT}}{kb:[ ]}")), R.Min.X, R.Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
 		}
 		{
 			const FBox2D R = PostButtonRect();
@@ -1523,7 +1526,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			GaPen(P, FVector2D(R.Min.X + 40.0f, R.GetCenter().Y), 30.0f, Ink, GaPink);
 			GaText(P, TEXT("投稿する"), static_cast<float>(R.Min.X) + 70.0f, static_cast<float>(R.Min.Y) + 13.0f, 26.0f, 150.0f, Ink, ETextAlign::Left,
 				TEXT("Black"));
-			P.Text(TEXT("X / P"), static_cast<float>(R.Max.X) - 14.0f, static_cast<float>(R.Min.Y) + 22.0f, 13.0f, WithAlpha(Ink, 0.7f), ETextAlign::Right,
+			P.Text(ChaosImpactHints::Text(Device, TEXT("{X|P}")), static_cast<float>(R.Max.X) - 14.0f, static_cast<float>(R.Min.Y) + 22.0f, 13.0f, WithAlpha(Ink, 0.7f), ETextAlign::Right,
 				TEXT("Bold"));
 		}
 
@@ -1622,7 +1625,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 		{
 			GaRound(P, FBox2D(Middle - FVector2D(420.0, 70.0), Middle + FVector2D(420.0, 70.0)), 18.0f, GaCard);
 			GaText(Over, ErrorText, static_cast<float>(Middle.X), static_cast<float>(Middle.Y) - 34.0f, 24.0f, 780.0f, Paper, ETextAlign::Center, TEXT("Black"));
-			Over.Text(TEXT("Y / R：もう一度"), static_cast<float>(Middle.X), static_cast<float>(Middle.Y) + 14.0f, 17.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+			Over.Text(ChaosImpactHints::Text(Device, TEXT("{Y|R}：もう一度")),static_cast<float>(Middle.X), static_cast<float>(Middle.Y) + 14.0f, 17.0f, Muted, ETextAlign::Center, TEXT("Bold"));
 		}
 		else if (bListPending && Posts.IsEmpty())
 		{
@@ -1648,7 +1651,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 		const FBox2D Shown(FVector2D(110.0, 96.0), FVector2D(650.0, 816.0));
 		GaRound(Back, GaGrow(Shown, 8.0f), 22.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
 		GaPicture(P, StageBrush, Shown);
-		Over.Text(TEXT("ドラッグ・右スティック・Z / X で回す"), static_cast<float>(Shown.GetCenter().X), static_cast<float>(Shown.Max.Y) - 34.0f, 14.0f,
+		Over.Text(ChaosImpactHints::Text(Device, TEXT("{kb:ドラッグ・Z / X}{pad:{RStick}} で回す")),static_cast<float>(Shown.GetCenter().X), static_cast<float>(Shown.Max.Y) - 34.0f, 14.0f,
 			WithAlpha(Paper, 0.65f), ETextAlign::Center, TEXT("Bold"));
 		// Its details.
 		const float X = 720.0f;
@@ -1761,7 +1764,8 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 		}
 		if (PostChoices.Num() > GaPostRows)
 		{
-			P.Text(FString::Printf(TEXT("%d / %d　↑↓・ホイール"), PostChoice + 1, PostChoices.Num()), GaGridLeft + 560.0f, 128.0f, 14.0f, Muted, ETextAlign::Right,
+			P.Text(FString::Printf(TEXT("%d / %d　%s"), PostChoice + 1, PostChoices.Num(),
+				*ChaosImpactHints::Text(Device, TEXT("{kb:↑↓・ホイール}{pad:{DPad}↑↓}"))),GaGridLeft + 560.0f, 128.0f, 14.0f, Muted, ETextAlign::Right,
 				TEXT("Bold"));
 		}
 		// The work as it will be seen.
@@ -1782,7 +1786,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			GaRound(Back, R, 12.0f, FLinearColor(0.015f, 0.03f, 0.08f, 1.0f));
 			GaText(P, PostTitle.IsEmpty() ? FString(TEXT("（名前をつけてください）")) : PostTitle, static_cast<float>(R.Min.X) + 16.0f, static_cast<float>(R.Min.Y) + 16.0f,
 				24.0f, static_cast<float>(R.GetSize().X) - 32.0f, PostTitle.IsEmpty() ? Muted : Paper, ETextAlign::Left, TEXT("Black"));
-			P.Text(TEXT("A：名前を変える ・ Y / N"), static_cast<float>(R.Min.X), static_cast<float>(R.Max.Y) + 6.0f, 13.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			P.Text(ChaosImpactHints::Text(Device, TEXT("{Confirm}：名前を変える ・ {Y|N}")),static_cast<float>(R.Min.X), static_cast<float>(R.Max.Y) + 6.0f, 13.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 		}
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(Controller.Get());
 		P.Text(TEXT("投稿者"), 1150.0f, 330.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
@@ -1832,11 +1836,12 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			ETextAlign::Center, TEXT("Black"));
 	}
 	Back.Box(0.0f, GaBarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
-	const FString Guide = View == EView::List
-		? TEXT("A / Enter：見る　　LB RB / Q E：新着・人気・自分　　LT RT / [ ]：キャラ　　X / P：投稿する　　Y / R：更新　　B / Esc：もどる")
+	// (The keyboard posts with Enter on the button: no key of its own.)
+	const FString Guide = ChaosImpactHints::Text(Device, View == EView::List
+		? TEXT("{Confirm}：見る　　{pad:{LB} {RB}}{kb:Q E}：新着・人気・自分　　{pad:{LT} {RT}}{kb:[ ]}：キャラ　　{X|P}：投稿する　　{Y|R}：更新　　{Back}：もどる")
 		: View == EView::Detail
-		? TEXT("←→：ボタン　　A / Enter：決定　　LB RB / Q E：となりの作品　　右スティック・ドラッグ：回す　　B / Esc：一覧へ")
-		: TEXT("↑↓：カラーをえらぶ　　→：名前・投稿へ　　A / Enter：決定　　Y / N：名前　　START：投稿　　B / Esc：やめる");
+		? TEXT("←→：ボタン　　{Confirm}：決定　　{pad:{LB} {RB}}{kb:Q E}：となりの作品　　{pad:{RStick}}{kb:ドラッグ}：回す　　{Back}：一覧へ")
+		: TEXT("↑↓：カラーをえらぶ　　→：名前・投稿へ　　{Confirm}：決定　　{Y|N}：名前　　{pad:{Start}：投稿　　}{Back}：やめる"));
 	if (!Naming.IsOpen())
 	{
 		GaText(P, Guide, 800.0f, GaBarTop + 16.0f, 17.0f, 1560.0f, Paper, ETextAlign::Center);

@@ -314,7 +314,7 @@ void AChaosImpactHook::Tick(const float DeltaSeconds)
 				bLatchedHere = true;
 				SparkAt = FPlatformTime::Seconds();
 				SparkLocation = FVector(AnchorPoint);
-				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBounce, FVector(AnchorPoint), 0.7f, 0.8f);
+				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::AnchorStick, FVector(AnchorPoint));
 			}
 		}
 		else if (bBlockedHere)
@@ -352,9 +352,18 @@ void AChaosImpactHook::Tick(const float DeltaSeconds)
 		break;
 	}
 	}
-	if (Phase == EChaosImpactHookPhase::Out && !bLatchedHere && !bBlockedHere && !bAnchor)
+	// Out, and on the way back too while it has caught nothing yet: whatever it meets coming back is caught and reeled
+	// in just the same.
+	if (!bLatchedHere && !bAnchor)
 	{
-		CatchAlong(LastHead, Head);
+		if (Phase == EChaosImpactHookPhase::Out && !bBlockedHere)
+		{
+			CatchAlong(LastHead, Head);
+		}
+		else if (Phase == EChaosImpactHookPhase::Back || (Phase == EChaosImpactHookPhase::Out && bBlockedHere))
+		{
+			CatchAlong(LastHead, Head, true);
+		}
 	}
 	if (HasAuthority())
 	{
@@ -366,7 +375,7 @@ void AChaosImpactHook::Tick(const float DeltaSeconds)
 	}
 }
 
-void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
+void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const bool bReturning)
 {
 	UWorld* World = GetWorld();
 	if (!World || From.Equals(To, 0.5))
@@ -382,11 +391,19 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
 	}
 	FVector End = To;
 	bool bWall = false;
-	if (World->SweepSingleByObjectType(Wall, From, To, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+	if (!bReturning && World->SweepSingleByObjectType(Wall, From, To, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
 		FCollisionShape::MakeSphere(HeadRadius), Query))
 	{
 		End = Wall.Location;
 		bWall = true;
+	}
+	// ルビーラッシュ: every ruby lying along the stretch it flew out is gathered to its thrower.
+	if (HasAuthority() && !bAnchor)
+	{
+		if (AChaosImpactRubyField* Field = AChaosImpactRubyField::Get(World))
+		{
+			Field->CollectAlong(Cast<AChaosImpactCharacter>(SourcePawn), From, End, BallCatchRadius, BallCatchHeight);
+		}
 	}
 	// An opponent along the stretch it moved (the host's own players and CPUs judged here, a guest's on their screen).
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
@@ -423,7 +440,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
 			Character->ServerReportHookHit(this);
 			SparkAt = FPlatformTime::Seconds();
 			SparkLocation = Near;
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, Near, 1.0f, 0.75f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::HookCatch, Near);
 		}
 		return;
 	}
@@ -485,6 +502,8 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
 			if (!It->IsDefeated() && FVector::Dist(HookClosestOnSegment(It->GetActorLocation(), From, End), It->GetActorLocation()) <= 90.0f)
 			{
 				UGameplayStatics::ApplyDamage(*It, 1.0f, SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
+				// (Once: not again as it comes back past it.)
+				bLatchedHere = true;
 				MulticastLatch(It->GetActorLocation(), true);
 				Head = It->GetActorLocation();
 				GoBack();
@@ -500,7 +519,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
 		BlockedFrom = End;
 		if (GetNetMode() != NM_DedicatedServer)
 		{
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBounce, End, 0.45f, 1.7f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::HookClank, End);
 			SparkAt = FPlatformTime::Seconds();
 			SparkLocation = End;
 		}
@@ -513,7 +532,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To)
 
 void AChaosImpactHook::CatchCharacter(AChaosImpactCharacter* Victim)
 {
-	if (!HasAuthority() || Phase != EChaosImpactHookPhase::Out || !Victim)
+	if (!HasAuthority() || Phase == EChaosImpactHookPhase::Pull || !Victim)
 	{
 		return;
 	}
@@ -534,7 +553,7 @@ void AChaosImpactHook::CatchCharacter(AChaosImpactCharacter* Victim)
 		Victim->BeginHookPull(this);
 	}
 	ForceNetUpdate();
-	UE_LOG(LogChaosImpact, Log, TEXT("Hook caught %s"), *GetNameSafe(Victim->GetPlayerState()));
+	UE_LOG(LogChaosImpact, Log, TEXT("Hook caught %s (%s)"), *GetNameSafe(Victim->GetPlayerState()), *Victim->GetName());
 }
 
 bool AChaosImpactHook::TryApplyReportedHit(AChaosImpactCharacter* Victim)
@@ -544,12 +563,18 @@ bool AChaosImpactHook::TryApplyReportedHit(AChaosImpactCharacter* Victim)
 	{
 		return false;
 	}
-	// Still on its way out (or only just turned back), and the guest stood near its line when their screen saw it.
+	// Still on its way out, or on its way back with nothing caught yet, and the guest stood near its line (out, or back
+	// to the hand) when their screen saw it.
 	const double Now = ServerNow();
 	const bool bInTime = Phase == EChaosImpactHookPhase::Out
-		|| (Phase == EChaosImpactHookPhase::Back && !Caught && Now - PhaseServerTime < 0.35);
+		|| (Phase == EChaosImpactHookPhase::Back && !Caught && !bLatchedHere);
 	const FVector Tip = FVector(Origin) + FVector(Heading) * Length;
-	const float Off = static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Victim->GetActorLocation(), Origin, Tip), Victim->GetActorLocation()));
+	const FVector Body = Victim->GetActorLocation();
+	float Off = static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Body, Origin, Tip), Body));
+	if (Phase == EChaosImpactHookPhase::Back)
+	{
+		Off = FMath::Min(Off, static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Body, FVector(PhaseFrom), GetHand()), Body)));
+	}
 	const bool bAccepted = bInTime && Off <= CatchRadius + 60.0f + ReportTolerance;
 	UE_LOG(LogChaosImpact, Log, TEXT("Reported hook hit %s: victim=%s off=%.0f phase=%d"), bAccepted ? TEXT("accepted") : TEXT("rejected"),
 		*GetNameSafe(Victim->GetPlayerState()), Off, static_cast<int32>(Phase));
@@ -578,7 +603,7 @@ bool AChaosImpactHook::TryApplyReportedHit(AChaosImpactCharacter* Victim)
 
 void AChaosImpactHook::CatchBall(AChaosImpactBall* Ball)
 {
-	if (!HasAuthority() || Phase != EChaosImpactHookPhase::Out || !Ball || !Ball->CatchInWind())
+	if (!HasAuthority() || Phase == EChaosImpactHookPhase::Pull || !Ball || !Ball->CatchInWind())
 	{
 		return;
 	}
@@ -595,7 +620,7 @@ void AChaosImpactHook::CatchBall(AChaosImpactBall* Ball)
 
 void AChaosImpactHook::CatchPart(AChaosImpactNovaPart* Part)
 {
-	if (!HasAuthority() || Phase != EChaosImpactHookPhase::Out || !Part)
+	if (!HasAuthority() || Phase == EChaosImpactHookPhase::Pull || !Part)
 	{
 		return;
 	}
@@ -727,7 +752,7 @@ void AChaosImpactHook::ServerTick(const float DeltaSeconds)
 				const EChaosImpactBallType Kind = Ball->GetBallType();
 				if (Thrower && Thrower->GiveContestedPickup(Kind))
 				{
-					ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharPickup, Hand, 0.9f, 0.9f);
+					ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::HookGrab, Hand, 1.0f, 1.1f);
 					Ball->Destroy();
 					UE_LOG(LogChaosImpact, Log, TEXT("Hook brought a %s ball to %s's hand"), ChaosImpactBallTypes::GetInternalName(Kind),
 						*GetNameSafe(Thrower->GetPlayerState()));
@@ -777,7 +802,7 @@ void AChaosImpactHook::MulticastLatch_Implementation(const FVector_NetQuantize L
 	}
 	SparkAt = FPlatformTime::Seconds();
 	SparkLocation = Location;
-	ChaosImpactSfx::PlayAt(this, bOnCharacter ? EChaosImpactSfx::BallHit : EChaosImpactSfx::CharPickup, Location, 1.0f, bOnCharacter ? 0.75f : 0.8f);
+	ChaosImpactSfx::PlayAt(this, bOnCharacter ? EChaosImpactSfx::HookCatch : EChaosImpactSfx::HookGrab, Location);
 }
 
 void AChaosImpactHook::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -860,7 +885,7 @@ void AChaosImpactHook::BuildPresentation()
 	HeadLight->SetAttenuationRadius(260.0f);
 	HeadLight->SetCastShadows(false);
 	HeadLight->RegisterComponent();
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharThrow, Origin, 0.9f, bAnchor ? 1.6f : 1.35f);
+	ChaosImpactSfx::PlayAt(this, bAnchor ? EChaosImpactSfx::AnchorFire : EChaosImpactSfx::HookFire, Origin);
 }
 
 void AChaosImpactHook::UpdatePresentation(const float DeltaSeconds)

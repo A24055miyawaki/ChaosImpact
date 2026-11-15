@@ -4,6 +4,7 @@
 #include "InputCoreTypes.h"
 #include "Layout/Geometry.h"
 
+class APlayerController;
 class FSlateWindowElementList;
 class FChaosImpactNameEntryIme;
 class ITextInputMethodChangeNotifier;
@@ -65,6 +66,8 @@ public:
 	/** The player (character select) this is open for. */
 	int32 GetOwner() const { return Owner; }
 	const FString& GetText() const { return Text; }
+	/** Whose device the help line names (none: whatever was pressed last). */
+	void SetHintPlayer(const APlayerController* Player);
 
 	/** A key (menu-translated: A decides, B goes back). True when it was used. */
 	bool HandleKey(const FKey& Key, bool bRepeat);
@@ -134,6 +137,7 @@ private:
 	FString Text;
 	FString Title;
 	int32 Owner = 0;
+	TWeakObjectPtr<const APlayerController> HintPlayer;
 	int32 Page = 0;
 	int32 CursorRow = 0;
 	int32 CursorColumn = 0;

@@ -3,6 +3,7 @@
 
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactBodyPaint.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaintCache.h"
 #include "ChaosImpactPuppetComponent.h"
 #include "ChaosImpactBallSwitch.h"
@@ -223,8 +224,9 @@ void AChaosImpactPlayerController::BeginPlay()
 	}
 	TitleShownSince = FPlatformTime::Seconds();
 	// The title plays a CPU match behind it, started a moment after the title appears (-CINoTitleDemo: none).
-	bTitleDemoWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && !bSoloWorldMap && GetNetMode() == NM_Standalone
-		&& GetWorld() && !GetWorld()->URL.HasOption(TEXT("CIVersus=1")) && !FParse::Param(FCommandLine::Get(), TEXT("CINoTitleDemo"));
+	bTitleWorld = CurrentScreen == EChaosImpactScreen::Title && !bSoloMode && !bSoloWorldMap && GetNetMode() == NM_Standalone
+		&& GetWorld() && !GetWorld()->URL.HasOption(TEXT("CIVersus=1"));
+	bTitleDemoWorld = bTitleWorld && !FParse::Param(FCommandLine::Get(), TEXT("CINoTitleDemo"));
 	// A local VS level opens dark, behind the VS emblem the card ended on (see UpdateVersusReveal).
 	if (GetNetMode() == NM_Standalone && IsPrimaryLocalPlayerController() && GetWorld()
 		&& GetWorld()->URL.HasOption(TEXT("CIMatch=1")) && !bDemoPlay)
@@ -822,6 +824,37 @@ int32 AChaosImpactPlayerController::GetThisLocalPlayerIndex() const
 		? GameInstance->GetLocalPlayers().IndexOfByKey(GetLocalPlayer()) : 0;
 }
 
+void AChaosImpactPlayerController::SyncCursorToLastDevice()
+{
+	// Alone on the machine: the mouse cursor goes while a controller is used (in the menus too, whose presses never come
+	// through InputKey: a still cursor there took the choice back from the stick) and comes back with the mouse. With a
+	// mouse player and a controller player on one machine, the cursor stays theirs (untouched).
+	if (!bOnlineAnyInput || !IsLocalController())
+	{
+		return;
+	}
+	const bool bPadNow = ChaosImpactHints::IsPad(ChaosImpactHints::GetLastDevice());
+	if (bPadNow == bHintPadSeen)
+	{
+		return;
+	}
+	bHintPadSeen = bPadNow;
+	bLastInputGamepad = bPadNow;
+	if (bPadNow)
+	{
+		bShowMouseCursor = false;
+		bEnableClickEvents = false;
+		bEnableMouseOverEvents = false;
+	}
+	else if (!IsGameplayActive())
+	{
+		// (In play, the cursor is the camera's to decide: RefreshGameplayMouseCapture.)
+		bShowMouseCursor = true;
+		bEnableClickEvents = true;
+		bEnableMouseOverEvents = true;
+	}
+}
+
 bool AChaosImpactPlayerController::IsUsingGamepad() const
 {
 	if (bOnlineAnyInput)
@@ -1382,7 +1415,8 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 		StopRoomSearch();
 	}
 	// The title (with its demo match) lives in its own world: from a battle or solo stage, go back there.
-	if (NewScreen == EChaosImpactScreen::Title && !bTitleDemoWorld && GetNetMode() == NM_Standalone
+	// (Already in the title's world, demo or not: just the screen.)
+	if (NewScreen == EChaosImpactScreen::Title && !bTitleWorld && GetNetMode() == NM_Standalone
 		&& IsPrimaryLocalPlayerController())
 	{
 		OpenTitleLevel();
@@ -1568,7 +1602,8 @@ void AChaosImpactPlayerController::ToggleTrainingOverlay()
 {
 	// Unlike pause, this menu belongs only to P1. Its widget also spans the complete
 	// viewport, so it remains a single global prompt/menu during local multiplayer.
-	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || IsOnlineRoom() || IsVersusMatchWorld() || IsDojo())
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || IsOnlineRoom() || IsVersusMatchWorld() || IsDojo()
+		|| IsSearchingForRoom())
 	{
 		return;
 	}
@@ -1584,7 +1619,7 @@ void AChaosImpactPlayerController::ToggleTrainingOverlay()
 
 void AChaosImpactPlayerController::OpenTrainingOverlay()
 {
-	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget || IsOnlineRoom() || IsDojo()
+	if (!IsPrimaryLocalPlayerController() || !bTrainingMode || bTravelPending || !MenuWidget || IsOnlineRoom() || IsDojo() || IsSearchingForRoom()
 		|| (CurrentScreen != EChaosImpactScreen::Playing
 			&& CurrentScreen != EChaosImpactScreen::ControllerAssignment))
 	{
@@ -3121,6 +3156,20 @@ void AChaosImpactPlayerController::OpenLineCheck()
 	ShowMenuScreen(EChaosImpactScreen::LineCheck);
 }
 
+void AChaosImpactPlayerController::OpenOnlineHistory(const bool bDuel)
+{
+	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+	bBoardDuel = bDuel;
+	ShowMenuScreen(EChaosImpactScreen::OnlineHistory);
+}
+
+void AChaosImpactPlayerController::OpenOnlineRanking()
+{
+	PlayFlow = EChaosImpactPlayFlow::VersusOnline;
+	bBoardDuel = true;
+	ShowMenuScreen(EChaosImpactScreen::OnlineRanking);
+}
+
 void AChaosImpactPlayerController::OpenOnlineRecord()
 {
 	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
@@ -3427,8 +3476,15 @@ void AChaosImpactPlayerController::UpdateMatchmadeProgress()
 		const int32 Side = Match->Duel.SideOf(PlayerState);
 		if (Side != INDEX_NONE)
 		{
+			// The 対戦履歴's detail: the arena, this player's character and the rounds won each.
+			const AChaosImpactPlayerState* Own = GetPlayerState<AChaosImpactPlayerState>();
+			TSharedPtr<FJsonObject> Detail = MakeShared<FJsonObject>();
+			Detail->SetNumberField(TEXT("stage"), -1);
+			Detail->SetNumberField(TEXT("chara"), Own ? Own->CharacterIndex : 0);
+			Detail->SetNumberField(TEXT("color"), Own ? Own->ColourChoice : -1);
+			Detail->SetArrayField(TEXT("score"), {MakeShared<FJsonValueNumber>(Match->Duel.Wins[Side]), MakeShared<FJsonValueNumber>(Match->Duel.Wins[1 - Side])});
 			Sessions->ReportDuelRecord(Match->Duel.MatchWinner == INDEX_NONE ? TEXT("draw")
-				: Match->Duel.MatchWinner == Side ? TEXT("win") : TEXT("lose"));
+				: Match->Duel.MatchWinner == Side ? TEXT("win") : TEXT("lose"), Detail);
 		}
 	}
 	if (Match->Matchmade == EChaosImpactMatchmade::Random && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Results)
@@ -3442,7 +3498,27 @@ void AChaosImpactPlayerController::UpdateMatchmadeProgress()
 			{
 				Place += Other->Points > Own->Points ? 1 : 0;
 			}
-			Sessions->ReportRandomRecord(Place, Ranking.Num());
+			// The 対戦履歴's detail: the stage, this player's character, points and knockouts, and everyone's places.
+			TSharedPtr<FJsonObject> Detail = MakeShared<FJsonObject>();
+			Detail->SetNumberField(TEXT("stage"), Match->Rules.StageIndex);
+			Detail->SetNumberField(TEXT("chara"), Own->CharacterIndex);
+			Detail->SetNumberField(TEXT("color"), Own->ColourChoice);
+			Detail->SetNumberField(TEXT("points"), Own->Points);
+			Detail->SetNumberField(TEXT("kos"), Own->Knockouts);
+			TArray<TSharedPtr<FJsonValue>> Players;
+			for (const AChaosImpactPlayerState* Other : Ranking)
+			{
+				int32 Theirs = 1;
+				for (const AChaosImpactPlayerState* Ahead : Ranking)
+				{
+					Theirs += Ahead->Points > Other->Points ? 1 : 0;
+				}
+				Players.Add(MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeShared<FJsonValueString>(Other->GetPlayerName()),
+					MakeShared<FJsonValueNumber>(Other->CharacterIndex), MakeShared<FJsonValueNumber>(Other->ColourChoice), MakeShared<FJsonValueNumber>(Theirs),
+					MakeShared<FJsonValueNumber>(Other->Points), MakeShared<FJsonValueBoolean>(Other->IsABot())}));
+			}
+			Detail->SetArrayField(TEXT("players"), Players);
+			Sessions->ReportRandomRecord(Place, Ranking.Num(), Detail);
 		}
 	}
 }
@@ -3595,8 +3671,9 @@ void AChaosImpactPlayerController::OpenTrainingLevel(const bool bOnlineSearch, c
 	{
 		Viewport->SetForceDisableSplitscreen(false);
 	}
-	// From the title, the load is covered (a retry or a settings change in training just reloads).
-	if (bLoadingScreen && bTitleDemoWorld)
+	// From the title, the load is covered (a retry or a settings change in training just reloads). (The title's world, demo
+	// or not: -CINoTitleDemo left it uncovered.)
+	if (bLoadingScreen && bTitleWorld)
 	{
 		if (UChaosImpactLoadingSubsystem* Loading = UChaosImpactLoadingSubsystem::Get(this))
 		{
@@ -4961,6 +5038,7 @@ void AChaosImpactPlayerController::PreClientTravel(const FString& PendingURL, co
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+	SyncCursorToLastDevice();
 	// ペイント someone here is shown with but this machine does not have: fetched from the host, one set at a time.
 	if (FetchingPaint == 0 && !HasAuthority() && IsLocalController() && IsPrimaryLocalPlayerController())
 	{

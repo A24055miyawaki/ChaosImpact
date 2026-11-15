@@ -4,6 +4,7 @@
 #include "ChaosImpactDojo.h"
 #include "ChaosImpactDojoLessons.h"
 #include "ChaosImpactDojoVideo.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactScreen.h"
@@ -226,7 +227,9 @@ void UChaosImpactDojoMenu::Leave()
 bool UChaosImpactDojoMenu::HandleKeyDown(const FKeyEvent& Event)
 {
 	const FKey Key = Event.GetKey();
-	const bool bSwap = ChaosImpactSettings::IsSwitchConfirmRight();
+	// (Decide on the right only from a Switch controller with that option on.)
+	const bool bSwap = Key.IsGamepadKey() && ChaosImpactSettings::IsSwitchConfirmRight()
+		&& ChaosImpactSettings::DetectPadDeviceForInput(Event.GetInputDeviceId().GetId()) == EChaosImpactDevice::Switch;
 	if (Key == EKeys::Up || Key == EKeys::W || Key == EKeys::Gamepad_DPad_Up)
 	{
 		MoveSelection(-1);
@@ -356,7 +359,10 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 	const float In = EaseOut(FMath::Clamp(static_cast<float>(Now - OpenedAt) / 0.35f, 0.0f, 1.0f));
 	const FPainter Back{Design, Elements, Layer};
 	const FPainter P{Design, Elements, Layer + 4, In};
-	const bool bPad = Controller.IsValid() && Controller->IsUsingGamepad();
+	// The key caps in the names of what this player is holding (on a Switch controller with "confirm on the right" on, the
+	// bottom and right buttons swap: HandleKeyDown).
+	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller.Get());
+	const bool bSwap = Device == EChaosImpactDevice::Switch && ChaosImpactSettings::IsSwitchConfirmRight();
 	const FLinearColor Accent = Group.Color;
 
 	// ---- The backdrop: deep navy over the stage, the group's colour washing in from the right, slow stripes, its name huge.
@@ -453,8 +459,8 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		const float X = FMath::Lerp(A.Min.X, B.Min.X, F);
 		RoundedBox(HudAbove(P, 9), X + 18.0f, 214.0f, A.GetSize().X - 36.0f, 5.0f, 2.5f, Accent);
 		// The keys that change it, at either end.
-		MenuKeyCap(HudAbove(P, 9), DojoListX - 54.0f, 158.0f, bPad ? TEXT("LB") : TEXT("Q"), 14.0f);
-		MenuKeyCap(HudAbove(P, 9), TabRect(All.Num() - 1).Max.X + 12.0f, 158.0f, bPad ? TEXT("RB") : TEXT("E"), 14.0f);
+		MenuKeyCap(HudAbove(P, 9), DojoListX - 54.0f, 158.0f, ChaosImpactHints::Text(Device, TEXT("{LB|Q}")), 14.0f);
+		MenuKeyCap(HudAbove(P, 9), TabRect(All.Num() - 1).Max.X + 12.0f, 158.0f, ChaosImpactHints::Text(Device, TEXT("{RB|E}")), 14.0f);
 	}
 
 	// ---- The lessons: a card each, the chosen one lit with a highlight that glides to it.
@@ -619,7 +625,7 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 			FVector2D(S.Min.X, S.Max.Y)};
 		HudPoly(HudAbove(Card, 2), HudInflate(Button, 5.0f + 5.0f * Pulse), SolidFill(WithAlpha(Accent, 0.25f + 0.2f * Pulse)), 1);
 		HudShard(HudAbove(Card, 3), Button, MakeFill(Accent * 1.1f, Accent * 0.55f), 2.5f, FVector2D(4.0, 5.0), Paper);
-		const FString StartKey = bPad ? TEXT("A") : TEXT("Enter");
+		const FString StartKey = ChaosImpactHints::Key(Device, bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom, TEXT("Enter"));
 		const float CapW = MenuKeyCap(HudAbove(Card, 8), S.Min.X + 30.0f, S.Min.Y + 17.0f, StartKey, 15.0f);
 		const float StartSize = HudFit(TEXT("はじめる"), 24.0f, S.GetSize().X - CapW - 74.0f);
 		HudAbove(Card, 8).Text(TEXT("はじめる"), S.Min.X + 42.0f + CapW, S.Min.Y + (62.0f - StartSize * 1.38f) * 0.5f, StartSize, Paper, ETextAlign::Left,
@@ -630,7 +636,8 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 	{
 		const FBox2D B = BackRect();
 		RoundedBox(P, B.Min.X, B.Min.Y, B.GetSize().X, B.GetSize().Y, 12.0f, DojoCard);
-		const float CapW = MenuKeyCap(HudAbove(P, 2), B.Min.X + 16.0f, B.Min.Y + 12.0f, bPad ? TEXT("B") : TEXT("Esc"), 14.0f);
+		const float CapW = MenuKeyCap(HudAbove(P, 2), B.Min.X + 16.0f, B.Min.Y + 12.0f,
+			ChaosImpactHints::Key(Device, bSwap ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right, TEXT("Esc")), 14.0f);
 		HudAbove(P, 2).Text(TEXT("モード選択へ"), B.Min.X + 28.0f + CapW, B.Min.Y + 12.0f, 18.0f, WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Black"));
 		float X = B.Max.X + 30.0f;
 		const auto Guide = [&](const FString& Key, const FString& What)
@@ -639,8 +646,8 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 			HudAbove(P, 2).Text(What, X, B.Min.Y + 13.0f, 15.0f, WithAlpha(Paper, 0.6f), ETextAlign::Left, TEXT("Bold"));
 			X += HudMeasure(What, 15.0f, TEXT("Bold")) + 22.0f;
 		};
-		Guide(bPad ? TEXT("↑↓") : TEXT("W/S"), TEXT("えらぶ"));
-		Guide(bPad ? TEXT("LB/RB") : TEXT("Q/E"), TEXT("グループ"));
+		Guide(ChaosImpactHints::Text(Device, TEXT("{pad:{DPad}↑↓}{kb:W/S}")), TEXT("えらぶ"));
+		Guide(ChaosImpactHints::Text(Device, TEXT("{LB|Q}/{RB|E}")), TEXT("グループ"));
 	}
 	return Layer + 40;
 }

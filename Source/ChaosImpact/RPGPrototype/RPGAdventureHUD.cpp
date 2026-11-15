@@ -12,6 +12,7 @@
 #include "RPGWorldLayout.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactHints.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -89,8 +90,16 @@ int32 GiverMark(const ARPGPrototypeCharacter* P, int32 Giver)
 struct FQuestPanel
 {
 	const ARPGPrototypeCharacter* P = nullptr;
-	bool bPad = false;
-	const TCHAR* Key(const TCHAR* Keyboard, const TCHAR* Pad) const { return bPad ? Pad : Keyboard; }
+	const APlayerController* PC = nullptr;
+	/** What this player plays with now: every key hint is in its names only (keyboard, Xbox, PlayStation or Switch). */
+	EChaosImpactDevice Device = EChaosImpactDevice::KeyboardMouse;
+	/**
+	 * A key hint from a ChaosImpactHints template. The panels' keys (RPG input): decide {A|Enter} (the bottom button),
+	 * back {B|Esc} (the right one), up/down {pad:{DPad}↑↓}, track {Y|T}, tabs LB/RB or Q/E, the board's gift {LB|G}.
+	 */
+	FString Key(const TCHAR* Template) const { return ChaosImpactHints::Text(Device, Template); }
+	/** A tutorial's words with keys (RPGTutorial::Words). */
+	FString Words(const TCHAR* Template) const { return Template ? RPGTutorial::Words(PC, Template) : FString(); }
 };
 
 /** Fast travel: the colony and the rest beacons, the ones not lit yet greyed out (RPGFastTravel.cpp). */
@@ -155,10 +164,10 @@ void TravelPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		FString Why;
 		const bool bCan = Point.bVisited && P->CanFastTravel(&Why);
 		if (!bCan && Point.bVisited) { RPGUI::LabelFit(C, 1, Why, DX, QuestH - 112, DW, 14, RPGUI::Bad); }
-		RPGUI::Button(C, 1, DX, QuestH - 84, DW, 46, Point.bVisited ? TEXT("ここへ移動する") : TEXT("まだ移動できない"), QuestAct::Primary, bCan, bCan, M.Key(TEXT("Enter"), TEXT("決定")));
+		RPGUI::Button(C, 1, DX, QuestH - 84, DW, 46, Point.bVisited ? TEXT("ここへ移動する") : TEXT("まだ移動できない"), QuestAct::Primary, bCan, bCan, M.Key(TEXT("{A|Enter}")));
 	}
 	float FX = 20;
-	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("移動")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}};
+	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選択")}, {M.Key(TEXT("{A|Enter}")), TEXT("移動")}, {M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}};
 	for (const auto& Hint : Hints)
 	{
 		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, FX, QuestH - 30, 22);
@@ -230,10 +239,14 @@ void MembersPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		RPGUI::Label(C, 1, FString::Printf(TEXT("%.0fms"), Ping), QuestW - 44, RY + 12, 13, RPGUI::TextSub, ETextAlign::Right);
 	}
 	if (Members.IsEmpty()) { RPGUI::Label(C, 1, TEXT("（メンバーを読み込んでいます）"), QuestW * 0.5f, Y + 30, 16, RPGUI::TextDim, ETextAlign::Center); }
-	RPGUI::Label(C, 1, bOnline ? TEXT("同じ合言葉をタイトルで入れると、この世界に入れます（最大4人）。依頼はそれぞれのものです。") : TEXT("いっしょに遊ぶ人は、タイトルの人数か、空いたコントローラーの＋ボタンで加われます。"),
-		22, QuestH - 62, 13, RPGUI::TextDim);
+	// An empty controller joins with its menu button (Start): named as on this player's kind of controller, in general
+	// words for a keyboard player.
+	FString JoinButton = ChaosImpactHints::IsPad(M.Device) ? ChaosImpactSettings::GetKeyName(EKeys::Gamepad_Special_Right, M.Device) : FString(TEXT("スタート"));
+	if (!JoinButton.EndsWith(TEXT("ボタン"))) { JoinButton += TEXT("ボタン"); }
+	RPGUI::LabelFit(C, 1, bOnline ? FString(TEXT("同じ合言葉をタイトルで入れると、この世界に入れます（最大4人）。依頼はそれぞれのものです。"))
+		: FString::Printf(TEXT("いっしょに遊ぶ人は、タイトルの人数か、空いたコントローラーの%sで加われます。"), *JoinButton), 22, QuestH - 62, QuestW - 44, 13, RPGUI::TextDim);
 	float FX = 20;
-	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}};
+	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}};
 	for (const auto& Hint : Hints)
 	{
 		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, FX, QuestH - 30, 22);
@@ -286,10 +299,10 @@ void TrainingPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		if (Next.Boss >= 0) { Need(Next.Boss == 0 ? TEXT("暴走マグロ撃破") : TEXT("シマエナガ撃破"), (P->GetBossesBeaten() & (1 << Next.Boss)) != 0); }
 		Need(FString::Printf(TEXT("ルビー %d"), Next.Rubies), P->GetRubies() >= Next.Rubies);
 		if (Next.Shards > 0) { Need(FString::Printf(TEXT("欠片 %d"), Next.Shards), P->GetTuneShards() >= Next.Shards); }
-		RPGUI::Button(C, 1, QuestW - 264, Y + 96, 226, 46, TEXT("修行する"), bOn ? QuestAct::Primary : Action, true, P->CanLearnSkill(Which), bOn ? M.Key(TEXT("Enter"), TEXT("決定")) : FString());
+		RPGUI::Button(C, 1, QuestW - 264, Y + 96, 226, 46, TEXT("修行する"), bOn ? QuestAct::Primary : Action, true, P->CanLearnSkill(Which), bOn ? M.Key(TEXT("{A|Enter}")) : FString());
 	}
 	float FX = 20;
-	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("修行する")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}};
+	const TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選ぶ")}, {M.Key(TEXT("{A|Enter}")), TEXT("修行する")}, {M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}};
 	for (const auto& Hint : Hints)
 	{
 		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, FX, QuestH - 30, 22);
@@ -374,7 +387,7 @@ void AdventureMenuLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		RPGUI::Label(C, 1, Rows[Row].Key, X + 24, Y, 16, RPGUI::TextSub);
 		RPGUI::Label(C, 1, Rows[Row].Value, X + W - 24, Y, 16, RPGUI::TextMain, ETextAlign::Right, TEXT("Bold"));
 	}
-	MenuHints(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {M.Key(TEXT("Enter"), TEXT("A")), TEXT("決定")}, {M.Key(TEXT("Esc"), TEXT("B")), TEXT("閉じる")}});
+	MenuHints(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選ぶ")}, {M.Key(TEXT("{A|Enter}")), TEXT("決定")}, {M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}});
 }
 
 /** The adventure log: the record, places found, the colony. */
@@ -433,7 +446,7 @@ void AdventureLogLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	for (int32 Gift = 1; Gift <= RPGColony::MaxStage; ++Gift)
 	{ RPGUI::Wrap(C, 1, FString::Printf(TEXT("%d. %s"), Gift, RPGColony::StageGift(Gift)), PX + PW / 2 + 10, 160 + (Gift - 1) * 44, PW / 2 - 24, 12, Gift <= Stage ? RPGUI::Good : RPGUI::TextDim, 2, 17); }
 	RPGUI::Wrap(C, 1, TEXT("依頼の達成と、掲示板での寄付で発展する"), PX + PW / 2 + 10, CY - 2, PW / 2 - 24, 12, RPGUI::TextDim, 2, 17);
-	MenuHints(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("土地をめくる")}, {M.Key(TEXT("Esc"), TEXT("B")), TEXT("メニューへ")}});
+	MenuHints(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("土地をめくる")}, {M.Key(TEXT("{B|Esc}")), TEXT("メニューへ")}});
 }
 
 /** Tutorials to read again (and the controls to do again). */
@@ -464,12 +477,12 @@ void TutorialListLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	RPGUI::Label(C, 1, bSeen ? Chosen.Title : TEXT("？？？"), X + 20, 84, 22, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
 	if (bSeen)
 	{
-		RPGUI::Wrap(C, 1, Chosen.Body, X + 20, 128, W - 40, 16, RPGUI::TextMain, 8, 26);
-		if (Chosen.TryKeyboard) { RPGUI::Wrap(C, 1, FString(TEXT("やってみよう：")) + (M.bPad ? Chosen.TryPad : Chosen.TryKeyboard), X + 20, 350, W - 40, 15, RPGUI::Good, 2, 22); }
-		RPGUI::Button(C, 1, X + W - 220, 406, 200, 44, Chosen.Id == RPGTutorial::ControlsId ? TEXT("もう一度やる") : TEXT("表示する"), QuestAct::Primary, true, true, M.Key(TEXT("Enter"), TEXT("A")));
+		RPGUI::Wrap(C, 1, M.Words(Chosen.Body), X + 20, 128, W - 40, 16, RPGUI::TextMain, 8, 26);
+		if (Chosen.TryKeyboard) { RPGUI::Wrap(C, 1, FString(TEXT("やってみよう：")) + M.Words(ChaosImpactHints::IsPad(M.Device) ? Chosen.TryPad : Chosen.TryKeyboard), X + 20, 350, W - 40, 15, RPGUI::Good, 2, 22); }
+		RPGUI::Button(C, 1, X + W - 220, 406, 200, 44, Chosen.Id == RPGTutorial::ControlsId ? TEXT("もう一度やる") : TEXT("表示する"), QuestAct::Primary, true, true, M.Key(TEXT("{A|Enter}")));
 	}
 	else { RPGUI::Wrap(C, 1, TEXT("冒険の中で出会うと、ここで見返せるようになる。"), X + 20, 128, W - 40, 16, RPGUI::TextDim, 3, 26); }
-	MenuHints(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {M.Key(TEXT("Enter"), TEXT("A")), TEXT("見る・やる")}, {M.Key(TEXT("Esc"), TEXT("B")), TEXT("メニューへ")}});
+	MenuHints(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選ぶ")}, {M.Key(TEXT("{A|Enter}")), TEXT("見る・やる")}, {M.Key(TEXT("{B|Esc}")), TEXT("メニューへ")}});
 }
 
 void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
@@ -496,7 +509,7 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	if (Giver) { RPGUI::Chip(C, 1, Giver->Role, 80 + RPGUI::Measure(Giver->Name, 24, TEXT("Black")), 18, RPGUI::TextSub, 13); }
 	RPGUI::Button(C, 1, QuestW - 60, 10, 44, 34, TEXT("×"), QuestAct::Close);
 	// The board takes gifts for the colony.
-	if (P->QuestGiver == 0) { RPGUI::Button(C, 1, QuestW - 290, 10, 220, 34, TEXT("寄付 ◆200"), QuestAct::Donate, false, P->GetRubies() >= 200, M.Key(TEXT("G"), TEXT("LB"))); }
+	if (P->QuestGiver == 0) { RPGUI::Button(C, 1, QuestW - 290, 10, 220, 34, TEXT("寄付 ◆200"), QuestAct::Donate, false, P->GetRubies() >= 200, M.Key(TEXT("{LB|G}"))); }
 	const TArray<int32> List = P->QuestPanelList();
 	float ListTop = 66;
 	if (bJournal)
@@ -602,7 +615,7 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		// Buttons: what you can do with this quest here.
 		const float BY = QuestH - 84, BW = (DW - 10) * 0.5f;
 		const bool bHere = !bJournal && RPGQuests::Get(Index).Giver == P->QuestGiver;
-		const FString Ok = M.Key(TEXT("Enter"), TEXT("決定")), Back = M.Key(TEXT("Esc"), TEXT("戻る")), Track = M.Key(TEXT("T"), TEXT("上"));
+		const FString Ok = M.Key(TEXT("{A|Enter}")), Back = M.Key(TEXT("{B|Esc}")), Track = M.Key(TEXT("{Y|T}"));
 		if (S == ERPGQuestState::Offered && (bHere || !RPGQuests::ReportsToGiver(Index)))
 		{
 			// The accept step: take it on, or leave it for later.
@@ -622,9 +635,9 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 	}
 	// Footer.
 	float FX = 20;
-	TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("受ける／報告")}, {M.Key(TEXT("T"), TEXT("上")), TEXT("追跡")}};
-	if (bJournal) { Hints.Add({M.Key(TEXT("Q E"), TEXT("L R")), TEXT("タブ")}); }
-	Hints.Add({M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")});
+	TArray<TPair<FString, FString>> Hints{{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選択")}, {M.Key(TEXT("{A|Enter}")), TEXT("受ける／報告")}, {M.Key(TEXT("{Y|T}")), TEXT("追跡")}};
+	if (bJournal) { Hints.Add({M.Key(TEXT("{pad:{LB} {RB}}{kb:Q E}")), TEXT("タブ")}); }
+	Hints.Add({M.Key(TEXT("{B|Esc}")), TEXT("閉じる")});
 	for (const auto& Hint : Hints)
 	{
 		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, FX, QuestH - 30, 22);
@@ -639,8 +652,8 @@ void QuestPanelLayout(RPGUI::FCanvas& C, const FQuestPanel& M)
 		RPGUI::Panel(C, 2, QuestW * 0.5f - 260, QuestH * 0.5f - 90, 520, 180, RPGUI::EStyle::Panel, RPGUI::Highlight);
 		RPGUI::Label(C, 2, FString::Printf(TEXT("「%s」を受けますか？"), RPGQuests::Get(P->QuestSelection).Name), QuestW * 0.5f, QuestH * 0.5f - 66, 21, RPGUI::TextMain, ETextAlign::Center);
 		RPGUI::LabelFit(C, 2, FString(TEXT("報酬：")) + RPGQuests::RewardText(P->QuestSelection), QuestW * 0.5f, QuestH * 0.5f - 28, 480, 15, RPGUI::TextSub, ETextAlign::Center);
-		RPGUI::Button(C, 2, QuestW * 0.5f - 236, QuestH * 0.5f + 20, 220, 46, TEXT("やめておく"), QuestAct::ConfirmNo, false, true, M.Key(TEXT("Esc"), TEXT("戻る")));
-		RPGUI::Button(C, 2, QuestW * 0.5f + 16, QuestH * 0.5f + 20, 220, 46, TEXT("受ける"), QuestAct::ConfirmYes, true, true, M.Key(TEXT("Enter"), TEXT("決定")));
+		RPGUI::Button(C, 2, QuestW * 0.5f - 236, QuestH * 0.5f + 20, 220, 46, TEXT("やめておく"), QuestAct::ConfirmNo, false, true, M.Key(TEXT("{B|Esc}")));
+		RPGUI::Button(C, 2, QuestW * 0.5f + 16, QuestH * 0.5f + 20, 220, 46, TEXT("受ける"), QuestAct::ConfirmYes, true, true, M.Key(TEXT("{A|Enter}")));
 		C.bInModal = false;
 	}
 }
@@ -672,13 +685,15 @@ void URPGPrototypeHUD::PaintAdventureMap(const FGeometry& Geometry,FSlateWindowE
 	const float Scale=FMath::Min(Size.X/(Split?960.0f:1280.0f),Size.Y/(Split?600.0f:720.0f)); if(Scale<=0) { return; }
 	const float W=Size.X/Scale,H=Size.Y/Scale;
 	const FGeometry Design=ChaosImpactPaint::MakeAnchor(OwnerMenuGeometry(Geometry),0,0,Scale);
-	if(Player->IsMapOpen()) { RPGMap::PaintFull(Design,Elements,Layer+20,W,H,Player,Time,PC->IsUsingGamepad()); return; }
-	if(Player->GetMapMode()==ARPGPrototypeCharacter::MapNearby) { RPGMap::PaintNearby(Design,Elements,Layer,W,H,Player,Time,PC->IsUsingGamepad()); return; }
+	// The key hints in the names of what this player plays with now (each pane its own player's).
+	const EChaosImpactDevice Device=ChaosImpactHints::GetDevice(PC);
+	if(Player->IsMapOpen()) { RPGMap::PaintFull(Design,Elements,Layer+20,W,H,Player,Time,Device); return; }
+	if(Player->GetMapMode()==ARPGPrototypeCharacter::MapNearby) { RPGMap::PaintNearby(Design,Elements,Layer,W,H,Player,Time,Device); return; }
 	// A shared screen: one minimap (player 1's), every player on it.
 	const auto* Mode=GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>();
 	if(Mode && Mode->UsesSharedScreen() && Player->GetLocalRPGIndex()!=0) { return; }
 	if(Player->IsBagOpen()) { return; }
-	RPGMap::PaintMini(Design,Elements,Layer,W,H,Player,Time,PC->IsUsingGamepad());
+	RPGMap::PaintMini(Design,Elements,Layer,W,H,Player,Time,Device);
 }
 
 void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElementList& Elements,int32 Layer,float Time) const
@@ -688,7 +703,10 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 	if(!World || !Player || !PC || (Player->IsBagOpen() && !Player->UsesMiniMenu())) { return; }
 	const FVector2D Size=OwnerMenuGeometry(Geometry).GetLocalSize(); const bool Split=GetGameInstance() && GetGameInstance()->GetLocalPlayers().Num()>1;
 	const float Scale=FMath::Min(Size.X/(Split?960.0f:1280.0f),Size.Y/(Split?600.0f:720.0f)); if(Scale<=0) { return; }
-	const float W=Size.X/Scale,H=Size.Y/Scale; const bool bPad=PC->IsUsingGamepad();
+	const float W=Size.X/Scale,H=Size.Y/Scale;
+	// What this player plays with now: the key hints are in its names only (each pane of a split view its own player's).
+	const EChaosImpactDevice Device=ChaosImpactHints::GetDevice(PC); const bool bPad=ChaosImpactHints::IsPad(Device);
+	const auto Key=[Device](const TCHAR* Template) { return ChaosImpactHints::Text(Device,Template); };
 	const FGeometry Design=ChaosImpactPaint::MakeAnchor(OwnerMenuGeometry(Geometry),0,0,Scale);
 	RPGUI::FCanvas C; C.Geometry=&Design; C.Elements=&Elements; C.Layer=Layer+3; C.Time=Time;
 	const double Now=GetWorld()->GetTimeSeconds();
@@ -730,12 +748,15 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 			RPGUI::Label(C,1,FString::Printf(TEXT("★ %s %d:%02d"),*Events->GetTitle(),Left/60,Left%60),22+RPGUI::Measure(Here,25)+18,24,16,bHere?RPGUI::Bad:RPGUI::Highlight,ETextAlign::Left,TEXT("Bold"));
 		}
 		// Journal shortcut (clickable) and up to three active quests, the tracked one first.
-		const float ChipW=RPGUI::Keycap(C,1,bPad?TEXT("↓"):TEXT("J"),22,58,24);
+		// (Each one further along when the one before it has a long button name: 十字ボタン↓ …)
+		const float ChipW=RPGUI::Keycap(C,1,Key(TEXT("{Down|J}")),22,58,24);
 		RPGUI::Label(C,1,TEXT("依頼の記録"),22+ChipW+6,58,16,RPGUI::TextSub);
-		const float TravelChipW=RPGUI::Keycap(C,1,bPad?TEXT("→"):TEXT("M"),180,58,24);
-		RPGUI::Label(C,1,TEXT("マップ"),180+TravelChipW+6,58,16,RPGUI::TextSub);
-		const float MembersChipW=RPGUI::Keycap(C,1,bPad?TEXT("←"):TEXT("O"),290,58,24);
-		RPGUI::Label(C,1,TEXT("マルチ"),290+MembersChipW+6,58,16,RPGUI::TextSub);
+		const float TravelX=FMath::Max(180.0f,22+ChipW+6+RPGUI::Measure(TEXT("依頼の記録"),16)+14);
+		const float TravelChipW=RPGUI::Keycap(C,1,Key(TEXT("{Right|M}")),TravelX,58,24);
+		RPGUI::Label(C,1,TEXT("マップ"),TravelX+TravelChipW+6,58,16,RPGUI::TextSub);
+		const float MembersX=FMath::Max(290.0f,TravelX+TravelChipW+6+RPGUI::Measure(TEXT("マップ"),16)+14);
+		const float MembersChipW=RPGUI::Keycap(C,1,Key(TEXT("{Left|O}")),MembersX,58,24);
+		RPGUI::Label(C,1,TEXT("マルチ"),MembersX+MembersChipW+6,58,16,RPGUI::TextSub);
 		TArray<int32> Shown;
 		if(Player->TrackedQuest!=INDEX_NONE) { const auto S=RPGQuests::State(Player,Player->TrackedQuest); if(S==ERPGQuestState::Active || S==ERPGQuestState::Ready) { Shown.Add(Player->TrackedQuest); } }
 		for(int32 Index=0;Index<RPGQuests::Num() && Shown.Num()<3;++Index)
@@ -768,8 +789,9 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 				// Bottom left, above the health bar: out of the middle of the field (the hero stands there).
 				const float CW=460,CX=22;
 				FString Head,Title,Body,Try;
-				if(Step>=0) { Head=FString::Printf(TEXT("操作チュートリアル  %d / %d"),Step+1,Steps.Num()); Title=Steps[Step].Title; Try=bPad?Steps[Step].PadText:Steps[Step].KeyboardText; }
-				else { Head=TEXT("チュートリアル"); Title=Lesson->Title; Body=Lesson->Body; if(Lesson->TryKeyboard) { Try=FString(TEXT("やってみよう："))+(bPad?Lesson->TryPad:Lesson->TryKeyboard); } }
+				// (The keys in them: this player's device's names, and what this player has set; RPGTutorial::Words.)
+				if(Step>=0) { Head=FString::Printf(TEXT("操作チュートリアル  %d / %d"),Step+1,Steps.Num()); Title=Steps[Step].Title; Try=RPGTutorial::Words(PC,bPad?Steps[Step].PadText:Steps[Step].KeyboardText); }
+				else { Head=TEXT("チュートリアル"); Title=Lesson->Title; Body=RPGTutorial::Words(PC,Lesson->Body); if(Lesson->TryKeyboard) { Try=FString(TEXT("やってみよう："))+RPGTutorial::Words(PC,bPad?Lesson->TryPad:Lesson->TryKeyboard); } }
 				const int32 BodyLines=Body.IsEmpty()?0:FMath::Min(5,RPGUI::WrapLines(Body,CW-40,14).Num());
 				const int32 TryLines=Try.IsEmpty()?0:FMath::Min(2,RPGUI::WrapLines(Try,CW-110,16).Num());
 				const float CH=60+BodyLines*20+TryLines*24+30;
@@ -785,9 +807,9 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 					if(bDone) { RPGUI::Label(T,0,TEXT("できた！"),CX+CW-18,TY+2,18,RPGUI::Good,ETextAlign::Right,TEXT("Black")); }
 					TY+=TryLines*24;
 				}
-				const FString Skip=Step>=0?FString(bPad?TEXT("L3 で次へ・長押しで終わる"):TEXT("Backspace で次へ・長押しで終わる"))
-					:FString(bPad?TEXT("L3 で閉じる（メニューで見返せる）"):TEXT("Backspace で閉じる（メニューで見返せる）"));
-				RPGUI::Label(T,0,Skip,CX+CW-18,CY+CH-22,12,RPGUI::TextDim,ETextAlign::Right);
+				// (Skipping: the left stick pressed in on a controller, Backspace on the keyboard. Kept clear of the step dots.)
+				const FString Skip=Key(Step>=0?TEXT("{L3|Backspace} で次へ・長押しで終わる"):TEXT("{L3|Backspace} で閉じる（メニューで見返せる）"));
+				RPGUI::LabelFit(T,0,Skip,CX+CW-18,CY+CH-22,Step>=0?CW-48-Steps.Num()*14:CW-36,12,RPGUI::TextDim,ETextAlign::Right);
 				// Where the controls are up to.
 				if(Step>=0 && T.IsPainting()) { FPainter Dots=T.At(0,4); for(int32 I=0;I<Steps.Num();++I) { Dots.Disc(FVector2D(CX+22+I*14,CY+CH-14),4,I<Step?RPGUI::Good:I==Step?RPGUI::Cyan:RPGUI::TextDim); } }
 			}
@@ -820,15 +842,19 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 				HudShard(Fade,{FVector2D(BX+10,BY),FVector2D(BX+BW,BY),FVector2D(BX+BW-10,BY+64),FVector2D(BX,BY+64)},RPGUI::StyleFill(RPGUI::EStyle::Card),2,FVector2D(3,4));
 				FPainter Text=B.At(0,6); Text.Alpha=Alpha;
 				Text.Text(Player->QuestBannerLabel,BX+28,BY+8,14,Player->QuestBannerLabel.Contains(TEXT("達成"))?RPGUI::Good:RPGUI::Highlight,ETextAlign::Left,TEXT("Bold"));
-				const float NameSize=RPGUI::FitSize(D.Name,BW-150,22);
-				Text.Text(RPGUI::Fit(D.Name,BW-150,NameSize),BX+28,BY+28+(22-NameSize)*.45f,NameSize,RPGUI::TextMain,ETextAlign::Left,TEXT("Bold"));
-				Text.Text(Player->QuestBannerLabel.Contains(TEXT("話"))?FString(bPad?TEXT("↓ で確認"):TEXT("J で確認")):RPGQuests::KindName(D.Kind),BX+BW-24,BY+34,15,RPGUI::TextSub,ETextAlign::Right,TEXT("Bold"));
+				// On the right: where to read it (the journal's key), or its kind. The name keeps clear of it.
+				const FString Right=Player->QuestBannerLabel.Contains(TEXT("話"))?Key(TEXT("{Down|J} で確認")):FString(RPGQuests::KindName(D.Kind));
+				const float NameW=FMath::Min(BW-150.0f,BW-64-RPGUI::Measure(Right,15));
+				const float NameSize=RPGUI::FitSize(D.Name,NameW,22);
+				Text.Text(RPGUI::Fit(D.Name,NameW,NameSize),BX+28,BY+28+(22-NameSize)*.45f,NameSize,RPGUI::TextMain,ETextAlign::Left,TEXT("Bold"));
+				Text.Text(Right,BX+BW-24,BY+34,15,RPGUI::TextSub,ETextAlign::Right,TEXT("Bold"));
 				FPainter Edge=B.At(0,3); Edge.Alpha=Alpha; Edge.Box(BX+10,BY+1,BW-12,2,RPGQuests::KindColor(D.Kind));
 			}
 		}
 		if(!Player->IsBagOpen())
 		{
-			const FString Use=bPad?TEXT("上ボタン"):TEXT("E");
+			// Talking, opening, helping up: the top face button on a controller (Y / △ / X), E on the keyboard.
+			const FString Use=Key(TEXT("{Y|E}"));
 			if(const auto* Downed=Player->FindReviveTarget()) { AdventurePrompt(Design,Elements,Layer+8,W,H-285,Use+TEXT(" 長押し"),FString(TEXT("起こす："))+Downed->GetHeroLabel(),RPGUI::Good); }
 			else if(Player->IsDowned())
 			{
@@ -901,7 +927,7 @@ void URPGPrototypeHUD::PaintAdventure(const FGeometry& Geometry,FSlateWindowElem
 	}
 	if(QuestRevealAlpha<=0) { return; }
 	const auto G=QuestPanelGeometry(Geometry);
-	FQuestPanel M; M.P=Player; M.bPad=bPad;
+	FQuestPanel M; M.P=Player; M.PC=PC; M.Device=Device;
 	RPGUI::FCanvas Panel; Panel.Geometry=&G; Panel.Elements=&Elements; Panel.Layer=Layer+12; Panel.Time=Time;
 	Panel.Hover=GetAdventurePointerAction();
 	QuestPanelLayout(Panel,M);

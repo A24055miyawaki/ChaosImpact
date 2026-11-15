@@ -4,6 +4,7 @@
 #include "ChaosImpactParty.h"
 #include "ChaosImpactPaintCache.h"
 #include "ChaosImpactHook.h"
+#include "ChaosImpactGadget.h"
 #include "ChaosImpactEase.h"
 #include "ChaosImpactFxKit.h"
 #include "Components/PoseableMeshComponent.h"
@@ -430,6 +431,8 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		}
 	}
 	UpdateSnowball();
+	UpdateSnowRunOver();
+	UpdateAnchorRam(DeltaSeconds);
 	UpdateDriving(DeltaSeconds);
 	if (GetNetMode() != NM_DedicatedServer)
 	{
@@ -438,6 +441,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		UpdateSnowRollPresentation();
 		UpdateNovaChargePresentation(DeltaSeconds);
 		UpdateLandingPreview(DeltaSeconds);
+		UpdateBarrierPreview();
 		UpdateCameraShake();
 		if (ChargeWidget && IsLocallyControlled())
 		{
@@ -474,6 +478,8 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		}
 		const bool bNovaOverview = IsLocallyControlled() && IsChargingNova() && !bTrainingMenuCameraActive;
 		const bool bShoulder = IsShoulderViewActive();
+		// (Over the shoulder, charging a throw: the boom closes in a little to aim.)
+		const bool bShoulderAiming = bShoulder && bIsChargingThrow;
 		FVector NovaStageCenter = GetActorLocation();
 		FVector2D NovaStageHalfExtent(3000.0f, 3000.0f);
 		if (bNovaOverview)
@@ -486,9 +492,9 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		const float TopDownArm = SavedCameraArmLength * StageCameraScale * (IsLocallyControlled()
 			? ChaosImpactSettings::GetCameraDistanceScale(Cast<APlayerController>(GetController())) : 1.0f);
 		const float DesiredArmLength = bTrainingMenuCameraActive
-			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : bShoulder ? ShoulderCamera->ArmLength : TopDownArm + NovaCameraExtra;
+			? TrainingMenuCameraArmLength : bNovaOverview ? NovaOverviewArm : bShoulder ? ShoulderCamera->GetDesiredArmLength(bShoulderAiming) : TopDownArm + NovaCameraExtra;
 		const FVector DesiredSocketOffset = bTrainingMenuCameraActive
-			? TrainingMenuCameraSocketOffset : bShoulder ? ShoulderCamera->SocketOffset : SavedCameraSocketOffset * StageCameraScale;
+			? TrainingMenuCameraSocketOffset : bShoulder ? ShoulderCamera->GetDesiredSocketOffset(bShoulderAiming) : SavedCameraSocketOffset * StageCameraScale;
 		const FRotator DesiredBoomRotation = bNovaOverview
 			? FRotator(-90.0f, TopDownRotation.Yaw, 0.0f) : bShoulder ? ShoulderCamera->GetViewRotation() : TopDownRotation;
 		// Steering a drive ball, the camera follows the ball (and sits a little further out to see round it).
@@ -496,7 +502,7 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 		FVector DriveOffset = Driven ? Driven->GetActorLocation() - GetActorLocation() : FVector::ZeroVector;
 		DriveOffset.Z = 0.0f;
 		const FVector DesiredTargetOffset = bTrainingMenuCameraActive
-			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead + CameraMoveLead + DojoCameraLead;
+			? FVector::ZeroVector : bNovaOverview ? NovaStageCenter - GetActorLocation() : Driven ? DriveOffset : bShoulder ? ShoulderCamera->TargetOffset : NovaCameraLead + CameraMoveLead + DojoCameraLead + BarrierCameraLead;
 		const float DriveBlendSpeed = 6.0f;
 		// Springs rather than a chase at a fixed rate: each change of view sets off gently and settles (イージーイーズ).
 		const auto SmoothTime = [](const float Speed) { return 1.2f / FMath::Max(Speed, 0.01f); };
@@ -507,7 +513,15 @@ void AChaosImpactCharacter::Tick(const float DeltaSeconds)
 			DesiredSocketOffset, CameraSocketVelocity, DeltaSeconds, SmoothTime(TrainingMenuCameraBlendSpeed));
 		CameraBoom->TargetOffset = ChaosImpactEase::SpringTo(CameraBoom->TargetOffset, DesiredTargetOffset, CameraTargetVelocity, DeltaSeconds,
 			SmoothTime(ViewSpeed));
-		CameraBoom->SetWorldRotation(bShoulder ? DesiredBoomRotation : ChaosImpactEase::SpringToRotator(CameraBoom->GetComponentRotation(),
+		// Over the shoulder the view is the look itself (no lag on a mouse); only switching to it eases round.
+		const bool bShoulderDirect = bShoulder && (!ShoulderCamera->IsBlendingIn()
+			|| CameraBoom->GetComponentRotation().Equals(DesiredBoomRotation, 1.5f));
+		if (bShoulderDirect)
+		{
+			ShoulderCamera->FinishBlendIn();
+			CameraTurnVelocity = FVector::ZeroVector;
+		}
+		CameraBoom->SetWorldRotation(bShoulderDirect ? DesiredBoomRotation : ChaosImpactEase::SpringToRotator(CameraBoom->GetComponentRotation(),
 			DesiredBoomRotation, CameraTurnVelocity, DeltaSeconds,
 			SmoothTime(bNovaOverview ? NovaOverviewBlendSpeed : TrainingMenuCameraBlendSpeed)));
 	}
@@ -1336,7 +1350,23 @@ void AChaosImpactCharacter::ReleaseThrowNow(const float ChargeAlpha)
 {
 	const bool bThrowingTargetedNova = CarriedBallCount > 0
 		&& GetCarriedBallType(0) == EChaosImpactBallType::Nova && bNovaTargetValid;
-	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation(), NovaTargetLocation, bThrowingTargetedNova);
+	// Twice: on the quick way (lost now and then) and the reliable one (resent, late, when lost). The host takes the first.
+	ThrowSequenceSent = ThrowSequenceSent == 255 ? 1 : ThrowSequenceSent + 1;
+	// A barrier goes where this screen's preview showed it: its floor rides along in the nova target's place.
+	FVector_NetQuantize SentTarget = NovaTargetLocation;
+	bool bSentTarget = bThrowingTargetedNova;
+	if (!bThrowingTargetedNova && CarriedBallCount > 0 && GetCarriedBallType(0) == EChaosImpactBallType::Barrier)
+	{
+		FVector Floor = FVector::ZeroVector, Heading = FVector::ForwardVector;
+		if (PredictBarrierPlacement(ChargeAlpha, Floor, Heading))
+		{
+			SentTarget = Floor;
+			bSentTarget = true;
+		}
+	}
+	ServerReleaseThrowEarly(ChargeAlpha, AimDirection, GetActorLocation(), SentTarget, bSentTarget, ThrowSequenceSent,
+		static_cast<uint8>(FMath::Clamp(CarriedBallCount, 0, 255)), static_cast<uint8>(GetCarriedBallType(0)));
+	ServerReleaseThrow(ChargeAlpha, AimDirection, GetActorLocation(), SentTarget, bSentTarget, ThrowSequenceSent);
 	LogLagProbe(TEXT("press"));
 	PendingBallActions.Add(-1);
 	if (BallForm->GetHeldBall(0) || BallForm->GetHeldBall(1))
@@ -1362,9 +1392,11 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	FVector DesiredDirection = AimDirection;
 	bool bMouseAimed = false;
 	const APlayerController* LocalPlayer = Cast<APlayerController>(GetController());
+	// The way this player moves is where they aim and throw: the pads' simple style, and 移動方向に投げる (any device).
 	const bool bSimplePad = LocalPlayer && IsLocallyControlled()
-		&& ChaosImpactSettings::GetPlayerDevice(LocalPlayer) != EChaosImpactDevice::KeyboardMouse
-		&& ChaosImpactSettings::GetPlayerControlScheme(LocalPlayer) == EChaosImpactControlScheme::Simple;
+		&& ((ChaosImpactSettings::GetPlayerDevice(LocalPlayer) != EChaosImpactDevice::KeyboardMouse
+			&& ChaosImpactSettings::GetPlayerControlScheme(LocalPlayer) == EChaosImpactControlScheme::Simple)
+			|| ChaosImpactSettings::IsThrowToMoveOn(LocalPlayer));
 	if (IsLocallyControlled() && !bDevAutoInput && !IsChargingNova())
 	{
 		// Read the right stick itself every frame. The look action's trigger state can report the stick as
@@ -1391,8 +1423,10 @@ void AChaosImpactCharacter::UpdateAim(float DeltaSeconds)
 	}
 	else if (IsShoulderViewActive())
 	{
-		// The pitch is visual only. All perspectives use the existing flat throw + charge pipeline.
-		DesiredDirection = ShoulderCamera->GetFlatAimDirection();
+		// Flat, toward what the crosshair is on (the pitch is visual only: flight is the same as every view). The
+		// camera's own assist already brought the crosshair there, so the charge magnet keeps out of it.
+		DesiredDirection = ShoulderCamera->GetThrowAimDirection(GetActorLocation());
+		bMouseAimed = true;
 	}
 	else if (bSimplePad)
 	{
@@ -1860,6 +1894,24 @@ bool AChaosImpactCharacter::SpawnBall(const float ChargeAlpha)
 			float Unused = 0.0f;
 			bPendingNovaTarget = PredictThrowLanding(ChargeAlpha, PendingNovaTarget, Unused);
 		}
+		if (Ball->GetBallType() == EChaosImpactBallType::Barrier)
+		{
+			// Its wall goes where the preview showed: this copy's own (a CPU, the host's players), or a guest's from its
+			// own screen (unless that is nowhere this copy could throw it).
+			FVector Floor = FVector::ZeroVector, Heading = FVector::ForwardVector;
+			const bool bOwn = PredictBarrierPlacement(ChargeAlpha, Floor, Heading);
+			const bool bClient = bPendingBarrierClientFloor && (bOwn ? FVector::Dist(PendingBarrierClientFloor, Floor) < 450.0f
+				: FVector::Dist2D(PendingBarrierClientFloor, GetActorLocation()) < 2600.0f);
+			if (bClient)
+			{
+				Floor = PendingBarrierClientFloor;
+			}
+			if (bOwn || bClient)
+			{
+				Ball->SetGadgetPlan(Floor, PendingThrowDirection);
+			}
+		}
+		bPendingBarrierClientFloor = false;
 		PendingThrowBall = Ball;
 		bThrowReleasePending = true;
 		USceneComponent* ModelCarryParent=nullptr; FName ModelCarrySocket; FVector ModelCarryOffset;
@@ -2093,6 +2145,10 @@ float AChaosImpactCharacter::TakeDamage(const float DamageAmount, const FDamageE
 	if (!SourcePawn && SourceZone)
 	{
 		SourcePawn = SourceZone->GetSourcePawn();
+	}
+	if (const AChaosImpactGadget* SourceGadget = Cast<AChaosImpactGadget>(DamageCauser); !SourcePawn && SourceGadget)
+	{
+		SourcePawn = SourceGadget->GetSourcePawn();
 	}
 	// VS: nobody is hurt outside the match itself (in a duel, outside a round being fought), and teammates never
 	// hurt each other.
@@ -2753,6 +2809,9 @@ void AChaosImpactCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	// a replicated value would overwrite predictions the server has not processed yet.
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CarriedBallCount, COND_SkipOwner);
 	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, CarriedBallTypes, COND_SkipOwner);
+	// (The flyer's own machine knows it first.)
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, bAnchorZipShown, COND_SkipOwner);
+	DOREPLIFETIME_CONDITION(AChaosImpactCharacter, NetPathServerTime, COND_SimulatedOnly);
 	DOREPLIFETIME(AChaosImpactCharacter, IceFrozenUntilServerTime);
 	DOREPLIFETIME(AChaosImpactCharacter, BlindedUntilServerTime);
 	DOREPLIFETIME(AChaosImpactCharacter, SnowGrowthRight);
@@ -2787,7 +2846,36 @@ void AChaosImpactCharacter::ServerStartCharge_Implementation()
 
 void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float ChargeAlpha,
 	FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
-	FVector_NetQuantize ClientNovaTarget, const bool bHasClientNovaTarget)
+	FVector_NetQuantize ClientNovaTarget, const bool bHasClientNovaTarget, const uint8 Sequence)
+{
+	// (Carried out already from the quick copy.)
+	if (Sequence != 0 && Sequence == ThrowSequenceDone)
+	{
+		return;
+	}
+	ThrowSequenceDone = Sequence;
+	HandleReleaseThrow(ChargeAlpha, FVector(Aim), FVector(ClientLocation), FVector(ClientNovaTarget), bHasClientNovaTarget);
+}
+
+void AChaosImpactCharacter::ServerReleaseThrowEarly_Implementation(const float ChargeAlpha,
+	FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
+	FVector_NetQuantize ClientNovaTarget, const bool bHasClientNovaTarget, const uint8 Sequence, const uint8 ExpectedCount, const uint8 ExpectedType)
+{
+	// Only the next throw in order, and only when the hand here is as the thrower's screen had it (every pickup, swap and
+	// throw before it has arrived): otherwise the reliable copy, which comes in order, is the one.
+	const uint8 Next = ThrowSequenceDone == 255 ? 1 : ThrowSequenceDone + 1;
+	if (Sequence != Next || CarriedBallCount <= 0 || CarriedBallCount != ExpectedCount
+		|| static_cast<uint8>(GetCarriedBallType(0)) != ExpectedType || bEliminated)
+	{
+		return;
+	}
+	ThrowSequenceDone = Sequence;
+	UE_LOG(LogChaosImpact, Verbose, TEXT("Throw %d of %s carried out from its quick copy"), Sequence, *GetName());
+	HandleReleaseThrow(ChargeAlpha, FVector(Aim), FVector(ClientLocation), FVector(ClientNovaTarget), bHasClientNovaTarget);
+}
+
+void AChaosImpactCharacter::HandleReleaseThrow(const float ChargeAlpha, const FVector& Aim, const FVector& ClientLocation,
+	const FVector& ClientNovaTarget, const bool bHasClientNovaTarget)
 {
 	bIsChargingThrow = false;
 	const bool bRemote = IsRemotePlayerOnServer();
@@ -2795,7 +2883,7 @@ void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float Charge
 	// A remote owner's dash may still be finishing here only because of latency.
 	if (!Tackle->IsBusy() && !bEliminated && !IsInBallForm() && !(bIsDashing && !bRemote) && !bTrainingMenuFrozen)
 	{
-		const FVector Direction = FVector(Aim).GetSafeNormal2D();
+		const FVector Direction = Aim.GetSafeNormal2D();
 		if (!Direction.IsNearlyZero())
 		{
 			AimDirection = Direction;
@@ -2805,6 +2893,8 @@ void AChaosImpactCharacter::ServerReleaseThrow_Implementation(const float Charge
 		{
 			SetNovaTargetPoint(FVector(ClientNovaTarget));
 		}
+		bPendingBarrierClientFloor = CarriedBallCount > 0 && GetCarriedBallType(0) == EChaosImpactBallType::Barrier && bHasClientNovaTarget;
+		PendingBarrierClientFloor = FVector(ClientNovaTarget);
 		if (bRemote && bThrowReleasePending)
 		{
 			// The previous release is still waiting here only because of latency; let it go now.
@@ -2898,7 +2988,7 @@ void AChaosImpactCharacter::MulticastNovaPart_Implementation(const bool bFinishe
 		return;
 	}
 	const FVector Chest = GetActorLocation() + FVector(0.0f, 0.0f, 50.0f);
-	ChaosImpactSfx::PlayAt(this, bFinished ? EChaosImpactSfx::CharRespawn : EChaosImpactSfx::CharPickup, Chest, 1.0f, bFinished ? 1.0f : 0.8f);
+	ChaosImpactSfx::PlayAt(this, bFinished ? EChaosImpactSfx::CharRevive : EChaosImpactSfx::CharPickup, Chest, 1.0f, bFinished ? 1.0f : 0.8f);
 	if (bFinished && IsLocallyControlled())
 	{
 		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchKO);
@@ -2928,6 +3018,8 @@ void AChaosImpactCharacter::ReportBallHitFromClient(AChaosImpactBall* Ball, cons
 {
 	if (!HasAuthority() && IsLocallyControlled() && !bEliminated && IsValid(Ball) && GetWorld())
 	{
+		// (Twice: the quick way and the reliable one; the host counts the first.)
+		ServerReportBallHitEarly(Ball, HitLocation);
 		ServerReportBallHit(Ball, HitLocation);
 		// Remember the expected health until the server's value has had a round trip to catch up,
 		// so a lethal hit stops throws and pickups right away instead of being refused later.
@@ -2950,6 +3042,31 @@ void AChaosImpactCharacter::ReportBallHitFromClient(AChaosImpactBall* Ball, cons
 void AChaosImpactCharacter::ServerReportBallHit_Implementation(AChaosImpactBall* Ball,
 	FVector_NetQuantize HitLocation)
 {
+	HandleReportedBallHit(Ball, FVector(HitLocation));
+}
+
+void AChaosImpactCharacter::ServerReportBallHitEarly_Implementation(AChaosImpactBall* Ball,
+	FVector_NetQuantize HitLocation)
+{
+	HandleReportedBallHit(Ball, FVector(HitLocation));
+}
+
+void AChaosImpactCharacter::HandleReportedBallHit(AChaosImpactBall* Ball, const FVector& HitLocation)
+{
+	// The same report comes twice (the quick way and the reliable one): each ball once.
+	const double ReportedNow = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	for (auto It = HandledBallReports.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || ReportedNow - It.Value() > 10.0) { It.RemoveCurrent(); }
+	}
+	if (IsValid(Ball))
+	{
+		if (HandledBallReports.Contains(Ball))
+		{
+			return;
+		}
+		HandledBallReports.Add(Ball, ReportedNow);
+	}
 	if (!IsValid(Ball) || bEliminated)
 	{
 		UE_LOG(LogChaosImpact, Log, TEXT("Reported ball hit rejected: victim=%s reason=%s"), *GetName(),
@@ -2970,6 +3087,29 @@ void AChaosImpactCharacter::ServerReportTackleHit_Implementation(AChaosImpactCha
 	Attacker->GetTackle()->TryApplyReportedContact(this, Started);
 }
 
+void AChaosImpactCharacter::ServerReportSnowRunOver_Implementation(AChaosImpactCharacter* Attacker)
+{
+	if (!IsValid(Attacker) || Attacker == this || bEliminated || Attacker->CarriedBallCount <= 0
+		|| Attacker->GetCarriedBallType(0) != EChaosImpactBallType::Snow
+		|| !ChaosImpactBallTypes::IsSnowOverhead(ChaosImpactBallTypes::GetSnowScale(Attacker->GetSnowGrowth(0))))
+	{
+		return;
+	}
+	// Reaches here a round trip after that screen saw it; the host's copy of this player trails them too.
+	const float RoundTrip = GetNetworkRoundTripSeconds();
+	const float Slack = FMath::Min(150.0f + 650.0f * RoundTrip, 750.0f);
+	const float Radius = 24.0f * ChaosImpactBallTypes::GetSnowScale(Attacker->GetSnowGrowth(0));
+	const float Reach = Attacker->GetCapsuleComponent()->GetScaledCapsuleRadius() + Radius * 2.0f + 28.0f
+		+ GetCapsuleComponent()->GetScaledCapsuleRadius() + Slack;
+	if (FVector::Dist2D(Attacker->GetActorLocation(), GetActorLocation()) > Reach)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Reported snowball run-over rejected: %s on %s (too far)"), *Attacker->GetName(), *GetName());
+		return;
+	}
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Attacker->TryRunOverWithSnowball(this, true);
+}
+
 void AChaosImpactCharacter::ServerReportBlastHit_Implementation(AChaosImpactHazardZone* Zone)
 {
 	if (!IsValid(Zone) || bEliminated)
@@ -2979,6 +3119,103 @@ void AChaosImpactCharacter::ServerReportBlastHit_Implementation(AChaosImpactHaza
 	// Judged by the reporter's screen, where they were not dashing.
 	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
 	Zone->TryApplyReportedBlast(this);
+}
+
+void AChaosImpactCharacter::ServerReportGadgetBlast_Implementation(AChaosImpactGadget* Gadget)
+{
+	if (!IsValid(Gadget) || bEliminated)
+	{
+		return;
+	}
+	// Judged by the reporter's screen, where they were not dashing.
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Gadget->TryApplyReportedBlast(this);
+}
+
+bool AChaosImpactCharacter::SwapPlacesWith(AChaosImpactCharacter* Other)
+{
+	if (!HasAuthority() || !IsValid(Other) || Other == this || bEliminated || Other->bEliminated || !Other->CanBeDamaged()
+		|| IsInBallForm() || Other->IsInBallForm() || Other->IsTrainingMenuFrozen()
+		|| AChaosImpactGameState::AreTeammates(GetWorld(), this, Other))
+	{
+		return false;
+	}
+	// Outside the match itself (or a duel's round) nobody is moved about, as nobody is hurt.
+	if (const AChaosImpactGameState* Match = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+		Match && ((Match->bVersusMatch && Match->Phase != EChaosImpactOnlinePhase::Match)
+			|| (Match->IsDuelAt(Other->GetActorLocation()) && !Match->IsDuelLiveAt(Other->GetActorLocation()))
+			|| Match->IsDuelAt(Other->GetActorLocation()) != Match->IsDuelAt(GetActorLocation())))
+	{
+		return false;
+	}
+	const FVector Mine = GetActorLocation();
+	const FVector Theirs = Other->GetActorLocation();
+	// (Bodies differ in height: each stands with its feet where the other's were.)
+	const float Lift = GetCapsuleComponent()->GetScaledCapsuleHalfHeight() - Other->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	WarpTo(Theirs + FVector(0.0f, 0.0f, Lift));
+	Other->WarpTo(Mine - FVector(0.0f, 0.0f, Lift));
+	++SwapPlacesCount;
+	MulticastSwapShown(Mine, Theirs);
+	UE_LOG(LogChaosImpact, Log, TEXT("Swap: %s and %s changed places (%.0f cm apart)"), *GetName(), *Other->GetName(), FVector::Dist(Mine, Theirs));
+	return true;
+}
+
+void AChaosImpactCharacter::MulticastSwapShown_Implementation(const FVector_NetQuantize From, const FVector_NetQuantize To)
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	const FLinearColor Color = ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Swap);
+	for (const FVector At : {FVector(From), FVector(To)})
+	{
+		// (One sound for the pair: heard from where this screen's own player is, if it is one of the two.)
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SwapWarp, At);
+		AChaosImpactFxKit* Fx = AChaosImpactFxKit::Spawn(this, At);
+		if (!Fx)
+		{
+			continue;
+		}
+		// A ring closing in at the feet, a short column of light, and sparks drawn up it (small and brief).
+		FChaosImpactFxPiece Ring;
+		Ring.Look = EChaosImpactFxLook::Ring;
+		Ring.Location = FVector(0.0f, 0.0f, -80.0f);
+		Ring.Life = 0.3f;
+		Ring.SizeFrom = 260.0f;
+		Ring.SizeTo = 70.0f;
+		Ring.Color = Color;
+		Ring.CoreColor = FLinearColor(0.95f, 0.96f, 1.0f);
+		Ring.Intensity = 2.8f;
+		Fx->Add(Ring);
+		FChaosImpactFxPiece Column;
+		Column.Location = FVector(0.0f, 0.0f, 10.0f);
+		Column.Life = 0.26f;
+		Column.SizeFrom = 110.0f;
+		Column.SizeTo = 50.0f;
+		Column.Width = 2.6f;
+		Column.Color = Color;
+		Column.CoreColor = FLinearColor(0.95f, 0.96f, 1.0f);
+		Column.Intensity = 1.8f;
+		Column.NoiseAmount = 0.2f;
+		Fx->Add(Column);
+		for (int32 Index = 0; Index < 8; ++Index)
+		{
+			const float Angle = FMath::FRandRange(0.0f, UE_TWO_PI);
+			FChaosImpactFxPiece Spark;
+			Spark.Look = EChaosImpactFxLook::Streak;
+			Spark.Location = FVector(FMath::Cos(Angle) * 45.0f, FMath::Sin(Angle) * 45.0f, FMath::FRandRange(-70.0f, 20.0f));
+			Spark.Velocity = FVector(0.0f, 0.0f, FMath::FRandRange(380.0f, 700.0f));
+			Spark.Drag = 3.0f;
+			Spark.Life = FMath::FRandRange(0.2f, 0.34f);
+			Spark.SizeFrom = 80.0f;
+			Spark.SizeTo = 24.0f;
+			Spark.Width = 4.0f;
+			Spark.Color = Color;
+			Spark.CoreColor = FLinearColor(0.95f, 0.96f, 1.0f);
+			Spark.Intensity = 3.0f;
+			Fx->Add(Spark);
+		}
+	}
 }
 
 void AChaosImpactCharacter::ServerReportHookHit_Implementation(AChaosImpactHook* Hook)
@@ -3226,6 +3463,11 @@ void AChaosImpactCharacter::UpdateWindKnockback(const float DeltaSeconds)
 
 void AChaosImpactCharacter::ClientTeleportTo_Implementation(FVector_NetQuantize Location, FRotator Rotation)
 {
+	// (Flying on its anchor on this machine: the flight would carry it straight back.)
+	if (bAnchorZipping)
+	{
+		EndAnchorZip(false);
+	}
 	SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
 	GetCharacterMovement()->StopMovementImmediately();
 	SnapCameraToCharacter();
@@ -3293,8 +3535,11 @@ void AChaosImpactCharacter::ServerClaimPickup_Implementation(AChaosImpactBall* B
 {
 	// Generous reach: this copy of the player can trail the owner's own screen by a round trip, and a rolling ball
 	// has rolled on meanwhile.
+	// (The copy here trails the player's own screen by half their round trip, more when their moves are lost on the way:
+	// a run's worth of that is allowed too, or a slow or lossy line had its pickups refused as too far.)
+	const float OwnTrail = GetCharacterMovement()->MaxWalkSpeed * (GetNetworkRoundTripSeconds() * 0.5f + 0.2f);
 	const float MaxClaimDistance = IsValid(Ball) ? FMath::Min(320.0f + static_cast<float>(Ball->GetVelocity().Size2D())
-		* (GetNetworkRoundTripSeconds() + 0.1f), 900.0f) : 320.0f;
+		* (GetNetworkRoundTripSeconds() + 0.1f) + OwnTrail, 1400.0f) : 320.0f;
 	// When this player touched it on their own screen: the claim left at once, half a round trip ago (reaching back
 	// no further than AChaosImpactBall::FairTouchReachSeconds).
 	const double TouchTime = GetSharedServerTime()
@@ -3316,7 +3561,7 @@ void AChaosImpactCharacter::ServerClaimPickup_Implementation(AChaosImpactBall* B
 }
 
 void AChaosImpactCharacter::ClientPickupResolved_Implementation(const bool bAccepted,
-	const int32 ServerBallCount, const uint8 ServerBallTypes, AChaosImpactBall* Ball)
+	const int32 ServerBallCount, const uint16 ServerBallTypes, AChaosImpactBall* Ball)
 {
 	ResolveOldestBallAction(ServerBallCount, ServerBallTypes);
 	if (!PendingPickupContested.IsEmpty())
@@ -3343,7 +3588,7 @@ void AChaosImpactCharacter::ClientPickupResolved_Implementation(const bool bAcce
 }
 
 void AChaosImpactCharacter::ClientThrowResolved_Implementation(const bool bAccepted, const int32 ServerBallCount,
-	const uint8 ServerBallTypes)
+	const uint16 ServerBallTypes)
 {
 	if (!bAccepted)
 	{
@@ -3364,7 +3609,7 @@ void AChaosImpactCharacter::ClientThrowResolved_Implementation(const bool bAccep
 }
 
 void AChaosImpactCharacter::ClientBallCountReset_Implementation(const int32 ServerBallCount,
-	const uint8 ServerBallTypes)
+	const uint16 ServerBallTypes)
 {
 	// Arrives in the same ordered stream as the answers, so pending changes still apply on top.
 	ServerAnsweredBallCount = ServerBallCount;
@@ -3394,7 +3639,7 @@ void AChaosImpactCharacter::ServerDropBall_Implementation()
 }
 
 void AChaosImpactCharacter::ClientSwapResolved_Implementation(const int32 ServerBallCount,
-	const uint8 ServerBallTypes)
+	const uint16 ServerBallTypes)
 {
 	ResolveOldestBallAction(ServerBallCount, ServerBallTypes);
 }
@@ -3439,7 +3684,7 @@ void AChaosImpactCharacter::RefreshPredictedBallCount()
 			Types.RemoveAt(0);
 		}
 	}
-	const uint8 PackedTypes = ChaosImpactBallTypes::Pack(Types);
+	const uint16 PackedTypes = ChaosImpactBallTypes::Pack(Types);
 	if (Types.Num() != CarriedBallCount || PackedTypes != CarriedBallTypes)
 	{
 		CarriedBallCount = Types.Num();
@@ -3448,7 +3693,7 @@ void AChaosImpactCharacter::RefreshPredictedBallCount()
 	}
 }
 
-void AChaosImpactCharacter::ResolveOldestBallAction(const int32 ServerBallCount, const uint8 ServerBallTypes)
+void AChaosImpactCharacter::ResolveOldestBallAction(const int32 ServerBallCount, const uint16 ServerBallTypes)
 {
 	if (!PendingBallActions.IsEmpty())
 	{
@@ -3690,6 +3935,11 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 		UCharacterMovementComponent* SmoothedMovement = GetCharacterMovement();
 		SmoothedMovement->NetworkSimulatedSmoothLocationTime = Smoothing;
 		SmoothedMovement->ListenServerNetworkSimulatedSmoothLocationTime = Smoothing;
+		// A slow or lossy line brings its news in bunches: a step that big is still glided over, not shown as a warp
+		// (the engine's own limits, 2.5 m and 3.8 m, are for a good line).
+		const float Slow = FMath::Clamp((PathRoundTrip - 0.15f) / 0.6f, 0.0f, 1.0f);
+		SmoothedMovement->NetworkMaxSmoothUpdateDistance = FMath::Lerp(256.0f, 700.0f, Slow);
+		SmoothedMovement->NetworkNoSmoothUpdateDistance = FMath::Lerp(384.0f, 1500.0f, Slow);
 	}
 	if (bDrawnFromNetwork && !bEliminated)
 	{
@@ -3719,15 +3969,28 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 		LeadScale = DevLeadScale;
 		SmoothingShare = DevSmoothingShare;
 #endif
-		const float LeadSeconds = FMath::Clamp(PathRoundTrip * LeadScale + SmoothingLag * SmoothingShare,
-			0.0f, MaxPresentationLeadSeconds);
+		// (A slow line may be led further: at a second's round trip the copy is over half a second behind.)
+		const float SlowLine = FMath::Clamp((PathRoundTrip - 0.3f) / 0.7f, 0.0f, 1.0f);
+		float MaxLeadSeconds = FMath::Lerp(MaxPresentationLeadSeconds, SlowLinePresentationLeadSeconds, SlowLine);
+		float MaxLeadDistance = FMath::Lerp(MaxPresentationLeadDistance, SlowLinePresentationLeadDistance, SlowLine);
+#if !UE_BUILD_SHIPPING
+		// Development (-CILeadMaxSeconds=, -CILeadMaxDistance=): other limits when measuring online lag.
+		static const float DevMaxSeconds = []() { float Value = 0.0f; FParse::Value(FCommandLine::Get(), TEXT("CILeadMaxSeconds="), Value); return Value; }();
+		static const float DevMaxDistance = []() { float Value = 0.0f; FParse::Value(FCommandLine::Get(), TEXT("CILeadMaxDistance="), Value); return Value; }();
+		MaxLeadSeconds = DevMaxSeconds > 0.0f ? DevMaxSeconds : MaxLeadSeconds;
+		MaxLeadDistance = DevMaxDistance > 0.0f ? DevMaxDistance : MaxLeadDistance;
+#endif
+		// (What a rough line's buffer holds the body back by is led for as well, most of it.)
+		const float BufferLead = NetPathDelay * 0.7f;
+		const float LeadSeconds = FMath::Clamp(PathRoundTrip * LeadScale + SmoothingLag * SmoothingShare + BufferLead,
+			0.0f, MaxLeadSeconds + BufferLead);
 		FVector HorizontalVelocity = GetVelocity();
 		HorizontalVelocity.Z = 0.0f;
 		if (!IsDashingForPresentation())
 		{
 			HorizontalVelocity = HorizontalVelocity.GetClampedToMaxSize(Movement->MaxWalkSpeed * 1.1f);
 		}
-		TargetLead = (HorizontalVelocity * LeadSeconds).GetClampedToMaxSize(MaxPresentationLeadDistance);
+		TargetLead = (HorizontalVelocity * LeadSeconds).GetClampedToMaxSize(MaxLeadDistance + 600.0f * BufferLead);
 	}
 	// A turn or a stop swings the lead the other way: never faster than a walk, so it never shows as a jump.
 	const FVector BlendedLead = FMath::VInterpTo(PresentationLeadWorld, TargetLead, DeltaSeconds, PresentationLeadBlendSpeed);
@@ -3751,8 +4014,10 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 		Step.Z = 0.0f;
 		Expected.Z = 0.0f;
 		const FVector Surprise = Step - Expected;
-		PresentationGlideWorld = Surprise.SizeSquared() < FMath::Square(400.0f)
-			? (PresentationGlideWorld - Surprise).GetClampedToMaxSize(160.0f) : FVector::ZeroVector;
+		// (A slow line's steps come bigger: glided over up to further, and only a far bigger jump is a real teleport.)
+		const float SlowSteps = FMath::Clamp((GetNetworkRoundTripSeconds() - 0.15f) / 0.6f, 0.0f, 1.0f);
+		PresentationGlideWorld = Surprise.SizeSquared() < FMath::Square(FMath::Lerp(400.0f, 1200.0f, SlowSteps))
+			? (PresentationGlideWorld - Surprise).GetClampedToMaxSize(FMath::Lerp(160.0f, 600.0f, SlowSteps)) : FVector::ZeroVector;
 		PresentationGlideWorld *= FMath::Exp(-PresentationGlideRate * DeltaSeconds);
 	}
 	else
@@ -3761,13 +4026,131 @@ void AChaosImpactCharacter::UpdatePresentationLead(const float DeltaSeconds)
 	}
 	PresentationLastActorLocation = ActorLocation;
 	bPresentationHasLast = true;
-	const FVector NewBase = CachedBaseTranslationOffset + GetActorQuat().UnrotateVector(PresentationLeadWorld + PresentationGlideWorld);
+	UpdateNetPathBuffer(DeltaSeconds, bDrawnFromNetwork && !bEliminated);
+	// (Drawn from the buffer, the uneven steps are evened out there: the glide is not added on top.)
+	const float Buffered = FMath::Clamp((NetPathDelay - 0.02f) / 0.04f, 0.0f, 1.0f);
+	const FVector NewBase = CachedBaseTranslationOffset
+		+ GetActorQuat().UnrotateVector(PresentationLeadWorld + PresentationGlideWorld * (1.0f - Buffered) + PresentationBufferWorld);
 	if (!NewBase.Equals(BaseTranslationOffset, 0.01f))
 	{
 		// Keep movement smoothing's current offset and only swap the lead underneath it.
 		CharacterMesh->SetRelativeLocation(CharacterMesh->GetRelativeLocation() - BaseTranslationOffset + NewBase);
 		BaseTranslationOffset = NewBase;
 	}
+}
+
+void AChaosImpactCharacter::UpdateNetPathBuffer(const float DeltaSeconds, const bool bDrawnFromNetwork)
+{
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	// Host: the time sent with every position (it changes whenever the character does).
+	if (HasAuthority() && World && GetNetMode() != NM_Standalone && !GetVelocity().IsNearlyZero(1.0f))
+	{
+		NetPathServerTime = static_cast<float>(World->GetTimeSeconds());
+	}
+#if !UE_BUILD_SHIPPING
+	// Development (-CINoJitterBuffer): as before, to compare when measuring.
+	static const bool bDevOff = FParse::Param(FCommandLine::Get(), TEXT("CINoJitterBuffer"));
+#else
+	constexpr bool bDevOff = false;
+#endif
+	if (!bDrawnFromNetwork || !World || !Movement || bDevOff)
+	{
+		NetPath.Reset();
+		NetPathLastSource = -1.0;
+		bNetPathClockValid = false;
+		NetPathLateness = NetPathDelay = 0.0f;
+		PresentationBufferWorld = FVector::ZeroVector;
+		return;
+	}
+	// When the position now here was true at its sender.
+	double Source = 0.0;
+	if (HasAuthority())
+	{
+		const FNetworkPredictionData_Server_Character* ServerData = Movement->HasPredictionData_Server()
+			? static_cast<const FNetworkPredictionData_Server_Character*>(Movement->GetPredictionData_Server()) : nullptr;
+		Source = ServerData ? ServerData->CurrentClientTimeStamp : 0.0;
+	}
+	else
+	{
+		Source = NetPathServerTime;
+	}
+	const double Now = World->GetTimeSeconds();
+	const FVector Here = GetActorLocation();
+	if (Source > 0.0 && Source != NetPathLastSource)
+	{
+		// (The sender's clock started again, or a real teleport: nothing before it is of use.)
+		const bool bRestart = Source < NetPathLastSource - 1.0 || (!NetPath.IsEmpty() && FVector::DistSquared2D(NetPath.Last().Location, Here) > FMath::Square(900.0f));
+		if (bRestart)
+		{
+			NetPath.Reset();
+			bNetPathClockValid = false;
+			NetPathLateness = 0.0f;
+		}
+		NetPathLastSource = Source;
+		const double Sample = Now - Source;
+		if (!bNetPathClockValid || Sample < NetPathClockOffset)
+		{
+			NetPathClockOffset = Sample;
+			bNetPathClockValid = true;
+		}
+		else
+		{
+			// (Followed upward slowly: a line that has become slower for good is not taken for lateness for ever.)
+			NetPathClockOffset += (Sample - NetPathClockOffset) * 0.004;
+		}
+		NetPathLateness = FMath::Max(NetPathLateness, static_cast<float>(Sample - NetPathClockOffset));
+		if (NetPath.IsEmpty() || Source > NetPath.Last().SourceTime)
+		{
+			NetPath.Add({Source, Here});
+		}
+		while (NetPath.Num() > 2 && NetPath[1].SourceTime < Source - 1.5)
+		{
+			NetPath.RemoveAt(0);
+		}
+	}
+	// The lateness lately: held, then let fall slowly (a tenth of a second in five), so one late bunch does not have the
+	// body hurrying back at once. Under a frame or two of it, nothing is held back.
+	NetPathLateness = FMath::Max(0.0f, NetPathLateness - 0.02f * DeltaSeconds);
+	const float WantedDelay = NetPathLateness < 0.035f ? 0.0f : FMath::Min(NetPathLateness + 0.02f, MaxNetPathDelay);
+	// (Its change is slow too: it shows only as the body running a tenth slower or faster for a moment.)
+	NetPathDelay = FMath::FInterpConstantTo(NetPathDelay, WantedDelay, DeltaSeconds, 0.12f);
+	if (NetPathDelay <= 0.0f || NetPath.Num() < 2 || !bNetPathClockValid)
+	{
+		PresentationBufferWorld = FVector::ZeroVector;
+		return;
+	}
+	// Where it was, at its sender, that long ago (between two positions kept; past the newest, carried on its way for
+	// up to a fifth of a second).
+	const double Play = Now - NetPathClockOffset - NetPathDelay;
+	FVector Drawn = Here;
+	if (Play >= NetPath.Last().SourceTime)
+	{
+		FVector Velocity = GetVelocity();
+		Velocity.Z = 0.0f;
+		Drawn = NetPath.Last().Location + Velocity * static_cast<float>(FMath::Min(Play - NetPath.Last().SourceTime, 0.2));
+	}
+	else
+	{
+		for (int32 Index = NetPath.Num() - 1; Index > 0; --Index)
+		{
+			if (NetPath[Index - 1].SourceTime <= Play)
+			{
+				const double Span = NetPath[Index].SourceTime - NetPath[Index - 1].SourceTime;
+				Drawn = Span > 0.0 ? FMath::Lerp(NetPath[Index - 1].Location, NetPath[Index].Location, static_cast<float>((Play - NetPath[Index - 1].SourceTime) / Span))
+					: NetPath[Index].Location;
+				break;
+			}
+			Drawn = NetPath[0].Location;
+		}
+	}
+	// The engine's own smoothing has the mesh off the capsule already by this much: only the rest is added.
+	const FNetworkPredictionData_Client_Character* Smoothing = Movement->HasPredictionData_Client() ? Movement->GetPredictionData_Client_Character() : nullptr;
+	FVector Offset = Drawn - Here - (Smoothing ? Smoothing->MeshTranslationOffset : FVector::ZeroVector);
+	Offset.Z = 0.0f;
+	// (Never further than a run could be behind in that time, and eased in so the switch does not show.)
+	const FVector Target = Offset.GetClampedToMaxSize(900.0f * MaxNetPathDelay);
+	PresentationBufferWorld = FMath::VInterpTo(PresentationBufferWorld, Target, DeltaSeconds, 30.0f);
 }
 
 void AChaosImpactCharacter::ClientShowRespawn_Implementation(const FString& DefeatedBy, const float Seconds,
@@ -4121,6 +4504,7 @@ void AChaosImpactCharacter::TakeBackLastPickup()
 	const int32 Slot = CarriedBallCount - 1;
 	CarriedBallTypes = ChaosImpactBallTypes::SetPackedSlot(CarriedBallTypes, Slot, static_cast<EChaosImpactBallType>(0));
 	SetSlotSnowGrowth(Slot, 0.0f);
+	SnowRunOverHits[FMath::Clamp(Slot, 0, 1)] = 0;
 	--CarriedBallCount;
 	UpdateBallPresentation();
 	ForceNetUpdate();
@@ -4205,6 +4589,7 @@ void AChaosImpactCharacter::PushCarriedBall(const EChaosImpactBallType Type)
 	CarriedBallTypes = ChaosImpactBallTypes::SetPackedSlot(CarriedBallTypes, FMath::Max(CarriedBallCount, 0), Type);
 	// A snowball starts small whoever last carried it.
 	SetSlotSnowGrowth(FMath::Max(CarriedBallCount, 0), 0.0f);
+	SnowRunOverHits[FMath::Clamp(CarriedBallCount, 0, 1)] = 0;
 	++CarriedBallCount;
 }
 
@@ -4212,10 +4597,12 @@ EChaosImpactBallType AChaosImpactCharacter::PopCarriedBall()
 {
 	BallForm->Pop();
 	const EChaosImpactBallType Type = GetCarriedBallType(0);
-	CarriedBallTypes = static_cast<uint8>(CarriedBallTypes >> ChaosImpactBallTypes::PackedBitsPerSlot);
+	CarriedBallTypes = static_cast<uint16>(CarriedBallTypes >> ChaosImpactBallTypes::PackedBitsPerSlot);
 	CarriedBallCount = FMath::Max(0, CarriedBallCount - 1);
 	SetSlotSnowGrowth(0, GetSnowGrowth(1));
 	SetSlotSnowGrowth(1, 0.0f);
+	SnowRunOverHits[0] = SnowRunOverHits[1];
+	SnowRunOverHits[1] = 0;
 	return Type;
 }
 
@@ -4226,6 +4613,7 @@ void AChaosImpactCharacter::ClearCarriedBalls()
 	CarriedBallTypes = 0;
 	SetSlotSnowGrowth(0, 0.0f);
 	SetSlotSnowGrowth(1, 0.0f);
+	SnowRunOverHits[0] = SnowRunOverHits[1] = 0;
 }
 
 void AChaosImpactCharacter::SwapCarriedBalls()
@@ -4240,6 +4628,7 @@ void AChaosImpactCharacter::SwapCarriedBalls()
 	const float Growth[] = {GetSnowGrowth(1), GetSnowGrowth(0)};
 	SetSlotSnowGrowth(0, Growth[0]);
 	SetSlotSnowGrowth(1, Growth[1]);
+	Swap(SnowRunOverHits[0], SnowRunOverHits[1]);
 }
 
 void AChaosImpactCharacter::RequestBallSwap()
@@ -4451,6 +4840,21 @@ void AChaosImpactCharacter::ApplyHeldBallAppearance(UStaticMeshComponent* HandBa
 		}
 		Material = HeldAnchorMaterial;
 		break;
+	case EChaosImpactBallType::Swap:
+	case EChaosImpactBallType::Barrier:
+	case EChaosImpactBallType::Mine:
+	{
+		TObjectPtr<UMaterialInstanceDynamic>& Kind = HeldKindMaterials.FindOrAdd(Type);
+		if (!Kind)
+		{
+			// (The same deep colours as the balls lying about: the kinds' bright ones wash out pale in the hand.)
+			Kind = MakeEmissive(this, Type == EChaosImpactBallType::Mine ? FLinearColor(0.8f, 0.01f, 0.03f)
+				: Type == EChaosImpactBallType::Swap ? FLinearColor(0.34f, 0.28f, 0.85f) : FLinearColor(0.1f, 0.38f, 0.8f),
+				Type == EChaosImpactBallType::Mine ? 0.85f : 1.2f);
+		}
+		Material = Kind;
+		break;
+	}
 	default:
 		// A normal ball: the same look as on the floor and in flight (glossy black, bands of light-blue light; its
 		// bands glow, so it never looks black on a hand's shadowed side).
@@ -4619,6 +5023,10 @@ void AChaosImpactCharacter::WarpTo(const FVector& Location)
 	if (bIsDashing)
 	{
 		FinishDash();
+	}
+	if (bAnchorZipping)
+	{
+		EndAnchorZip(false);
 	}
 	SetActorLocation(Location, false, nullptr, ETeleportType::TeleportPhysics);
 	GetCharacterMovement()->StopMovementImmediately();
@@ -5196,6 +5604,7 @@ void AChaosImpactCharacter::UpdateAnchorZip(const float DeltaSeconds)
 		ZipPawnResponse = GetCapsuleComponent()->GetCollisionResponseToChannel(ECC_Pawn);
 		GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 		PlayControllerRumble(0.35f, 0.55f, 0.25f);
+		SetAnchorZipShown(true);
 		UE_LOG(LogChaosImpact, Log, TEXT("Anchor zip: %s from %s to %s (%.2fs)"), *GetNameSafe(GetPlayerState()), *ZipFrom.ToCompactString(),
 			*ZipTo.ToCompactString(), ZipDuration);
 	}
@@ -5242,6 +5651,7 @@ void AChaosImpactCharacter::EndAnchorZip(const bool bArrived)
 	if (bAnchorZipping)
 	{
 		GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Pawn, ZipPawnResponse);
+		SetAnchorZipShown(false);
 	}
 	bAnchorZipping = false;
 	ZipHook.Reset();
@@ -5257,6 +5667,258 @@ void AChaosImpactCharacter::EndAnchorZip(const bool bArrived)
 		Movement->Velocity = bArrived && !bWall ? Flat * 420.0f : FVector(0.0f, 0.0f, -100.0f);
 	}
 	PreventClientMoveCombining();
+}
+
+void AChaosImpactCharacter::SetAnchorZipShown(const bool bOn)
+{
+	if (bAnchorZipShown == bOn)
+	{
+		return;
+	}
+	bAnchorZipShown = bOn;
+	if (!HasAuthority())
+	{
+		ServerSetAnchorZipShown(bOn);
+		return;
+	}
+	if (bOn)
+	{
+		// A new flight: nobody rammed yet.
+		AnchorRamHit.Reset();
+		bAnchorRamTracked = false;
+	}
+	else
+	{
+		AnchorZipEndedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	}
+	ForceNetUpdate();
+}
+
+void AChaosImpactCharacter::ServerSetAnchorZipShown_Implementation(const bool bOn)
+{
+	SetAnchorZipShown(bOn);
+}
+
+bool AChaosImpactCharacter::TryAnchorRam(AChaosImpactCharacter* Victim, const bool bReported)
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World || !IsValid(Victim) || Victim == this || Victim->IsEliminated() || Victim->IsTrainingMenuFrozen()
+		|| AnchorRamHit.Contains(Victim) || (Victim->GetBallForm() && Victim->GetBallForm()->IsCaptured())
+		|| AChaosImpactGameState::AreTeammates(World, this, Victim))
+	{
+		return false;
+	}
+	// Knocked along the way it flies (and away from it).
+	FVector Along = GetVelocity().GetSafeNormal2D();
+	if (Along.IsNearlyZero())
+	{
+		Along = GetActorForwardVector().GetSafeNormal2D();
+	}
+	const FVector Away = ((Victim->GetActorLocation() - GetActorLocation()).GetSafeNormal2D() * 0.6f + Along).GetSafeNormal2D();
+	const float Applied = UGameplayStatics::ApplyDamage(Victim, 1.0f, GetController(), this, nullptr);
+	if (Applied <= 0.0f)
+	{
+		return false;
+	}
+	AnchorRamHit.Add(Victim);
+	MulticastAnchorRam(Victim->GetActorLocation());
+	if (!Victim->IsEliminated())
+	{
+		Victim->ApplyBlastKnockback(Away * 1150.0f + FVector(0.0f, 0.0f, 420.0f));
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Anchor ram%s: %s on %s"), bReported ? TEXT(" (reported)") : TEXT(""), *GetName(), *Victim->GetName());
+	return true;
+}
+
+void AChaosImpactCharacter::MulticastAnchorRam_Implementation(const FVector_NetQuantize At)
+{
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::AnchorRam, At);
+}
+
+void AChaosImpactCharacter::ServerReportAnchorRam_Implementation(AChaosImpactCharacter* Attacker)
+{
+	UWorld* World = GetWorld();
+	if (!World || !IsValid(Attacker) || Attacker == this || bEliminated)
+	{
+		return;
+	}
+	// Reaches here a round trip after that screen saw it: the flight may just have ended, and both copies trail.
+	const float RoundTrip = GetNetworkRoundTripSeconds();
+	const bool bRecent = Attacker->bAnchorZipShown || World->GetTimeSeconds() - Attacker->AnchorZipEndedAt < 0.4 + RoundTrip;
+	const float Slack = FMath::Min(200.0f + 900.0f * RoundTrip, 900.0f);
+	if (!bRecent || FVector::Dist2D(Attacker->GetActorLocation(), GetActorLocation()) > Slack)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Reported anchor ram rejected: %s on %s"), *Attacker->GetName(), *GetName());
+		return;
+	}
+	TGuardValue<bool> ReportGuard(bApplyingReportedHit, true);
+	Attacker->TryAnchorRam(this, true);
+}
+
+void AChaosImpactCharacter::UpdateAnchorRam(const float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	const float Radius = Capsule ? Capsule->GetScaledCapsuleRadius() : 40.0f;
+	const float HalfHeight = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 90.0f;
+	const FVector Here = GetActorLocation();
+	if (HasAuthority())
+	{
+		// The host: along the stretch flown since the last frame, its own players and the CPUs (a guest says on its own).
+		if (bAnchorZipShown && !bEliminated)
+		{
+			const FVector From = bAnchorRamTracked ? AnchorRamLast : Here;
+			AnchorRamLast = Here;
+			bAnchorRamTracked = true;
+			for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+			{
+				AChaosImpactCharacter* Victim = *It;
+				if (Victim == this || Victim->IsRemotePlayerOnServer() || Victim->IsEliminated() || AnchorRamHit.Contains(Victim))
+				{
+					continue;
+				}
+				const UCapsuleComponent* Theirs = Victim->GetCapsuleComponent();
+				const FVector Body = Victim->GetActorLocation();
+				const FVector Near = FMath::ClosestPointOnSegment(Body, From, Here);
+				if (FVector::Dist2D(Near, Body) <= Radius + AnchorRamReach + (Theirs ? Theirs->GetScaledCapsuleRadius() : 40.0f)
+					&& FMath::Abs(Near.Z - Body.Z) <= HalfHeight + (Theirs ? Theirs->GetScaledCapsuleHalfHeight() : 90.0f))
+				{
+					TryAnchorRam(Victim, false);
+				}
+			}
+		}
+		else
+		{
+			bAnchorRamTracked = false;
+		}
+	}
+	else if (IsLocallyControlled() && IsPlayerControlled() && !bEliminated && !IsDashing())
+	{
+		// A guest's own player: someone flying on an anchor met it on this screen.
+		for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+		{
+			AChaosImpactCharacter* Flyer = *It;
+			if (Flyer == this)
+			{
+				continue;
+			}
+			if (!Flyer->bAnchorZipShown)
+			{
+				AnchorRamReported.Remove(Flyer);
+				continue;
+			}
+			if (AnchorRamReported.Contains(Flyer) || AChaosImpactGameState::AreTeammates(World, Flyer, this))
+			{
+				continue;
+			}
+			const UCapsuleComponent* Theirs = Flyer->GetCapsuleComponent();
+			const FVector At = Flyer->GetPresentationLocation();
+			if (FVector::Dist2D(At, Here) <= Radius + AnchorRamReach + (Theirs ? Theirs->GetScaledCapsuleRadius() : 40.0f)
+				&& FMath::Abs(At.Z - Here.Z) <= HalfHeight + (Theirs ? Theirs->GetScaledCapsuleHalfHeight() : 90.0f))
+			{
+				AnchorRamReported.Add(Flyer);
+				ServerReportAnchorRam(Flyer);
+			}
+		}
+	}
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		UpdateAnchorZipPresentation();
+	}
+}
+
+void AChaosImpactCharacter::UpdateAnchorZipPresentation()
+{
+	const bool bOn = bAnchorZipShown && !bEliminated && !IsHidden();
+	const double Now = FPlatformTime::Seconds();
+	const FLinearColor Line(0.25f, 0.8f, 1.0f, 1.0f);
+	const FLinearColor White(0.95f, 0.99f, 1.0f, 1.0f);
+	const auto Effect = [this]() -> AChaosImpactFxKit*
+	{
+		AChaosImpactFxKit* Fx = ZipFx.Get();
+		if (!IsValid(Fx))
+		{
+			Fx = AChaosImpactFxKit::Spawn(this, GetActorLocation());
+			ZipFx = Fx;
+		}
+		return Fx;
+	};
+	const FVector Body = (IsLocallyControlled() || HasAuthority() ? GetActorLocation() : GetPresentationLocation()) + FVector(0.0f, 0.0f, 10.0f);
+	FVector Along = GetVelocity().GetSafeNormal();
+	if (Along.IsNearlyZero())
+	{
+		Along = GetActorForwardVector();
+	}
+	// Off and on: a ring of air where the flight begins, a smaller one where it lands.
+	if (bOn != bZipFxWasOn)
+	{
+		bZipFxWasOn = bOn;
+		if (bOn)
+		{
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::AnchorZip, Body);
+		}
+		if (AChaosImpactFxKit* Fx = Effect())
+		{
+			FChaosImpactFxPiece Ring;
+			Ring.Look = bOn ? EChaosImpactFxLook::AirRing : EChaosImpactFxLook::Ring;
+			Ring.Location = Body - Fx->GetActorLocation() - (bOn ? FVector::ZeroVector : FVector(0.0f, 0.0f, 90.0f));
+			Ring.Life = bOn ? 0.26f : 0.3f;
+			Ring.SizeFrom = bOn ? 90.0f : 80.0f;
+			Ring.SizeTo = bOn ? 300.0f : 220.0f;
+			Ring.Color = Line;
+			Ring.CoreColor = White;
+			Ring.Intensity = 2.6f;
+			Ring.Attack = 0.05f;
+			Fx->Add(Ring);
+		}
+	}
+	if (!bOn || Now < ZipFxNextAt)
+	{
+		return;
+	}
+	ZipFxNextAt = Now + 0.025;
+	AChaosImpactFxKit* Fx = Effect();
+	if (!Fx)
+	{
+		return;
+	}
+	const FVector At = Body - Fx->GetActorLocation();
+	// A soft light about the body (small: the field stays in view).
+	FChaosImpactFxPiece Glow;
+	Glow.Location = At;
+	Glow.Life = 0.09f;
+	Glow.SizeFrom = 125.0f;
+	Glow.SizeTo = 70.0f;
+	Glow.Color = Line;
+	Glow.CoreColor = White;
+	Glow.Intensity = 1.25f;
+	Glow.Attack = 0.1f;
+	Glow.NoiseAmount = 0.2f;
+	Fx->Add(Glow);
+	// Speed lines streaming back off it.
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		const FVector Side = FVector::CrossProduct(Along, FVector::UpVector).GetSafeNormal();
+		FChaosImpactFxPiece Streak;
+		Streak.Look = EChaosImpactFxLook::Streak;
+		Streak.Location = At + Side * FMath::FRandRange(-38.0f, 38.0f) + FVector(0.0f, 0.0f, FMath::FRandRange(-55.0f, 45.0f)) - Along * 30.0f;
+		Streak.Velocity = -Along * FMath::FRandRange(500.0f, 800.0f);
+		Streak.Drag = 4.0f;
+		Streak.Life = FMath::FRandRange(0.14f, 0.22f);
+		Streak.SizeFrom = 170.0f;
+		Streak.SizeTo = 30.0f;
+		Streak.Width = 7.0f;
+		Streak.Color = Line;
+		Streak.CoreColor = White;
+		Streak.Intensity = 2.8f;
+		Streak.Attack = 0.05f;
+		Streak.ErodeTo = 0.0f;
+		Fx->Add(Streak);
+	}
 }
 
 bool AChaosImpactCharacter::GetHookHandLocation(FVector& OutLocation) const
@@ -5396,7 +6058,8 @@ void AChaosImpactCharacter::UpdateSnowball()
 				{
 					if (GetCarriedBallType(Slot) == EChaosImpactBallType::Snow)
 					{
-						SetSlotSnowGrowth(Slot, GetSnowGrowth(Slot) + AddedGrowth);
+						// (One that has run people over grows less big each time.)
+						SetSlotSnowGrowth(Slot, FMath::Min(GetSnowGrowth(Slot) + AddedGrowth, FMath::Max(GetSnowGrowth(Slot), GetSnowGrowthCap(SnowRunOverHits[Slot]))));
 					}
 				}
 			}
@@ -5443,7 +6106,8 @@ void AChaosImpactCharacter::UpdateSnowRollPresentation()
 	const bool bOverhead = bRightSnow && ChaosImpactBallTypes::IsSnowOverhead(RightScale);
 	float ChargeSeconds = 0.0f;
 	const bool bCharging = bRightSnow && GetPresentedCharge(ChargeSeconds);
-	const bool bInHand = (ToonCharacter && (ToonCharacter->HasAuthoredAnimations() || ToonCharacter->HasFixedCarrySockets() || ToonCharacter->HasFootCarry())) || (bCharging && !bOverhead);
+	// (Everyone rolls it, マグロ and the others who carry their balls in a fin, a fingertip or a foot included.)
+	const bool bInHand = bCharging && !bOverhead;
 	if (HeldBallMesh && bRightSnow && !bThrowReleasePending && !bEliminated)
 	{
 		HeldBallMesh->SetRelativeScale3D(FVector(0.34f * RightScale));
@@ -5519,6 +6183,155 @@ void AChaosImpactCharacter::UpdateSnowRollPresentation()
 	SnowRollMesh->SetWorldLocationAndRotation(Center, SnowRollSpin);
 	SnowRollMesh->SetWorldScale3D(FVector(0.48f * RightScale));
 	SnowRollMesh->SetVisibility(true, true);
+}
+
+bool AChaosImpactCharacter::GetRolledSnowball(const bool bShown, FVector& OutCenter, float& OutRadius) const
+{
+	if (bEliminated || IsHidden() || bThrowReleasePending || CarriedBallCount <= 0
+		|| GetCarriedBallType(0) != EChaosImpactBallType::Snow)
+	{
+		return false;
+	}
+	// Charging a throw: a small one is in the hand, a big one being lifted over the head.
+	float ChargeSeconds = 0.0f;
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (bIsChargingThrow || GetPresentedCharge(ChargeSeconds) || !Capsule)
+	{
+		return false;
+	}
+	OutRadius = 24.0f * ChaosImpactBallTypes::GetSnowScale(GetSnowGrowth(0));
+	const FVector Here = bShown ? GetPresentationLocation() : GetActorLocation();
+	OutCenter = Here + GetActorForwardVector().GetSafeNormal2D() * (Capsule->GetScaledCapsuleRadius() + OutRadius + 28.0f)
+		+ FVector(0.0f, 0.0f, OutRadius - Capsule->GetScaledCapsuleHalfHeight());
+	return true;
+}
+
+bool AChaosImpactCharacter::IsUnderRolledSnowball(const AChaosImpactCharacter* Victim, const bool bShown) const
+{
+	FVector Center;
+	float Radius = 0.0f;
+	if (!Victim || Victim == this || GetVelocity().Size2D() < SnowRunOverMinSpeed || !GetRolledSnowball(bShown, Center, Radius)
+		|| !ChaosImpactBallTypes::IsSnowOverhead(Radius / 24.0f))
+	{
+		return false;
+	}
+	const UCapsuleComponent* Capsule = Victim->GetCapsuleComponent();
+	const float VictimRadius = Capsule ? Capsule->GetScaledCapsuleRadius() : 40.0f;
+	const float VictimHalf = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 90.0f;
+	const FVector Body = Victim->GetActorLocation();
+	// Touching it across, and standing on about the same floor as it rolls on.
+	return FVector::Dist2D(Body, Center) <= Radius + VictimRadius * 0.85f
+		&& FMath::Abs((Body.Z - VictimHalf) - (Center.Z - Radius)) <= 90.0f;
+}
+
+bool AChaosImpactCharacter::TryRunOverWithSnowball(AChaosImpactCharacter* Victim, const bool bReported)
+{
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || !World || !IsValid(Victim) || Victim == this || Victim->IsEliminated() || Victim->IsTrainingMenuFrozen()
+		|| (Victim->GetBallForm() && Victim->GetBallForm()->IsCaptured()) || AChaosImpactGameState::AreTeammates(World, this, Victim))
+	{
+		return false;
+	}
+	const double Now = World->GetTimeSeconds();
+	if (const double* Last = SnowRunOverAt.Find(Victim); Last && Now - *Last < SnowRunOverCooldownSeconds)
+	{
+		return false;
+	}
+	const float Scale = CarriedBallCount > 0 ? ChaosImpactBallTypes::GetSnowScale(GetSnowGrowth(0)) : 1.0f;
+	const FVector Away = ((Victim->GetActorLocation() - GetActorLocation()).GetSafeNormal2D() + GetActorForwardVector().GetSafeNormal2D()).GetSafeNormal2D();
+	const float Applied = UGameplayStatics::ApplyDamage(Victim, 1.0f, GetController(), this, nullptr);
+	if (Applied <= 0.0f)
+	{
+		return false;
+	}
+	SnowRunOverAt.Add(Victim, Now);
+	// Knocked away along the way it rolls (a bigger snowball, further).
+	if (!Victim->IsEliminated())
+	{
+		Victim->ApplyBlastKnockback(Away * (950.0f + 250.0f * FMath::Clamp(Scale - 1.0f, 0.0f, 2.0f)) + FVector(0.0f, 0.0f, 380.0f));
+	}
+	// The snowball pays for it: broken up (SnowRunOverBreakHits; were it more, back to its smallest each time).
+	FVector Center = Victim->GetActorLocation();
+	float Radius = 24.0f * Scale;
+	GetRolledSnowball(false, Center, Radius);
+	const bool bBroke = ++SnowRunOverHits[0] >= SnowRunOverBreakHits;
+	if (bBroke && CarriedBallCount > 0)
+	{
+		PopCarriedBall();
+		UpdateBallPresentation();
+		ClientBallCountReset(CarriedBallCount, CarriedBallTypes);
+	}
+	else
+	{
+		SetSlotSnowGrowth(0, 0.0f);
+	}
+	ForceNetUpdate();
+	MulticastSnowRunOver(Center, Scale, bBroke);
+	UE_LOG(LogChaosImpact, Log, TEXT("Snowball run-over%s: %s on %s"), bReported ? TEXT(" (reported)") : TEXT(""), *GetName(), *Victim->GetName());
+	return true;
+}
+
+void AChaosImpactCharacter::MulticastSnowRunOver_Implementation(FVector_NetQuantize At, const float Scale, const bool bBroke)
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	ChaosImpactBallTypes::PlaySnowBurst(this, At, FMath::Clamp(Scale * (bBroke ? 0.75f : 0.5f), 0.6f, 3.2f));
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SnowCrush, At, bBroke ? 1.0f : 0.85f);
+	if (bBroke)
+	{
+		// (The snowball itself breaks up.)
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::SnowBurst, At, 0.9f, 0.9f);
+	}
+}
+
+void AChaosImpactCharacter::UpdateSnowRunOver()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		// The host judges its own players and the CPUs (a guest is judged on their own screen, below).
+		FVector Center;
+		float Radius = 0.0f;
+		if (!GetRolledSnowball(false, Center, Radius) || GetVelocity().Size2D() < SnowRunOverMinSpeed)
+		{
+			return;
+		}
+		for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+		{
+			AChaosImpactCharacter* Victim = *It;
+			if (Victim != this && !Victim->IsRemotePlayerOnServer() && !Victim->IsDashing() && IsUnderRolledSnowball(Victim, false))
+			{
+				TryRunOverWithSnowball(Victim, false);
+			}
+		}
+		return;
+	}
+	if (!IsLocallyControlled() || !IsPlayerControlled() || bEliminated || IsDashing())
+	{
+		return;
+	}
+	// This screen's own player under someone's snowball as drawn here: the host is told.
+	const double Now = World->GetTimeSeconds();
+	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+	{
+		AChaosImpactCharacter* Attacker = *It;
+		if (Attacker == this || AChaosImpactGameState::AreTeammates(World, Attacker, this) || !Attacker->IsUnderRolledSnowball(this, true))
+		{
+			continue;
+		}
+		double& Last = SnowRunOverReportedAt.FindOrAdd(Attacker, -100.0);
+		if (Now - Last >= SnowRunOverCooldownSeconds)
+		{
+			Last = Now;
+			ServerReportSnowRunOver(Attacker);
+		}
+	}
 }
 
 bool AChaosImpactCharacter::CanDropBall() const
@@ -5785,6 +6598,14 @@ void AChaosImpactCharacter::GetThrowFlight(const float ChargeAlpha, const EChaos
 		OutMode = EChaosImpactBallFlightMode::Arc;
 		bOutOverhead = true;
 	}
+	else if (Type == EChaosImpactBallType::Barrier || Type == EChaosImpactBallType::Mine)
+	{
+		// Set down rather than thrown: lobbed onto the floor ahead, further the longer it was charged.
+		OutHorizontalSpeed = FMath::Lerp(ChaosImpactBallTypes::GadgetThrowMinSpeed, ChaosImpactBallTypes::GadgetThrowMaxSpeed,
+			FMath::Clamp(ChargeAlpha, 0.0f, 1.0f));
+		OutUpSpeed = ChaosImpactBallTypes::GadgetThrowUpSpeed;
+		OutMode = EChaosImpactBallFlightMode::Arc;
+	}
 	else if (Type == EChaosImpactBallType::Drive)
 	{
 		// Flies level, at a speed set by the charge (a fast one turns wider), however it is steered after.
@@ -5900,6 +6721,35 @@ bool AChaosImpactCharacter::PredictThrowLanding(const float ChargeAlpha, FVector
 			return true;
 		}
 	}
+	FVector Landing;
+	if (!PredictThrowContact(ChargeAlpha, Landing))
+	{
+		return false;
+	}
+	const float Radius = 24.0f * (Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::NovaShownScale : Scale);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactThrowPreview), false, this);
+	const FCollisionObjectQueryParams Stage(ECC_WorldStatic);
+	FHitResult Ground;
+	if (!World->LineTraceSingleByObjectType(Ground, Landing + FVector(0.0f, 0.0f, 10.0f),
+		Landing - FVector(0.0f, 0.0f, 3000.0f), Stage, Params))
+	{
+		return false;
+	}
+	OutGround = Ground.ImpactPoint;
+	OutRadius = Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaBlastRadius(Scale) : FMath::Max(Radius, 45.0f);
+	return true;
+}
+
+bool AChaosImpactCharacter::PredictThrowContact(const float ChargeAlpha, FVector& OutContact, TArray<FVector>* OutArc) const
+{
+	UWorld* World = GetWorld();
+	if (!World || CarriedBallCount <= 0)
+	{
+		return false;
+	}
+	const EChaosImpactBallType Type = GetCarriedBallType(0);
+	const float Scale = Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaScale(ChargeAlpha)
+		: Type == EChaosImpactBallType::Snow ? ChaosImpactBallTypes::GetSnowScale(GetSnowGrowth(0)) : 1.0f;
 	float Horizontal = 0.0f;
 	float Upward = 0.0f;
 	EChaosImpactBallFlightMode Mode = EChaosImpactBallFlightMode::Arc;
@@ -5927,6 +6777,10 @@ bool AChaosImpactCharacter::PredictThrowLanding(const float ChargeAlpha, FVector
 	bool bLands = false;
 	for (float Time = 0.0f; Time < 4.0f; Time += Step)
 	{
+		if (OutArc)
+		{
+			OutArc->Add(Position);
+		}
 		const FVector Next = Position + Velocity * Step + FVector(0.0f, 0.0f, 0.5f * Gravity * Step * Step);
 		Velocity.Z += Gravity * Step;
 		FHitResult Hit;
@@ -5938,15 +6792,161 @@ bool AChaosImpactCharacter::PredictThrowLanding(const float ChargeAlpha, FVector
 		}
 		Position = Next;
 	}
-	FHitResult Ground;
-	if (!bLands || !World->LineTraceSingleByObjectType(Ground, Landing + FVector(0.0f, 0.0f, 10.0f),
-		Landing - FVector(0.0f, 0.0f, 3000.0f), Stage, Params))
+	if (!bLands)
 	{
 		return false;
 	}
-	OutGround = Ground.ImpactPoint;
-	OutRadius = Type == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaBlastRadius(Scale) : FMath::Max(Radius, 45.0f);
+	if (OutArc)
+	{
+		OutArc->Add(Landing);
+	}
+	OutContact = Landing;
 	return true;
+}
+
+bool AChaosImpactCharacter::PredictBarrierPlacement(const float ChargeAlpha, FVector& OutFloor, FVector& OutHeading, TArray<FVector>* OutArc) const
+{
+	if (CarriedBallCount <= 0 || GetCarriedBallType(0) != EChaosImpactBallType::Barrier)
+	{
+		return false;
+	}
+	FVector Contact;
+	if (!PredictThrowContact(ChargeAlpha, Contact, OutArc) || !AChaosImpactGadget::FindFloor(GetWorld(), Contact, OutFloor))
+	{
+		return false;
+	}
+	OutHeading = (IsLocallyControlled() || HasAuthority() ? AimDirection : GetActorForwardVector()).GetSafeNormal2D();
+	return !OutHeading.IsNearlyZero();
+}
+
+bool AChaosImpactCharacter::IsBarrierPreviewShown() const
+{
+	return BarrierPreviewLines && BarrierPreviewLines->IsVisible();
+}
+
+namespace
+{
+	/** A flat quad (seen from both sides) for the barrier preview. */
+	void AppendPreviewQuad(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& A, const FVector& B, const FVector& C, const FVector& D)
+	{
+		const int32 Base = Mesh.Vertices.Num();
+		const FVector Normal = FVector::CrossProduct(B - A, D - A).GetSafeNormal();
+		Mesh.Vertices.Append({A, B, C, D});
+		Mesh.Normals.Append({Normal, Normal, Normal, Normal});
+		Mesh.UVs.Append({FVector2D(0, 0), FVector2D(1, 0), FVector2D(1, 1), FVector2D(0, 1)});
+		Mesh.Triangles.Append({Base, Base + 1, Base + 2, Base, Base + 2, Base + 3, Base, Base + 2, Base + 1, Base, Base + 3, Base + 2});
+	}
+
+	/** A strip From-To, Width wide, its flat side turned toward Facing. */
+	void AppendPreviewStrip(ChaosImpactIceMeshes::FMeshBuffers& Mesh, const FVector& From, const FVector& To, const float Width, const FVector& Facing)
+	{
+		FVector Side = FVector::CrossProduct(To - From, Facing).GetSafeNormal();
+		if (Side.IsNearlyZero())
+		{
+			Side = FVector::CrossProduct(To - From, FVector::UpVector).GetSafeNormal();
+		}
+		Side *= Width * 0.5f;
+		AppendPreviewQuad(Mesh, From - Side, From + Side, To + Side, To - Side);
+	}
+}
+
+void AChaosImpactCharacter::UpdateBarrierPreview()
+{
+	UWorld* World = GetWorld();
+	FVector Floor = FVector::ZeroVector, Heading = FVector::ForwardVector;
+	TArray<FVector> Arc;
+	const bool bShow = World && IsLocallyControlled() && !bDevAutoInput && bIsChargingThrow && !bThrowReleasePending && !bTrainingMenuFrozen
+		&& !bEliminated && !IsHidden() && CarriedBallCount > 0 && GetCarriedBallType(0) == EChaosImpactBallType::Barrier
+		&& PredictBarrierPlacement(GetThrowChargeAlpha(), Floor, Heading, &Arc);
+	if (World)
+	{
+		FVector Lead = bShow ? (Floor - GetActorLocation()) * 0.45f : FVector::ZeroVector;
+		Lead.Z = 0.0f;
+		BarrierCameraLead = FMath::VInterpTo(BarrierCameraLead, Lead.GetClampedToMaxSize(700.0f), World->GetDeltaSeconds(), bShow ? 2.5f : 3.0f);
+	}
+	if (!bShow)
+	{
+		for (UProceduralMeshComponent* Part : {BarrierPreviewLines.Get(), BarrierPreviewPane.Get()})
+		{
+			if (Part && Part->IsVisible())
+			{
+				Part->SetVisibility(false);
+			}
+		}
+		return;
+	}
+	using namespace ChaosImpactBallTypes;
+	if (!BarrierPreviewLines)
+	{
+		const FLinearColor Color = GetColor(EChaosImpactBallType::Barrier);
+		BarrierPreviewLineMaterial = MakeAdditive(this, Color, 1.1f);
+		BarrierPreviewPaneMaterial = MakeAdditive(this, Color, 0.22f);
+		// (Not attached to the character: they stand where the wall will, in the world.)
+		BarrierPreviewLines = ChaosImpactLightning::CreateComponent(this, nullptr, BarrierPreviewLineMaterial);
+		BarrierPreviewPane = ChaosImpactLightning::CreateComponent(this, nullptr, BarrierPreviewPaneMaterial);
+		for (UProceduralMeshComponent* Part : {BarrierPreviewLines.Get(), BarrierPreviewPane.Get()})
+		{
+			if (Part)
+			{
+				// (Only this player's own view: a plan, not a warning to anyone else.)
+				Part->SetOnlyOwnerSee(true);
+			}
+		}
+	}
+	if (!BarrierPreviewLines || !BarrierPreviewPane)
+	{
+		return;
+	}
+	ChaosImpactIceMeshes::FMeshBuffers Lines, Pane;
+	const FVector Facing = ChaosImpactLightning::GetViewDirection(World);
+	// The flight: a dashed line from the hand (its first steps left out: they are inside the hand) to where it comes down.
+	for (int32 Index = 2; Index + 1 < Arc.Num(); Index += 2)
+	{
+		AppendPreviewStrip(Lines, Arc[Index], Arc[Index + 1], 10.0f, Facing);
+	}
+	// The wall as it will stand: a faint pane, its outline bright, a line along the floor.
+	const FVector Right(-Heading.Y, Heading.X, 0.0f);
+	const float Half = AChaosImpactGadget::BarrierWidth * 0.5f;
+	const float Height = AChaosImpactGadget::BarrierHeight;
+	const FVector Lift(0.0f, 0.0f, 3.0f);
+	const FVector BottomLeft = Floor - Right * Half + Lift, BottomRight = Floor + Right * Half + Lift;
+	const FVector Up(0.0f, 0.0f, Height);
+	AppendPreviewQuad(Pane, BottomLeft, BottomRight, BottomRight + Up, BottomLeft + Up);
+	AppendPreviewStrip(Lines, BottomLeft, BottomLeft + Up, 9.0f, Heading);
+	AppendPreviewStrip(Lines, BottomRight, BottomRight + Up, 9.0f, Heading);
+	AppendPreviewStrip(Lines, BottomLeft + Up, BottomRight + Up, 7.0f, Heading);
+	AppendPreviewStrip(Lines, BottomLeft, BottomRight, 10.0f, FVector::UpVector);
+	// Its footprint on the floor, so it reads from straight above as well (where the pane is only a line).
+	const FVector Depth = Heading * 28.0f;
+	AppendPreviewQuad(Pane, BottomLeft - Depth, BottomRight - Depth, BottomRight + Depth, BottomLeft + Depth);
+	AppendPreviewStrip(Lines, BottomLeft - Depth, BottomRight - Depth, 6.0f, FVector::UpVector);
+	AppendPreviewStrip(Lines, BottomLeft + Depth, BottomRight + Depth, 6.0f, FVector::UpVector);
+	AppendPreviewStrip(Lines, BottomLeft - Depth, BottomLeft + Depth, 6.0f, FVector::UpVector);
+	AppendPreviewStrip(Lines, BottomRight - Depth, BottomRight + Depth, 6.0f, FVector::UpVector);
+	// (Built round the wall's floor, and the parts put there: like the nova's ring, never at the character's place.)
+	for (ChaosImpactIceMeshes::FMeshBuffers* Buffers : {&Lines, &Pane})
+	{
+		for (FVector& Vertex : Buffers->Vertices)
+		{
+			Vertex -= Floor;
+		}
+	}
+	for (UProceduralMeshComponent* Part : {BarrierPreviewLines.Get(), BarrierPreviewPane.Get()})
+	{
+		Part->SetWorldLocationAndRotation(Floor, FRotator::ZeroRotator);
+		Part->SetWorldScale3D(FVector::OneVector);
+	}
+	ChaosImpactLightning::SetMesh(BarrierPreviewLines, Lines);
+	ChaosImpactLightning::SetMesh(BarrierPreviewPane, Pane);
+	const float Time = static_cast<float>(World->GetTimeSeconds());
+	BarrierPreviewLineMaterial->SetScalarParameterValue(TEXT("Intensity"), 1.0f + 0.25f * FMath::Sin(Time * 6.0f));
+	for (UProceduralMeshComponent* Part : {BarrierPreviewLines.Get(), BarrierPreviewPane.Get()})
+	{
+		if (!Part->IsVisible())
+		{
+			Part->SetVisibility(true);
+		}
+	}
 }
 
 void AChaosImpactCharacter::UpdateLandingPreview(const float DeltaSeconds)
@@ -6356,8 +7356,8 @@ void AChaosImpactCharacter::PlayHitFeel(const bool bKnockout)
 		}
 	}
 	// A low thud under the hit's own sound.
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f),
-		bKnockout ? 0.9f : 0.6f, bKnockout ? 0.45f : 0.55f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharThud, GetActorLocation() + FVector(0.0f, 0.0f, 40.0f),
+		bKnockout ? 1.0f : 0.7f, bKnockout ? 0.85f : 1.0f);
 }
 
 void AChaosImpactCharacter::SpawnDashGhost()
@@ -6535,15 +7535,17 @@ void AChaosImpactCharacter::UpdateFeelPresentation(const float DeltaSeconds)
 			FovKickVelocity += 40.0f + 90.0f * FeelThrowCharge;
 		}
 		FovKick = ChaosImpactEase::SpringTo(FovKick, 0.0f, FovKickVelocity, DeltaSeconds, 0.18f);
-		FollowCamera->SetFieldOfView(BaseFieldOfView + FovKick);
+		const float ShoulderFov = ShoulderCamera && IsShoulderViewActive() && bIsChargingThrow ? -ShoulderCamera->ChargeFovDrop : 0.0f;
+		ShoulderFovOffset = ChaosImpactEase::SpringTo(ShoulderFovOffset, ShoulderFov, ShoulderFovVelocity, DeltaSeconds, 0.16f);
+		FollowCamera->SetFieldOfView(BaseFieldOfView + FovKick + ShoulderFovOffset);
 		CameraMoveLead = bAlive && !bDashing ? (Seen * 0.12f).GetClampedToMaxSize(110.0f) : FVector::ZeroVector;
 	}
 	// A throw's whoosh, sharper the harder it was thrown.
 	if (bThrowing && !bFeelWasThrowing && bAlive)
 	{
 		const float Charge = bLocalView ? FeelThrowCharge : 0.4f;
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharDash, Location + GetActorForwardVector() * 60.0f,
-			0.25f + 0.4f * Charge, 1.3f + 0.35f * Charge);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CharWhoosh, Location + GetActorForwardVector() * 60.0f,
+			0.55f + 0.45f * Charge, 0.9f + 0.3f * Charge);
 	}
 	UpdateDashGhosts(DeltaSeconds, bDashing && bAlive);
 	bFeelWasDashing = bDashing;

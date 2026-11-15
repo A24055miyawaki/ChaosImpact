@@ -180,6 +180,9 @@ namespace
 		case EChaosImpactBallType::Prison: return TEXT("当たった相手を殻に閉じこめる。閉じこめた相手は投げられる");
 		case EChaosImpactBallType::Hook: return TEXT("フックを飛ばし、当てた相手や床のボールを手元へ引き寄せる");
 		case EChaosImpactBallType::Anchor: return TEXT("壁や床に打ちこみ、そこまで一気に飛んでいく。ダッシュで止まれる");
+		case EChaosImpactBallType::Swap: return TEXT("当てた相手と自分の場所が入れ替わる。ダメージはない");
+		case EChaosImpactBallType::Barrier: return TEXT("落ちた所に光の壁が立つ。ボールを1つ止めると砕ける。人は通れる");
+		case EChaosImpactBallType::Mine: return TEXT("落ちた所に置かれ、相手が近づくと爆発する。ダッシュで逃げられる");
 		default: return FString();
 		}
 	}

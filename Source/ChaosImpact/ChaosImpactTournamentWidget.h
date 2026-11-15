@@ -130,6 +130,10 @@ private:
 	double NextStickAt = 0.0;
 	bool bStickHeld = false;
 	float LocalTime = 0.0f;
+	/** Development (-CITourWatch): when watching was last asked for, since when this player watches, the bracket opened. */
+	float DevWatchAskedAt = -100.0f;
+	float DevWatchSince = -1.0f;
+	bool bDevWatchBracket = false;
 	/** The design space's width for this player's part of the screen (900 high; 1000 to 1600 wide). */
 	mutable float DesignWidth = 1600.0f;
 	FString Toast;

@@ -38,6 +38,10 @@ namespace ChaosImpactParty
 	inline constexpr float CrownReach = 135.0f;
 	/** The crown's holder walks this much of their usual speed. */
 	inline constexpr float CrownSpeedScale = 0.84f;
+	/** クラウンキープ: everyone starts this share of the way out from the crown to the furthest floor. */
+	inline constexpr float CrownStartShare = 0.6f;
+	/** クラウンキープ: ball pads added at least (as many as the stage has, if more). */
+	inline constexpr int32 CrownExtraBallPadsMin = 6;
 	/** Rubies (and the crown) a player dropped cannot be picked up by them again for this long. */
 	inline constexpr float DropperBlockSeconds = 1.1f;
 	/** A burst of hits (a fire zone's burns) shakes rubies loose once in this long. */
@@ -122,6 +126,13 @@ namespace ChaosImpactParty
 	CHAOSIMPACT_API bool FindFloor(const UWorld* World, const FVector& Location, float Up, float Down, FVector& OutFloor);
 	/** Server: room for a character standing on Floor (nothing solid in the way). */
 	CHAOSIMPACT_API bool IsStandingRoom(const UWorld* World, const FVector& Floor);
+	/**
+	 * How high above the floor a player can get up onto (a jump's reach, a little short of it). Higher than this is a
+	 * ledge nobody can climb: nothing of the party's ever lands up there.
+	 */
+	constexpr float ClimbableRise = 105.0f;
+	/** Floor on the stage's walkable field (Points): level with one of its spots nearby, not up on some ledge or wall. */
+	CHAOSIMPACT_API bool IsOnField(const TArray<FVector>& Points, const FVector& Floor);
 	CHAOSIMPACT_API FVector NearestPoint(const TArray<FVector>& Points, const FVector& Location);
 }
 
@@ -191,6 +202,11 @@ public:
 	void Scatter(const FVector& Origin, int32 Amount, APawn* Dropper);
 	/** A pickup touched at TouchTime (server time). Settled once nobody can have touched it earlier. */
 	void Claim(AChaosImpactCharacter* Character, int32 Id, double TouchTime);
+	/**
+	 * Server: a hook thrown by Character swept From-To (at hand height): every ruby lying along it within Reach (across)
+	 * and Height (up/down) is theirs at once, each flying into them. Returns how many rubies (in value) it took.
+	 */
+	int32 CollectAlong(AChaosImpactCharacter* Character, const FVector& From, const FVector& To, float Reach, float Height);
 	/** The nearest point rubies may lie on (drops from a player knocked off the stage land there). */
 	FVector GetNearestFieldPoint(const FVector& Location) const;
 	const TArray<FVector>& GetFieldPoints() const { return FieldPoints; }

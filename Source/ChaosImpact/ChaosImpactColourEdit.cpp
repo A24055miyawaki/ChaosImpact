@@ -4,6 +4,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactBodyPaint.h"
 #include "ChaosImpactCustomColour.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPaintStudio.h"
 #include "ChaosImpactPuppetComponent.h"
@@ -1488,6 +1489,8 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	const FPainter P{Design, Elements, Layer + 1};
 	const FPainter Over{Design, Elements, Layer + 2};
 	const FPainter Top{Design, Elements, Layer + 3};
+	// Hints in the names of what is being played with right now.
+	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller.Get());
 	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, FLinearColor(0.008f, 0.012f, 0.03f, 1.0f));
 	Back.Box(PreviewLeft - 18.0f, 96.0f, PreviewWidth + 36.0f, 740.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
 	P.Text(TEXT("カラーエディット"), 70.0f, 24.0f, 42.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"));
@@ -1526,7 +1529,7 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	PaintPicture(P, PreviewBrush, FBox2D(FVector2D(PreviewLeft, PreviewTop), FVector2D(PreviewLeft + PreviewWidth, PreviewTop + PreviewHeight)));
 	P.Text(ChaosImpactRoster::Get(Character).Name, PreviewLeft + PreviewWidth * 0.5f, PreviewTop + 8.0f, 28.0f, Paper,
 		ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
-	P.Text(TEXT("ドラッグ・Z / X・右スティックで回転"), PreviewLeft + PreviewWidth * 0.5f, PreviewTop + 46.0f, 14.0f, WithAlpha(Paper, 0.6f),
+	P.Text(ChaosImpactHints::Text(Device, TEXT("{kb:ドラッグ・Z / X}{pad:{RStick}}で回転")), PreviewLeft + PreviewWidth * 0.5f, PreviewTop + 46.0f, 14.0f, WithAlpha(Paper, 0.6f),
 		ETextAlign::Center, TEXT("Bold"));
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 	const TArray<FChaosImpactColourPreset> NoPresets;
@@ -1558,7 +1561,11 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 		P.Disc(Pen + FVector2D(-12.0, 12.0), 4.0f, bCursor ? Ink : Accent);
 		const FString Label = HasPaint() ? TEXT("ペイント（描いた絵あり）") : TEXT("ペイント　キャラに自由に描く");
 		P.Text(Label, R.Min.X + 66.0f, R.Min.Y + 15.0f, HudFit(Label, 19.0f, R.GetSize().X - 120.0f), Line, ETextAlign::Left, TEXT("Black"));
-		P.Text(TEXT("P"), R.Max.X - 16.0f, R.Min.Y + 19.0f, 13.0f, bCursor ? Ink : Muted, ETextAlign::Right, TEXT("Bold"));
+		if (!ChaosImpactHints::IsPad(Device))
+		{
+			// (P is the keyboard's shortcut only.)
+			P.Text(TEXT("P"), R.Max.X - 16.0f, R.Min.Y + 19.0f, 13.0f, bCursor ? Ink : Muted, ETextAlign::Right, TEXT("Bold"));
+		}
 		if (bCursor)
 		{
 			DrawFrame(Top, Grow(R, 2.0f), WithAlpha(Gold, Pulse), 3.0f);
@@ -1567,7 +1574,7 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 
 	// Presets.
 	P.Text(TEXT("プリセット"), RightLeft, ChipTop - 34.0f, 22.0f, Paper, ETextAlign::Left, TEXT("Black"));
-	P.Text(TEXT("LB / RB ・ Q / E"), RightLeft + RightWidth, ChipTop - 30.0f, 15.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	P.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E}")), RightLeft + RightWidth, ChipTop - 30.0f, 15.0f, Muted, ETextAlign::Right, TEXT("Bold"));
 	for (int32 Chip = 0; Chip < PresetChips(); ++Chip)
 	{
 		const FBox2D R = ChipRect(Chip);
@@ -1641,7 +1648,7 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 		P.Text(bFineTab ? TEXT("こまかく") : TEXT("パレット"), R.GetCenter().X, R.Min.Y + 6.0f, 16.0f, bChosen ? Ink : Paper, ETextAlign::Center,
 			TEXT("Black"));
 	}
-	P.Text(TEXT("T / Y"), RightLeft + RightWidth - 270.0f, PickerTop - 34.0f, 14.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	P.Text(ChaosImpactHints::Text(Device, TEXT("{Y|T}")), RightLeft + RightWidth - 270.0f, PickerTop - 34.0f, 14.0f, Muted, ETextAlign::Right, TEXT("Bold"));
 
 	if (!bFine)
 	{
@@ -1777,18 +1784,20 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 
 	// Guide bar and notices.
 	Back.Box(0.0f, CeBarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
-	const TCHAR* Guide = Area == EArea::Characters ? TEXT("A / Enter：このキャラにする　　B / Esc：もどる")
-		: Area == EArea::Palette ? TEXT("十字 / 矢印：色をえらぶ（すぐ反映）　　A / Enter：決定して次の部位へ　　T / Y：こまかく　　B / Esc：やめる")
-		: Area == EArea::Ring ? TEXT("←→：色相　　↓：四角へ　　Tab / LT RT：次へ　　A / Enter：決定　　B / Esc：やめる")
-		: Area == EArea::Square ? TEXT("十字 / スティック：彩度（横）・明るさ（縦）　　端の先：となりへ　　A / Enter：決定　　B / Esc：やめる")
-		: Area == EArea::Sliders ? TEXT("←→：調整（長押しで速く）　　↑↓：H S B R G B　　A / Enter：決定　　B / Esc：やめる")
-		: Area == EArea::Recent ? TEXT("←→：最近の色・元の色　　A / Enter：決定　　↑：もどる　　B / Esc：やめる")
-		: Area == EArea::Parts ? TEXT("↑↓：部位　　←→：色相　　A / Enter：色をえらぶ　　R：元の色　　X / F：保存　　View / N：名前")
-		: Area == EArea::Presets ? TEXT("←→：プリセット　　A / Enter：よびだす　　B / Esc：キャラへ")
-		: ButtonCursor == Buttons ? TEXT("A / Enter：ペイントをひらく（キャラに直接描く）　　↑：ボタンへ　　P：ペイント")
-		: TEXT("←→：ボタン　　A / Enter：決定　　↑：最近の色へ　　↓：ペイント　　View / N：名前");
+	// (R and P are the keyboard's only.)
+	const TCHAR* GuideLine = Area == EArea::Characters ? TEXT("{Confirm}：このキャラにする　　{Back}：もどる")
+		: Area == EArea::Palette ? TEXT("{DPad|矢印}：色をえらぶ（すぐ反映）　　{Confirm}：決定して次の部位へ　　{Y|T}：こまかく　　{Back}：やめる")
+		: Area == EArea::Ring ? TEXT("←→：色相　　↓：四角へ　　{kb:Tab}{pad:{LT} {RT}}：次へ　　{Confirm}：決定　　{Back}：やめる")
+		: Area == EArea::Square ? TEXT("{pad:{DPad} / {LStick}}{kb:矢印}：彩度（横）・明るさ（縦）　　端の先：となりへ　　{Confirm}：決定　　{Back}：やめる")
+		: Area == EArea::Sliders ? TEXT("←→：調整（長押しで速く）　　↑↓：H S B R G B　　{Confirm}：決定　　{Back}：やめる")
+		: Area == EArea::Recent ? TEXT("←→：最近の色・元の色　　{Confirm}：決定　　↑：もどる　　{Back}：やめる")
+		: Area == EArea::Parts ? TEXT("↑↓：部位　　←→：色相　　{Confirm}：色をえらぶ　　{kb:R：元の色　　}{X|F}：保存　　{Select|N}：名前")
+		: Area == EArea::Presets ? TEXT("←→：プリセット　　{Confirm}：よびだす　　{Back}：キャラへ")
+		: ButtonCursor == Buttons ? TEXT("{Confirm}：ペイントをひらく（キャラに直接描く）　　↑：ボタンへ{kb:　　P：ペイント}")
+		: TEXT("←→：ボタン　　{Confirm}：決定　　↑：最近の色へ　　↓：ペイント　　{Select|N}：名前");
+	const FString Guide = ChaosImpactHints::Text(Device, GuideLine);
 	// (The name entry shows its own keys.)
-	if (!Naming.IsOpen()) P.Text(Guide, 800.0f, CeBarTop + 15.0f, 18.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+	if (!Naming.IsOpen()) P.Text(Guide, 800.0f, CeBarTop + 15.0f, HudFit(Guide, 18.0f, 1560.0f, TEXT("Bold")), Paper, ETextAlign::Center, TEXT("Bold"));
 	if (Now - NoticeAt < 2.5)
 	{
 		const float Fade = FMath::Clamp(static_cast<float>(2.5 - (Now - NoticeAt)) / 0.4f, 0.0f, 1.0f);
@@ -1890,6 +1899,6 @@ void UChaosImpactColourEdit::PaintApplyAsk(const FGeometry& Design, FSlateWindow
 		Words.Text(Label, BX + BW * 0.5f, BY + (BH - 24.0f * 1.32f) * 0.5f, HudFit(Label, 24.0f, BW - 20.0f, TEXT("Black")),
 			bChosen ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
 	}
-	const FString Guide = TEXT("決定：A / Enter ・ B / Esc：しない");
+	const FString Guide = ChaosImpactHints::Text(Controller.Get(), TEXT("決定：{Confirm} ・ {Back}：しない"));
 	Words.Text(Guide, 800.0f, PY + PH - 34.0f, HudFit(Guide, 15.0f, PW - 60.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
 }

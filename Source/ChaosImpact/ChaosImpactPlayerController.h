@@ -132,6 +132,10 @@ public:
 	bool WillPrimaryUseGamepad() const { return bRequestedPrimaryUsesGamepad; }
 	/** True when this local player's assigned gameplay device is a controller. */
 	bool IsUsingGamepad() const;
+	/** Alone on this machine: plays with whatever was used last (keyboard and mouse or any controller), not one assigned. */
+	bool FollowsLastDevice() const { return bOnlineAnyInput; }
+	/** Alone on the machine: the mouse cursor hidden while a controller is used, back with the mouse (each tick, menus too). */
+	void SyncCursorToLastDevice();
 	/**
 	 * Controller rumble for this player alone: Small drives the light high-frequency motors, Big the heavy ones
 	 * (0-1). Nothing happens for a keyboard/mouse player or with rumble turned off in the pause menu.
@@ -210,6 +214,10 @@ public:
 	/** オンラインメニュー: 合言葉マッチ (make a room or find one) and 戦績 (asks the relay for the latest). */
 	void OpenOnlinePrivate();
 	void OpenOnlineRecord();
+	/** 戦績 -> 対戦履歴 (1v1 or 8人), and the online menu's ランキング. */
+	void OpenOnlineHistory(bool bDuel);
+	void OpenOnlineRanking();
+	bool IsBoardDuel() const { return bBoardDuel; }
 	/**
 	 * The rules screen's kinds of match, by number: 0 個人戦, 1-3 チーム戦 2-4チーム, 4 クラッシュボール, 5 1対1,
 	 * 6 バトルロイヤル 個人, 7-9 バトルロイヤル 2-4チーム, 10 トーナメント, 11 ルビーラッシュ, 12 クラウンキープ.
@@ -529,6 +537,8 @@ protected:
 
 	/** The title world (opened with no mode options): the title shows a CPU match and does not pause the world. */
 	bool bTitleDemoWorld = false;
+	/** This world is the title's (whether or not its demo match plays behind it): leaving it is covered by the loading screen. */
+	bool bTitleWorld = false;
 	UPROPERTY(Transient)
 	TObjectPtr<AChaosImpactTitleDemo> TitleDemo;
 	FTimerHandle TitleDemoTimer;
@@ -639,6 +649,8 @@ protected:
 	/** Online rooms and room search accept keyboard and pad alike, following the last one used. */
 	bool bOnlineAnyInput = false;
 	bool bLastInputGamepad = false;
+	/** PlayerTick: whether the machine's last press was a controller's, as last acted on (the cursor hidden or shown). */
+	bool bHintPadSeen = false;
 	void UpdateRecruitmentHold(float DeltaSeconds);
 	void UpdateSpectateHold(float DeltaSeconds);
 	float SpectateHeldSeconds = 0.f;
@@ -824,4 +836,7 @@ protected:
 	double TitleShownSince = 0.0;
 	FTimerHandle SoloReturnTimer;
 
+private:
+	/** The 対戦履歴 / ランキング page opens on 1v1 (else 8人). */
+	bool bBoardDuel = true;
 };

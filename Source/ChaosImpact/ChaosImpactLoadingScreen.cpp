@@ -2,6 +2,7 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactSettings.h"
 #include "Engine/Engine.h"
@@ -42,6 +43,9 @@ namespace
 		{EChaosImpactBallType::Drive, TEXT("ドライブは投げたあと自分で操れる。逆を押すとその場で折り返す！")},
 		{EChaosImpactBallType::Hook, TEXT("フックは当てた相手を引き寄せる。ダッシュで振りほどける！床のボールも拾える。")},
 		{EChaosImpactBallType::Anchor, TEXT("アンカーを壁や床に打ちこむと、そこまで一気に飛んでいける。逃げにも回りこみにも！")},
+		{EChaosImpactBallType::Swap, TEXT("スワップボールを当てると、相手と自分の場所が入れ替わる。ダメージはなし！")},
+		{EChaosImpactBallType::Barrier, TEXT("バリアボールは落ちた所に光の壁を立てる。ボールを1つだけ止めて砕ける。人は通れる。")},
+		{EChaosImpactBallType::Mine, TEXT("マインは床に置かれる。相手が近づくと赤く光って爆発！ダッシュで逃げられる。")},
 		{EChaosImpactBallType::Normal, TEXT("ダッシュ中は無敵。飛んでくるボールもすり抜けられる。")},
 		{EChaosImpactBallType::Normal, TEXT("ボールは2つまで持てる。入れ替えで投げる順番を変えられる。")},
 		{EChaosImpactBallType::Normal, TEXT("長押しでためると、速くて強い球になる。")},
@@ -52,7 +56,7 @@ namespace
 		EChaosImpactBallType::Ice, EChaosImpactBallType::Thunder, EChaosImpactBallType::Black, EChaosImpactBallType::Wind,
 		EChaosImpactBallType::Smoke, EChaosImpactBallType::Beam, EChaosImpactBallType::Snow, EChaosImpactBallType::Nova,
 		EChaosImpactBallType::Simae, EChaosImpactBallType::Drive, EChaosImpactBallType::Hook,
-		EChaosImpactBallType::Anchor};
+		EChaosImpactBallType::Anchor, EChaosImpactBallType::Swap, EChaosImpactBallType::Barrier, EChaosImpactBallType::Mine};
 	constexpr int32 LoadingBallTypeCount = UE_ARRAY_COUNT(LoadingBallTypes);
 
 	EChaosImpactBallType LoadingBallType(const int32 Type)
@@ -209,6 +213,23 @@ namespace
 	constexpr float LoadingAvoidHalf = 22.0f;
 	constexpr float LoadingAvoidTall = 70.0f;
 
+	/**
+	 * What the hints are written for: the machine's last press (there is no player here). The screen keeps the presses it
+	 * takes from everything else, so it notes them itself (taken over from the machine's last press when it comes up).
+	 */
+	EChaosImpactDevice LoadingPressDevice = EChaosImpactDevice::KeyboardMouse;
+
+	void LoadingNoteDevice(const FKey& Key, const int32 InputDeviceId)
+	{
+		LoadingPressDevice = Key.IsGamepadKey() ? ChaosImpactSettings::DetectPadDeviceForInput(InputDeviceId) : EChaosImpactDevice::KeyboardMouse;
+	}
+
+	/** (The movie player's copy, drawn off the game thread, shows no hints.) */
+	EChaosImpactDevice LoadingHintDevice()
+	{
+		return IsInGameThread() ? LoadingPressDevice : EChaosImpactDevice::KeyboardMouse;
+	}
+
 	/** Left or right on a key (keys, the d-pad); 0 for any other. The stick comes as an analog value instead. */
 	int32 LoadingSteerDirection(const FKey& Key)
 	{
@@ -252,6 +273,7 @@ namespace
 			if (!Loading) { return false; }
 			// Unattended runs use explicit test commands, never the user's live devices.
 			if (FApp::IsUnattended()) { return Loading->IsShowing(); }
+			LoadingNoteDevice(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
 			// Held keys must not leak into the menu beneath the arcade, or repeatedly trigger timing games.
 			if (InKeyEvent.IsRepeat()) { return Loading->IsShowing() && InKeyEvent.GetKey() != EKeys::F11; }
 			return Loading->HandleKey(InKeyEvent.GetKey(), InKeyEvent.GetInputDeviceId().GetId());
@@ -267,7 +289,30 @@ namespace
 			// The sticks steer the paddle, and do not move the menus underneath meanwhile.
 			UChaosImpactLoadingSubsystem* Loading = Owner.Get();
 			if (FApp::IsUnattended()) { return Loading && Loading->IsShowing(); }
+			// (A stick pushed well over, not one resting a little off centre.)
+			if (InAnalogInputEvent.GetKey().IsGamepadKey() && FMath::Abs(InAnalogInputEvent.GetAnalogValue()) > 0.5f)
+			{
+				LoadingNoteDevice(InAnalogInputEvent.GetKey(), InAnalogInputEvent.GetInputDeviceId().GetId());
+			}
 			return Loading && Loading->HandleAnalog(InAnalogInputEvent.GetKey(), InAnalogInputEvent.GetAnalogValue());
+		}
+		// The mouse is only watched (never kept from anything).
+		virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			if (!MouseEvent.IsTouchEvent())
+			{
+				LoadingPressDevice = EChaosImpactDevice::KeyboardMouse;
+			}
+			return false;
+		}
+		virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			// (Moved on purpose, not nudged.)
+			if (!MouseEvent.IsTouchEvent() && MouseEvent.GetCursorDelta().Size() > 4.0f)
+			{
+				LoadingPressDevice = EChaosImpactDevice::KeyboardMouse;
+			}
+			return false;
 		}
 		virtual const TCHAR* GetDebugName() const override { return TEXT("ChaosImpactLoading"); }
 
@@ -1303,6 +1348,11 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	}
 	FScopeLock Guard(&State->Lock);
 	FChaosImpactLoadingState& S = *State;
+	// The hints in the names of what was used last (any key or button plays: the keyboard is told Space, a controller its
+	// decide button, as its back button can leave).
+	const EChaosImpactDevice Device = LoadingHintDevice();
+	const FString PressOrClick = ChaosImpactHints::Text(Device, TEXT("{kb:スペース・クリック}{pad:{Confirm}ボタン}"));
+	const FString Press = ChaosImpactHints::Text(Device, TEXT("{kb:スペース}{pad:{Confirm}ボタン}"));
 	const double Now = FPlatformTime::Seconds();
 	S.Step(Now);
 	const float T = static_cast<float>(Now - S.StartedAt);
@@ -1337,7 +1387,8 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 		{
 			LoadingDrawBall(Back, Front, Ball.Position, Ball.Radius, Ball.Type);
 		}
-		Hint = FString::Printf(TEXT("クリック・ボタンでボールを割れる！　割った数 %d"), S.Score);
+		Hint = FString::Printf(TEXT("%sでボールを割れる！　割った数 %d"),
+			*ChaosImpactHints::Text(Device, TEXT("{kb:クリック・スペース}{pad:{Confirm}ボタン}")), S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Dodge:
@@ -1382,7 +1433,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Text(TEXT("AUTO"), LoadingDodgeRunnerX, Base - 150.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		Hint = FString::Printf(TEXT("ボタン・クリックでジャンプ！　高いボールは跳ばずに見送ろう　よけた数 %d"), S.Score);
+		Hint = FString::Printf(TEXT("%sでジャンプ！　高いボールは跳ばずに見送ろう　よけた数 %d"), *PressOrClick, S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Juggle:
@@ -1422,7 +1473,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Text(TEXT("AUTO"), Center, LoadingJuggleBar + 20.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		Hint = FString::Printf(TEXT("ボールがバーに来たらボタン！　れんぞく %d"), S.Score);
+		Hint = FString::Printf(TEXT("ボールがバーに来たら%s！　れんぞく %d"), *Press, S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Target:
@@ -1459,7 +1510,8 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Text(TEXT("AUTO"), LoadingLauncher.X, LoadingLauncher.Y + 52.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		Hint = FString::Printf(TEXT("ボタンで投げる（クリックした所へも投げられる）　小さい的ほど高得点　%d点"), S.Score);
+		Hint = FString::Printf(TEXT("%sで投げる%s　小さい的ほど高得点　%d点"), *Press,
+			*ChaosImpactHints::Text(Device, TEXT("{kb:（クリックした所へも投げられる）}")), S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Gallery:
@@ -1499,7 +1551,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Disc(FVector2D(726.0f + Dot * 26.0f, 560.0f + 44.0f * FMath::Max(0, Lines.Num() - 2)), Dot == S.Page ? 8.0f : 5.0f,
 				Dot == S.Page ? LoadingBallColor(Dot) : LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.3f));
 		}
-		Hint = TEXT("ボタン・クリックで次のボールへ");
+		Hint = PressOrClick + TEXT("で次のボールへ");
 		break;
 	}
 	case EChaosImpactLoadingGame::Breakout:
@@ -1540,7 +1592,8 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Text(TEXT("AUTO"), S.PaddleX, LoadingBreakPaddleY + 20.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		Hint = FString::Printf(TEXT("←→・スティック・マウスで動かす　ボタンで発射　こわした数 %d"), S.Score);
+		Hint = FString::Printf(TEXT("%sで動かす　%sで発射　こわした数 %d"),
+			*ChaosImpactHints::Text(Device, TEXT("{kb:←→・マウス}{pad:{DPad}←→・{LStick}}")), *Press, S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Flappy:
@@ -1594,7 +1647,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Text(TEXT("AUTO"), LoadingFlapBirdX, LoadingFlapGround + 16.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		Hint = FString::Printf(TEXT("ボタン・クリックで羽ばたく　くぐった数 %d"), S.Score);
+		Hint = FString::Printf(TEXT("%sで羽ばたく　くぐった数 %d"), *PressOrClick, S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Avoid:
@@ -1623,11 +1676,13 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			Front.Text(TEXT("AUTO"), X, Base + 14.0f, 16.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.6f),
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		Hint = FString::Printf(TEXT("←→・スティック・マウスでよける　よけた数 %d"), S.Score);
+		Hint = FString::Printf(TEXT("%sでよける　よけた数 %d"),
+			*ChaosImpactHints::Text(Device, TEXT("{kb:←→・マウス}{pad:{DPad}←→・{LStick}}")), S.Score);
 		break;
 	}
 	default:
-		Hint = S.PaintExtraGame(Back, Front);
+		// (The new games' hints are templates.)
+		Hint = ChaosImpactHints::Text(Device, S.PaintExtraGame(Back, Front));
 		break;
 	}
 
@@ -1660,7 +1715,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	{
 		Text.Text(TEXT("MINI GAME"), 70.0f, 46.0f, 56.0f, LoadingPaint::Paper, LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f,
 			LoadingPaint::Ink);
-		Text.Text(TEXT("Q / E ・ LB / RB 切りかえ　R / ＋ リトライ"), 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f),
+		Text.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E} 切りかえ　{Start|R} リトライ")), 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f),
 			LoadingPaint::ETextAlign::Left, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
 	}
 	else
@@ -1723,7 +1778,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			TEXT("Bold"), 2.0f, LoadingPaint::Ink);
 		if (S.bCancelable)
 		{
-			Hints.Text(S.bArcade ? TEXT("Esc / B でもどる") : TEXT("Esc / B でやめる"), 70.0f, 838.0f, 18.0f, LoadingPaint::Muted,
+			Hints.Text(ChaosImpactHints::Text(Device, S.bArcade ? TEXT("{Back} でもどる") : TEXT("{Back} でやめる")), 70.0f, 838.0f, 18.0f, LoadingPaint::Muted,
 				LoadingPaint::ETextAlign::Left, TEXT("Bold"));
 		}
 	}
@@ -1810,6 +1865,8 @@ void UChaosImpactLoadingSubsystem::Show(const EChaosImpactLoadingKind Kind)
 	{
 		Input = MakeShared<FLoadingInputProcessor>(this);
 		FSlateApplication::Get().RegisterInputPreProcessor(Input, 0);
+		// The hints carry on with what was used last (the screen notes the presses itself from here).
+		LoadingPressDevice = ChaosImpactHints::GetLastDevice();
 	}
 	ShownAt = FPlatformTime::Seconds();
 	StartupLoadedAt = 0.0;

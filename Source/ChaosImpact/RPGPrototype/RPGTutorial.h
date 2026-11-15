@@ -1,8 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ChaosImpactSettings.h"
 
 class ARPGPrototypeCharacter;
+class APlayerController;
 class UWorld;
 
 /**
@@ -19,7 +21,7 @@ namespace RPGTutorial
 	struct FStep
 	{
 		const TCHAR* Title;
-		/** What to do, with the keys for the keyboard and for a pad. */
+		/** What to do, with the keys for the keyboard and for a pad (both shown through Words()). */
 		const TCHAR* KeyboardText;
 		const TCHAR* PadText;
 		ETry Try;
@@ -32,13 +34,23 @@ namespace RPGTutorial
 		FName Id;
 		const TCHAR* Title;
 		const TCHAR* Body;
-		/** Something to try (keyboard / pad wording), or none. */
+		/** Something to try (keyboard / pad wording), or none. Body and both of these are shown through Words(). */
 		const TCHAR* TryKeyboard;
 		const TCHAR* TryPad;
 		ETry Try;
 	};
 	const TArray<FLesson>& Lessons();
 	const FLesson* FindLesson(FName Id);
+
+	/**
+	 * Words with keys in them for a player's device (keyboard and mouse, Xbox, PlayStation or Switch: only that one's
+	 * names): a ChaosImpactHints template, plus {act:Jump} (the key or button first set for that action on the device:
+	 * Jump, Dash, Throw, Tackle, SwapBall, Pause), {act:Jump+} (the same with where it sits on a controller,
+	 * "A（下のボタン）") and {act:Move} (the stick that moves).
+	 */
+	FString Words(const APlayerController* Player, const FString& Template);
+	/** The key or button first set for an action on a device, by that device's name for it ("－" when none). */
+	FString ActionKey(const APlayerController* Player, EChaosImpactDevice Device, EChaosImpactAction Action, bool bWhere = false);
 	/** The controls tutorial's own entry in the list (replaying it starts the steps again). */
 	inline const FName ControlsId(TEXT("Controls"));
 

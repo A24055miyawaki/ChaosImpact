@@ -1,6 +1,7 @@
 #include "ChaosImpactDojo.h"
 
 #include "ChaosImpact.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactBall.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBallSpawner.h"
@@ -14,6 +15,7 @@
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactHazardZone.h"
 #include "ChaosImpactHook.h"
+#include "ChaosImpactGadget.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactNovaParts.h"
@@ -68,12 +70,23 @@ namespace
 		{
 			return EChaosImpactBallType::Simae;
 		}
+		if (const AChaosImpactGadget* Gadget = Cast<AChaosImpactGadget>(Causer))
+		{
+			return Gadget->IsMine() ? EChaosImpactBallType::Mine : EChaosImpactBallType::Barrier;
+		}
 		return EChaosImpactBallType::Normal;
+	}
+
+	/** A controller's decide and back: the bottom and right buttons, swapped only on a Switch controller with "confirm on
+	 *  the right" on (never on an Xbox or PlayStation one). */
+	bool IsPadSwapped(const APlayerController* PC)
+	{
+		return ChaosImpactHints::GetDevice(PC) == EChaosImpactDevice::Switch && ChaosImpactSettings::IsSwitchConfirmRight();
 	}
 
 	bool IsConfirm(const APlayerController* PC)
 	{
-		const bool bSwap = ChaosImpactSettings::IsSwitchConfirmRight();
+		const bool bSwap = IsPadSwapped(PC);
 		return PC->WasInputKeyJustPressed(EKeys::Enter) || PC->WasInputKeyJustPressed(EKeys::SpaceBar)
 			|| PC->WasInputKeyJustPressed(EKeys::LeftMouseButton)
 			|| PC->WasInputKeyJustPressed(bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom);
@@ -81,7 +94,7 @@ namespace
 
 	bool IsBack(const APlayerController* PC)
 	{
-		const bool bSwap = ChaosImpactSettings::IsSwitchConfirmRight();
+		const bool bSwap = IsPadSwapped(PC);
 		return PC->WasInputKeyJustPressed(EKeys::BackSpace) || PC->WasInputKeyJustPressed(EKeys::RightMouseButton)
 			|| PC->WasInputKeyJustPressed(bSwap ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right);
 	}
@@ -553,6 +566,8 @@ void AChaosImpactDojo::SetUpLesson()
 	Player->SetDojoRooted(IsRootedLesson(*L));
 	LastBalls = 0;
 	LastTypes = 0;
+	LastSwapPlaces = Player->GetSwapPlacesCount();
+	CountedWalls.Reset();
 	// (A mock match: only its slides here; the match is opened from its start button. Filmed for its slides, as before.)
 	if (L->bRealMatch && !bRecording)
 	{
@@ -772,7 +787,7 @@ void AChaosImpactDojo::TickClearMenu()
 		return;
 	}
 	const bool bClick = PC->WasInputKeyJustPressed(EKeys::LeftMouseButton);
-	const bool bSwap = ChaosImpactSettings::IsSwitchConfirmRight();
+	const bool bSwap = IsPadSwapped(PC);
 	const bool bKey = PC->WasInputKeyJustPressed(EKeys::Enter) || PC->WasInputKeyJustPressed(EKeys::SpaceBar)
 		|| PC->WasInputKeyJustPressed(bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom);
 	if (bClick && Hovered != INDEX_NONE)
@@ -874,6 +889,7 @@ void AChaosImpactDojo::ClearLesson()
 	}
 	for (TActorIterator<AChaosImpactBall> It(World); It; ++It) { It->Destroy(); }
 	for (TActorIterator<AChaosImpactHazardZone> It(World); It; ++It) { It->Destroy(); }
+	AChaosImpactGadget::ClearAll(World);
 	for (TActorIterator<AChaosImpactTornado> It(World); It; ++It) { It->Destroy(); }
 	for (TActorIterator<AChaosImpactHook> It(World); It; ++It) { It->Destroy(); }
 	for (TActorIterator<AChaosImpactSimaeBird> It(World); It; ++It) { It->Destroy(); }
@@ -1476,7 +1492,12 @@ void AChaosImpactDojo::OnCharacterDamaged(AChaosImpactCharacter* Victim, const f
 		Count(L->Count - Done);
 		return;
 	}
-	if (L->Goal == EGoal::HitCPU && (L->HitKind == EChaosImpactBallType::Normal || Kind == L->HitKind))
+	if (L->Goal == EGoal::HitCPU && L->HitKind == EChaosImpactBallType::Mine && !Cast<AChaosImpactGadget>(Causer))
+	{
+		// (The mine ball itself striking the CPU is not what the lesson is about.)
+		Fail(TEXT("床に置いて、踏ませよう"));
+	}
+	else if (L->Goal == EGoal::HitCPU && (L->HitKind == EChaosImpactBallType::Normal || Kind == L->HitKind))
 	{
 		Count();
 	}
@@ -1718,7 +1739,7 @@ void AChaosImpactDojo::TickGoal(const float DeltaSeconds)
 	const double Now = GetWorld()->GetTimeSeconds();
 	const bool bCharging = Player->IsChargingThrow();
 	const int32 Balls = Player->GetCarriedBallCount();
-	const uint8 Types = Player->GetCarriedBallTypesPacked();
+	const uint16 Types = Player->GetCarriedBallTypesPacked();
 	if (bCharging)
 	{
 		MaxCharge = FMath::Max(MaxCharge, Player->GetThrowChargeAlpha());
@@ -1748,7 +1769,7 @@ void AChaosImpactDojo::TickGoal(const float DeltaSeconds)
 		if (Rings.IsValidIndex(RingAt) && FVector::Dist2D(Player->GetActorLocation(), Rings[RingAt]) < DojoRingRadius)
 		{
 			++RingAt;
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageTargetHit, Player->GetActorLocation(), 0.8f, 1.2f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::DojoRing, Player->GetActorLocation());
 			Count();
 		}
 		break;
@@ -1852,6 +1873,35 @@ void AChaosImpactDojo::TickGoal(const float DeltaSeconds)
 		break;
 	case EGoal::OpenMap:
 		if (bMap && !bWasMapOpen) { Count(); }
+		break;
+	case EGoal::SwapPlace:
+	{
+		const int32 Swaps = Player->GetSwapPlacesCount();
+		if (Swaps > LastSwapPlaces)
+		{
+			Count();
+		}
+		LastSwapPlaces = Swaps;
+		break;
+	}
+	case EGoal::BarrierBlock:
+		// A wall broken by a CPU's ball: stopped. Broken by the player's own: not what was asked.
+		for (TActorIterator<AChaosImpactGadget> It(GetWorld()); It; ++It)
+		{
+			if (!It->IsBarrier() || !It->HasEnded() || !It->GetState().bBurst || CountedWalls.Contains(*It))
+			{
+				continue;
+			}
+			CountedWalls.Add(*It);
+			if (It->GetBrokenBy() == Player)
+			{
+				Fail(TEXT("CPUの球を壁で止めよう"));
+			}
+			else
+			{
+				Count();
+			}
+		}
 		break;
 	case EGoal::Freeze:
 	case EGoal::Blind:

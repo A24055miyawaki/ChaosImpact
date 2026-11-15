@@ -705,6 +705,7 @@ void FChaosImpactLoadingState::StepExtraGame(float Delta, bool bAuto)
 FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainter& Back, const ChaosImpactPaint::FPainter& Front) const
 {
 	using namespace ChaosImpactLoadingArcadeDetails;
+	// (The hint comes back as a ChaosImpactHints template: the loading screen puts in the keys of what was used last.)
 	Back.Box(370, 205, 860, 425, FLinearColor(0, 0, 0, 0.35f));
 	Back.Outline(370, 205, 860, 425, P::WithAlpha(P::Paper, 0.16f), 2);
 	Front.Text(FString::FromInt(Score), 1200, 230, 46, P::Gold, P::ETextAlign::Right, TEXT("BlackItalic"));
@@ -739,7 +740,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 			else { Back.Ring(At, 14, P::Muted, 2); }
 		}
 		for (const FBall& Shot : Shots) { Orb(Back, Front, Shot.Position, 14, P::Ice); }
-		return TEXT("←→で白い球を拾う　ボタンで真上に投げてマトに当てろ！　赤い球はよける");
+		return TEXT("←→で白い球を拾う　{pad:{Confirm}ボタン}{kb:スペース}で真上に投げてマトに当てろ！　赤い球はよける");
 	case EChaosImpactLoadingGame::LaneRush:
 		for (int32 L = 0; L < 3; ++L) { Back.Box(LaneX(L) - 105, Top, 210, 385, P::WithAlpha(P::Ice, L == Selection ? 0.13f : 0.04f)); }
 		Obstacles(); Player(FVector2D(PaddleX, 560));
@@ -749,7 +750,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 		Back.Disc(Center, 75, P::WithAlpha(P::Paper, 0.12f));
 		for (const FBall& Ball : Balls) { Bird(Back, Front, Ball, GameClock); }
 		Player(MiniPlayer);
-		return TEXT("←→でリングを回ってシマエナガをよける　ボタンでダッシュ（無敵）");
+		return TEXT("←→でリングを回ってシマエナガをよける　{pad:{Confirm}ボタン}{kb:スペース}でダッシュ（無敵）");
 	case EChaosImpactLoadingGame::Stack:
 		Player(MiniPlayer);
 		SpecialBall(Back, Front, MiniPlayer - FVector2D(0, 48 + Width * 0.5f), Width, 2, GameClock);
@@ -758,7 +759,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 		Back.Box(485, 550, 230, 12, P::Muted);
 		Front.Box(485, 550, (Width - 18) / 54 * 230, 12, P::Ice);
 		Front.Text(TEXT("← →"), 600, 485, 34, P::Paper, P::ETextAlign::Center);
-		return TEXT("←→を交互に連打してスノーを育てる　ボタンで投げてKO！");
+		return TEXT("←→を交互に連打してスノーを育てる　{pad:{Confirm}ボタン}{kb:スペース}で投げてKO！");
 	case EChaosImpactLoadingGame::Golf:
 		Back.Line(FVector2D(Left, Top + 1), FVector2D(Right, Top + 1), P::Ice, 14);
 		Back.Line(FVector2D(Left, Bottom), FVector2D(Right, Bottom), P::Muted, 14);
@@ -770,7 +771,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 			Front.Line(MiniPlayer, MiniPlayer + FVector2D(FMath::Cos(Marker), FMath::Sin(Marker)) * 135, P::Gold, 5);
 		}
 		for (const FBall& Ball : Balls) { Orb(Back, Front, Ball.Position, 12, P::Paper); }
-		return TEXT("ボタンで投げる　壁で1回はね返してマトに当てろ！（直撃はノーカウント）");
+		return TEXT("{pad:{Confirm}ボタン}{kb:スペース}で投げる　壁で1回はね返してマトに当てろ！（直撃はノーカウント）");
 	case EChaosImpactLoadingGame::Fishing:
 		Player(MiniPlayer); Dummy(Back, Front, MiniGoal);
 		if (Phase == 0) { Orb(Back, Front, MiniPlayer + FVector2D(35, -5), 18, P::Paper); }
@@ -779,7 +780,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 		Front.Box(900 - Width, 500, Width * 2, 30, P::Gold);
 		Front.Line(FVector2D(Marker, 480), FVector2D(Marker, 545), P::Paper, 7);
 		Front.Text(TEXT("CHARGE"), 800, 555, 24, P::Paper, P::ETextAlign::Center);
-		return TEXT("白い針が金のゾーンでボタン！　まん中ならフルチャージ");
+		return TEXT("白い針が金のゾーンで{pad:{Confirm}ボタン}{kb:スペース}！　まん中ならフルチャージ");
 	case EChaosImpactLoadingGame::Rhythm:
 	case EChaosImpactLoadingGame::Parry:
 	{
@@ -806,7 +807,8 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 		}
 		for (const FBall& Shot : Shots) { Front.Line(Shot.Position - FVector2D(55, 0), Shot.Position, P::Gold, 8); }
 		Front.Text(FString::Printf(TEXT("%d COMBO"), Combo), 800, 530, 30, P::Paper, P::ETextAlign::Center);
-		return Game == EChaosImpactLoadingGame::Rhythm ? TEXT("マトが白いラインに来たらボタンでビーム！") : TEXT("球が白いラインに来たらボタンで打ち返す！");
+		return Game == EChaosImpactLoadingGame::Rhythm ? TEXT("マトが白いラインに来たら{pad:{Confirm}ボタン}{kb:スペース}でビーム！")
+			: TEXT("球が白いラインに来たら{pad:{Confirm}ボタン}{kb:スペース}で打ち返す！");
 	}
 	case EChaosImpactLoadingGame::Memory:
 	{
@@ -822,7 +824,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 			if (Phase == 1 && I == Selection) { Front.Ring(At, 65, P::Paper, 5); }
 		}
 		Front.Text(Phase == 0 ? TEXT("光る順番をおぼえよう") : TEXT("同じ順番でえらぼう！"), 800, 540, 28, P::Paper, P::ETextAlign::Center);
-		return TEXT("光ったボールを同じ順番でえらぶ（←→＋ボタン / クリック）");
+		return TEXT("光ったボールを同じ順番でえらぶ（←→＋{pad:{Confirm}ボタン}{kb:スペース / クリック}）");
 	}
 	case EChaosImpactLoadingGame::Reaction:
 		Back.Disc(Center, Phase == 1 ? 175 : 110, P::WithAlpha(Phase == 1 ? P::Gold : P::Fire, 0.25f));
@@ -830,7 +832,7 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 		SpecialBall(Back, Front, Center - FVector2D(0, Phase == 0 ? 85 : 0), Phase == 1 ? 70 : 36, 3, GameClock);
 		Player(MiniPlayer + FVector2D(0, 40));
 		Front.Text(Phase == 1 ? TEXT("回避！") : Phase == 0 ? TEXT("光るまで待て…") : HitFlash > 0 ? TEXT("KO…") : TEXT("次のノヴァ"), 800, 550, 30, P::Paper, P::ETextAlign::Center, TEXT("Black"), 3);
-		return TEXT("ノヴァが光った瞬間にボタン！　早すぎても遅すぎてもダメ");
+		return TEXT("ノヴァが光った瞬間に{pad:{Confirm}ボタン}{kb:スペース}！　早すぎても遅すぎてもダメ");
 	case EChaosImpactLoadingGame::Snake:
 		for (int32 I = 0; I <= SnakeColumns; ++I) { Back.Line(FVector2D(390 + I * 40, 212), FVector2D(390 + I * 40, 572), P::WithAlpha(P::Paper, 0.07f)); }
 		for (int32 I = 0; I <= SnakeRows; ++I) { Back.Line(FVector2D(390, 212 + I * 36), FVector2D(1190, 212 + I * 36), P::WithAlpha(P::Paper, 0.07f)); }
@@ -853,11 +855,11 @@ FString FChaosImpactLoadingState::PaintExtraGame(const ChaosImpactPaint::FPainte
 		Back.Disc(Center, 50, P::Ink); Front.Ring(Center, 52, P::Fire, 3);
 		Orb(Back, Front, MiniGoal, 15, P::Gold); Front.Ring(MiniGoal, 26 + FMath::Sin(GameClock * 5) * 3, P::Gold, 3);
 		Player(MiniPlayer);
-		return TEXT("←→↑↓で動いてボールを集める　吸いこまれそうならボタンでダッシュ！");
+		return TEXT("←→↑↓で動いてボールを集める　吸いこまれそうなら{pad:{Confirm}ボタン}{kb:スペース}でダッシュ！");
 	}
 	case EChaosImpactLoadingGame::Quest:
 		PaintQuest(Back, Front);
-		return TEXT("↑↓←→でよける　雪玉をひろってボタンで真上に投げ、敵をやっつけろ！");
+		return TEXT("↑↓←→でよける　雪玉をひろって{pad:{Confirm}ボタン}{kb:スペース}で真上に投げ、敵をやっつけろ！");
 	default: return FString();
 	}
 }

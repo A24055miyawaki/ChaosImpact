@@ -7,6 +7,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactLoadoutSubsystem.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactHints.h"
 #include "EngineUtils.h"
 #include "ChaosImpactSfx.h"
 #include "Blueprint/WidgetTree.h"
@@ -145,7 +146,10 @@ struct FRPGTitleLayout
 		using ChaosImpactPaint::ETextAlign;
 		using ChaosImpactPaint::WithAlpha;
 		const bool bPad = C.bGamepad;
-		const auto Key = [bPad](const TCHAR* K, const TCHAR* Pad) { return FString(bPad ? Pad : K); };
+		// Key hints in the names of what this player plays with now only (ChaosImpactHints templates). The title's keys
+		// (HandleKey): decide {A|Enter}, back {B|Esc}, delete {X|Del}, look {Y|C}, random {Y|F1}, the d-pad or left stick.
+		const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(T.GetOwningPlayer());
+		const auto Key = [Device](const TCHAR* Template) { return ChaosImpactHints::Text(Device, Template); };
 		const double Now = FPlatformTime::Seconds();
 		// The world (and the hero standing in it) stays visible in the middle; only the top and bottom are shaded.
 		if (C.IsPainting())
@@ -219,7 +223,7 @@ struct FRPGTitleLayout
 				RPGUI::Label(C, 1, FString::Printf(TEXT("依頼 %d件達成"), Hero.QuestsDone), SX, IY + 18, 15, RPGUI::TextSub, ETextAlign::Right);
 				RPGUI::Label(C, 1, FString::Printf(TEXT("プレイ %d時間%02d分"), FMath::FloorToInt(Hero.PlaySeconds / 3600), FMath::FloorToInt(FMath::Fmod(Hero.PlaySeconds, 3600.0f) / 60)), SX, IY + 42, 15, RPGUI::TextSub, ETextAlign::Right);
 				RPGUI::Label(C, 1, TEXT("最終 ") + Hero.LastPlayed.ToString(TEXT("%m/%d %H:%M")), SX, IY + 66, 15, RPGUI::TextDim, ETextAlign::Right);
-				RPGUI::Button(C, 1, IX + IW - 254, IY + 26, 230, 52, TEXT("見た目変更"), TitleAct::ChangeLook, false, !T.IsTaken(Hero.Id), Key(TEXT("C"), TEXT("上")));
+				RPGUI::Button(C, 1, IX + IW - 254, IY + 26, 230, 52, TEXT("見た目変更"), TitleAct::ChangeLook, false, !T.IsTaken(Hero.Id), Key(TEXT("{Y|C}")));
 			}
 			else
 			{
@@ -228,9 +232,9 @@ struct FRPGTitleLayout
 			}
 			RPGUI::Button(C, 1, 30, H * 0.5f - 30, 50, 60, TEXT("‹"), TitleAct::PrevHero, false, T.HeroCursor > 0);
 			RPGUI::Button(C, 1, W - 80, H * 0.5f - 30, 50, 60, TEXT("›"), TitleAct::NextHero, false, T.HeroCursor < T.Heroes.Num());
-			TArray<TPair<FString, FString>> Hints{{Key(TEXT("←→"), TEXT("左右")), TEXT("選ぶ")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("このキャラで遊ぶ")}};
-			if (T.Heroes.IsValidIndex(T.HeroCursor)) { Hints.Add({Key(TEXT("C"), TEXT("上")), TEXT("見た目")}); Hints.Add({Key(TEXT("Del"), TEXT("左")), TEXT("削除")}); }
-			if (T.Mode == URPGTitleWidget::EMode::Title) { Hints.Add({Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}); }
+			TArray<TPair<FString, FString>> Hints{{Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("選ぶ")}, {Key(TEXT("{A|Enter}")), TEXT("このキャラで遊ぶ")}};
+			if (T.Heroes.IsValidIndex(T.HeroCursor)) { Hints.Add({Key(TEXT("{Y|C}")), TEXT("見た目")}); Hints.Add({Key(TEXT("{X|Del}")), TEXT("削除")}); }
+			if (T.Mode == URPGTitleWidget::EMode::Title) { Hints.Add({Key(TEXT("{B|Esc}")), TEXT("戻る")}); }
 			Footer(C, H, bPad, Hints);
 			break;
 		}
@@ -264,8 +268,8 @@ struct FRPGTitleLayout
 					if (Colour == T.ColourCursor) { C.At(1, 5).Ring(At, 24, RPGUI::Highlight, 3); }
 				}
 			}
-			RPGUI::Button(C, 1, W - 380, H - 120, 330, 54, Editing ? TEXT("この姿に変える") : TEXT("この姿にする"), TitleAct::Ok, true, true, Key(TEXT("Enter"), TEXT("決定")));
-			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("キャラクター")}, {Key(TEXT("←→"), TEXT("左右")), TEXT("色")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}});
+			RPGUI::Button(C, 1, W - 380, H - 120, 330, 54, Editing ? TEXT("この姿に変える") : TEXT("この姿にする"), TitleAct::Ok, true, true, Key(TEXT("{A|Enter}")));
+			Footer(C, H, bPad, {{Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("キャラクター")}, {Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("色")}, {Key(TEXT("{B|Esc}")), TEXT("戻る")}});
 			break;
 		}
 		case URPGTitleWidget::EPage::Name:
@@ -277,9 +281,9 @@ struct FRPGTitleLayout
 			if (C.IsPainting()) { ChaosImpactPaint::RoundedBox(C.At(1, 3), PX + 30, PY + 46, PW - 60, 62, 8, FLinearColor(0, 0, 0, 0.45f)); C.At(1, 4).Box(PX + 30, PY + 106, PW - 60, 2, RPGUI::Highlight); }
 			if (T.NameDraft.IsEmpty() && C.IsPainting() && (!T.NameBox || !T.NameBox->HasKeyboardFocus())) { RPGUI::Label(C, 1, TEXT("（未入力）"), PX + 48, PY + 58, 28, RPGUI::TextDim); }
 			if (bPad && !T.NameDraft.IsEmpty()) { RPGUI::Label(C, 1, T.NameDraft, PX + 48, PY + 58, 28, RPGUI::TextMain); }
-			RPGUI::Button(C, 1, PX + 30, PY + 128, 200, 48, TEXT("おまかせ"), TitleAct::Random, false, true, Key(TEXT("F1"), TEXT("上")));
-			RPGUI::Button(C, 1, PX + PW - 290, PY + 128, 260, 48, TEXT("この名前にする"), TitleAct::Ok, true, !T.NameDraft.TrimStartAndEnd().IsEmpty(), Key(TEXT("Enter"), TEXT("決定")));
-			Footer(C, H, bPad, {{Key(TEXT("Enter"), TEXT("決定")), TEXT("決定")}, {Key(TEXT("F1"), TEXT("上")), TEXT("おまかせ")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}});
+			RPGUI::Button(C, 1, PX + 30, PY + 128, 200, 48, TEXT("おまかせ"), TitleAct::Random, false, true, Key(TEXT("{Y|F1}")));
+			RPGUI::Button(C, 1, PX + PW - 290, PY + 128, 260, 48, TEXT("この名前にする"), TitleAct::Ok, true, !T.NameDraft.TrimStartAndEnd().IsEmpty(), Key(TEXT("{A|Enter}")));
+			Footer(C, H, bPad, {{Key(TEXT("{A|Enter}")), TEXT("決定")}, {Key(TEXT("{Y|F1}")), TEXT("おまかせ")}, {Key(TEXT("{B|Esc}")), TEXT("戻る")}});
 			break;
 		}
 		case URPGTitleWidget::EPage::Play:
@@ -306,8 +310,8 @@ struct FRPGTitleLayout
 			RPGUI::Button(C, 1, X0 + 112, RY, 54, 48, TEXT("‹"), TitleAct::LessPlayers, false, T.Players > 1);
 			if (C.IsPainting()) { ChaosImpactPaint::HudText3D(C.At(1, 6), FString::Printf(TEXT("%d人"), T.Players), X0 + 208, RY + 4, 32, RPGUI::Highlight, ETextAlign::Center); }
 			RPGUI::Button(C, 1, X0 + 250, RY, 54, 48, TEXT("›"), TitleAct::MorePlayers, false, T.Players < 4);
-			RPGUI::Button(C, 1, X0 + CW * 2 + Gap - 304, RY, 304, 54, T.PlayCursor == 1 ? TEXT("合言葉を決める") : T.Players > 1 ? TEXT("コントローラー割り当てへ") : TEXT("キャラクター選択へ"), TitleAct::Ok, true, true, Key(TEXT("Enter"), TEXT("決定")));
-			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("オフライン／オンライン")}, {Key(TEXT("←→"), TEXT("左右")), TEXT("人数")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("つぎへ")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("タイトルへ")}});
+			RPGUI::Button(C, 1, X0 + CW * 2 + Gap - 304, RY, 304, 54, T.PlayCursor == 1 ? TEXT("合言葉を決める") : T.Players > 1 ? TEXT("コントローラー割り当てへ") : TEXT("キャラクター選択へ"), TitleAct::Ok, true, true, Key(TEXT("{A|Enter}")));
+			Footer(C, H, bPad, {{Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("オフライン／オンライン")}, {Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("人数")}, {Key(TEXT("{A|Enter}")), TEXT("つぎへ")}, {Key(TEXT("{B|Esc}")), TEXT("タイトルへ")}});
 			break;
 		}
 		case URPGTitleWidget::EPage::Online:
@@ -319,7 +323,7 @@ struct FRPGTitleLayout
 			if (C.IsPainting()) { ChaosImpactPaint::RoundedBox(C.At(1, 3), PX + 30, PY + 44, PW - 260, 58, 8, FLinearColor(0, 0, 0, 0.45f)); C.At(1, 4).Box(PX + 30, PY + 100, PW - 260, 2, RPGUI::Cyan); }
 			if (T.PasswordDraft.IsEmpty() && C.IsPainting() && (!T.PasswordBox || !T.PasswordBox->HasKeyboardFocus())) { RPGUI::Label(C, 1, TEXT("（未入力）"), PX + 48, PY + 56, 26, RPGUI::TextDim); }
 			if (bPad && !T.PasswordDraft.IsEmpty()) { RPGUI::Label(C, 1, T.PasswordDraft, PX + 48, PY + 56, 26, RPGUI::TextMain); }
-			RPGUI::Button(C, 1, PX + PW - 214, PY + 46, 184, 54, TEXT("おまかせ"), TitleAct::RandomPassword, false, true, Key(TEXT("F1"), TEXT("上")));
+			RPGUI::Button(C, 1, PX + PW - 214, PY + 46, 184, 54, TEXT("おまかせ"), TitleAct::RandomPassword, false, true, Key(TEXT("{Y|F1}")));
 			const bool bHasPassword = !T.PasswordDraft.TrimStartAndEnd().IsEmpty();
 			const TCHAR* Labels[] = {TEXT("この合言葉で世界を開く"), TEXT("この合言葉の世界をさがす")};
 			const TCHAR* Notes[] = {TEXT("あなたが遊んでいる間、同じ合言葉の人がいつでも入ってこられます。"), TEXT("見つかった世界に入り、そこで自分のキャラクターを選びます（この機械からは1人）。")};
@@ -328,12 +332,12 @@ struct FRPGTitleLayout
 			{
 				const float Y = PY + 128 + Index * 96;
 				const bool bOn = T.OnlineCursor == Index;
-				RPGUI::Button(C, 1, PX + 30, Y, PW - 60, 54, Labels[Index], Actions[Index], bOn, bHasPassword, bOn ? Key(TEXT("Enter"), TEXT("決定")) : FString());
+				RPGUI::Button(C, 1, PX + 30, Y, PW - 60, 54, Labels[Index], Actions[Index], bOn, bHasPassword, bOn ? Key(TEXT("{A|Enter}")) : FString());
 				RPGUI::LabelFit(C, 1, Notes[Index], PX + 36, Y + 60, PW - 70, 13, RPGUI::TextDim);
 			}
 			const FString Online = URPGOnlineSubsystem::Get(&T) ? URPGOnlineSubsystem::Get(&T)->GetNotice() : FString();
 			if (!Online.IsEmpty()) { RPGUI::LabelFit(C, 1, Online, W * 0.5f, PY - 30, PW, 16, RPGUI::Bad, ETextAlign::Center); }
-			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("決定")}, {Key(TEXT("F1"), TEXT("上")), TEXT("おまかせ")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}});
+			Footer(C, H, bPad, {{Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選ぶ")}, {Key(TEXT("{A|Enter}")), TEXT("決定")}, {Key(TEXT("{Y|F1}")), TEXT("おまかせ")}, {Key(TEXT("{B|Esc}")), TEXT("戻る")}});
 			break;
 		}
 		case URPGTitleWidget::EPage::Rooms:
@@ -365,7 +369,7 @@ struct FRPGTitleLayout
 			}
 			const FString Notice = Online ? Online->GetNotice() : FString();
 			if (!Notice.IsEmpty()) { RPGUI::LabelFit(C, 1, Notice, W * 0.5f, H - 120, PW, 16, RPGUI::Bad, ETextAlign::Center); }
-			Footer(C, H, bPad, {{Key(TEXT("↑↓"), TEXT("十字")), TEXT("選ぶ")}, {Key(TEXT("Enter"), TEXT("決定")), TEXT("この世界に入る")}, {Key(TEXT("Esc"), TEXT("戻る")), TEXT("戻る")}});
+			Footer(C, H, bPad, {{Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選ぶ")}, {Key(TEXT("{A|Enter}")), TEXT("この世界に入る")}, {Key(TEXT("{B|Esc}")), TEXT("戻る")}});
 			break;
 		}
 		case URPGTitleWidget::EPage::Leaving:
@@ -377,7 +381,7 @@ struct FRPGTitleLayout
 		const bool bCanGoBack = T.Page == URPGTitleWidget::EPage::Look || T.Page == URPGTitleWidget::EPage::Name || T.Page == URPGTitleWidget::EPage::Play
 			|| T.Page == URPGTitleWidget::EPage::Online || T.Page == URPGTitleWidget::EPage::Rooms || (T.Page == URPGTitleWidget::EPage::Heroes && T.Mode == URPGTitleWidget::EMode::Title);
 		if (bCanGoBack && !(T.Page == URPGTitleWidget::EPage::Look && T.Heroes.IsEmpty() && T.Mode == URPGTitleWidget::EMode::Join))
-		{ RPGUI::Button(C, 1, W - 240, 36, 200, 46, TEXT("もどる"), TitleAct::Back, false, true, Key(TEXT("Esc"), TEXT("戻る"))); }
+		{ RPGUI::Button(C, 1, W - 240, 36, 200, 46, TEXT("もどる"), TitleAct::Back, false, true, Key(TEXT("{B|Esc}"))); }
 		if (T.bConfirmDelete && T.Heroes.IsValidIndex(T.HeroCursor))
 		{
 			C.bInModal = true;
@@ -385,8 +389,8 @@ struct FRPGTitleLayout
 			RPGUI::Panel(C, 2, W * 0.5f - 300, H * 0.5f - 110, 600, 220, RPGUI::EStyle::Panel, RPGUI::Bad);
 			RPGUI::Label(C, 2, FString::Printf(TEXT("「%s」を削除しますか？"), *T.Heroes[T.HeroCursor].Name), W * 0.5f, H * 0.5f - 86, 24, RPGUI::TextMain, ETextAlign::Center);
 			RPGUI::Label(C, 2, TEXT("装備・レベル・依頼の進み具合がすべて消え、元に戻せません。"), W * 0.5f, H * 0.5f - 40, 16, RPGUI::TextSub, ETextAlign::Center);
-			RPGUI::Button(C, 2, W * 0.5f - 270, H * 0.5f + 20, 250, 50, TEXT("やめる"), TitleAct::DeleteNo, false, true, Key(TEXT("Esc"), TEXT("戻る")));
-			RPGUI::Button(C, 2, W * 0.5f + 20, H * 0.5f + 20, 250, 50, TEXT("削除する"), TitleAct::DeleteYes, true, true, Key(TEXT("Enter"), TEXT("決定")));
+			RPGUI::Button(C, 2, W * 0.5f - 270, H * 0.5f + 20, 250, 50, TEXT("やめる"), TitleAct::DeleteNo, false, true, Key(TEXT("{B|Esc}")));
+			RPGUI::Button(C, 2, W * 0.5f + 20, H * 0.5f + 20, 250, 50, TEXT("削除する"), TitleAct::DeleteYes, true, true, Key(TEXT("{A|Enter}")));
 			C.bInModal = false;
 		}
 		if (!T.Message.IsEmpty() && FPlatformTime::Seconds() < T.MessageUntil)

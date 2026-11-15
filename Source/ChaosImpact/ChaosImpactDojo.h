@@ -212,7 +212,10 @@ private:
 	bool bWasCharging = false;
 	float MaxCharge = 0.0f;
 	int32 LastBalls = 0;
-	uint8 LastTypes = 0;
+	uint16 LastTypes = 0;
+	/** The swap lesson: the player's swaps so far. The barrier lesson: the walls already counted (or refused). */
+	int32 LastSwapPlaces = 0;
+	TSet<TWeakObjectPtr<AActor>> CountedWalls;
 	double ChargeEndedAt = -100.0;
 	int32 BallsAtChargeEnd = 0;
 	float ChargeAtEnd = 0.0f;
@@ -293,7 +296,7 @@ private:
 	enum class ERecScript : uint8
 	{
 		Rings, PickUp, TapTargets, AimTargets, ChargeAtCPU, KnockOutCPU, LeadThrows, Dashes, DashThrough, Sidestep, StandHit, Jumps,
-		TackleCPU, Swaps, Cancels, Drops, BallForm, Map, Wander, Snow, Nova, Drive, Anchor, BallAtCPU, PadFight, DriveCourse
+		TackleCPU, Swaps, Cancels, Drops, BallForm, Map, Wander, Snow, Nova, Drive, Anchor, BallAtCPU, PadFight, DriveCourse, Barrier, Mine
 	};
 	struct FRecClip
 	{
@@ -318,6 +321,7 @@ private:
 	bool RecHolding = false;
 	bool RecSide = false;
 	float RecHoldUntil = -1.0f;
+	FVector RecMineAt = FVector::ZeroVector;
 	/** The filming camera (the game's angle, framing the player and what the clip is about) and where it looks. */
 	UPROPERTY(Transient)
 	TObjectPtr<class ACameraActor> RecCamera;

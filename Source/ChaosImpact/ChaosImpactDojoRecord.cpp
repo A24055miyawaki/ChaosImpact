@@ -103,13 +103,16 @@ const TArray<AChaosImpactDojo::FRecClip>& AChaosImpactDojo::GetClips()
 	const TPair<EBall, const TCHAR*> Balls[] = {{EBall::Fire, TEXT("x_fire")}, {EBall::Ice, TEXT("x_ice")}, {EBall::Thunder, TEXT("x_thunder")},
 		{EBall::Black, TEXT("x_black")}, {EBall::Wind, TEXT("x_wind")}, {EBall::Smoke, TEXT("x_smoke")}, {EBall::Beam, TEXT("x_beam")},
 		{EBall::Snow, TEXT("x_snow")}, {EBall::Nova, TEXT("x_nova")}, {EBall::Simae, TEXT("x_simae")}, {EBall::Drive, TEXT("x_drive")},
-		{EBall::Prison, TEXT("x_prison")}, {EBall::Hook, TEXT("x_hook")}, {EBall::Anchor, TEXT("x_anchor")}};
+		{EBall::Prison, TEXT("x_prison")}, {EBall::Hook, TEXT("x_hook")}, {EBall::Anchor, TEXT("x_anchor")},
+		{EBall::Swap, TEXT("x_swap")}, {EBall::Barrier, TEXT("x_barrier")}, {EBall::Mine, TEXT("x_mine")}};
 	for (const TPair<EBall, const TCHAR*>& Entry : Balls)
 	{
 		const EBall Ball = Entry.Key;
 		const ERecScript Script = Ball == EBall::Snow ? ERecScript::Snow : Ball == EBall::Nova ? ERecScript::Nova
-			: Ball == EBall::Drive ? ERecScript::Drive : Ball == EBall::Anchor ? ERecScript::Anchor : ERecScript::BallAtCPU;
-		Add(GetClipName(EArt::Ball, Ball), Entry.Value, Ball == EBall::Nova ? 8.0f : Ball == EBall::Snow ? 5.5f : 4.5f, Script, Ball);
+			: Ball == EBall::Drive ? ERecScript::Drive : Ball == EBall::Anchor ? ERecScript::Anchor
+			: Ball == EBall::Barrier ? ERecScript::Barrier : Ball == EBall::Mine ? ERecScript::Mine : ERecScript::BallAtCPU;
+		Add(GetClipName(EArt::Ball, Ball), Entry.Value, Ball == EBall::Nova ? 8.0f : Ball == EBall::Barrier ? 6.2f : Ball == EBall::Snow
+			|| Ball == EBall::Mine ? 5.5f : 4.5f, Script, Ball);
 	}
 	return Clips;
 }
@@ -573,6 +576,37 @@ void AChaosImpactDojo::RunRecScript(const FRecClip& Clip, const float T)
 		Throw(*FString::Printf(TEXT("a%d"), Turn), 0.2f + Turn * 1.5f, 0.35f, Ring);
 		break;
 	}
+	case ERecScript::Barrier:
+		// A short charge sets the wall down between the two just before the CPU's throw; again before its next one.
+		if (Foe)
+		{
+			if (RecOnce(TEXT("wait"), true))
+			{
+				// (The CPU's first throw once the first wall stands.)
+				CPUs[0].NextActAt = GetWorld()->GetTimeSeconds() + 2.1;
+			}
+			Throw(TEXT("w1"), 0.15f, 0.3f, Foe->GetActorLocation());
+			Throw(TEXT("w2"), 3.1f, 0.3f, Foe->GetActorLocation());
+		}
+		break;
+	case ERecScript::Mine:
+		// Charged long enough to reach the CPU's walk, set down in the middle of it: it walks onto it.
+		if (Foe)
+		{
+			const FVector Ahead = CPUs[0].Home;
+			const float Reach = static_cast<float>(FVector::Dist2D(Ahead, Me->GetActorLocation()));
+			// (How long to hold for that far: the lob's speed grows evenly with the charge, and it is in the air 0.77 s.)
+			const float Hold = FMath::Clamp((Reach / 0.77f - ChaosImpactBallTypes::GadgetThrowMinSpeed)
+				/ (ChaosImpactBallTypes::GadgetThrowMaxSpeed - ChaosImpactBallTypes::GadgetThrowMinSpeed), 0.05f, 1.0f) * Me->GetMaxChargeSeconds();
+			if (!RecHolding)
+			{
+				RecHolding = true;
+				RecHoldUntil = Hold;
+				RecMineAt = Ahead;
+			}
+			Throw(TEXT("m1"), 0.2f, RecHoldUntil, RecMineAt);
+		}
+		break;
 	case ERecScript::DriveCourse:
 		if (Foe && CoursePath.Num() >= 2)
 		{

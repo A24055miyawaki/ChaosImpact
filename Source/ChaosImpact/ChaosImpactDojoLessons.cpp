@@ -372,6 +372,24 @@ namespace
 				L.Unit = TEXT("か所");
 				C.Lessons.Add(L);
 			}
+			C.Lessons.Add(BallLesson(EBall::Swap, TEXT("x_swap"), TEXT("当てた相手と場所が入れ替わる"),
+				TEXT("スワップを当てて、CPUと入れ替わろう"), EGoal::SwapPlace, 2,
+				{Slide(TEXT("スワップボールが当たると、相手と自分の場所が一瞬で入れ替わる"), EArt::Ball),
+					Slide(TEXT("ダメージはない。危ない所から逃げたり、相手を危ない所へ送ったりできる"), EArt::Ball)}, ECPU::Walk, 1000.0f));
+			{
+				FChaosImpactDojoLesson L = BallLesson(EBall::Barrier, TEXT("x_barrier"), TEXT("ボールを止める光の壁"),
+					TEXT("バリアを立てて、CPUの球を止めよう"), EGoal::BarrierBlock, 2,
+					{Slide(TEXT("バリアボールが落ちた所に、光の壁が立つ。長くためるほど遠くに立つ"), EArt::Ball),
+						Slide(TEXT("壁はボールを1つ止めると砕ける。何も当たらなくても8秒で消える"), EArt::Ball),
+						Slide(TEXT("人は壁を通りぬけられる。フックとアンカーは壁で止まる"), EArt::Ball)}, ECPU::Thrower, 1000.0f);
+				L.ThrowEvery = 2.4f;
+				C.Lessons.Add(L);
+			}
+			C.Lessons.Add(BallLesson(EBall::Mine, TEXT("x_mine"), TEXT("置いておくと、近づいた相手に爆発"),
+				TEXT("マインを置いて、CPUに踏ませよう"), EGoal::HitCPU, 2,
+				{Slide(TEXT("マインは落ちた所に置かれる。長くためるほど遠くに置ける"), EArt::Ball),
+					Slide(TEXT("相手が近づくと赤く光って、すぐ爆発する。光ったらダッシュで逃げられる"), EArt::Ball),
+					Slide(TEXT("自分と味方には反応しない。置けるのは1人2個まで"), EArt::Ball)}, ECPU::Walk, 900.0f));
 		}
 
 		// ---------------------------------------------------------------------------------------------------- 対戦ルール

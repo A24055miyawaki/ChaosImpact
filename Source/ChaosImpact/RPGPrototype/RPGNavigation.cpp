@@ -11,6 +11,7 @@
 #include "RPGPrototypeUIKit.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacterRoster.h"
+#include "ChaosImpactHints.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -857,7 +858,7 @@ void PaintMarks(const FPainter& Base, const FMapView& V, const ARPGPrototypeChar
 }
 }
 
-void RPGMap::PaintMini(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, bool bPad)
+void RPGMap::PaintMini(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, EChaosImpactDevice Device)
 {
 	UWorld* World = Player ? Player->GetWorld() : nullptr;
 	if (!World || !ARPGAdventureWorld::Find(World)) { return; }
@@ -882,22 +883,24 @@ void RPGMap::PaintMini(const FGeometry& Design, FSlateWindowElementList& Element
 	// North, and the key for the whole map.
 	FPainter Text = C.At(2, 6);
 	Text.Text(TEXT("N"), X + Size * 0.5f, Y - 1, 12, RPGUI::TextSub, ETextAlign::Center, TEXT("Black"), 2, Navy);
-	const float Key = RPGUI::Keycap(C, 2, bPad ? TEXT("→") : TEXT("M"), X + 6, Y + Size - 28, 22);
+	const float Key = RPGUI::Keycap(C, 2, ChaosImpactHints::Text(Device, TEXT("{Right|M}")), X + 6, Y + Size - 28, 22);
 	RPGUI::Label(C, 2, TEXT("マップ"), X + 12 + Key, Y + Size - 27, 13, RPGUI::TextMain);
 	// The light line: on or off, and what it leads to.
 	const float LineY = Y + Size + 8;
-	const float GuideKey = RPGUI::Keycap(C, 1, bPad ? TEXT("R3") : TEXT("N"), X, LineY, 22);
+	const float GuideKey = RPGUI::Keycap(C, 1, ChaosImpactHints::Text(Device, TEXT("{R3|N}")), X, LineY, 22);
 	FVector Goal; FString Label;
 	const bool bGoal = Player->GetQuestTarget(Goal, &Label);
 	FString Line = Player->IsGuideOn() ? FString(TEXT("案内 オン")) : FString(TEXT("案内 オフ"));
 	if (Player->IsGuideOn() && bGoal)
 	{ Line = FString::Printf(TEXT("%s  %dm"), *Label, FMath::RoundToInt(RPGNav::WayLength(Player->GetQuestRoute()) / 100)); }
 	else if (Player->IsGuideOn()) { Line = TEXT("案内 オン（行き先なし）"); }
-	// Under the map, on two lines when the place's name is long.
-	RPGUI::Wrap(C, 1, Line, X + GuideKey + 6, LineY + 2, Size - GuideKey - 8, 13, Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextDim, 2, 17);
+	// Under the map, on two lines when the place's name is long. A long button name ("Rスティック押し込み") leaves no
+	// room beside it: then the words go under the key, the map's whole width.
+	if (GuideKey > Size * 0.45f) { RPGUI::Wrap(C, 1, Line, X, LineY + 28, Size, 13, Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextDim, 2, 17); }
+	else { RPGUI::Wrap(C, 1, Line, X + GuideKey + 6, LineY + 2, Size - GuideKey - 8, 13, Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextDim, 2, 17); }
 }
 
-void RPGMap::PaintNearby(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, bool bPad)
+void RPGMap::PaintNearby(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, EChaosImpactDevice Device)
 {
 	UWorld* World = Player ? Player->GetWorld() : nullptr;
 	if (!World || !ARPGAdventureWorld::Find(World)) { return; }
@@ -923,18 +926,20 @@ void RPGMap::PaintNearby(const FGeometry& Design, FSlateWindowElementList& Eleme
 	// The keys, small, under it.
 	float KeyX = X0 + 6;
 	const float KeyY = Y1 + 10;
-	const auto Hint = [&](const TCHAR* Keyboard, const TCHAR* Pad, const FString& Text, const FLinearColor& Color)
+	// Key: a ChaosImpactHints template (only the device being played with).
+	const auto Hint = [&](const TCHAR* Key, const FString& Text, const FLinearColor& Color)
 	{
-		KeyX += RPGUI::Keycap(C, 3, bPad ? Pad : Keyboard, KeyX, KeyY, 22) + 6;
+		KeyX += RPGUI::Keycap(C, 3, ChaosImpactHints::Text(Device, Key), KeyX, KeyY, 22) + 6;
 		RPGUI::Label(C, 3, Text, KeyX, KeyY + 2, 14, Color);
 		KeyX += RPGUI::Measure(Text, 14) + 20;
 	};
-	Hint(TEXT("M"), TEXT("→"), TEXT("全体マップ"), RPGUI::TextMain);
-	if (!bPad) { Hint(TEXT("Esc"), TEXT(""), TEXT("閉じる"), RPGUI::TextMain); }
-	Hint(TEXT("N"), TEXT("R3"), Player->IsGuideOn() ? FString(TEXT("案内ライン オン")) : FString(TEXT("案内ライン オフ")), Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextSub);
+	Hint(TEXT("{Right|M}"), TEXT("全体マップ"), RPGUI::TextMain);
+	// (On a controller B dashes here: the surroundings close with the map button.)
+	if (!ChaosImpactHints::IsPad(Device)) { Hint(TEXT("Esc"), TEXT("閉じる"), RPGUI::TextMain); }
+	Hint(TEXT("{R3|N}"), Player->IsGuideOn() ? FString(TEXT("案内ライン オン")) : FString(TEXT("案内ライン オフ")), Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextSub);
 }
 
-void RPGMap::PaintFull(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, bool bPad)
+void RPGMap::PaintFull(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float W, float H, const ARPGPrototypeCharacter* Player, float Time, EChaosImpactDevice Device)
 {
 	UWorld* World = Player ? Player->GetWorld() : nullptr;
 	if (!World || !ARPGAdventureWorld::Find(World)) { return; }
@@ -975,26 +980,31 @@ void RPGMap::PaintFull(const FGeometry& Design, FSlateWindowElementList& Element
 	}
 	float KeyX = 34;
 	const float KeyY = H - 46;
-	const auto Hint = [&](const TCHAR* Keyboard, const TCHAR* Pad, const FString& Text, const FLinearColor& Color)
+	// Key: a ChaosImpactHints template (only the device being played with).
+	const auto Hint = [&](const TCHAR* Key, const FString& Text, const FLinearColor& Color)
 	{
-		KeyX += RPGUI::Keycap(C, 3, bPad ? Pad : Keyboard, KeyX, KeyY, 24) + 6;
+		KeyX += RPGUI::Keycap(C, 3, ChaosImpactHints::Text(Device, Key), KeyX, KeyY, 24) + 6;
 		RPGUI::Label(C, 3, Text, KeyX, KeyY + 2, 15, Color);
 		KeyX += RPGUI::Measure(Text, 15) + 22;
 	};
-	Hint(TEXT("M"), TEXT("→"), TEXT("閉じる"), RPGUI::TextMain);
+	Hint(TEXT("{Right|M}"), TEXT("閉じる"), RPGUI::TextMain);
 	FString Why;
 	const bool bTravel = Player->CanFastTravel(&Why);
-	Hint(TEXT("Enter"), TEXT("A"), bTravel ? FString(TEXT("ファストトラベル")) : FString::Printf(TEXT("ファストトラベル（%s）"), *Why), bTravel ? RPGUI::TextMain : RPGUI::TextDim);
-	Hint(TEXT("N"), TEXT("R3"), Player->IsGuideOn() ? FString(TEXT("案内ライン オン")) : FString(TEXT("案内ライン オフ")), Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextSub);
-	// Legend.
+	Hint(TEXT("{A|Enter}"), bTravel ? FString(TEXT("ファストトラベル")) : FString::Printf(TEXT("ファストトラベル（%s）"), *Why), bTravel ? RPGUI::TextMain : RPGUI::TextDim);
+	Hint(TEXT("{R3|N}"), Player->IsGuideOn() ? FString(TEXT("案内ライン オン")) : FString(TEXT("案内ライン オフ")), Player->IsGuideOn() ? RPGUI::Cyan : RPGUI::TextSub);
+	// Legend (one row up when the keys' row reaches it: long button names, a split view).
+	const TCHAR* LegendNames[] = {TEXT("イベント・ネームド"), TEXT("ボス"), TEXT("依頼"), TEXT("休息の灯り"), TEXT("目的地")};
+	float LegendW = 0;
+	for (const TCHAR* Name : LegendNames) { LegendW += RPGUI::Measure(Name, 13) + 38; }
+	const float LegendY = KeyX - 22 > W - 34 - LegendW ? KeyY - 30 : KeyY;
 	FPainter Legend = C.At(3, 2);
 	float LX = W - 34;
 	const auto Item = [&](const FString& Text, TFunctionRef<void(const FVector2D&)> Draw)
 	{
 		LX -= RPGUI::Measure(Text, 13);
-		RPGUI::Label(C, 3, Text, LX, KeyY + 4, 13, RPGUI::TextSub);
+		RPGUI::Label(C, 3, Text, LX, LegendY + 4, 13, RPGUI::TextSub);
 		LX -= 16;
-		Draw(FVector2D(LX, KeyY + 13));
+		Draw(FVector2D(LX, LegendY + 13));
 		LX -= 22;
 	};
 	Item(TEXT("イベント・ネームド"), [&](const FVector2D& At) { Glyph(Legend, At, 7, FLinearColor(1.0f, 0.8f, 0.18f, 1.0f), TEXT("★")); });

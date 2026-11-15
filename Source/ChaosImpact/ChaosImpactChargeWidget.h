@@ -39,7 +39,7 @@ public:
 	void SetHealth(float CurrentHealth, float MaxHealth);
 	void SetStamina(float CurrentStamina, float MaxStamina);
 	/** BallTypes: packed EChaosImpactBallType per slot (ChaosImpactBallTypes::Pack), slot 0 thrown next. */
-	void SetBallInventory(int32 CurrentBalls, int32 MaximumBalls, uint8 BallTypes = 0);
+	void SetBallInventory(int32 CurrentBalls, int32 MaximumBalls, uint16 BallTypes = 0);
 	void ShowRespawn(const FString& DefeatedBy, float TotalSeconds);
 	void UpdateRespawn(float RemainingSeconds, float TotalSeconds);
 	void HideRespawn();
@@ -193,7 +193,7 @@ private:
 	float GetSmokeCover() const;
 
 	int32 CarriedBalls = 0;
-	uint8 CarriedBallTypes = 0;
+	uint16 CarriedBallTypes = 0;
 	double BallGainedAt = -100.0;
 	int32 BallGainedSlot = INDEX_NONE;
 	double BallSwappedAt = -100.0;
@@ -233,6 +233,9 @@ private:
 	void PaintOverviewMap(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 Layer) const;
 	/** Balls already announced as coming at this player from off screen (its sound plays once each). */
 	mutable TSet<TWeakObjectPtr<class AChaosImpactBall>> WarnedBalls;
+	/** Over the shoulder: what the crosshair is on, and since when (its red eases in). */
+	mutable TWeakObjectPtr<const AActor> LastShoulderTarget;
+	mutable double ShoulderTargetSince = 0.0;
 	/** The perched-bird card's own area (left out when it looks for room under the top HUD). */
 	mutable FBox2D SimaeCardBox = FBox2D(ForceInit);
 	/** Sudden death: since when this player has stood outside the closing circle (its card's gauge), and its card's area. */

@@ -24,8 +24,9 @@ struct FKeyEvent;
  *         nicknames are made, renamed and taken off here too (and picked at character select).
  *   その他: volume, rumble, camera shake, and which button decides on a Switch controller.
  * Up and down pick a row, left and right change it, LB/RB (Q/E) change tab; on a control, A (Enter or a click) waits
- * for the new key, Y (Delete) takes it off. Everything is saved as it changes. Drawn by the menu widget in its
- * 1600 x 900 design space.
+ * for the new key, Y (Delete) takes it off. A change shows at once, and is kept when 保存 is pressed (X / S, or the
+ * button above もどる); leaving with changes not saved asks whether to save them, and not saving puts everything back.
+ * Drawn by the menu widget in its 1600 x 900 design space.
  */
 UCLASS()
 class UChaosImpactSettingsScreen : public UObject
@@ -86,6 +87,8 @@ public:
 	int32 GetSelectedCell() const { return SelectedCell; }
 	/** The first row with this id (INDEX_NONE when this tab has none). */
 	int32 FindRow(int32 Id) const;
+	/** Where a row is drawn now (design space; it moves as the list scrolls). */
+	FBox2D GetRowRect(int32 Row) const { return RowRect(Row); }
 	void SelectRow(int32 Row, int32 Cell = 0);
 	void MoveSelection(int32 Direction);
 	/** Left or right on the selected row: its value, or which of a control's two keys. */
@@ -109,6 +112,19 @@ public:
 	bool IsControlVideoPlaying() const;
 	double GetControlVideoTime() const;
 	virtual void BeginDestroy() override;
+
+	// 保存: changes are kept only when saved.
+	/** Something was changed since the screen opened (or was last saved). */
+	bool HasUnsavedChanges() const;
+	/** Keeps every change made (X / S, or the 保存 button). */
+	void Save();
+	/** もどる with changes not saved: the question whether to save them is up. */
+	bool IsAskingToSave() const { return bAskSave; }
+	/** The question's answers. */
+	enum class ESaveAnswer : uint8 { SaveAndLeave, LeaveWithoutSaving, Stay, Count };
+	ESaveAnswer GetSaveAnswerChoice() const { return AskChoice; }
+	/** Answers the question (as a press on that choice). */
+	void AnswerSave(ESaveAnswer Answer);
 
 	// Row ids, for the tests and the cpp.
 	enum ERowId : int32
@@ -137,6 +153,7 @@ public:
 		RowShoulderSensitivityY,
 		RowResetShoulderSensitivity,
 		RowCameraDistance,
+		RowThrowToMove,
 		RowVolume = 300,
 		RowRumble,
 		RowShake,
@@ -146,6 +163,7 @@ public:
 		RowHudSize,
 		RowTutorial,
 		RowMiniGames,
+		RowMusicVolume,
 		RowBinding = 1000
 	};
 
@@ -164,6 +182,8 @@ private:
 	FBox2D RowRect(int32 Row) const;
 	FBox2D CellRect(int32 Row, int32 Cell) const;
 	FBox2D TabRect(int32 Index) const;
+	/** What the hints name the keys of: the device being used now (not the one being set). */
+	EChaosImpactDevice HintDevice() const;
 	/** The key and controller names the hint line uses (from the last device pressed). */
 	FString HintText() const;
 	/** What a row does, in a line (under the rows). */
@@ -194,9 +214,6 @@ private:
 	double TabChangedAt = 0.0;
 	double NextStickAt[2] = {0.0, 0.0};
 	bool bStickHeld[2] = {false, false};
-	/** The last press came from a controller (the hint line shows its buttons) and which layout it was. */
-	bool bLastInputPad = false;
-	EChaosImpactDevice LastPadDevice = EChaosImpactDevice::Xbox;
 	bool bOpen = false;
 	bool bControlStylePickerOpen = false;
 	EChaosImpactControlScheme PreviewControlScheme = EChaosImpactControlScheme::Normal;
@@ -206,4 +223,14 @@ private:
 	FSlateBrush ControlVideoBrush;
 	int32 OpenVideoId = INDEX_NONE;
 	bool bVideoOpenFailed = false;
+	/** The question whether to save, over the screen. */
+	bool bAskSave = false;
+	ESaveAnswer AskChoice = ESaveAnswer::SaveAndLeave;
+	double AskOpenedAt = 0.0;
+	/** Has changes not saved (refreshed each tick: comparing every setting is not done while drawing). */
+	bool bUnsaved = false;
+	/** The question's buttons, in design space. */
+	FBox2D AskButtonRect(int32 Index) const;
+	int32 PaintAskSave(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
+	void LeaveNow();
 };

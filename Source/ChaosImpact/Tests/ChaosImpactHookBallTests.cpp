@@ -634,7 +634,8 @@ namespace
 				Test->TestTrue(TEXT("Thrown over open floor, the thrower goes most of the anchor's reach"),
 					Moved > AChaosImpactHook::Length * 0.75f);
 				Test->TestTrue(TEXT("The flight goes straight across (level)"), HighestSeen - Start.Z < 40.0f);
-				Test->TestTrue(TEXT("The anchor does not hurt the CPU it passes"), CPU && FMath::IsNearlyEqual(CPU->GetHealth(), CPUHealth));
+				// (The anchor itself catches nobody; flying into the CPU on the way rams it: one hit, see ChaosImpactAnchorRamTests.)
+				Test->TestTrue(TEXT("Flying into the CPU on the way rams it once"), CPU && FMath::IsNearlyEqual(CPU->GetHealth(), CPUHealth - 1.0f));
 				Test->TestTrue(TEXT("Back on the ground afterwards"), Player->GetCharacterMovement()->IsMovingOnGround());
 				Test->TestFalse(TEXT("The flight is over"), Player->IsAnchorZipping());
 				Player->ResetForOnlineMatch(Origin, (bHaveWall ? WallWay : Toward).Rotation());

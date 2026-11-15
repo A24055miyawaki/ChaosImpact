@@ -10,6 +10,7 @@ class UEditableText;
 class UChaosImpactCharacterSelect;
 class UChaosImpactColourEdit;
 class UChaosImpactGallery;
+class UChaosImpactRecordBoards;
 class UChaosImpactSettingsScreen;
 
 /** Native, resolution-independent front end. All hit regions and D-pad focus share one layout. */
@@ -26,6 +27,8 @@ public:
 	void RefreshEntries();
 	int32 GetSelectedIndex() const { return SelectedIndex; }
 	int32 GetEntryCount() const { return Entries.Num(); }
+	/** Puts the cursor on an entry (tests, and the pad's way round checked from each one). */
+	void SelectEntry(const int32 Index) { SelectedIndex = FMath::Clamp(Index, 0, FMath::Max(0, Entries.Num() - 1)); }
 	bool IsEntryDisabled(const int32 Index) const { return Entries.IsValidIndex(Index) && Entries[Index].bDisabled; }
 	bool HasLogo() const { return LogoTexture != nullptr; }
 	EChaosImpactScreen GetScreen() const { return Screen; }
@@ -42,6 +45,8 @@ public:
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
 	UChaosImpactColourEdit* GetColourEdit() const { return ColourEdit; }
 	UChaosImpactGallery* GetGallery() const { return Gallery; }
+	UChaosImpactRecordBoards* GetRecordBoards() const { return RecordBoards; }
+	bool IsBoardScreen() const { return Screen == EChaosImpactScreen::OnlineHistory || Screen == EChaosImpactScreen::OnlineRanking; }
 	UChaosImpactSettingsScreen* GetSettingsScreen() const { return SettingsScreen; }
 	void OpenTrainingBallPicker();
 	bool IsTrainingBallPickerOpen() const { return bTrainingBallPickerOpen; }
@@ -50,6 +55,8 @@ protected:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+	/** Takes the keyboard / pad focus back when nothing of the menus' has it (no click needed first). */
+	void KeepMenuFocus(class AChaosImpactPlayerController* Player);
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 		const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements,
 		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
@@ -144,7 +151,9 @@ private:
 	/** When leaving with every kind off was refused (the note flashes). */
 	double BallSwitchDeniedAt = -100.0;
 	/** Ball tiles in a row on the ボールスイッチ. */
-	static constexpr int32 BallSwitchColumns = 8;
+	static constexpr int32 BallSwitchColumns = 9;
+	/** The training overlay's ball list: this many a row. */
+	static constexpr int32 TrainingBallColumns = 4;
 	void OpenBallSwitch(bool bOpen);
 	/** Closes the ボールスイッチ unless every kind is off (then refused, false). */
 	bool CloseBallSwitchIfAnyOn();
@@ -218,6 +227,10 @@ private:
 	/** みんなのカラー (online). */
 	UPROPERTY(Transient)
 	TObjectPtr<UChaosImpactGallery> Gallery;
+
+	/** 対戦履歴 and ランキング (online). */
+	UPROPERTY(Transient)
+	TObjectPtr<UChaosImpactRecordBoards> RecordBoards;
 
 	/** 訓練場's lesson list. */
 	UPROPERTY(Transient)

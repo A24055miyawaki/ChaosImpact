@@ -309,7 +309,7 @@ bool ARPGPrototypeGameMode::HandleUnownedPad(const FInputKeyEventArgs& EventArgs
     const auto* First=Cast<ARPGPrototypeCharacter>(UGameplayStatics::GetPlayerPawn(this,0));
     if(!First || (First->IsInTitle() && First->GetTitleWidget()->GetMode()==URPGTitleWidget::EMode::Title)) { return false; }
     if(EventArgs.Key==EKeys::Gamepad_Special_Right) { return JoinWithPad(EventArgs.InputDevice.GetId()); }
-    JoinPromptUntil=GetWorld()->GetRealTimeSeconds()+6;
+    JoinPromptUntil=GetWorld()->GetRealTimeSeconds()+6; JoinPromptInput=EventArgs.InputDevice.GetId();
     return true;
 }
 bool ARPGPrototypeGameMode::IsJoinPromptShown() const

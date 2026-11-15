@@ -926,7 +926,7 @@ void AChaosImpactCyberStage::OnRep_GateState()
 {
 	if (GatePattern >= 0 && GetNetMode() != NM_DedicatedServer)
 	{
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, GetActorLocation() + FVector(0.0f, 0.0f, 160.0f), 0.5f, 1.35f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageCharge, GetActorLocation() + FVector(0.0f, 0.0f, 160.0f), 0.9f, 1.1f);
 	}
 }
 
@@ -943,7 +943,7 @@ void AChaosImpactCyberStage::MulticastGateActivated_Implementation(const int32 P
 			continue;
 		}
 		const FVector At = GetActorTransform().TransformPosition(GetGateOffset(Gate));
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageWarp, At, 0.7f, 1.25f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageGate, At);
 		// The barrier forms: a ring of its colour spreads out over the floor from it.
 		PlayFloorRing(At, Gate % 2 == 0 ? FLinearColor(0.0f, 0.9f, 1.0f) : FLinearColor(1.0f, 0.5f, 0.1f), GateHalfWidth * 0.5f, GateHalfWidth * 2.4f,
 			0.6f, 12.0f, 12.0f);
@@ -965,7 +965,7 @@ void AChaosImpactCyberStage::MulticastGateBounce_Implementation(const FVector_Ne
 	{
 		return;
 	}
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, At, 0.75f, 1.3f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageBounce, At);
 	if (UNiagaraSystem* Sparks = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::SparkBurst))
 	{
 		UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Sparks, At, FRotator::ZeroRotator, FVector(1.6f));

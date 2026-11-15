@@ -65,6 +65,17 @@ public:
 	virtual void Launch(const FVector& Direction, float Speed,
 		EChaosImpactBallFlightMode FlightMode = EChaosImpactBallFlightMode::Arc,
 		float ArcUpwardSpeed = 650.0f);
+	/**
+	 * Server: where a barrier ball's wall goes (the floor its thrower's preview showed, standing across Heading). It
+	 * is put there when the ball comes down near it; else where the ball came down, still across the throw.
+	 */
+	void SetGadgetPlan(const FVector& Floor, const FVector& Heading)
+	{
+		GadgetPlanFloor = Floor;
+		GadgetPlanHeading = Heading.GetSafeNormal2D();
+		bGadgetPlan = !GadgetPlanHeading.IsNearlyZero();
+	}
+	bool HasGadgetPlan() const { return bGadgetPlan; }
 	/** Online catch-up: as if launched Seconds ago (its own movement in small steps, so it still meets what is in the way). */
 	void AdvanceFlight(float Seconds);
 	/**
@@ -493,6 +504,11 @@ protected:
 
 	UPROPERTY(ReplicatedUsing=OnRep_Detonated)
 	bool bDetonated = false;
+	/** The way it was thrown (flat), and a barrier's planned wall (SetGadgetPlan). */
+	FVector LaunchHeading = FVector::ZeroVector;
+	FVector GadgetPlanFloor = FVector::ZeroVector;
+	FVector GadgetPlanHeading = FVector::ZeroVector;
+	bool bGadgetPlan = false;
 	/** A drive ball may be flown on its driver's own screen (TickOwnDriveFlight); not one with its own steering. */
 	bool bOwnDriveFlight = true;
 
@@ -581,7 +597,7 @@ protected:
 	double TakenTouchTime = 0.0;
 	double TakenAt = 0.0;
 	int32 TakenCountAfter = 0;
-	uint8 TakenTypesAfter = 0;
+	uint16 TakenTypesAfter = 0;
 	/** Server: from when the host's and CPUs' characters may take it (see GetFairSightDelay). */
 	double LocalPickupFrom = 0.0;
 	/** Server: one of them is on it but was early (or it was locked out): looked at again each frame. */

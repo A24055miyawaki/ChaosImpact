@@ -119,6 +119,9 @@ struct FChaosImpactRateReport
 	int32 Delta = 0;
 	/** Held at the floor (500). */
 	bool bFloor = false;
+	/** 1v1: this win was the Streak-th in a row, its gain multiplied by StreakBonus (1: none). */
+	int32 Streak = 0;
+	float StreakBonus = 1.0f;
 	double ChangedAt = 0.0;
 };
 

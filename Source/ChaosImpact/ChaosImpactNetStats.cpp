@@ -39,6 +39,8 @@ namespace
 	constexpr float ClearSeconds = 0.06f;
 	constexpr double BestWindowSeconds = 30.0;
 	constexpr int32 FloorRate = 12000;
+	/** Sending less than this a second cannot be what clogs a line: nothing is held back for it. */
+	constexpr int32 MinLoadToHoldBack = 14000;
 	constexpr int32 HighChecksToAct = 3;
 	constexpr int32 CeilingRate = 100000;
 	/** While any line of a game is held back: packets this many times a second instead (half as many to queue up). */
@@ -60,7 +62,16 @@ namespace
 		}
 		const int32 Rate = Connection->CurrentNetSpeed;
 		int32 Wanted = Rate;
-		Line.HighChecks = Connection->AvgLag > Best + QueueingSeconds ? Line.HighChecks + 1 : 0;
+		// Queueing is what this machine sends piling up on the line: the round trip stays high, every check, for a while.
+		// A line whose delay only swings up and down (its lowest of the last two seconds still near the best), or one
+		// this game hardly loads (a few kilobytes a second), is not helped by sending less: it is left at full speed.
+		float RecentLow = Connection->AvgLag;
+		for (const auto& Entry : Line.Recent)
+		{
+			RecentLow = Now - Entry.Key <= 2.0 ? FMath::Min(RecentLow, Entry.Value) : RecentLow;
+		}
+		const bool bLoaded = Connection->OutBytesPerSecond > MinLoadToHoldBack;
+		Line.HighChecks = bLoaded && RecentLow > Best + QueueingSeconds ? Line.HighChecks + 1 : 0;
 		if (Line.HighChecks >= HighChecksToAct)
 		{
 			// Below what is going out now, so the queue drains.
@@ -68,7 +79,8 @@ namespace
 		}
 		else if (Connection->AvgLag < Best + ClearSeconds)
 		{
-			Wanted = FMath::Min(CeilingRate, FMath::RoundToInt(Rate * 1.3f) + 2000);
+			// (Back up quickly: a few seconds held back, not half a minute.)
+			Wanted = FMath::Min(CeilingRate, Rate * 2 + 4000);
 		}
 		if (Wanted != Rate)
 		{
@@ -89,17 +101,52 @@ void ChaosImpactNetStats::StartLatencyGuard()
 	bStarted = true;
 	const TSharedRef<TMap<TWeakObjectPtr<UNetConnection>, FGuardedLine>> Lines = MakeShared<TMap<TWeakObjectPtr<UNetConnection>, FGuardedLine>>();
 	const TSharedRef<double> NextAt = MakeShared<double>(0.0);
-	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Lines, NextAt](const float)
+	// (A stall or a new level: the round trips measured through it say nothing of the line. Nothing is held back for a
+	// while after, and what was measured before is forgotten.)
+	const TSharedRef<double> QuietUntil = MakeShared<double>(0.0);
+	const TSharedRef<TWeakObjectPtr<const UWorld>> LastWorld = MakeShared<TWeakObjectPtr<const UWorld>>();
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Lines, NextAt, QuietUntil, LastWorld](const float)
 	{
 		const double Now = FPlatformTime::Seconds();
+		// This machine stalling (a level loading) makes every round trip look long: not the line's doing. Seen every
+		// frame, so a single long frame between two checks is not missed.
+		if (FApp::GetDeltaTime() > 0.25)
+		{
+			*QuietUntil = Now + 8.0;
+		}
 		if (Now < *NextAt)
 		{
 			return true;
 		}
 		*NextAt = Now + 0.5;
-		// This machine stalling (a level loading) makes every round trip look long: not the line's doing.
-		if (FApp::GetDeltaTime() > 0.25)
+		const UWorld* GameWorld = nullptr;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
 		{
+			if (Context.World() && Context.World()->IsGameWorld()) { GameWorld = Context.World(); }
+		}
+		if (GameWorld != LastWorld->Get())
+		{
+			*LastWorld = GameWorld;
+			*QuietUntil = Now + 10.0;
+		}
+		if (Now < *QuietUntil)
+		{
+			// Whatever a stall held back goes straight back to full speed.
+			for (TPair<TWeakObjectPtr<UNetConnection>, FGuardedLine>& Pair : *Lines)
+			{
+				Pair.Value.Recent.Reset();
+				Pair.Value.HighChecks = 0;
+				if (UNetConnection* Held = Pair.Key.Get(); Held && Held->CurrentNetSpeed < CeilingRate)
+				{
+					Held->CurrentNetSpeed = CeilingRate;
+					UE_LOG(LogChaosImpact, Log, TEXT("Line guard: a stall, not the line: back to %d B/s"), CeilingRate);
+				}
+			}
+			if (UNetDriver* Driver = GameWorld ? GameWorld->GetNetDriver() : nullptr)
+			{
+				const int32 Usual = Driver->GetClass()->GetDefaultObject<UNetDriver>()->MaxNetTickRate;
+				Driver->MaxNetTickRate = Usual;
+			}
 			return true;
 		}
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())

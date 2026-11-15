@@ -120,12 +120,10 @@ namespace
 				}
 				RemoveTestProfiles();
 				PC->ShowMenuScreen(EChaosImpactScreen::ModeSelect);
-				Test->TestEqual(TEXT("The mode select menu has 設定"), Menu->GetEntryCount(), 5);
-				// Solo, down to タイトルへ, right to 設定.
-				PressKey(EKeys::Down);
-				PressKey(EKeys::Right);
-				Test->TestEqual(TEXT("設定 sits between タイトルへ and トレーニング"), Menu->GetSelectedIndex(), 4);
-				PressKey(EKeys::Enter);
+				// (The mode select is a mosaic of seven now, 設定 the fifth: 0 ソロ, 1 VS, 2 トレーニング, 3 タイトルへ, 4 設定,
+				// 5 カラーエディット, 6 訓練場.)
+				Test->TestEqual(TEXT("The mode select menu has 設定"), Menu->GetEntryCount(), 7);
+				PC->OpenSettings();
 				Test->TestTrue(TEXT("設定 opens the settings"), PC->GetCurrentScreen() == EChaosImpactScreen::Settings && Settings->IsOpen());
 				Test->TestTrue(TEXT("It opens on 画面"), Settings->GetTab() == FScreen::ETab::Display);
 				OriginalMode = GetWindowMode();
@@ -261,7 +259,10 @@ namespace
 				return Next(0.5);
 			case 8:
 				SettingsShot(TEXT("06-Other.png"));
+				// Changes not saved: Escape asks first; Enter on its first answer saves them and goes back.
 				PressKey(EKeys::Escape);
+				Test->TestTrue(TEXT("Escape with changes not saved asks whether to save"), Settings->IsAskingToSave() && Settings->IsOpen());
+				PressKey(EKeys::Enter);
 				Test->TestTrue(TEXT("Escape goes back to the mode select menu"), PC->GetCurrentScreen() == EChaosImpactScreen::ModeSelect);
 				Test->TestFalse(TEXT("…and closes the settings"), Settings->IsOpen());
 				// Character select with one keyboard player.

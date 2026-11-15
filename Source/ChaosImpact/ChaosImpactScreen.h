@@ -71,6 +71,10 @@ enum class EChaosImpactScreen : uint8
 	DojoSelect,
 	/** Online: the gallery of custom colours players post (UChaosImpactGallery). */
 	Gallery,
+	/** Online: the last 50 ランダムマッチ games of 1v1 or 8人, in detail (UChaosImpactRecordBoards). */
+	OnlineHistory,
+	/** Online: the ランキング of 1v1 or 8人 (UChaosImpactRecordBoards). */
+	OnlineRanking,
 };
 
 /** Which mode the player-count and controller-assignment screens are setting up. */

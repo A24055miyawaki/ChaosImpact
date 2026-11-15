@@ -16,6 +16,7 @@
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactSettings.h"
+#include "ChaosImpactHints.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "ChaosImpactCharacter.h"
@@ -900,7 +901,7 @@ void UChaosImpactChargeWidget::SetStamina(const float CurrentStamina, const floa
 }
 
 void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const int32 MaximumBalls,
-	const uint8 BallTypes)
+	const uint16 BallTypes)
 {
 	const int32 ClampedMaximum = FMath::Clamp(MaximumBalls, 0, BallIcons.Num());
 	const int32 ClampedCurrent = FMath::Clamp(CurrentBalls, 0, ClampedMaximum);
@@ -973,6 +974,18 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(0.93f, 1.0f, 0.78f), FLinearColor(0.1f, 0.14f, 0.0f, 0.97f),
 				FLinearColor(0.66f, 1.0f, 0.06f), FLinearColor(0.26f, 0.4f, 0.0f, 0.95f),
 				FLinearColor(0.95f, 1.0f, 0.82f), FLinearColor(0.9f, 1.0f, 0.75f)};
+		case EChaosImpactBallType::Swap:
+			return {FLinearColor(0.88f, 0.86f, 1.0f), FLinearColor(0.05f, 0.03f, 0.2f, 0.97f),
+				FLinearColor(0.5f, 0.42f, 1.0f), FLinearColor(0.18f, 0.13f, 0.5f, 0.95f),
+				FLinearColor(0.9f, 0.88f, 1.0f), FLinearColor(0.85f, 0.82f, 1.0f)};
+		case EChaosImpactBallType::Barrier:
+			return {FLinearColor(0.8f, 0.92f, 1.0f), FLinearColor(0.0f, 0.07f, 0.2f, 0.97f),
+				FLinearColor(0.22f, 0.6f, 1.0f), FLinearColor(0.04f, 0.22f, 0.5f, 0.95f),
+				FLinearColor(0.86f, 0.95f, 1.0f), FLinearColor(0.78f, 0.9f, 1.0f)};
+		case EChaosImpactBallType::Mine:
+			return {FLinearColor(1.0f, 0.82f, 0.84f), FLinearColor(0.2f, 0.0f, 0.03f, 0.97f),
+				FLinearColor(1.0f, 0.1f, 0.24f), FLinearColor(0.48f, 0.02f, 0.08f, 0.95f),
+				FLinearColor(1.0f, 0.86f, 0.88f), FLinearColor(1.0f, 0.78f, 0.8f)};
 		case EChaosImpactBallType::Simae:
 			return {FLinearColor(0.98f, 0.99f, 1.0f), FLinearColor(0.12f, 0.14f, 0.18f, 0.97f),
 				FLinearColor(0.92f, 0.96f, 1.0f), FLinearColor(0.03f, 0.035f, 0.045f, 1.0f),
@@ -1423,17 +1436,17 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 				HudText3D(Words, Line, TextLeft + KeyW + 8.0f, 27.0f, HudFit(Line, 24.0f, Room - KeyW - 8.0f), Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
 			}
 			// Time until the peck: a bar in five cells that empties, gold to red, flashing at the end.
-			const float BarLeft = TextLeft, BarTop = H - 16.0f, BarW = W - TextLeft - 18.0f;
+			const float BarLeft = TextLeft, CellTop = H - 16.0f, BarW = W - TextLeft - 18.0f;
 			const float Flash = Ratio < 0.3f ? 0.6f + 0.4f * FMath::Sin(static_cast<float>(Clock) * 20.0f) : 1.0f;
 			for (int32 Cell = 0; Cell < 5; ++Cell)
 			{
 				const float CellW = (BarW - 4.0f * 4.0f) / 5.0f;
 				const float X = BarLeft + Cell * (CellW + 4.0f);
 				const float Fill = FMath::Clamp(Ratio * 5.0f - Cell, 0.0f, 1.0f);
-				RoundedBox(Words, X, BarTop, CellW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
+				RoundedBox(Words, X, CellTop, CellW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
 				if (Fill > 0.0f)
 				{
-					RoundedBox(HudAbove(Words, 1), X, BarTop, CellW * Fill, 6.0f, 3.0f, WithAlpha(FMath::Lerp(Fire, Gold, Ratio), Flash));
+					RoundedBox(HudAbove(Words, 1), X, CellTop, CellW * Fill, 6.0f, 3.0f, WithAlpha(FMath::Lerp(Fire, Gold, Ratio), Flash));
 				}
 			}
 		}
@@ -1504,17 +1517,17 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 				ETextAlign::Left, TEXT("Bold"));
 			HudText3D(Words, TEXT("円の中にもどれ！"), TextLeft, 27.0f, HudFit(TEXT("円の中にもどれ！"), 25.0f, Room), Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
 			// The moment before it counts: five cells that fill, gold to red, flashing as they fill up.
-			const float BarLeft = TextLeft, BarTop = H - 16.0f, BarW = W - TextLeft - 18.0f;
+			const float BarLeft = TextLeft, CellTop = H - 16.0f, BarW = W - TextLeft - 18.0f;
 			const float Flash = Filled > 0.6f ? 0.6f + 0.4f * FMath::Sin(static_cast<float>(Clock) * 24.0f) : 1.0f;
 			for (int32 Cell = 0; Cell < 5; ++Cell)
 			{
 				const float CellW = (BarW - 4.0f * 4.0f) / 5.0f;
 				const float X = BarLeft + Cell * (CellW + 4.0f);
 				const float Fill = FMath::Clamp(Filled * 5.0f - Cell, 0.0f, 1.0f);
-				RoundedBox(Words, X, BarTop, CellW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
+				RoundedBox(Words, X, CellTop, CellW, 6.0f, 3.0f, WithAlpha(Paper, 0.12f));
 				if (Fill > 0.0f)
 				{
-					RoundedBox(HudAbove(Words, 1), X, BarTop, CellW * Fill, 6.0f, 3.0f, WithAlpha(FMath::Lerp(Gold, Fire, Filled), Flash));
+					RoundedBox(HudAbove(Words, 1), X, CellTop, CellW * Fill, 6.0f, 3.0f, WithAlpha(FMath::Lerp(Gold, Fire, Filled), Flash));
 				}
 			}
 		}
@@ -2229,26 +2242,51 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 	if (ShoulderCharacter && ShoulderCharacter->IsShoulderViewActive())
 	{
 		const FPainter Paint{Geometry, Elements, Layer};
-		// A near wall hit + shoulder offset produced huge lateral parallax. Character aim also
-		// belongs to a different tick than the rendered camera. Use the actual rendered view,
-		// fixed depth and flat throw plane for a stable direction marker, not a hit guarantee.
-		FVector ViewLocation; FRotator ViewRotation;
-		PC->GetPlayerViewPoint(ViewLocation,ViewRotation);
-		const FVector End = UChaosImpactShoulderCameraComponent::MakeReticleAnchor(
-			ViewLocation,ViewRotation,ShoulderCharacter->GetActorLocation().Z + 54);
-		FVector2D At;
-		if (UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(),End,At,true))
+		const UChaosImpactShoulderCameraComponent* Camera = ShoulderCharacter->GetShoulderCamera();
+		const AActor* Target = Camera ? Camera->GetAimTarget() : nullptr;
+		const double Now = FPlatformTime::Seconds();
+		if (Target != LastShoulderTarget.Get())
 		{
-			At.X = Size.X * .5;
-			At.Y = FMath::Clamp(At.Y, 24.0, Size.Y - 24.0);
-			Paint.Ring(At, 8 * S, Ink, 5 * S);
-			Paint.Ring(At, 8 * S, Paper, 2 * S);
-			Paint.Line(At - FVector2D(13 * S,0), At + FVector2D(13 * S,0), Ink, 5 * S);
-			Paint.Line(At - FVector2D(13 * S,0), At + FVector2D(13 * S,0), Paper, 2 * S);
-			if (bPointerCharging) { Paint.Arc(At, 13 * S,-90,-90 + 360 * PointerChargeAlpha, Gold, 3 * S); }
+			LastShoulderTarget = Target;
+			ShoulderTargetSince = Now;
 		}
-		// A separate ground marker previews first stage contact, not a false pitch-directed crosshair.
+		// Over an enemy the crosshair turns red and closes in a touch (eased, so it never flickers).
+		const float Lock = Target ? ChaosImpactEase::Out(FMath::Clamp(static_cast<float>(Now - ShoulderTargetSince) / 0.12f, 0.0f, 1.0f)) : 0.0f;
+		const FLinearColor Mark = FMath::Lerp(Paper, Fire, Lock);
+		// The crosshair is the centre of the view: the throw goes flat to whatever is there.
+		const FVector2D Center = Size * 0.5;
+		const float R = FMath::Lerp(9.0f, 7.0f, Lock) * S;
+		Paint.Ring(Center, R, WithAlpha(Ink, 0.75f), 4.5f * S);
+		Paint.Ring(Center, R, Mark, 2.0f * S);
+		Paint.Disc(Center, 2.6f * S, WithAlpha(Ink, 0.75f));
+		Paint.Disc(Center, 1.5f * S, Mark);
+		if (bPointerCharging)
+		{
+			// The charge, round the crosshair (gold; full: a closed ring).
+			Paint.Ring(Center, R + 7.0f * S, WithAlpha(Ink, 0.45f), 5.0f * S);
+			Paint.Arc(Center, R + 7.0f * S, -90, -90 + 360 * PointerChargeAlpha, Gold, 3.0f * S);
+		}
+		// The one it is on: a thin ring round them (where the ball will go).
+		FVector2D TargetAt, TopAt;
+		if (Target && Lock > 0.01f)
+		{
+			float Radius = 40.0f, HalfHeight = 90.0f;
+			Target->GetSimpleCollisionCylinder(Radius, HalfHeight);
+			const FVector Body = Target->GetActorLocation();
+			if (UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(), Body, TargetAt, true)
+				&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(), Body + FVector(0, 0, HalfHeight), TopAt, true)
+				&& FBox2D(FVector2D::ZeroVector, Size).IsInside(TargetAt))
+			{
+				const float Around = FMath::Clamp(static_cast<float>(FVector2D::Distance(TargetAt, TopAt)) * 1.15f, 22.0f * S, 140.0f * S)
+					* FMath::Lerp(1.25f, 1.0f, Lock);
+				const FPainter Ring{Geometry, Elements, Layer, Lock};
+				Ring.Ring(TargetAt, Around, WithAlpha(Ink, 0.5f), 4.0f * S, 64);
+				Ring.Ring(TargetAt, Around, WithAlpha(Fire, 0.85f), 1.8f * S, 64);
+			}
+		}
+		// While charging, where the ball first meets the stage.
 		FVector Ground; float Radius = 0;
+		FVector2D At;
 		if (ShoulderCharacter->IsChargingThrow() && ShoulderCharacter->PredictThrowLanding(ShoulderCharacter->GetThrowChargeAlpha(),Ground,Radius)
 			&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(GetOwningPlayer(),Ground + FVector(0,0,4),At,true)
 			&& FBox2D(FVector2D::ZeroVector,Size).IsInside(At))
@@ -2365,6 +2403,9 @@ void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& P
 	case EChaosImpactBallType::Prison: Body = FLinearColor(.22f,.035f,.018f,1.f); break;
 	case EChaosImpactBallType::Hook: Body = FLinearColor(0.1f, 0.42f, 0.4f, 1.0f); break;
 	case EChaosImpactBallType::Anchor: Body = FLinearColor(0.34f, 0.5f, 0.04f, 1.0f); break;
+	case EChaosImpactBallType::Swap: Body = FLinearColor(0.26f, 0.2f, 0.62f, 1.0f); break;
+	case EChaosImpactBallType::Barrier: Body = FLinearColor(0.08f, 0.3f, 0.62f, 1.0f); break;
+	case EChaosImpactBallType::Mine: Body = FLinearColor(0.16f, 0.05f, 0.07f, 1.0f); break;
 	default: break;
 	}
 	const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -2462,6 +2503,59 @@ void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& P
 				+ FVector2D(FMath::Cos(FMath::DegreesToRadians(Side > 0.0f ? 30.0f : 150.0f)), FMath::Sin(FMath::DegreesToRadians(30.0f))) * Radius * 0.48f;
 			Paint.Line(Tip, Tip + FVector2D(Side * Radius * 0.06f, -Radius * 0.16f), Glow, 2.5f);
 		}
+		break;
+	}
+	case EChaosImpactBallType::Swap:
+	{
+		// Two arrows chasing each other round, slowly turning.
+		const float Turn = Time * 60.0f;
+		const FLinearColor White(0.95f, 0.96f, 1.0f, 1.0f);
+		for (int32 Arrow = 0; Arrow < 2; ++Arrow)
+		{
+			const FLinearColor Color = Arrow == 0 ? White : FLinearColor(0.78f, 0.72f, 1.0f, 1.0f);
+			const float From = Turn + Arrow * 180.0f + 15.0f;
+			const float To = From + 130.0f;
+			Paint.Arc(Center, Radius * 0.5f, From, To, Color, 3.0f);
+			const float End = FMath::DegreesToRadians(To);
+			const FVector2D Out(FMath::Cos(End), FMath::Sin(End));
+			const FVector2D Along(-Out.Y, Out.X);
+			const FVector2D Tip = Center + Out * Radius * 0.5f + Along * Radius * 0.16f;
+			Paint.Line(Tip, Tip - Along * Radius * 0.3f + Out * Radius * 0.2f, Color, 3.0f);
+			Paint.Line(Tip, Tip - Along * Radius * 0.3f - Out * Radius * 0.2f, Color, 3.0f);
+		}
+		break;
+	}
+	case EChaosImpactBallType::Barrier:
+	{
+		// A shield: a six-sided frame with a pane of light across it that shimmers.
+		const FLinearColor Frame(0.86f, 0.95f, 1.0f, 1.0f);
+		FVector2D Last = Center + FVector2D(FMath::Cos(FMath::DegreesToRadians(-90.0f)), FMath::Sin(FMath::DegreesToRadians(-90.0f))) * Radius * 0.62f;
+		for (int32 Side = 1; Side <= 6; ++Side)
+		{
+			const float Angle = FMath::DegreesToRadians(-90.0f + Side * 60.0f);
+			const FVector2D Next = Center + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius * 0.62f;
+			Paint.Line(Last, Next, Frame, 2.5f);
+			Last = Next;
+		}
+		const float Shimmer = 0.55f + 0.35f * FMath::Sin(Time * 4.0f);
+		Paint.Line(Center - FVector2D(Radius * 0.4f, 0.0f), Center + FVector2D(Radius * 0.4f, 0.0f), WithAlpha(Glow, Shimmer), 5.0f);
+		Paint.Line(Center - FVector2D(0.0f, Radius * 0.36f), Center + FVector2D(0.0f, Radius * 0.36f), WithAlpha(Frame, 0.8f), 2.0f);
+		break;
+	}
+	case EChaosImpactBallType::Mine:
+	{
+		// A sea mine: spikes all round, and a red lamp that blinks.
+		const FLinearColor Steel(0.72f, 0.74f, 0.8f, 1.0f);
+		for (int32 Spike = 0; Spike < 8; ++Spike)
+		{
+			const float Angle = FMath::DegreesToRadians(22.5f + Spike * 45.0f);
+			const FVector2D Out(FMath::Cos(Angle), FMath::Sin(Angle));
+			Paint.Line(Center + Out * Radius * 0.42f, Center + Out * Radius * 0.74f, Steel, 2.5f);
+			Paint.Disc(Center + Out * Radius * 0.78f, Radius * 0.07f, Glow);
+		}
+		Paint.Ring(Center, Radius * 0.42f, Steel, 2.0f);
+		const float Blink = FMath::Frac(Time * 1.6f) < 0.5f ? 1.0f : 0.35f;
+		Paint.Disc(Center, Radius * 0.2f, WithAlpha(Glow, Blink));
 		break;
 	}
 	case EChaosImpactBallType::Prison:
@@ -3029,11 +3123,13 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	const AChaosImpactPlayerController* Viewer = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 	const bool bOnline = Viewer && Viewer->IsOnlineRoom();
 	const FPainter Keys{MakeAnchor(Bottom, 0.0f, -54.0f, 1.0f), OutDrawElements, BaseLayer, 1.0f};
-	FString KeyHelp = Watched
-		? TEXT("← →  /  LB RB  選手切替　　F / X  フリーカメラ　　H / Y  UI表示切替")
-		: TEXT("WASD  移動　E Q / RT LT  上下　右クリック / 右スティック  視点　Shift / L3  高速　← →  選手視点　H / Y  UI");
+	// In the names of what this player is holding (the spectator pawn's keys and buttons).
+	const EChaosImpactDevice HelpDevice = ChaosImpactHints::GetDevice(GetOwningPlayer());
+	FString KeyHelp = ChaosImpactHints::Text(HelpDevice, Watched
+		? TEXT("{LB|←} {RB|→}  選手切替　　{X|F}  フリーカメラ　　{Y|H}  UI表示切替")
+		: TEXT("{LStick}  移動　{RT|E} {LT|Q}  上下　{RStick|右クリック}  視点　{L3|Shift}  高速　{LB|←} {RB|→}  選手視点　{Y|H}  UI"));
 	// Offline, time can be stopped for screenshots; online, the lobby is where to switch back to playing.
-	KeyHelp += !bOnline ? TEXT("　T / A  時間停止")
+	KeyHelp += !bOnline ? ChaosImpactHints::Text(HelpDevice, TEXT("　{A|T}  時間停止"))
 		: Viewer->CanToggleSpectating() ? FString::Printf(TEXT("　%s  プレイヤーに戻る"),
 			*ChaosImpactSettings::DescribeAction(Viewer, EChaosImpactAction::LobbySpectate)) : FString();
 	// Within this player's part of the screen: smaller to fit, and on two lines when one would be too small to read.
@@ -3077,7 +3173,7 @@ namespace
 	 * crown, the number, a glow as it goes up; the crown's holder gets the count in progress as a ring round the crown.
 	 */
 	void CwPaintPartyCount(const ChaosImpactPaint::FPainter& P, const UWorld* World, const APlayerState* Member, const FVector2D& Bottom,
-		const float S, const float Scale = 1.0f)
+		const float S, const float Scale = 1.0f, const bool bOverhead = false)
 	{
 		using namespace ChaosImpactPaint;
 		const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
@@ -3088,17 +3184,41 @@ namespace
 		const bool bCrown = Match->Rules.IsCrownKeep();
 		const AChaosImpactCrown* Crown = bCrown ? AChaosImpactCrown::Get(World) : nullptr;
 		const bool bHolder = Crown && Crown->GetHolderState() == Member;
-		const float K = S * Scale;
 		const float Time = static_cast<float>(World->GetTimeSeconds());
+		const FString Text = FString::FromInt(ChaosImpactParty::GetShownCount(World, Member));
+		// クラウンキープ: only the crown's holder wears a crown here; the others' counts left are a plain, quiet number.
+		if (bOverhead && bCrown && !bHolder)
+		{
+			const float Q = S * Scale * 0.82f;
+			const float QText = 16.0f * Q;
+			const float QH = 22.0f * Q;
+			const float QW = HudMeasure(Text, QText, TEXT("BlackItalic")) + 18.0f * Q;
+			const float QX = static_cast<float>(Bottom.X) - QW * 0.5f;
+			const float QY = static_cast<float>(Bottom.Y) - QH;
+			RoundedBox(P, QX, QY, QW, QH, QH * 0.5f, WithAlpha(Ink, 0.62f));
+			HudText3D(HudAbove(P, 1), Text, static_cast<float>(Bottom.X), QY + 1.0f * Q, QText, WithAlpha(Paper, 0.72f),
+				ETextAlign::Center, TEXT("BlackItalic"), 1.2f * Q);
+			return;
+		}
+		const float K = S * Scale * (bOverhead && bHolder ? 1.22f : 1.0f);
 		const float Glow = FMath::Clamp(1.0f - static_cast<float>(Match->GetServerWorldTimeSeconds()
 			- ChaosImpactParty::GetCountGainedAt(World, Member)) / 0.55f, 0.0f, 1.0f);
-		const FString Text = FString::FromInt(ChaosImpactParty::GetShownCount(World, Member));
 		const float TextSize = 17.0f * K;
 		const float H = 26.0f * K;
 		const float W = 31.0f * K + HudMeasure(Text, TextSize, TEXT("BlackItalic")) + 11.0f * K;
 		const float X = static_cast<float>(Bottom.X) - W * 0.5f;
 		const float Y = static_cast<float>(Bottom.Y) - H;
 		const FLinearColor Accent = bCrown ? ChaosImpactParty::CrownColor : ChaosImpactParty::RubyColor;
+		if (bOverhead && bHolder)
+		{
+			// The holder: a big crown floating over the count, in a soft gold glow that breathes.
+			const float Breath = 0.5f + 0.5f * FMath::Sin(Time * 4.0f);
+			const FVector2D Over(Bottom.X, Y - 17.0f * K + FMath::Sin(Time * 2.6f) * 2.0f * K);
+			P.Disc(Over, (21.0f + 3.0f * Breath) * K, WithAlpha(Accent, 0.16f + 0.1f * Breath));
+			RoundedBox(P, X - (4.0f + 2.0f * Breath) * K, Y - (4.0f + 2.0f * Breath) * K, W + (8.0f + 4.0f * Breath) * K,
+				H + (8.0f + 4.0f * Breath) * K, H * 0.5f + (4.0f + 2.0f * Breath) * K, WithAlpha(Accent, 0.22f + 0.12f * Breath));
+			ChaosImpactParty::PaintCrown(HudAbove(P, 4), Over, 15.0f * K, Time, 1.0f);
+		}
 		if (Glow > 0.0f)
 		{
 			RoundedBox(P, X - 5.0f * K * Glow, Y - 5.0f * K * Glow, W + 10.0f * K * Glow, H + 10.0f * K * Glow, H * 0.5f + 5.0f * K * Glow,
@@ -3201,6 +3321,11 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 			}
 		}
 		FString Name = Character->GetOverheadDisplayName();
+		// Over the shoulder the player's own name would hang right in front of the camera.
+		if (Character == ViewerPawn && Character->IsShoulderViewActive())
+		{
+			Name.Empty();
+		}
 		if (const auto* TrainingPC = Cast<AChaosImpactPlayerController>(World->GetFirstPlayerController());
 			TrainingPC && TrainingPC->ShowsTrainingPauseEntries() && TrainingPC->AreTrainingTeamsEnabled() && Character->SoloTeam >= 0)
 		{
@@ -3245,7 +3370,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 				if (bPartyTags && TagState && (!PartyMatch->Rules.IsCrownKeep() || TagState->Points > 0 || (TagCrown && TagCrown->GetHolder() == Character)))
 				{
 					CwPaintPartyCount(HudAbove(Tag, 2), World, TagState,
-						FVector2D(HeadScreen.X, HeadScreen.Y - FontSize * 1.75f - 9.0f * S - HealthSpace), S);
+						FVector2D(HeadScreen.X, HeadScreen.Y - FontSize * 1.75f - 9.0f * S - HealthSpace), S, 1.0f, true);
 				}
 			}
 			// Standing on a warp pad: a ring above the name fills up until the warp.
@@ -3433,7 +3558,7 @@ void UChaosImpactChargeWidget::PaintPlayerMarkers(const FGeometry& AllottedGeome
 		{
 			// (Placed a little way toward the ball from this player, so it is heard from that side and not too far.)
 			const FVector Side = FVector(Toward.X, Toward.Y, 0.0).GetSafeNormal() * -420.0f;
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::MatchTick, Target->GetActorLocation() + Side, 0.5f, 1.35f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallWarn, Target->GetActorLocation() + Side);
 		}
 		const float Urgency = 1.0f - FMath::Clamp(static_cast<float>(When) / WarnSeconds, 0.0f, 1.0f);
 		const float Pulse = 0.5f + 0.5f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * (10.0f + 14.0f * Urgency));
@@ -3609,8 +3734,13 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 				const float IconTime = static_cast<float>(Clock) + Row * 0.8f;
 				if (Match->Rules.IsCrownKeep())
 				{
+					// Only the crown's holder has a crown on their row (in a soft gold glow); the others, just their counts left.
 					const AChaosImpactCrown* Crown = AChaosImpactCrown::Get(GetWorld());
-					ChaosImpactParty::PaintCrown(HudAbove(Words, 1), IconAt, 10.0f, IconTime, Crown && Crown->GetHolderState() == Player ? 1.0f : 0.3f);
+					if (Crown && Crown->GetHolderState() == Player)
+					{
+						Words.Disc(IconAt, 14.0f + 1.5f * FMath::Sin(static_cast<float>(Clock) * 4.0f), WithAlpha(ChaosImpactParty::CrownColor, 0.28f));
+						ChaosImpactParty::PaintCrown(HudAbove(Words, 1), IconAt, 11.5f, IconTime, 1.0f);
+					}
 				}
 				else
 				{

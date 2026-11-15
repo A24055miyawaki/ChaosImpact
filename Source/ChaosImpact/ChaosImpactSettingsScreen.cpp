@@ -3,6 +3,7 @@
 #include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
@@ -34,6 +35,11 @@ namespace
 	constexpr float CellWidth = 262.0f;
 	constexpr float CellGap = 16.0f;
 	const FBox2D BackButton(FVector2D(60.0f, 796.0f), FVector2D(380.0f, 856.0f));
+	/** 保存, just above もどる. */
+	const FBox2D SaveButton(FVector2D(60.0f, 724.0f), FVector2D(380.0f, 784.0f));
+	/** The question whether to save: its box, and its three answers side by side. */
+	const FBox2D AskBox(FVector2D(400.0f, 290.0f), FVector2D(1200.0f, 620.0f));
+	const TCHAR* const AskAnswers[] = {TEXT("保存してもどる"), TEXT("保存しないでもどる"), TEXT("キャンセル")};
 	/** The control style picker keeps its own back button where it draws it. */
 	const FBox2D PickerBackButton(FVector2D(60.0f, 812.0f), FVector2D(300.0f, 866.0f));
 	const FBox2D ApplyControlButton(FVector2D(1220.0f, 812.0f), FVector2D(1540.0f, 866.0f));
@@ -74,15 +80,19 @@ void UChaosImpactSettingsScreen::Open(AChaosImpactPlayerController* InController
 	bControlStylePickerOpen = false;
 	bWaitingForKey = false;
 	bDeleteArmed = false;
+	bAskSave = false;
+	bUnsaved = false;
 	NameEntry.Close();
 	Message.Reset();
+	// What everything is now: kept unless saved over (see Save / Leave).
+	ChaosImpactSettings::BeginSettingsEdit();
 	OpenedAt = FPlatformTime::Seconds();
 	TabChangedAt = OpenedAt;
 	// The controls tab starts on what P1 plays with: their nickname, and their device.
 	EditedProfile = ChaosImpactSettings::GetPlayerProfile(InController);
 	EditedDevice = ChaosImpactSettings::GetPlayerDevice(InController);
-	bLastInputPad = EditedDevice != EChaosImpactDevice::KeyboardMouse;
-	LastPadDevice = bLastInputPad ? EditedDevice : EChaosImpactDevice::Xbox;
+	// The name entry's help names the keys the hints here do (see HintDevice).
+	NameEntry.SetHintPlayer(InController && InController->FollowsLastDevice() ? InController : nullptr);
 	SetTab(ETab::Display);
 #if !UE_BUILD_SHIPPING
 	// Development (-CIDevSettingsTab=<n>): opens on that tab (screenshots of it).
@@ -98,7 +108,7 @@ void UChaosImpactSettingsScreen::Open(AChaosImpactPlayerController* InController
 		if (FParse::Param(FCommandLine::Get(), TEXT("CIDevStylePad")))
 		{
 			EditedDevice = EChaosImpactDevice::Xbox;
-			bLastInputPad = true;
+			ChaosImpactHints::SetLastDeviceForTests(EChaosImpactDevice::Xbox);
 			BuildRows();
 		}
 		OpenControlStylePicker();
@@ -109,6 +119,18 @@ void UChaosImpactSettingsScreen::Open(AChaosImpactPlayerController* InController
 
 void UChaosImpactSettingsScreen::Close()
 {
+	if (bOpen)
+	{
+		// Closed from outside without an answer (the match moved on, the level changed): what was not saved is not kept.
+		// (Not while the game itself is closing: the window is going.)
+		if (!IsEngineExitRequested())
+		{
+			ChaosImpactSettings::RevertSettingsEdit();
+		}
+		ChaosImpactSettings::EndSettingsEdit();
+	}
+	bAskSave = false;
+	bUnsaved = false;
 	if (ControlVideoPlayer) { ControlVideoPlayer->Close(); }
 	OpenVideoId = INDEX_NONE;
 	bOpen = false;
@@ -169,6 +191,63 @@ void UChaosImpactSettingsScreen::BeginDestroy()
 {
 	if (ControlVideoPlayer) { ControlVideoPlayer->Close(); }
 	Super::BeginDestroy();
+}
+
+bool UChaosImpactSettingsScreen::HasUnsavedChanges() const
+{
+	return bOpen && ChaosImpactSettings::HasUnsavedSettings();
+}
+
+void UChaosImpactSettingsScreen::Save()
+{
+	if (!bOpen)
+	{
+		return;
+	}
+	if (!HasUnsavedChanges())
+	{
+		ShowMessage(TEXT("変更はありません"));
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiDeny);
+		return;
+	}
+	ChaosImpactSettings::SaveSettingsEdit();
+	bUnsaved = false;
+	ShowMessage(TEXT("設定を保存しました"));
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiConfirm);
+}
+
+void UChaosImpactSettingsScreen::AnswerSave(const ESaveAnswer Answer)
+{
+	if (!bAskSave)
+	{
+		return;
+	}
+	bAskSave = false;
+	switch (Answer)
+	{
+	case ESaveAnswer::SaveAndLeave:
+		ChaosImpactSettings::SaveSettingsEdit();
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiConfirm);
+		LeaveNow();
+		break;
+	case ESaveAnswer::LeaveWithoutSaving:
+		ChaosImpactSettings::RevertSettingsEdit();
+		ChaosImpactSettings::BeginSettingsEdit();
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
+		LeaveNow();
+		break;
+	default:
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
+		break;
+	}
+}
+
+FBox2D UChaosImpactSettingsScreen::AskButtonRect(const int32 Index) const
+{
+	constexpr float Width = 236.0f;
+	constexpr float Gap = 20.0f;
+	const float Left = static_cast<float>(AskBox.GetCenter().X) - (Width * 3.0f + Gap * 2.0f) * 0.5f + Index * (Width + Gap);
+	return FBox2D(FVector2D(Left, 476.0f), FVector2D(Left + Width, 540.0f));
 }
 
 bool UChaosImpactSettingsScreen::IsControlVideoPlaying() const
@@ -335,8 +414,8 @@ int32 UChaosImpactSettingsScreen::PaintControlStylePicker(const FGeometry& Desig
 		}
 	}
 	{
-		const FString Hint = bLastInputPad ? TEXT("十字キー：比べる　　決定：この操作にする　　戻る：もどる")
-			: TEXT("カーソルを重ねて映像を見る　　クリック：この操作にする　　右クリック：もどる");
+		const FString Hint = ChaosImpactHints::Text(HintDevice(), TEXT("{pad:{DPad}：比べる　　{Confirm}：この操作にする　　{Back}：もどる}")
+			TEXT("{kb:カーソルを重ねて映像を見る　　クリック：この操作にする　　右クリック：もどる}"));
 		const float L = static_cast<float>(PickerBackButton.Max.X) + 24.0f, R = static_cast<float>(ApplyControlButton.Min.X) - 24.0f;
 		FootText.Text(Hint, (L + R) * 0.5f, static_cast<float>(PickerBackButton.Min.Y) + 17.0f, HudFit(Hint, 17.0f, R - L, TEXT("Bold")),
 			WithAlpha(Paper, 0.55f), ETextAlign::Center, TEXT("Bold"));
@@ -435,10 +514,17 @@ void UChaosImpactSettingsScreen::BuildControlRows()
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("だれの・どのデバイスの設定か")));
 	Rows.Add(MakeRow(ERowKind::Value, RowProfile, TEXT("ニックネーム"), Profile.Name));
 	Rows.Add(MakeRow(ERowKind::Value, RowDevice, TEXT("デバイス"), GetDeviceName(EditedDevice)));
-	// How it is played.
-	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("操作のしかた")));
-	Rows.Add(MakeRow(ERowKind::Value, RowControlScheme, TEXT("操作スタイル"), GetControlSchemeName(Scheme)));
-	Rows.Add(MakeRow(ERowKind::Button, RowControlPreview, TEXT("操作スタイルを図と動画で見る")));
+	// How it is played (for now only the normal style: no style rows).
+	const bool bStyles = !IsNormalControlsOnly();
+	if (bStyles || bPad)
+	{
+		Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("操作のしかた")));
+	}
+	if (bStyles)
+	{
+		Rows.Add(MakeRow(ERowKind::Value, RowControlScheme, TEXT("操作スタイル"), GetControlSchemeName(Scheme)));
+		Rows.Add(MakeRow(ERowKind::Button, RowControlPreview, TEXT("操作スタイルを図と動画で見る")));
+	}
 	if (Scheme == EChaosImpactControlScheme::MouseOnly)
 	{
 		Rows.Add(MakeRow(ERowKind::Value, RowMouseDash, TEXT("ダッシュ操作"),
@@ -455,6 +541,11 @@ void UChaosImpactSettingsScreen::BuildControlRows()
 	// Aiming and the camera.
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("ねらい・カメラ")));
 	Rows.Add(MakeRow(ERowKind::Value, RowCameraDistance, TEXT("カメラの距離"), GetCameraDistanceName(Profile.CameraDistance)));
+	if (Scheme == EChaosImpactControlScheme::Normal)
+	{
+		// (The pads' simple style already throws the way it moves; the mouse-only styles move toward the cursor.)
+		Rows.Add(MakeRow(ERowKind::Value, RowThrowToMove, TEXT("移動方向に投げる"), OnOff(GetThrowToMove(EditedProfile, EditedDevice))));
+	}
 	Rows.Add(MakeRow(ERowKind::Value, RowAimAssist, TEXT("エイムアシスト"), OnOff(Profile.bAimAssist)));
 	Rows.Add(MakeRow(ERowKind::Value, RowShoulderSensitivityX,
 		bPad ? TEXT("肩越しの感度（横）") : TEXT("肩越しのマウス感度"),
@@ -524,7 +615,8 @@ void UChaosImpactSettingsScreen::BuildOtherRows()
 	using namespace ChaosImpactSettings;
 	static const TCHAR* const Shakes[] = {TEXT("なし"), TEXT("弱い"), TEXT("ふつう"), TEXT("強い")};
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("サウンド")));
-	Rows.Add(MakeRow(ERowKind::Value, RowVolume, TEXT("音量"), FString::Printf(TEXT("%d%%"), GetMasterVolume())));
+	Rows.Add(MakeRow(ERowKind::Value, RowVolume, TEXT("全体の音量"), FString::Printf(TEXT("%d%%"), GetMasterVolume())));
+	Rows.Add(MakeRow(ERowKind::Value, RowMusicVolume, TEXT("BGMの音量"), FString::Printf(TEXT("%d%%"), GetMusicVolume())));
 	Rows.Add(MakeRow(ERowKind::Heading, 0, TEXT("プレイ中")));
 	Rows.Add(MakeRow(ERowKind::Value, RowShake, TEXT("画面の揺れ"), Shakes[GetCameraShakeLevel()]));
 	Rows.Add(MakeRow(ERowKind::Value, RowRumble, TEXT("コントローラーの振動"), OnOff(AChaosImpactPlayerController::IsRumbleEnabled())));
@@ -599,6 +691,7 @@ void UChaosImpactSettingsScreen::KeepSelectionVisible()
 
 void UChaosImpactSettingsScreen::HandleWheel(const float Delta)
 {
+	if (bAskSave) { return; }
 	if (bControlStylePickerOpen) { MoveControlPreview(Delta > 0 ? -1 : 1); return; }
 	if (NameEntry.IsOpen() || bWaitingForKey)
 	{
@@ -719,9 +812,17 @@ void UChaosImpactSettingsScreen::ChangeValue(const FRow& Row, const int32 Direct
 	{
 		SetAimAssist(EditedProfile, !GetProfile(EditedProfile).bAimAssist);
 	}
+	else if (Id == RowThrowToMove)
+	{
+		SetThrowToMove(EditedProfile, EditedDevice, !GetThrowToMove(EditedProfile, EditedDevice));
+	}
 	else if (Id == RowVolume)
 	{
 		SetMasterVolume(FMath::Clamp(GetMasterVolume() / 10 * 10 + Step * 10, 0, 100));
+	}
+	else if (Id == RowMusicVolume)
+	{
+		SetMusicVolume(FMath::Clamp(GetMusicVolume() / 10 * 10 + Step * 10, 0, 100));
 	}
 	else if (Id == RowRumble)
 	{
@@ -882,9 +983,30 @@ void UChaosImpactSettingsScreen::ShowMessage(const FString& Text)
 
 void UChaosImpactSettingsScreen::Leave()
 {
-	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
-	if (bControlStylePickerOpen) { bControlStylePickerOpen = false; return; }
+	if (bControlStylePickerOpen)
+	{
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
+		bControlStylePickerOpen = false;
+		return;
+	}
 	bWaitingForKey = false;
+	if (HasUnsavedChanges())
+	{
+		// Changes not saved: asked first whether to keep them.
+		bAskSave = true;
+		AskChoice = ESaveAnswer::SaveAndLeave;
+		AskOpenedAt = FPlatformTime::Seconds();
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiOpen);
+		return;
+	}
+	ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiBack);
+	LeaveNow();
+}
+
+void UChaosImpactSettingsScreen::LeaveNow()
+{
+	bWaitingForKey = false;
+	bAskSave = false;
 	if (AChaosImpactPlayerController* Owner = Controller.Get())
 	{
 		Owner->CloseSettings();
@@ -938,6 +1060,7 @@ void UChaosImpactSettingsScreen::Tick(const float DeltaSeconds)
 	{
 		return;
 	}
+	bUnsaved = ChaosImpactSettings::HasUnsavedSettings();
 	if (bWaitingForKey && FPlatformTime::Seconds() - WaitStartedAt > 8.0)
 	{
 		bWaitingForKey = false;
@@ -961,16 +1084,28 @@ bool UChaosImpactSettingsScreen::HandleKeyDown(const FKeyEvent& Event)
 	}
 	const FKey RawKey = Event.GetKey();
 	const int32 DeviceId = Event.GetInputDeviceId().GetId();
-	if (RawKey.IsGamepadKey())
-	{
-		bLastInputPad = true;
-		LastPadDevice = ChaosImpactSettings::DetectPadDeviceForInput(DeviceId);
-	}
-	else if (!RawKey.IsMouseButton())
-	{
-		bLastInputPad = false;
-	}
 	const FKey Key = ChaosImpactSettings::ToMenuKey(RawKey, DeviceId);
+	if (bAskSave)
+	{
+		// The question whether to save: left / right (or up / down) between its answers, decide, or back to the settings.
+		const int32 Count = static_cast<int32>(ESaveAnswer::Count);
+		const int32 Step = Key == EKeys::Left || Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Up ? -1
+			: Key == EKeys::Right || Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Right || Key == EKeys::Gamepad_DPad_Down ? 1 : 0;
+		if (Step != 0)
+		{
+			AskChoice = static_cast<ESaveAnswer>(Wrap(static_cast<int32>(AskChoice) + Step, Count));
+			ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
+		}
+		else if (!Event.IsRepeat() && (Key == EKeys::Enter || Key == EKeys::SpaceBar || Key == EKeys::Gamepad_FaceButton_Bottom))
+		{
+			AnswerSave(AskChoice);
+		}
+		else if (!Event.IsRepeat() && (Key == EKeys::Escape || Key == EKeys::BackSpace || Key == EKeys::Gamepad_FaceButton_Right))
+		{
+			AnswerSave(ESaveAnswer::Stay);
+		}
+		return true;
+	}
 	if (bControlStylePickerOpen)
 	{
 		if (Key == EKeys::Up || Key == EKeys::Left || Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Left) { MoveControlPreview(-1); }
@@ -1030,6 +1165,10 @@ bool UChaosImpactSettingsScreen::HandleKeyDown(const FKeyEvent& Event)
 	{
 		ClearSelectedKey();
 	}
+	else if (Key == EKeys::S || Key == EKeys::Gamepad_FaceButton_Left)
+	{
+		Save();
+	}
 	else if (Key == EKeys::Escape || Key == EKeys::BackSpace || Key == EKeys::Gamepad_FaceButton_Right
 		|| Key == EKeys::Gamepad_Special_Right)
 	{
@@ -1065,7 +1204,14 @@ bool UChaosImpactSettingsScreen::HandleAnalog(const FAnalogInputEvent& Event)
 	{
 		NextStickAt[Axis] = Now + (bStickHeld[Axis] ? 0.13 : 0.38);
 		bStickHeld[Axis] = true;
-		if (Axis == 0)
+		if (bAskSave)
+		{
+			// (The question's answers side by side: either axis steps through them, up or left to the previous.)
+			const int32 Step = Axis == 0 ? (Value > 0.0f ? 1 : -1) : (Value > 0.0f ? -1 : 1);
+			AskChoice = static_cast<ESaveAnswer>(Wrap(static_cast<int32>(AskChoice) + Step, static_cast<int32>(ESaveAnswer::Count)));
+			ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
+		}
+		else if (Axis == 0)
 		{
 			Adjust(Value > 0.0f ? 1 : -1);
 		}
@@ -1112,7 +1258,26 @@ bool UChaosImpactSettingsScreen::HandleMouseDown(const FVector2D& DesignPoint, c
 	{
 		return false;
 	}
-	bLastInputPad = false;
+	if (bAskSave)
+	{
+		if (Button == EKeys::RightMouseButton)
+		{
+			AnswerSave(ESaveAnswer::Stay);
+		}
+		else if (Button == EKeys::LeftMouseButton)
+		{
+			for (int32 Index = 0; Index < static_cast<int32>(ESaveAnswer::Count); ++Index)
+			{
+				if (AskButtonRect(Index).IsInside(DesignPoint))
+				{
+					AskChoice = static_cast<ESaveAnswer>(Index);
+					AnswerSave(AskChoice);
+					break;
+				}
+			}
+		}
+		return true;
+	}
 	if (bControlStylePickerOpen)
 	{
 		if (Button == EKeys::RightMouseButton || (Button == EKeys::LeftMouseButton && PickerBackButton.IsInside(DesignPoint))) { Leave(); }
@@ -1156,6 +1321,11 @@ bool UChaosImpactSettingsScreen::HandleMouseDown(const FVector2D& DesignPoint, c
 	if (BackButton.IsInside(DesignPoint))
 	{
 		Leave();
+		return true;
+	}
+	if (SaveButton.IsInside(DesignPoint))
+	{
+		Save();
 		return true;
 	}
 	for (int32 Index = 0; Index < static_cast<int32>(ETab::Count); ++Index)
@@ -1204,6 +1374,18 @@ bool UChaosImpactSettingsScreen::HandleMouseDown(const FVector2D& DesignPoint, c
 
 void UChaosImpactSettingsScreen::HandleMouseMove(const FVector2D& DesignPoint)
 {
+	if (bAskSave)
+	{
+		for (int32 Index = 0; Index < static_cast<int32>(ESaveAnswer::Count); ++Index)
+		{
+			if (AskButtonRect(Index).IsInside(DesignPoint) && Index != static_cast<int32>(AskChoice))
+			{
+				AskChoice = static_cast<ESaveAnswer>(Index);
+				ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiMove);
+			}
+		}
+		return;
+	}
 	if (bControlStylePickerOpen)
 	{
 		const int32 Count = EditedDevice == EChaosImpactDevice::KeyboardMouse ? 4 : 2;
@@ -1240,35 +1422,30 @@ void UChaosImpactSettingsScreen::HandleMouseMove(const FVector2D& DesignPoint)
 	}
 }
 
+EChaosImpactDevice UChaosImpactSettingsScreen::HintDevice() const
+{
+	// Alone on the machine: what this player last pressed (their nickname's controller kind too). Several: anyone can work
+	// this screen, so whatever was pressed last.
+	const AChaosImpactPlayerController* Owner = Controller.Get();
+	return Owner && Owner->FollowsLastDevice() ? ChaosImpactHints::GetDevice(Owner) : ChaosImpactHints::GetLastDevice();
+}
+
 FString UChaosImpactSettingsScreen::HintText() const
 {
-	if (!bLastInputPad)
-	{
-		// (はずす only where there are keys to take off.)
-		return Tab == ETab::Controls ? TEXT("Q / E：タブ　　↑↓：えらぶ　　←→：変える　　Enter：決定　　Delete：キーをはずす　　Esc：もどる")
-			: TEXT("Q / E：タブ　　↑↓：えらぶ　　←→：変える　　Enter：決定　　Esc：もどる");
-	}
-	using namespace ChaosImpactSettings;
-	const EChaosImpactDevice Pad = LastPadDevice;
-	const FKey Confirm = Pad == EChaosImpactDevice::Switch && IsSwitchConfirmRight()
-		? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom;
-	const FKey Back = Confirm == EKeys::Gamepad_FaceButton_Right ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right;
-	if (Tab != ETab::Controls)
-	{
-		return FString::Printf(TEXT("%s / %s：タブ　　十字キー・スティック：えらぶ・変える　　%s：決定　　%s：もどる"),
-			*GetKeyName(EKeys::Gamepad_LeftShoulder, Pad), *GetKeyName(EKeys::Gamepad_RightShoulder, Pad), *GetKeyName(Confirm, Pad), *GetKeyName(Back, Pad));
-	}
-	return FString::Printf(TEXT("%s / %s：タブ　　十字キー・スティック：えらぶ・変える　　%s：決定　　%s：ボタンをはずす　　%s：もどる"),
-		*GetKeyName(EKeys::Gamepad_LeftShoulder, Pad), *GetKeyName(EKeys::Gamepad_RightShoulder, Pad),
-		*GetKeyName(Confirm, Pad), *GetKeyName(EKeys::Gamepad_FaceButton_Top, Pad), *GetKeyName(Back, Pad));
+	// (はずす only where there are keys to take off.)
+	return ChaosImpactHints::Text(HintDevice(), Tab == ETab::Controls
+		? TEXT("{pad:{LB} / {RB}：タブ　　{DPad}・スティック：えらぶ・変える　　{Confirm}：決定　　{Y}：ボタンをはずす　　{X}：保存　　{Back}：もどる}")
+			TEXT("{kb:Q / E：タブ　　↑↓：えらぶ　　←→：変える　　Enter：決定　　Delete：キーをはずす　　S：保存　　Esc：もどる}")
+		: TEXT("{pad:{LB} / {RB}：タブ　　{DPad}・スティック：えらぶ・変える　　{Confirm}：決定　　{X}：保存　　{Back}：もどる}")
+			TEXT("{kb:Q / E：タブ　　↑↓：えらぶ　　←→：変える　　Enter：決定　　S：保存　　Esc：もどる}"));
 }
 
 FString UChaosImpactSettingsScreen::GetRowHelp(const int32 Id) const
 {
 	if (Id >= RowBinding)
 	{
-		return bLastInputPad ? TEXT("決定でボタンを登録（ひとつの操作に2つまで）・Yボタンではずします")
-			: TEXT("Enterでキーを登録（ひとつの操作に2つまで）・Deleteではずします");
+		return ChaosImpactHints::Text(HintDevice(), TEXT("{pad:{Confirm}でボタンを登録（ひとつの操作に2つまで）・{Y}ボタンではずします}")
+			TEXT("{kb:Enterでキーを登録（ひとつの操作に2つまで）・Deleteではずします}"));
 	}
 	if (Id >= RowQualityGroup && Id < RowProfile)
 	{
@@ -1276,8 +1453,10 @@ FString UChaosImpactSettingsScreen::GetRowHelp(const int32 Id) const
 	}
 	switch (Id)
 	{
-	case RowWindowMode: return TEXT("フルスクリーン・ボーダーレス・ウィンドウを切り替えます（F11でも切り替え）");
-	case RowResolution: return TEXT("画面（ウィンドウ）の大きさです。21:9・32:9の横長は左右が広く見えます（ウィンドウは端のドラッグでも変えられます）");
+	// (The keyboard's and the mouse's ways only for them.)
+	case RowWindowMode: return ChaosImpactHints::Text(HintDevice(), TEXT("フルスクリーン・ボーダーレス・ウィンドウを切り替えます{kb:（F11でも切り替え）}"));
+	case RowResolution: return ChaosImpactHints::Text(HintDevice(),
+		TEXT("画面（ウィンドウ）の大きさです。21:9・32:9の横長は左右が広く見えます{kb:（ウィンドウは端のドラッグでも変えられます）}"));
 	case RowVSync: return TEXT("ONにすると画面のちらつきを防ぎます。入力が少し遅れることがあります");
 	case RowFrameRate: return TEXT("1秒あたりのコマ数の上限です");
 	case RowBrightness: return TEXT("画面全体の明るさです");
@@ -1291,6 +1470,7 @@ FString UChaosImpactSettingsScreen::GetRowHelp(const int32 Id) const
 	case RowPadChoice: return TEXT("ボタンの表示（A/B・○/×など）をどのコントローラーに合わせるかです");
 	case RowSwapSticks: return TEXT("左右のスティックの役割を入れ替えます");
 	case RowAimAssist: return TEXT("投げるときに、ねらいを少しだけ補助します");
+	case RowThrowToMove: return TEXT("オンにすると、マウスや右スティックではなく、移動している方向に投げます");
 	case RowCameraDistance: return TEXT("見下ろしカメラの距離です。近いと迫力が、遠いと見える範囲が増えます（人ごと・分割画面でも別々）");
 	case RowResetDevice: return TEXT("このデバイスのボタン設定を、はじめの状態にもどします");
 	case RowControlScheme: return TEXT("操作のしかたです。下の「図と動画で見る」で見比べられます");
@@ -1300,6 +1480,7 @@ FString UChaosImpactSettingsScreen::GetRowHelp(const int32 Id) const
 	case RowShoulderSensitivityY: return TEXT("肩越し視点で、カメラが動く速さです");
 	case RowResetShoulderSensitivity: return TEXT("肩越しの感度を100%にもどします");
 	case RowVolume: return TEXT("ゲーム全体の音の大きさです");
+	case RowMusicVolume: return TEXT("BGM（音楽）だけの大きさです。効果音はそのままです");
 	case RowRumble: return TEXT("コントローラーを振動させるかどうかです");
 	case RowShake: return TEXT("当たったときなどに、画面がどれだけ揺れるかです");
 	case RowSwitchConfirm: return TEXT("Switchのコントローラーで「決定」に使うボタンです");
@@ -1325,7 +1506,7 @@ int32 UChaosImpactSettingsScreen::Paint(const FGeometry& Design, FSlateWindowEle
 	const FPainter P{Design, Elements, Layer, In};
 	const FPainter Top{Design, Elements, Layer + 1, In};
 	const FPainter Text{Design, Elements, Layer + 2, In};
-	static const TCHAR* const TabNotes[] = {TEXT("画面モード・大きさ・なめらかさ"), TEXT("見た目の細かさ・動きの軽さ"), TEXT("操作スタイル・感度・ボタン"),
+	const TCHAR* const TabNotes[] = {TEXT("画面モード・大きさ・なめらかさ"), TEXT("見た目の細かさ・動きの軽さ"), ChaosImpactSettings::IsNormalControlsOnly() ? TEXT("感度・カメラ・ボタン") : TEXT("操作スタイル・感度・ボタン"),
 		TEXT("音量・振動・画面の揺れ")};
 	const FLinearColor TabColors[] = {Fire, Gold, Ice, Violet};
 	const FLinearColor Accent = TabColors[FMath::Clamp(static_cast<int32>(Tab), 0, 3)];
@@ -1363,10 +1544,7 @@ int32 UChaosImpactSettingsScreen::Paint(const FGeometry& Design, FSlateWindowEle
 	}
 	{
 		// How to change tabs, under them.
-		const FString TabKeys = bLastInputPad
-			? FString::Printf(TEXT("%s / %s：タブ"), *ChaosImpactSettings::GetKeyName(EKeys::Gamepad_LeftShoulder, LastPadDevice),
-				*ChaosImpactSettings::GetKeyName(EKeys::Gamepad_RightShoulder, LastPadDevice))
-			: FString(TEXT("Q / E：タブ"));
+		const FString TabKeys = ChaosImpactHints::Text(HintDevice(), TEXT("{LB|Q} / {RB|E}：タブ"));
 		Text.Text(TabKeys, 64.0f, TabRect(static_cast<int32>(ETab::Count) - 1).Max.Y + 16.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 	}
 
@@ -1543,8 +1721,35 @@ int32 UChaosImpactSettingsScreen::Paint(const FGeometry& Design, FSlateWindowEle
 		Top.Box(X, Y + 12.0f, 4.0f, H - 24.0f, Muted);
 		Text.Text(TEXT("もどる"), X + W * 0.5f, Y + H * 0.5f - 18.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
 	}
+	// 保存, above it: lit while there are changes not saved, quiet once they are.
+	{
+		const float X = static_cast<float>(SaveButton.Min.X);
+		const float Y = static_cast<float>(SaveButton.Min.Y);
+		const float W = static_cast<float>(SaveButton.GetSize().X);
+		const float H = static_cast<float>(SaveButton.GetSize().Y);
+		if (bUnsaved)
+		{
+			FLinearColor Deep = Gold * 0.3f;
+			Deep.A = 0.95f;
+			HudPoly(P, {FVector2D(X, Y), FVector2D(X + W, Y), FVector2D(X + W, Y + H), FVector2D(X, Y + H)},
+				MakeFill(FMath::Lerp(Gold, Ink, 0.55f), Deep));
+			Top.Box(X, Y + 12.0f, 4.0f, H - 24.0f, Gold);
+			Top.Outline(X, Y, W, H, WithAlpha(Gold, 0.5f + 0.3f * FMath::Sin(static_cast<float>(Now) * 4.0f)), 1.5f);
+			Text.Text(TEXT("保存する"), X + W * 0.5f, Y + H * 0.5f - 18.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
+		}
+		else
+		{
+			RoundedBox(P, X, Y, W, H, 12.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.95f));
+			Top.Box(X, Y + 12.0f, 4.0f, H - 24.0f, WithAlpha(Muted, 0.5f));
+			Text.Text(TEXT("保存ずみ"), X + W * 0.5f, Y + H * 0.5f - 15.0f, 20.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+		}
+	}
 
 	int32 TopLayer = Layer + 5;
+	if (bAskSave)
+	{
+		return PaintAskSave(Design, Elements, TopLayer);
+	}
 	// Waiting for a key: the screen dims and says what to press.
 	if (bWaitingForKey && IsSelectable(SelectedRow))
 	{
@@ -1560,8 +1765,67 @@ int32 UChaosImpactSettingsScreen::Paint(const FGeometry& Design, FSlateWindowEle
 			EditedDevice == EChaosImpactDevice::KeyboardMouse ? TEXT("キー・マウスボタン") : TEXT("ボタン"));
 		Words.Text(Ask, 800.0f, 422.0f, HudFit(Ask, 20.0f, 960.0f, TEXT("Bold")), WithAlpha(Paper, 0.6f + 0.4f * FMath::Sin(static_cast<float>(Now) * 5.0f)),
 			ETextAlign::Center, TEXT("Bold"));
-		Words.Text(TEXT("Esc でやめる（何もしなければ 8 秒でもどります）"), 800.0f, 480.0f, 18.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+		// How to stop: Esc on the keyboard; a controller's button stops waiting for a key, but is taken when buttons are being set.
+		const FString Stop = ChaosImpactHints::Text(HintDevice(), EditedDevice == EChaosImpactDevice::KeyboardMouse
+			? TEXT("{kb:Esc }{pad:コントローラーのボタン}でやめる（何もしなければ 8 秒でもどります）")
+			: TEXT("{kb:Esc でやめる（}何もしなければ 8 秒でもどります{kb:）}"));
+		Words.Text(Stop, 800.0f, 480.0f, HudFit(Stop, 18.0f, 960.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
 		TopLayer += 3;
 	}
 	return NameEntry.Paint(Design, Elements, TopLayer);
+}
+
+int32 UChaosImpactSettingsScreen::PaintAskSave(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
+{
+	using namespace ChaosImpactPaint;
+	const double Now = FPlatformTime::Seconds();
+	const float In = EaseOut(static_cast<float>(Now - AskOpenedAt) / 0.18f);
+	// The settings dim behind the question.
+	const FPainter Shade{Design, Elements, Layer, In};
+	Shade.Box(-1400.0f, -200.0f, 4400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f));
+	const float X = static_cast<float>(AskBox.Min.X);
+	const float Y = static_cast<float>(AskBox.Min.Y) + (1.0f - In) * 18.0f;
+	const float W = static_cast<float>(AskBox.GetSize().X);
+	const float H = static_cast<float>(AskBox.GetSize().Y);
+	const FPainter Box{Design, Elements, Layer + 1, In};
+	HudPoly(Box, {FVector2D(X, Y), FVector2D(X + W, Y), FVector2D(X + W, Y + H), FVector2D(X, Y + H)},
+		MakeFill(FLinearColor(0.05f, 0.07f, 0.13f, 1.0f), FLinearColor(0.01f, 0.012f, 0.03f, 1.0f)));
+	Box.Box(X, Y, W, 6.0f, Gold);
+	Box.Outline(X, Y, W, H, WithAlpha(Paper, 0.12f), 1.0f);
+	const FPainter Words{Design, Elements, Layer + 2, In};
+	const FString Title = TEXT("変更が保存されていません");
+	Words.Text(Title, X + W * 0.5f, Y + 44.0f, HudFit(Title, 32.0f, W - 80.0f), Paper, ETextAlign::Center, TEXT("Black"));
+	const FString Ask = TEXT("変更した設定を保存しますか？（保存しないと、変更する前にもどります）");
+	Words.Text(Ask, X + W * 0.5f, Y + 110.0f, HudFit(Ask, 19.0f, W - 80.0f, TEXT("Bold")), WithAlpha(Paper, 0.75f), ETextAlign::Center, TEXT("Bold"));
+	for (int32 Index = 0; Index < static_cast<int32>(ESaveAnswer::Count); ++Index)
+	{
+		const FBox2D Rect = AskButtonRect(Index);
+		const float BX = static_cast<float>(Rect.Min.X);
+		const float BY = static_cast<float>(Rect.Min.Y) + (1.0f - In) * 18.0f;
+		const float BW = static_cast<float>(Rect.GetSize().X);
+		const float BH = static_cast<float>(Rect.GetSize().Y);
+		const bool bChosen = Index == static_cast<int32>(AskChoice);
+		// 保存 in gold, 保存しない in red, キャンセル plain.
+		const FLinearColor Tint = Index == 0 ? Gold : Index == 1 ? Fire : Ice;
+		if (bChosen)
+		{
+			FLinearColor Deep = Tint * 0.3f;
+			Deep.A = 1.0f;
+			HudPoly(Box, {FVector2D(BX, BY), FVector2D(BX + BW, BY), FVector2D(BX + BW, BY + BH), FVector2D(BX, BY + BH)},
+				MakeFill(FMath::Lerp(Tint, Ink, 0.45f), Deep));
+			Words.Outline(BX, BY, BW, BH, WithAlpha(Paper, 0.7f), 2.0f);
+		}
+		else
+		{
+			RoundedBox(Box, BX, BY, BW, BH, 10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+			Words.Box(BX, BY + 12.0f, 4.0f, BH - 24.0f, WithAlpha(Tint, 0.7f));
+		}
+		const FString Label = AskAnswers[Index];
+		const float Size = HudFit(Label, 21.0f, BW - 24.0f, TEXT("Black"));
+		Words.Text(Label, BX + BW * 0.5f, BY + BH * 0.5f - Size * 0.72f, Size, bChosen ? Paper : WithAlpha(Paper, 0.7f), ETextAlign::Center, TEXT("Black"));
+	}
+	const FString Keys = ChaosImpactHints::Text(HintDevice(), TEXT("{pad:{DPad}・スティック：えらぶ　　{Confirm}：決定　　{Back}：キャンセル}")
+		TEXT("{kb:←→：えらぶ　　Enter：決定　　Esc：キャンセル}"));
+	Words.Text(Keys, X + W * 0.5f, Y + H - 50.0f, HudFit(Keys, 16.0f, W - 60.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
+	return Layer + 3;
 }

@@ -659,7 +659,7 @@ void AChaosImpactTempleStage::OnRep_Pillar()
 	if (PillarSeal >= 0 && GetNetMode() != NM_DedicatedServer)
 	{
 		// The warning: a rising hum over the seal.
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::NovaCharge, GetActorTransform().TransformPosition(GetSealOffset(PillarSeal)), 0.55f, 1.4f);
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageCharge, GetActorTransform().TransformPosition(GetSealOffset(PillarSeal)), 0.9f, 1.15f);
 	}
 }
 
@@ -678,8 +678,7 @@ void AChaosImpactTempleStage::MulticastPillarStrike_Implementation(const int32 S
 		return;
 	}
 	const FVector At = GetActorTransform().TransformPosition(GetSealOffset(Seal));
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBurst, At, 1.0f, 0.8f);
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BeamStrike, At, 0.9f, 0.7f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::StageSmite, At);
 	if (UNiagaraSystem* Burst = ChaosImpactBallTypes::LoadEffect(ChaosImpactBallTypes::Effects::WarpIn))
 	{
 		if (UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Burst, At + FVector(0.0f, 0.0f, 20.0f),

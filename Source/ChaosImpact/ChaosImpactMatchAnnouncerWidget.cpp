@@ -1,4 +1,5 @@
 #include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ChaosImpactMusic.h"
 #include "ChaosImpactParty.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactBallSwitch.h"
@@ -110,7 +111,8 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 		}
 		else if (Match->Phase == EChaosImpactOnlinePhase::Results)
 		{
-			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchFinish);
+			// (A duel ends on its WIN, not the match's whistle.)
+			ChaosImpactSfx::Play2D(this, Match->Rules.bDuel ? EChaosImpactSfx::DuelWin : EChaosImpactSfx::MatchFinish);
 		}
 	}
 	const float Remaining = Match->GetPhaseRemainingSeconds();
@@ -144,21 +146,17 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 			SoundDuelStepAt = Duel.StepStartedAt;
 			SoundSecond = MAX_int32;
 			SoundReelsStopped = 0;
-			if (Duel.Step == EChaosImpactDuelStep::Opening)
+			// (The duel's own calls, not the ordinary match's.)
+			switch (Duel.Step)
 			{
-				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchStarting);
-			}
-			else if (Duel.Step == EChaosImpactDuelStep::BallDraw || Duel.Step == EChaosImpactDuelStep::RoundIntro)
-			{
-				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchReady);
-			}
-			else if (Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath)
-			{
-				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchGo);
-			}
-			else if (Duel.Step == EChaosImpactDuelStep::RoundOver)
-			{
-				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchFinish);
+			case EChaosImpactDuelStep::Opening: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelOpening); break;
+			case EChaosImpactDuelStep::BallDraw: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelReelSpin); break;
+			case EChaosImpactDuelStep::RoundIntro: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelRound); break;
+			case EChaosImpactDuelStep::Fight: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelFight); break;
+			case EChaosImpactDuelStep::SuddenDeath: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelSudden); break;
+			case EChaosImpactDuelStep::RoundOver: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelRoundOver); break;
+			case EChaosImpactDuelStep::Finished: ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelWin); break;
+			default: break;
 			}
 		}
 		// The slot's reels: a tick as each one stops, rising, and the cheer once all three are in.
@@ -167,10 +165,10 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 			const float DrawAge = Match->GetDuelStepElapsed(Duel);
 			while (SoundReelsStopped < ChaosImpactMatch::DuelBallPicks && DrawAge >= ChaosImpactMatch::DuelReelStopSeconds[SoundReelsStopped])
 			{
-				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchTick, 1.0f, 1.0f + SoundReelsStopped * 0.12f);
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelReelStop, 1.0f, 1.0f + SoundReelsStopped * 0.12f);
 				if (++SoundReelsStopped == ChaosImpactMatch::DuelBallPicks)
 				{
-					ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchStarting);
+					ChaosImpactSfx::Play2D(this, EChaosImpactSfx::DuelReelDone);
 				}
 			}
 		}
@@ -203,6 +201,7 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 	{
 		// The podium: confetti and the crowd.
 		bSoundPodiumShown = true;
+		UChaosImpactMusic::NotifyResultsShown(this);
 		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchConfetti);
 		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::MatchCheer);
 	}

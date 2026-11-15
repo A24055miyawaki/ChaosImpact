@@ -46,6 +46,8 @@ public:
 	bool HandleAnalog(const FAnalogInputEvent& Event);
 	void HandleMouseDown(const FVector2D& Point, const FKey& Button, bool bAlt);
 	void HandleMouseUp(const FVector2D& Point, const FKey& Button);
+	/** The camera's turn round the model (tests). */
+	float GetViewYaw() const { return ViewYaw; }
 	void HandleMouseMove(const FVector2D& Point);
 	void HandleWheel(const FVector2D& Point, float Delta, bool bCtrl);
 

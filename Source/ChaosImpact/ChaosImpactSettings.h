@@ -75,6 +75,8 @@ struct FChaosImpactProfile
 	int32 CameraDistance = 1;
 	/** Shoulder-camera multipliers: per device, [horizontal, vertical]. Old saves keep 100%. */
 	int32 ShoulderSensitivity[DeviceCount][2] = {{100,100}, {100,100}, {100,100}, {100,100}};
+	/** 移動方向に投げる (per device): throws (and the aim) go the way the player moves, not where the mouse / aim stick points. */
+	bool bThrowToMove[DeviceCount] = {};
 };
 
 /**
@@ -109,11 +111,24 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API void SetCameraDistance(int32 Profile, int32 Level);
 	CHAOSIMPACT_API FString GetCameraDistanceName(int32 Level);
 	CHAOSIMPACT_API float GetCameraDistanceScale(const APlayerController* Player);
+	/**
+	 * For now only the normal style is offered: the other styles' rows are hidden and every device plays the normal
+	 * controls, whatever was saved (kept, so bringing them back restores each person's choice). Automation still tests
+	 * the resting styles.
+	 */
+	CHAOSIMPACT_API bool IsNormalControlsOnly();
+#if !UE_BUILD_SHIPPING
+	/** Tests: -1 as in play (automation sees every style), 0 every style, 1 normal only. */
+	CHAOSIMPACT_API void SetNormalControlsOnlyForTests(int32 Mode);
+#endif
 	CHAOSIMPACT_API void SetControlScheme(int32 Profile, EChaosImpactDevice Device, EChaosImpactControlScheme Scheme);
 	CHAOSIMPACT_API EChaosImpactControlScheme GetControlScheme(int32 Profile, EChaosImpactDevice Device);
 	CHAOSIMPACT_API EChaosImpactControlScheme GetPlayerControlScheme(const APlayerController* Player);
 	CHAOSIMPACT_API FString GetControlSchemeName(EChaosImpactControlScheme Scheme);
 	CHAOSIMPACT_API void SetMouseDoubleClickDash(int32 Profile, bool bOn);
+	/** 移動方向に投げる, per nickname and device. */
+	CHAOSIMPACT_API void SetThrowToMove(int32 Profile, EChaosImpactDevice Device, bool bOn);
+	CHAOSIMPACT_API bool GetThrowToMove(int32 Profile, EChaosImpactDevice Device);
 	/** 10-300%, saved per nickname/device. Mouse has one sensitivity for both axes. */
 	CHAOSIMPACT_API int32 GetShoulderSensitivity(int32 Profile, EChaosImpactDevice Device, bool bVertical = false);
 	CHAOSIMPACT_API void SetShoulderSensitivity(int32 Profile, EChaosImpactDevice Device, bool bVertical, int32 Percent);
@@ -162,6 +177,8 @@ namespace ChaosImpactSettings
 	/** The aiming stick's raw axes (the right stick, or the left with the sticks swapped). */
 	CHAOSIMPACT_API FVector2D GetAimStick(const APlayerController* Player);
 	CHAOSIMPACT_API bool IsAimAssistOn(const APlayerController* Player);
+	/** This player throws the way they move (移動方向に投げる on for the device they play with, in the normal style). */
+	CHAOSIMPACT_API bool IsThrowToMoveOn(const APlayerController* Player);
 	/** The names of the keys set for an action for this player, for on-screen hints ("G / 左クリック"). */
 	CHAOSIMPACT_API FString DescribeAction(const APlayerController* Player, EChaosImpactAction Action);
 
@@ -174,6 +191,9 @@ namespace ChaosImpactSettings
 	// --- Sound, rumble and the rest ---
 	CHAOSIMPACT_API int32 GetMasterVolume();
 	CHAOSIMPACT_API void SetMasterVolume(int32 Percent);
+	/** BGMの音量 (percent, on top of the overall volume): the music only. */
+	CHAOSIMPACT_API int32 GetMusicVolume();
+	CHAOSIMPACT_API void SetMusicVolume(int32 Percent);
 	/** 0 off, 1 weak, 2 normal, 3 strong. */
 	CHAOSIMPACT_API int32 GetCameraShakeLevel();
 	CHAOSIMPACT_API void SetCameraShakeLevel(int32 Level);
@@ -245,4 +265,18 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API void SetResolutionScale(int32 Percent);
 	/** Whether window and resolution changes are applied now (not in the editor, where they would resize it). */
 	CHAOSIMPACT_API bool CanApplyWindowChanges();
+
+	// --- The settings screen's 保存 ---
+	// Changes made there show at once (to see and hear them), and are kept only when saved: leaving without saving puts
+	// everything back as it was when the screen opened (nicknames, controls, sound, screen and picture alike).
+	/** Remembers every setting as it is now (the settings screen opening, or just saved). */
+	CHAOSIMPACT_API void BeginSettingsEdit();
+	/** Something differs from what was remembered. */
+	CHAOSIMPACT_API bool HasUnsavedSettings();
+	/** Keeps what is set now (it is already written; this is what a later revert goes back to). */
+	CHAOSIMPACT_API void SaveSettingsEdit();
+	/** Puts back what was remembered, applied and written again. Nothing remembered: nothing happens. */
+	CHAOSIMPACT_API void RevertSettingsEdit();
+	/** Forgets what was remembered (the screen closed). */
+	CHAOSIMPACT_API void EndSettingsEdit();
 }

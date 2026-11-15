@@ -5,6 +5,7 @@
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactGameMode.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactPuppetComponent.h"
@@ -145,6 +146,8 @@ void UChaosImpactTackleComponent::ApplyContact(AChaosImpactCharacter* Victim)
     Other->InterruptAndDrop();
     Kick(Victim,FVector(State.Direction)*KnockbackSpeed+FVector(0,0,KnockbackUpwardSpeed));
     P->OnTackledSomeone(Victim);
+    // ルビーラッシュ: a tackle shakes a few rubies loose (a twentieth).
+    if(auto* Mode=GetWorld()->GetAuthGameMode<AChaosImpactGameMode>()) { Mode->NotifyPartyTackle(Victim); }
     UE_LOG(LogChaosImpact,Log,TEXT("Tackle hit: %s on %s"),*P->GetName(),*Victim->GetName());
     Victim->ForceNetUpdate();
     MulticastImpact((P->GetActorLocation()+Victim->GetActorLocation())*.5,State.Direction);
@@ -204,7 +207,7 @@ void UChaosImpactTackleComponent::MulticastImpact_Implementation(FVector_NetQuan
     if(auto* Effect=LoadEffect(Effects::SparkBurst))
     { if(auto* FX=UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(),Effect,At,FVector(Direction).Rotation(),FVector(.85f)))
         { SetEffectColor(FX,TEXT("Color"),FLinearColor(1,.65f,.15f)*3); } }
-    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::BallHit,At,.8f,.8f);
+    ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::TackleHit,At);
 }
 void UChaosImpactTackleComponent::CheckShownContact()
 {
@@ -351,7 +354,7 @@ void UChaosImpactTackleComponent::TickComponent(float Delta,ELevelTick Type,FAct
     if(State.Started!=ObservedStart)
     {
         ObservedStart=State.Started; bStoppedRush=false;
-        if(IsActive()) { ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::CharDash,P->GetActorLocation(),.7f,.82f); }
+        if(IsActive()) { ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::TackleStart,P->GetActorLocation()); }
     }
     // Include the last travelled segment even when a slow frame crosses the end of the active window.
     if(P->HasAuthority() && State.Started>=0 && !bStoppedRush)

@@ -3,6 +3,7 @@
 #include "RPGPrototypeHUDStyle.h"
 #include "RPGAdventure.h"
 #include "RPGTreasureChest.h"
+#include "ChaosImpactHints.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/CapsuleComponent.h"
 #include "EngineUtils.h"
@@ -106,12 +107,15 @@ void URPGPrototypeHUD::PaintSharedHUD(const FGeometry& Geometry,FSlateWindowElem
     }
     else if(!P->IsBagOpen() && !P->IsQuestMenuOpen())
     {
+        // Only this player's device's key: the top face button (Y / △ / X) or E; picking up d-pad up or F.
+        const EChaosImpactDevice Device=ChaosImpactHints::GetDevice(PC);
+        const FString Use=ChaosImpactHints::Text(Device,TEXT("{Y|E}　")),Pick=ChaosImpactHints::Text(Device,TEXT("{Up|F}　"));
         FString Hint;
-        if(const auto* Chest=ARPGTreasureChest::Nearest(P)) { Hint=TEXT("E / 上側ボタン　")+Chest->DisplayName; }
-        else if(const auto* Node=ARPGAdventureNode::Nearest(P)) { Hint=TEXT("E / 上側ボタン　")+Node->DisplayName; }
-        else if(P->FindNearbyLoot()) { Hint=TEXT("F / 拾うボタン　拾う"); }
-        else if(P->FindMerchant()) { Hint=TEXT("E / 上側ボタン　ルビー工房"); }
-        if(Hint.IsEmpty()) { for(TActorIterator<ARPGPrototypeBoss> It(GetWorld());It;++It) { if(It->CanRetry(P)) { Hint=TEXT("E / 上側ボタン　ボスに再挑戦"); break; } } }
+        if(const auto* Chest=ARPGTreasureChest::Nearest(P)) { Hint=Use+Chest->DisplayName; }
+        else if(const auto* Node=ARPGAdventureNode::Nearest(P)) { Hint=Use+Node->DisplayName; }
+        else if(P->FindNearbyLoot()) { Hint=Pick+TEXT("拾う"); }
+        else if(P->FindMerchant()) { Hint=Use+TEXT("ルビー工房"); }
+        if(Hint.IsEmpty()) { for(TActorIterator<ARPGPrototypeBoss> It(GetWorld());It;++It) { if(It->CanRetry(P)) { Hint=Use+TEXT("ボスに再挑戦"); break; } } }
         if(!Hint.IsEmpty()) { Card(X+12,H-240,Col-24,40,Gold); F.Text(Hint,X+Col*.5f,H-228,12,Paper,ETextAlign::Center,TEXT("Bold")); }
     }
     if(GetWorld()->GetTimeSeconds()<P->NoticeUntil)

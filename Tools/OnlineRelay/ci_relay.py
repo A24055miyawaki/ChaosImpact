@@ -32,6 +32,13 @@ do); where that does not work, every packet passes through this relay, so no one
                                                       top3, average, recent:[[place, of], ...]}}
     record_report {match, token, game, result:"win"|"lose"|"draw"}   (duel)
                   {match, token, game, place, of}                     (random)   -> {ok, ...record_info}
+                  (both may carry "detail": {stage, chara, color, score:[mine, theirs], points, kos,
+                   players:[[name, chara, color, place, points, cpu], ...]}: what the 対戦履歴 shows of the game)
+    record_history {token, mode:"duel"|"ffa", page}  -> {ok, mode, page, pages, total, entries:[...]} (newest first,
+                                                      HISTORY_PAGE a page, the last HISTORY_KEEP games)
+    ranking       {token, name, mode:"duel"|"ffa", page}  -> {ok, mode, page, pages, total, entries:[{k, n, r, g, w, l, t,
+                                                      c, o, me}], me:{rank, rate, measured, left, games, best}}
+                                                      (rated players only, RANKING_PAGE a page, the top RANKING_TOP)
 
     Rank (仮, the preseason: a JSON file on this VM, see --data):
     rank_info   {token, name}                     -> {ok, mmr, games, wins, losses, draws, best, placement, recent}
@@ -116,15 +123,59 @@ RATE_START = 1500
 RATE_FLOOR = 500
 RATE_MEASURING = 5        # games played before the rating shows
 DUEL_K = (40.0, 20.0)     # (while measuring, after)
+# 1v1 win streak bonus: the rating a win gains is multiplied by this (the 2nd win in a row on); a loss is not changed.
+DUEL_STREAK_BONUS = {2: 1.1, 3: 1.2, 4: 1.3}
+DUEL_STREAK_TOP = 2.0     # the 5th win in a row and on
+# 1v1 by the rounds: a 2-0 moves both ratings more, a 2-1 less (when the players' machines said the rounds; else as before).
+DUEL_MARGIN_STRAIGHT = 1.25
+# 1v1 upsets: the further the winner was below, the more both ratings move (1 + UPSET * x^2, x = how far below even the
+# winner's chance was: 0 even, 1 none). Close ratings ±10 as before; 400 below: about ±50.
+DUEL_UPSET = 2.6
+# ...the change from the result and the upset is held to this (before the rounds and the streak: at most 40 x 1.25 x 2 = 100).
+DUEL_CHANGE_CAP = 40.0
+DUEL_MARGIN_CLOSE = 0.75
 FFA_K = (48.0, 32.0)
 RATE_HISTORY = 20         # the last ratings kept (the 戦績 graph)
 FFA_REPORT_WAIT = 30.0    # an 8-player game is settled this long after its first report (who never said is last)
+HISTORY_KEEP = 50         # the 対戦履歴: the last games kept, each mode
+HISTORY_PAGE = 10         # ...sent this many at a time (a reply stays well under the 16 KB a client reads)
+RANKING_TOP = 100         # the ランキング: the top this many
+RANKING_PAGE = 50
 
 log = logging.getLogger("ci_relay")
 
 
 def token_id(token):
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:32]
+
+
+def clean_detail(detail, mode):
+    """What a player's machine says of a game for its 対戦履歴 (shown only; nothing is rated on it)."""
+    if not isinstance(detail, dict):
+        detail = {}
+
+    def number(value, low, high, default=0):
+        try:
+            return max(low, min(high, int(value)))
+        except (TypeError, ValueError):
+            return default
+    out = {"st": number(detail.get("stage"), -1, 63, -1), "ch": number(detail.get("chara"), 0, 255, 0),
+           "co": number(detail.get("color"), -1, 7, -1)}
+    if mode == "duel":
+        score = detail.get("score")
+        if isinstance(score, list) and len(score) == 2:
+            out["sc"] = [number(score[0], 0, 9), number(score[1], 0, 9)]
+    else:
+        out["pt"] = number(detail.get("points"), -99999, 99999)
+        out["ko"] = number(detail.get("kos"), 0, 999)
+        players = []
+        for row in detail.get("players") or []:
+            if not isinstance(row, list) or len(row) < 6 or len(players) >= RANDOM_MAX_PLAYERS:
+                continue
+            players.append([str(row[0])[:16], number(row[1], 0, 255), number(row[2], -1, 7, -1),
+                            number(row[3], 1, RANDOM_MAX_PLAYERS, RANDOM_MAX_PLAYERS), number(row[4], -99999, 99999), 1 if row[5] else 0])
+        out["ps"] = players
+    return out
 
 
 def clean_profile(profile):
@@ -447,16 +498,35 @@ class RankBook:
                 "before": int(round(before)), "after": int(round(after)), "delta": delta,
                 "floor": after <= RATE_FLOOR + 0.001 and delta <= 0}
 
-    def settle_duel(self, a, b, score_a):
-        """A rated 1v1: score_a 1 a won, 0 b won, 0.5 drawn. Returns {pid: (before, after)}."""
+    def settle_duel(self, a, b, score_a, margin=1.0):
+        """A rated 1v1: score_a 1 a won, 0 b won, 0.5 drawn; margin scales both changes (the rounds). Returns {pid: (before, after)}."""
         ra, rb = self.rating(a, "duel"), self.rating(b, "duel")
         expected_a = self.expected(ra["rate"], rb["rate"])
         ka = DUEL_K[0] if ra["games"] < RATE_MEASURING else DUEL_K[1]
         kb = DUEL_K[0] if rb["games"] < RATE_MEASURING else DUEL_K[1]
-        delta_a, delta_b = ka * (score_a - expected_a), kb * ((1.0 - score_a) - (1.0 - expected_a))
+        upset = 1.0
+        if score_a != 0.5:
+            winner_chance = expected_a if score_a == 1.0 else 1.0 - expected_a
+            below = max(0.0, (0.5 - winner_chance) / 0.5)
+            upset = 1.0 + DUEL_UPSET * below * below
+        cap = DUEL_CHANGE_CAP
+        delta_a = max(-cap, min(cap, ka * (score_a - expected_a) * upset)) * margin
+        delta_b = max(-cap, min(cap, kb * ((1.0 - score_a) - (1.0 - expected_a)) * upset)) * margin
+        # The winner's streak (this win counted, as the records already have it) makes the gain bigger.
+        bonus_a = self.streak_bonus(a) if delta_a > 0 and score_a == 1.0 else 1.0
+        bonus_b = self.streak_bonus(b) if delta_b > 0 and score_a == 0.0 else 1.0
+        delta_a *= bonus_a
+        delta_b *= bonus_b
+        # (Told with the rating: the results show the bonus.)
+        self.last_duel_extra = {pid: {"streak": self.records(pid)[0]["streak"], "streak_bonus": bonus}
+                                for pid, bonus in ((a, bonus_a), (b, bonus_b)) if bonus > 1.0}
         changes = {a: self.apply_rating(a, "duel", delta_a), b: self.apply_rating(b, "duel", delta_b)}
         self.save()
         return changes
+
+    def streak_bonus(self, pid):
+        streak = self.records(pid)[0]["streak"]
+        return DUEL_STREAK_TOP if streak >= 5 else DUEL_STREAK_BONUS.get(streak, 1.0)
 
     def settle_ffa(self, places):
         """A rated 8-player game: {pid: place} (people only). Each pair is a 1v1 (the better place wins), the sum shared
@@ -517,15 +587,17 @@ class RankBook:
                              "recent": ffa["recent"][-10:], "streak": ffa["streak"], "best_streak": ffa["best_streak"]},
                             **self.describe_rating(pid, "ffa"))}
 
-    def add_duel(self, pid, result):
+    def add_duel(self, pid, result, logged=None):
         duel, _ = self.records(pid)
         duel[{"win": "wins", "lose": "losses", "draw": "draws"}[result]] += 1
         duel["recent"] = (duel["recent"] + [{"win": "W", "lose": "L", "draw": "D"}[result]])[-10:]
         duel["streak"] = duel["streak"] + 1 if result == "win" else 0
         duel["best_streak"] = max(duel["best_streak"], duel["streak"])
+        if logged:
+            self.log_game(pid, "duel", dict(logged, res={"win": "W", "lose": "L", "draw": "D"}[result]))
         self.save()
 
-    def add_ffa(self, pid, place, of):
+    def add_ffa(self, pid, place, of, logged=None):
         _, ffa = self.records(pid)
         ffa["games"] += 1
         ffa["wins"] += 1 if place == 1 else 0
@@ -534,7 +606,70 @@ class RankBook:
         ffa["recent"] = (ffa["recent"] + [[place, of]])[-10:]
         ffa["streak"] = ffa["streak"] + 1 if place == 1 else 0
         ffa["best_streak"] = max(ffa["best_streak"], ffa["streak"])
+        if logged:
+            self.log_game(pid, "ffa", dict(logged, pl=place, of=of))
         self.save()
+
+    # ---- the 対戦履歴 (the last HISTORY_KEEP games of each mode, in detail) and the ランキング
+    def log_game(self, pid, mode, logged):
+        entry = self.player(pid)
+        games = entry.setdefault(mode + "_log", [])
+        games.append(logged)
+        del games[:-HISTORY_KEEP]
+        # The character a player last played (the ランキング shows it).
+        rating = self.rating(pid, mode)
+        rating["chara"], rating["color"] = logged.get("ch", 0), logged.get("co", -1)
+
+    def note_rating(self, pid, mode, match_id, game, before, after):
+        """A game's rating settled: its 対戦履歴 entry is given the change (and whether the rating was shown by then)."""
+        rating = self.rating(pid, mode)
+        for logged in reversed(self.player(pid).get(mode + "_log", [])):
+            if logged.get("m") == match_id and logged.get("g") == game:
+                logged["d"] = int(round(after)) - int(round(before))
+                logged["r"] = int(round(after))
+                logged["ms"] = rating["games"] >= RATE_MEASURING
+                break
+
+    def history(self, pid, mode, page):
+        games = list(reversed(self.player(pid).get(mode + "_log", [])))
+        pages = max(1, (len(games) + HISTORY_PAGE - 1) // HISTORY_PAGE)
+        page = max(0, min(pages - 1, page))
+        return {"mode": mode, "page": page, "pages": pages, "total": len(games),
+                "entries": games[page * HISTORY_PAGE:(page + 1) * HISTORY_PAGE]}
+
+    def ranking(self, pid, mode, page):
+        rated = []
+        for other, entry in self.data["players"].items():
+            rating = entry.get(mode + "_rating")
+            if rating and rating.get("games", 0) >= RATE_MEASURING:
+                rated.append((-int(round(rating["rate"])), -rating.get("games", 0), other))
+        rated.sort()
+        ranks = {}
+        rank = 0
+        last = None
+        for index, (negative, _, other) in enumerate(rated):
+            if negative != last:
+                rank, last = index + 1, negative
+            ranks[other] = rank
+        top = rated[:RANKING_TOP]
+        pages = max(1, (len(top) + RANKING_PAGE - 1) // RANKING_PAGE)
+        page = max(0, min(pages - 1, page))
+        entries = []
+        for negative, _, other in top[page * RANKING_PAGE:(page + 1) * RANKING_PAGE]:
+            entry = self.data["players"][other]
+            rating = entry[mode + "_rating"]
+            duel, ffa = self.records(other)
+            row = {"k": ranks[other], "n": entry.get("name", ""), "r": -negative, "g": rating.get("games", 0),
+                   "c": rating.get("chara", 0), "o": rating.get("color", -1), "me": other == pid}
+            if mode == "duel":
+                row.update(w=duel["wins"], l=duel["losses"])
+            else:
+                row.update(w=ffa["wins"], t=ffa["top3"])
+            entries.append(row)
+        mine = self.describe_rating(pid, mode)
+        return {"mode": mode, "page": page, "pages": pages, "total": len(rated), "entries": entries,
+                "me": {"rank": ranks.get(pid, 0), "rate": mine["rate"], "measured": mine["measured"], "left": mine["measuring_left"],
+                       "games": mine["rated_games"], "best": mine["best"]}}
 
     def settle(self, a, b, score_a, match_id):
         """score_a: 1 a won, 0 b won, 0.5 draw. Returns {pid: (before, after)}."""
@@ -652,6 +787,19 @@ class Relay:
             return dict(ok=True, **self.ranks.describe_records(pid))
         if op == "record_report":
             return self.record_report(request)
+        if op in ("record_history", "ranking"):
+            mode = request.get("mode")
+            if not request.get("token") or mode not in ("duel", "ffa"):
+                return {"ok": False, "error": "bad request"}
+            pid = token_id(request["token"])
+            self.ranks.player(pid, request.get("name"))
+            try:
+                page = int(request.get("page", 0))
+            except (TypeError, ValueError):
+                page = 0
+            if op == "record_history":
+                return dict(ok=True, **self.ranks.history(pid, mode, page))
+            return dict(ok=True, **self.ranks.ranking(pid, mode, page))
         if op == "mm_leave":
             ticket = self.tickets.pop(str(request.get("ticket", "")), None)
             if ticket and ticket.match is None:
@@ -965,20 +1113,28 @@ class Relay:
             game = int(request.get("game", 0))
             key = (pid, game)
             if key not in match.recorded:
+                logged = dict(clean_detail(request.get("detail"), "duel" if match.mode == "duel" else "ffa"),
+                              m=match.id, g=game, at=int(time.time()))
                 if match.mode == "duel":
                     result = request.get("result")
                     if result not in ("win", "lose", "draw"):
                         return {"ok": False, "error": "bad request"}
-                    self.ranks.add_duel(pid, result)
+                    # The opponent as the relay matched them.
+                    other = next((t for t in match.tickets if t.pid != pid), None)
+                    if other:
+                        logged["op"] = {"n": other.name, "ch": other.profile.get("chara", 0), "co": other.profile.get("color", -1)}
+                    self.ranks.add_duel(pid, result, logged)
                 else:
                     of = max(2, min(RANDOM_MAX_PLAYERS, int(request.get("of", RANDOM_MAX_PLAYERS))))
                     place = max(1, min(of, int(request.get("place", of))))
-                    self.ranks.add_ffa(pid, place, of)
+                    self.ranks.add_ffa(pid, place, of, logged)
                 match.recorded.add(key)
                 log.info("match %s: %s recorded game %d", match.id, self.ranks.player(pid)["name"], game)
                 rated = match.games.setdefault(game, {"reports": {}, "changes": None, "outcome": None})
                 if match.mode == "duel":
                     rated["reports"][pid] = (request.get("result"), time.monotonic())
+                    if "sc" in logged:
+                        rated.setdefault("rounds", {})[pid] = logged["sc"]
                     if len(rated["reports"]) == 2:
                         self.settle_game(match, game)
                 else:
@@ -997,7 +1153,7 @@ class Relay:
         if rated["outcome"] == "void" or pid not in (rated["changes"] or {}):
             return {"state": "void"}
         before, after = rated["changes"][pid]
-        return self.ranks.rated_change(pid, "duel" if match.mode == "duel" else "ffa", before, after)
+        return dict(self.ranks.rated_change(pid, "duel" if match.mode == "duel" else "ffa", before, after), **rated.get("extra", {}).get(pid, {}))
 
     def settle_game(self, match, game):
         rated = match.games.get(game)
@@ -1016,15 +1172,37 @@ class Relay:
             if said not in flip:
                 rated["outcome"] = "void"
                 return
-            rated["changes"] = self.ranks.settle_duel(a, b, 1.0 if said == "win" else 0.0 if said == "lose" else 0.5)
+            rated["changes"] = self.ranks.settle_duel(a, b, 1.0 if said == "win" else 0.0 if said == "lose" else 0.5,
+                                                      self.duel_margin(rated.get("rounds", {}), a, b, said))
+            rated["extra"] = getattr(self.ranks, "last_duel_extra", {})
         else:
             # Who never said (left, or gone) is last.
             of = max([value[2] for value in reports.values()] + [len(match.tickets)])
             places = {t.pid: (reports[t.pid][0] if t.pid in reports else of) for t in match.tickets}
             rated["changes"] = self.ranks.settle_ffa(places)
         rated["outcome"] = "done"
+        mode = "duel" if match.mode == "duel" else "ffa"
+        for pid, (before, after) in (rated["changes"] or {}).items():
+            self.ranks.note_rating(pid, mode, match.id, game, before, after)
+        self.ranks.save()
         log.info("match %s game %d rated: %s", match.id, game, ", ".join(
             f"{self.ranks.player(pid)['name']} {before:.0f}->{after:.0f}" for pid, (before, after) in (rated["changes"] or {}).items()))
+
+    @staticmethod
+    def duel_margin(rounds, a, b, said):
+        """The rounds' factor: from what either side said (a's rounds first), the two agreeing and matching the result."""
+        seen = set()
+        if a in rounds:
+            seen.add(tuple(rounds[a]))
+        if b in rounds:
+            seen.add(tuple(reversed(rounds[b])))
+        if len(seen) != 1 or said == "draw":
+            return 1.0
+        mine, theirs = next(iter(seen))
+        if (said == "win") != (mine > theirs):
+            return 1.0
+        won, lost = max(mine, theirs), min(mine, theirs)
+        return DUEL_MARGIN_STRAIGHT if lost == 0 else DUEL_MARGIN_CLOSE if won - lost == 1 else 1.0
 
     # ---- rank results
     def rank_report(self, request):

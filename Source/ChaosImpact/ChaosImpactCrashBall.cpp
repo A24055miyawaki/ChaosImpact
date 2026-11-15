@@ -589,7 +589,7 @@ bool AChaosImpactCrashBall::ApplyBallHit(AChaosImpactBall* IncomingBall, const F
 			++NetState.HitRevision;
 			NetState.bLastHitCharged = true;
 			ForceNetUpdate();
-			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation(), 1.4f, .6f);
+			ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CrashHit, GetActorLocation(), 1.1f, .85f);
 		}
 		return true;
 	case EChaosImpactBallType::Smoke:
@@ -788,7 +788,7 @@ PostVelocityUpdate:
 	ClientHitFlashAt = FPlatformTime::Seconds();
 	bClientLastHitCharged = bCharged;
 	ClientSeenHitRevision = NetState.HitRevision;
-	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, GetActorLocation(), bCharged ? 1.3f : .8f, bCharged ? .75f : .95f);
+	ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CrashHit, GetActorLocation(), bCharged ? 1.0f : .7f, bCharged ? .9f : 1.1f);
 	ShakeNearbyPlayers();
 
 }
@@ -846,8 +846,8 @@ void AChaosImpactCrashBall::OnRep_NetState()
 		ClientSeenHitRevision = NetState.HitRevision;
 		ClientHitFlashAt = FPlatformTime::Seconds();
 		bClientLastHitCharged = NetState.bLastHitCharged;
-		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, FVector(NetState.Location), bClientLastHitCharged ? 1.3f : .8f,
-			FMath::Max(.85f - 0.06f * FMath::Max(NetState.Combo - 1, 0), .55f));
+		ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CrashHit, FVector(NetState.Location), bClientLastHitCharged ? 1.0f : .7f,
+			FMath::Max(1.05f - 0.05f * FMath::Max(NetState.Combo - 1, 0), .75f));
 		ShakeNearbyPlayers();
 	}
 	if (NetState.RecoveryRevision != ClientSeenRecoveryRevision)
@@ -1142,7 +1142,7 @@ void AChaosImpactCrashBall::ResolveCharacterOverlaps()
 				LastKnockBySource.Add(Key, Now);
 				const FVector Away = (Delta2D.GetSafeNormal() * 0.5f + Ahead * 0.5f).GetSafeNormal();
 				Character->ApplyBlastKnockback(Away * FMath::Clamp(500.0f + Speed2D * 0.75f, 700.0f, 1500.0f) + FVector(0.0f, 0.0f, 520.0f));
-				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::BallHit, CharLoc, 1.2f, .7f);
+				ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::CrashBump, CharLoc);
 				continue;
 			}
 		}

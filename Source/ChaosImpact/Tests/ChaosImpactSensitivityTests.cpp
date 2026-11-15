@@ -109,8 +109,10 @@ namespace
 			case 1:
 				// Settings use the same keyboard/pad adjustment and mouse-value buttons.
 				Settings->SelectRow(0); Settings->SelectRow(Settings->FindRow(Screen::RowShoulderSensitivityX));
-				Settings->HandleMouseDown(FVector2D(1200,722),EKeys::LeftMouseButton);
+				// (The right half of the row's value, wherever the list has scrolled it.)
+				Settings->HandleMouseDown(FVector2D(1200,Settings->GetRowRect(Settings->GetSelectedRow()).GetCenter().Y),EKeys::LeftMouseButton);
 				Test->TestEqual(TEXT("Mouse can increase sensitivity too"),GetShoulderSensitivity(Profile,Device),120);
+				Settings->Save();
 				PC->CloseSettings(); PC->OpenSettings(); Settings->SetTab(Screen::ETab::Controls);
 				Test->TestEqual(TEXT("Reopening settings keeps the saved value"),GetShoulderSensitivity(Profile,Device),120);
 				Settings->SelectRow(Settings->FindRow(Screen::RowResetShoulderSensitivity)); Settings->Activate();

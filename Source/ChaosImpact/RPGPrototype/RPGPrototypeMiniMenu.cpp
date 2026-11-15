@@ -3,6 +3,7 @@
 #include "RPGPrototypeUIKit.h"
 #include "RPGTuning.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactHints.h"
 #include "Framework/Application/SlateApplication.h"
 
 // The per-player mini menu (split screen, or solo by choice): a 448x532 panel that rises from the bottom of the
@@ -31,7 +32,10 @@ struct FMiniMenu
 	bool bMerchant = false;
 	bool bPad = false;
 	bool bChoosing = false;
-	const TCHAR* Key(const TCHAR* Keyboard, const TCHAR* Pad) const { return bPad ? Pad : Keyboard; }
+	/** What this player plays with now: every key hint is in its names only (keyboard, Xbox, PlayStation or Switch). */
+	EChaosImpactDevice Device = EChaosImpactDevice::KeyboardMouse;
+	/** A key hint from a ChaosImpactHints template (the bag's keys: see RPGPrototypeBag.cpp's FFullMenu::Key). */
+	FString Key(const TCHAR* Template) const { return ChaosImpactHints::Text(Device, Template); }
 	// One column: list rows, then a detail strip, then the buttons.
 	static constexpr float X = 16, W = MiniW - 32, ListTop = 138, RowH = 46, RowDraw = 42, DetailTop = 402, ButtonY = 452, ButtonH = 40;
 };
@@ -79,12 +83,20 @@ void MiniHeader(RPGUI::FCanvas& C, const FMiniMenu& M)
 
 void MiniFooter(RPGUI::FCanvas& C, const TArray<TPair<FString, FString>>& Hints)
 {
+	// Long controller names (十字ボタン↑↓, 右スティック …) could run past the panel: then the gaps, and after them the
+	// words, get a little smaller so the row stays inside (the keys themselves keep their size).
+	const float Room = MiniW - 32;
+	float Size = 14, Gap = 13, KeysW = 0, TextW = 0;
+	for (const auto& Hint : Hints) { KeysW += FMath::Max(22.0f, RPGUI::Measure(Hint.Key, 22 * 0.58f) + 22 * 0.6f) + 5; TextW += RPGUI::Measure(Hint.Value, 14); }
+	const int32 Gaps = FMath::Max(1, Hints.Num() - 1);
+	if (KeysW + TextW + Gap * Gaps > Room) { Gap = FMath::Max(6.0f, (Room - KeysW - TextW) / Gaps); }
+	if (TextW > 0 && KeysW + TextW + Gap * Gaps > Room) { Size = FMath::Max(10.0f, 14 * (Room - KeysW - Gap * Gaps) / TextW); }
 	float X = 16;
 	for (const auto& Hint : Hints)
 	{
 		const float KeyW = RPGUI::Keycap(C, 1, Hint.Key, X, 500, 22);
-		RPGUI::Label(C, 1, Hint.Value, X + KeyW + 5, 501, 14, RPGUI::TextSub);
-		X += KeyW + RPGUI::Measure(Hint.Value, 14) + 18;
+		RPGUI::Label(C, 1, Hint.Value, X + KeyW + 5, 501 + (14 - Size) * 0.45f, Size, RPGUI::TextSub);
+		X += KeyW + 5 + RPGUI::Measure(Hint.Value, Size) + Gap;
 	}
 }
 
@@ -224,8 +236,8 @@ void MiniOverview(RPGUI::FCanvas& C, const FMiniMenu& M)
 	const FString Name = Item.IsValid() ? Item.Name() : ARPGPrototypeCharacter::EquipmentLabel(P->EquipmentSelection) + TEXT("（未装備）");
 	RPGUI::LabelFit(C, 1, Name, 18, 368, MiniW - 36, 20, Item.IsValid() && Item.Rarity != ERPGPrototypeRarity::Normal ? RPGUI::RarityColor(Item.Rarity) : RPGUI::TextMain);
 	RPGUI::Wrap(C, 1, Item.IsValid() ? RPGUI::ShortEffect(Item) : FString(TEXT("「装備変更」で付ける物を選べます")), 18, 398, MiniW - 36, 15, RPGUI::TextSub, 2, 21);
-	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, TEXT("装備変更"), MiniAct::BeginChange, true, true, M.Key(TEXT("Enter"), TEXT("決定")));
-	MiniFooter(C, {{M.Key(TEXT("↑↓←→"), TEXT("十字")), TEXT("枠")}, {M.Key(TEXT("Q E"), TEXT("L R")), TEXT("ページ")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}});
+	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, TEXT("装備変更"), MiniAct::BeginChange, true, true, M.Key(TEXT("{A|Enter}")));
+	MiniFooter(C, {{M.Key(TEXT("{DPad|↑↓←→}")), TEXT("枠")}, {M.Key(TEXT("{pad:{LB} {RB}}{kb:Q E}")), TEXT("ページ")}, {M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}});
 }
 
 void MiniItems(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -237,12 +249,12 @@ void MiniItems(RPGUI::FCanvas& C, const FMiniMenu& M)
 	if (I) { MiniDetailStrip(C, M, *I); }
 	const bool bEquipped = I && P->IsEquipped(I->Id);
 	const float Y = FMiniMenu::ButtonY, H = FMiniMenu::ButtonH;
-	const FString Enter = M.Key(TEXT("Enter"), TEXT("決定"));
+	const FString Enter = M.Key(TEXT("{A|Enter}"));
 	if (M.bChoosing)
 	{
 		const bool bAlready = I && P->GetEquipment(P->EquipmentSelection).Id == I->Id;
 		RPGUI::Button(C, 1, 16, Y, MiniW - 32, H, bAlready ? TEXT("この枠に装備中") : TEXT("この装備に変更"), MiniAct::EquipSelected, true, I && !bAlready, Enter);
-		MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {Enter, TEXT("変更")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("やめる")}});
+		MiniFooter(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選択")}, {Enter, TEXT("変更")}, {M.Key(TEXT("{B|Esc}")), TEXT("やめる")}});
 		return;
 	}
 	RPGUI::Button(C, 1, 16, Y, 76, H, I && I->bLocked ? TEXT("解除") : TEXT("ロック"), MiniAct::Lock, false, I != nullptr);
@@ -257,7 +269,7 @@ void MiniItems(RPGUI::FCanvas& C, const FMiniMenu& M)
 		}
 	}
 	else { RPGUI::Button(C, 1, 204, Y, MiniW - 220, H, bEquipped ? TEXT("装備中") : TEXT("装備する"), MiniAct::EquipSelected, true, I && !bEquipped, Enter); }
-	MiniFooter(C, {{M.Key(TEXT("←→"), TEXT("左右")), TEXT("種類")}, {M.Key(TEXT("X"), TEXT("ZL")), TEXT("並べ替え")}, {M.Key(TEXT("F"), TEXT("上")), TEXT("ロック")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}});
+	MiniFooter(C, {{M.Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("種類")}, {M.Key(TEXT("{LT|X}")), TEXT("並べ替え")}, {M.Key(TEXT("{Y|F}")), TEXT("ロック")}, {M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}});
 }
 
 void MiniUpgrade(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -285,8 +297,8 @@ void MiniUpgrade(RPGUI::FCanvas& C, const FMiniMenu& M)
 	const int32 Cost = I->UpgradeCost();
 	const bool bAfford = P->GetRubies() >= Cost;
 	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, bMax ? TEXT("強化MAX") : bAfford ? FString::Printf(TEXT("強化する  ◆%d"), Cost) : FString::Printf(TEXT("ルビー不足（あと◆%d）"), Cost - P->GetRubies()),
-		MiniAct::Upgrade, true, !bMax && bAfford, M.Key(TEXT("Enter"), TEXT("決定")));
-	MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {M.Key(TEXT("←→"), TEXT("左右")), TEXT("種類")}, {M.Key(TEXT("Q E"), TEXT("L R")), TEXT("ページ")}});
+		MiniAct::Upgrade, true, !bMax && bAfford, M.Key(TEXT("{A|Enter}")));
+	MiniFooter(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選択")}, {M.Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("種類")}, {M.Key(TEXT("{pad:{LB} {RB}}{kb:Q E}")), TEXT("ページ")}});
 }
 
 void MiniTune(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -339,7 +351,7 @@ void MiniTune(RPGUI::FCanvas& C, const FMiniMenu& M)
 		bCanRank && P->GetRubies() >= RankCost && P->GetTuneShards() >= Current.Rank);
 	RPGUI::Button(C, 1, 24 + Half, FMiniMenu::ButtonY, Half, FMiniMenu::ButtonH, FString::Printf(TEXT("付ける ◆%d・%d"), I->TuneCost(), RPGTuning::ShardsPerTune), MiniAct::ApplyTune, true,
 		Offers.Num() > 0 && P->GetRubies() >= I->TuneCost() && P->GetTuneShards() >= RPGTuning::ShardsPerTune);
-	MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("候補")}, {M.Key(TEXT("←→"), TEXT("左右")), TEXT("枠")}, {M.Key(TEXT("PgUp/Dn"), TEXT("Rスティック")), TEXT("ボール")}});
+	MiniFooter(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("候補")}, {M.Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("枠")}, {M.Key(TEXT("{RStick|PgUp/Dn}")), TEXT("ボール")}});
 }
 
 void MiniShop(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -378,8 +390,8 @@ void MiniShop(RPGUI::FCanvas& C, const FMiniMenu& M)
 	const bool bFull = P->GetBag().Num() >= RPGTuning::BagCapacity, bAfford = I && P->GetRubies() >= Price;
 	RPGUI::Button(C, 1, 16, FMiniMenu::ButtonY, MiniW - 32, FMiniMenu::ButtonH, !I ? FString(TEXT("買えるボールがありません")) : bFull ? FString(TEXT("バッグがいっぱい"))
 		: bAfford ? FString::Printf(TEXT("買う  ◆%d"), Price) : FString::Printf(TEXT("ルビー不足（あと◆%d）"), Price - P->GetRubies()),
-		MiniAct::Buy, true, I && !bFull && bAfford, M.Key(TEXT("Enter"), TEXT("決定")));
-	MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("買う")}, {M.Key(TEXT("Q E"), TEXT("L R")), TEXT("ページ")}});
+		MiniAct::Buy, true, I && !bFull && bAfford, M.Key(TEXT("{A|Enter}")));
+	MiniFooter(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選択")}, {M.Key(TEXT("{A|Enter}")), TEXT("買う")}, {M.Key(TEXT("{pad:{LB} {RB}}{kb:Q E}")), TEXT("ページ")}});
 }
 
 void MiniSettings(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -407,7 +419,7 @@ void MiniSettings(RPGUI::FCanvas& C, const FMiniMenu& M)
 	}
 	RPGUI::Wrap(C, 1, TEXT("保存：装備・所持品・Lv・経験値・ルビー・宝箱・依頼"), 20, 392, MiniW - 40, 15, RPGUI::TextSub, 2, 21);
 	RPGUI::Wrap(C, 1, TEXT("ステージ・敵・落ちている物は保存しません"), 20, 438, MiniW - 40, 14, RPGUI::TextDim, 2, 20);
-	MiniFooter(C, {{M.Key(TEXT("↑↓"), TEXT("十字")), TEXT("選択")}, {M.Key(TEXT("Enter"), TEXT("決定")), TEXT("実行")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("閉じる")}});
+	MiniFooter(C, {{M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), TEXT("選択")}, {M.Key(TEXT("{A|Enter}")), TEXT("実行")}, {M.Key(TEXT("{B|Esc}")), TEXT("閉じる")}});
 }
 
 void MiniDialog(RPGUI::FCanvas& C, const FMiniMenu& M)
@@ -478,7 +490,7 @@ void URPGPrototypeHUD::PaintLoadout(const FGeometry& Design,FSlateWindowElementL
 	const FMiniMenuState S=MiniState();
 	FMiniMenu M; M.P=Player; M.Page=S.Page; M.bMerchant=S.bMerchant; M.bChoosing=S.bChoosing;
 	M.Mode=GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>();
-	const auto* PC=Cast<AChaosImpactPlayerController>(GetOwningPlayer()); M.bPad=PC && PC->IsUsingGamepad();
+	const auto* PC=Cast<AChaosImpactPlayerController>(GetOwningPlayer()); M.bPad=PC && PC->IsUsingGamepad(); M.Device=ChaosImpactHints::GetDevice(PC);
 	RPGUI::FCanvas C; C.Geometry=&Design; C.Elements=&Elements; C.Layer=Layer+3; C.Time=Time; C.bGamepad=M.bPad;
 	C.Hover=Player->IsBagOpen()?GetBagPointerAction():0;
 	MiniLayout(C,M);

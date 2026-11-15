@@ -128,6 +128,12 @@ protected:
 	float HookBallChance = 0.06f;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Anchor (アンカー)"))
 	float AnchorBallChance = 0.05f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Swap (スワップ・VS/トレーニング限定)"))
+	float SwapBallChance = 0.05f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Barrier (バリア・VS/トレーニング限定)"))
+	float BarrierBallChance = 0.05f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Mine (マイン・VS/トレーニング限定)"))
+	float MineBallChance = 0.05f;
 
 	/** What the weights come to, in percent (follows them as they change). */
 	UPROPERTY(VisibleAnywhere, Transient, Category="Chaos Impact|Ball Chances", meta=(DisplayName="確率の内訳 (%)", MultiLine="true"))

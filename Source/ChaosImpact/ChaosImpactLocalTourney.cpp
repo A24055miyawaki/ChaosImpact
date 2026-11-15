@@ -3,6 +3,7 @@
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactCustomColour.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
@@ -1183,7 +1184,9 @@ int32 UChaosImpactTourneyEntry::Paint(const FGeometry& Design, FSlateWindowEleme
 
 	// ---- A word (why it cannot start, …), and the keys.
 	const bool bMessage = Now - MessageAt < 3.0;
-	const FString Line = bMessage ? Message : !Blocker.IsEmpty() ? Blocker : FString(TEXT("A：決定　B：もどる　X：追加　Y：消す　SELECT / N：名前　LB RB：参加者を切りかえ　START：開始へ"));
+	// (The keys as HandleKeyDown takes them, in the names of what is being held; START has no key on the keyboard.)
+	const FString Line = bMessage ? Message : !Blocker.IsEmpty() ? Blocker : ChaosImpactHints::Text(Controller.Get(),
+		TEXT("{Confirm}：決定　{Back}：もどる　{X|Insert}：追加　{Y|Delete}：消す　{Select|N}：名前　{LB|Q} {RB|E}：参加者を切りかえ{pad:　{Start}：開始へ}"));
 	P.Text(Line, 800.0f, 872.0f, HudFit(Line, 16.0f, 1480.0f, TEXT("Bold")), bMessage || !Blocker.IsEmpty() ? Gold : Muted, ETextAlign::Center, TEXT("Bold"));
 
 	if (Naming.IsOpen())

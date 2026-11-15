@@ -24,6 +24,9 @@ public:
 	static double DevThinkSeconds;
 	/** Development: the same split up (perception, learning, target, dodging, offence, positioning). */
 	static double DevSectionSeconds[6];
+	/** Development: time in the heavier parts (PlanSureShot, CollectExactThreats, EvaluateEscape, UpdateEvasion,
+	 * ChooseSafeDirection, GetHazardAt, FindVantagePoint, RouteToward, SelectPickup, UpdateLearning). */
+	static double DevPartSeconds[10];
 	AChaosImpactCPUController();
 	virtual void Tick(float DeltaSeconds) override;
 	bool UsesArcFlightMode() const;
@@ -46,6 +49,9 @@ public:
 	 */
 	void MarkAsMatchCPU() { bMatchCPU = true; }
 	bool IsMatchCPU() const { return bMatchCPU; }
+	/** The duel's boss (さいきょう in a duel), whether it plays as one. Tests: set either way (unset: as in play). */
+	bool IsDuelBoss() const { return bDuelBoss; }
+	void SetDuelBossForTests(const TOptional<bool> bBoss) { DuelBossForTests = bBoss; }
 
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
@@ -197,6 +203,16 @@ private:
 	// ---- さいきょう
 	bool bPerfect = false;
 	/**
+	 * さいきょう in a duel (one opponent, nobody else to watch): its duel play (see the duel parts of the .cpp). No
+	 * advantage of any kind but the way it plays.
+	 */
+	bool bDuelBoss = false;
+	TOptional<bool> DuelBossForTests;
+	/** In a duel, hunting dashes only while this much stamina is left (the rest is kept for getting out of the way). */
+	static constexpr float DuelHuntDashStamina = 4.0f;
+	/** In a duel, an unarmed opponent's nearest ball within this far is guarded (stood over, between it and them). */
+	static constexpr float DuelGuardBallRange = 1800.0f;
+	/**
 	 * Hunting: behind on points, the match nearly over without a lead, or the target simply running. Then it cuts the
 	 * runner off from open floor (herding them to the walls), closes in with dashes (always keeping one for a dodge)
 	 * and keeps throwing to wear their dashes down, instead of waiting for a certain shot that never comes.
@@ -217,7 +233,9 @@ private:
 	FVector RouteDirectionGoal = FVector::ZeroVector;
 	float DevTraceAt = 0.0f;
 	static constexpr float PerfectDecisionSeconds = 0.025f;
-	static constexpr float PerfectShotPlanSeconds = 0.05f;
+	static constexpr float PerfectShotPlanSeconds = 0.03f;
+	/** At most this many CPUs plan a throw in one frame (all CPUs together). */
+	static constexpr int32 MaxShotPlansPerFrame = 2;
 	/** Stamina a hunting dash needs: one dash's worth always stays back for getting out of a ball's way. */
 	static constexpr float HuntDashStaminaReserve = 2.2f;
 	/** Hunting throws (not certain ones) only from this near: from further a dodger always gets out of the way. */
@@ -240,7 +258,8 @@ private:
 	/** A ball's whole flight as it really goes: its own size, gravity, homing, rebounds and speed-ups, and its blast. */
 	void SimulateTypedFlight(const FVector& Start, FVector Velocity, EChaosImpactBallType Type, float Radius, bool bArc,
 		float GravityScale, float HorizonSeconds, float StepSeconds, const AActor* IgnoredA, const AActor* IgnoredB,
-		const AChaosImpactCharacter* HomingTarget, FBallThreat& Out) const;
+		const AChaosImpactCharacter* HomingTarget, FBallThreat& Out,
+		const TFunction<bool(int32 Index, const FVector& From, const FVector& To)>& StopWhen = nullptr) const;
 	static float GetBurstRadius(EChaosImpactBallType Type, float Scale);
 	/** Every ball that could still reach this CPU, seen at once, flown exactly. */
 	void CollectExactThreats(const AChaosImpactCharacter* Self, TArray<FBallThreat>& OutThreats) const;
@@ -253,6 +272,25 @@ private:
 	bool IsNovaSafe(const AChaosImpactCharacter* Self) const;
 	/** How bad it is to stand there: burning ground, a black hole, smoke, a tornado, a nova coming down, the stage's edge. */
 	float GetHazardAt(const AChaosImpactCharacter* Self, const FVector& Point) const;
+	/** What GetHazardAt goes by, gathered once a frame (zones, tornadoes, novas coming down), and the floor under each
+	 * square once found (the stage does not move: the edge is where it was). */
+	struct FHazardSnapshot
+	{
+		float At = -1.0f;
+		struct FZone
+		{
+			FVector2D Center = FVector2D::ZeroVector;
+			float Radius = 0.0f;
+			float Age = 0.0f;
+			EChaosImpactBallType Type = EChaosImpactBallType::Normal;
+		};
+		TArray<FZone> Zones;
+		TArray<FVector2D> Tornadoes;
+		/** x, y and reach. */
+		TArray<FVector> NovaLandings;
+	};
+	mutable FHazardSnapshot HazardSnapshot;
+	void RefreshHazardSnapshot(const AChaosImpactCharacter* Self) const;
 	/** How exposed a spot is: armed opponents with a clear line to it, the nearer the worse. */
 	float GetExposureAt(const AChaosImpactCharacter* Self, const FVector& Point) const;
 	/** Armed opponents near enough, with a clear line, to throw at this CPU now. */

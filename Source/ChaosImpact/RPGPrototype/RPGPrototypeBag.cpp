@@ -3,6 +3,7 @@
 #include "RPGPrototypeUIKit.h"
 #include "RPGTuning.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactHints.h"
 #include "ChaosImpactSfx.h"
 
 // The full-screen bag menu (1 player, "全体メニュー"). Pages: 装備 / バッグ / 強化 / チューン / ショップ / 設定.
@@ -25,7 +26,14 @@ struct FFullMenu
 	const ARPGPrototypeGameMode* Mode = nullptr;
 	float W = 1280, H = 720;
 	bool bPad = false;
-	const TCHAR* Key(const TCHAR* Keyboard, const TCHAR* Pad) const { return bPad ? Pad : Keyboard; }
+	/** What this player plays with now: every key hint is in its names only (keyboard, Xbox, PlayStation or Switch). */
+	EChaosImpactDevice Device = EChaosImpactDevice::KeyboardMouse;
+	/**
+	 * A key hint from a ChaosImpactHints template. The bag's keys (HandleBagKey): decide {A|Enter}, back {B|Esc}, close
+	 * {Select|Tab}, pages {LB|Q} {RB|E}, lock {Y|F}, salvage {X|Del}, sort {LT|X}, bulk salvage {RT|BS}, rank up {Y|Space},
+	 * the description {RStick|PgUp/Dn}.
+	 */
+	FString Key(const TCHAR* Template) const { return ChaosImpactHints::Text(Device, Template); }
 	// Layout of the 1280x720 design space (wider screens get wider right panels).
 	static constexpr float Margin = 32, ContentTop = 96, RowH = 52, RowDraw = 46;
 	float ListW() const { return FMath::Min(560.0f, W * 0.41f); }
@@ -63,7 +71,7 @@ void FullHeader(RPGUI::FCanvas& C, const FFullMenu& M)
 	const int32 Pages[] = {ERPGBagPage::Equipment, ERPGBagPage::Items, ERPGBagPage::Upgrade, ERPGBagPage::Tune, ERPGBagPage::Shop, ERPGBagPage::Settings};
 	const TCHAR* Names[] = {TEXT("装備"), TEXT("バッグ"), TEXT("強化"), TEXT("チューン"), TEXT("ショップ"), TEXT("設定")};
 	float X = FFullMenu::Margin;
-	X += RPGUI::Keycap(C, 0, M.Key(TEXT("Q"), TEXT("L")), X, 30, 24) + 8;
+	X += RPGUI::Keycap(C, 0, M.Key(TEXT("{LB|Q}")), X, 30, 24) + 8;
 	int32 Current = 0;
 	for (int32 Tab = 0; Tab < 6; ++Tab) { if (Pages[Tab] == P->BagPage) { Current = Tab; } }
 	for (int32 Tab = 0; Tab < 6; ++Tab)
@@ -84,8 +92,8 @@ void FullHeader(RPGUI::FCanvas& C, const FFullMenu& M)
 		{ RPGUI::Chip(C, 1, FString::Printf(TEXT("NEW %d"), P->GetUnseenCount()), X + TabW - 2, Y - 9, RPGUI::NewColor, 11, true, ETextAlign::Right); }
 		X += TabW + 6;
 	}
-	RPGUI::Keycap(C, 0, M.Key(TEXT("E"), TEXT("R")), X + 2, 30, 24);
-	RPGUI::Button(C, 0, M.W - FFullMenu::Margin - 190, 18, 190, 46, TEXT("閉じる"), Act::Close, false, true, M.Key(TEXT("Tab"), TEXT("－")));
+	RPGUI::Keycap(C, 0, M.Key(TEXT("{RB|E}")), X + 2, 30, 24);
+	RPGUI::Button(C, 0, M.W - FFullMenu::Margin - 190, 18, 190, 46, TEXT("閉じる"), Act::Close, false, true, M.Key(TEXT("{Select|Tab}")));
 	RPGUI::Rubies(C, 0, P->GetRubies(), M.W - FFullMenu::Margin - 214, 28, 24, ETextAlign::Right);
 	if (C.IsPainting())
 	{
@@ -200,7 +208,7 @@ void FullItemList(RPGUI::FCanvas& C, const FFullMenu& M)
 	if (P->bChoosingEquipment)
 	{
 		RPGUI::Label(C, 0, ARPGPrototypeCharacter::EquipmentLabel(P->EquipmentSelection) + TEXT(" を変更"), X + 4, Y + 4, 24, RPGUI::TextMain, ETextAlign::Left, TEXT("Black"));
-		RPGUI::Button(C, 0, X + W - 150, Y, 150, 40, TEXT("戻る"), Act::CancelChange, false, true, M.Key(TEXT("Esc"), TEXT("戻る")));
+		RPGUI::Button(C, 0, X + W - 150, Y, 150, 40, TEXT("戻る"), Act::CancelChange, false, true, M.Key(TEXT("{B|Esc}")));
 	}
 	else
 	{
@@ -223,12 +231,12 @@ void FullItemList(RPGUI::FCanvas& C, const FFullMenu& M)
 	// Tools: order, capacity, bulk salvage.
 	if (!P->bChoosingEquipment)
 	{
-		RPGUI::Button(C, 0, X, Y, 210, 34, TEXT("並び：") + ARPGPrototypeCharacter::BagSortName(P->BagSort), Act::Sort, false, true, M.Key(TEXT("X"), TEXT("ZL")));
+		RPGUI::Button(C, 0, X, Y, 210, 34, TEXT("並び：") + ARPGPrototypeCharacter::BagSortName(P->BagSort), Act::Sort, false, true, M.Key(TEXT("{LT|X}")));
 		const int32 Count = P->GetBag().Num();
 		const bool bFull = Count >= RPGTuning::BagCapacity - 5;
 		if (P->BagPage == ERPGBagPage::Items)
 		{
-			RPGUI::Button(C, 0, X + W - 196, Y, 196, 34, TEXT("まとめて分解"), Act::BulkSalvage, false, true, M.Key(TEXT("BS"), TEXT("ZR")));
+			RPGUI::Button(C, 0, X + W - 196, Y, 196, 34, TEXT("まとめて分解"), Act::BulkSalvage, false, true, M.Key(TEXT("{RT|BS}")));
 			RPGUI::Label(C, 0, FString::Printf(TEXT("所持 %d/%d"), Count, RPGTuning::BagCapacity), X + W - 206, Y + 8, 15, bFull ? RPGUI::Bad : RPGUI::TextDim, ETextAlign::Right);
 		}
 		else { RPGUI::Label(C, 0, FString::Printf(TEXT("所持 %d/%d"), Count, RPGTuning::BagCapacity), X + W, Y + 8, 15, bFull ? RPGUI::Bad : RPGUI::TextDim, ETextAlign::Right); }
@@ -361,7 +369,7 @@ void FullOverview(RPGUI::FCanvas& C, const FFullMenu& M)
 		RPGUI::Wrap(C, 1, Fits > 0 ? FString::Printf(TEXT("この枠に付けられる持ち物が %d個 あります。「装備変更」で選べます。"), Fits)
 			: TEXT("この枠に付けられる持ち物はまだありません。敵のドロップや宝箱で集めましょう。"), X + 22, Y + 104, W - 44, 16, RPGUI::TextSub, 4, 24);
 	}
-	RPGUI::Button(C, 1, X + 22, ButtonY, W - 44, 46, TEXT("装備変更"), Act::BeginChange, true, true, M.Key(TEXT("Enter"), TEXT("決定")));
+	RPGUI::Button(C, 1, X + 22, ButtonY, W - 44, 46, TEXT("装備変更"), Act::BeginChange, true, true, M.Key(TEXT("{A|Enter}")));
 }
 
 void FullItemsPage(RPGUI::FCanvas& C, const FFullMenu& M)
@@ -379,7 +387,7 @@ void FullItemsPage(RPGUI::FCanvas& C, const FFullMenu& M)
 	const float Inner = W - 44, Row1 = Bottom - 62, Row2 = Bottom - 114;
 	FullItemDetail(C, M, *I, X, Y, W, P->bChoosingEquipment ? Row1 : Row2);
 	const bool bEquipped = P->IsEquipped(I->Id);
-	const FString Enter = M.Key(TEXT("Enter"), TEXT("決定"));
+	const FString Enter = M.Key(TEXT("{A|Enter}"));
 	if (P->bChoosingEquipment)
 	{
 		const bool bAlready = P->GetEquipment(P->EquipmentSelection).Id == I->Id;
@@ -402,9 +410,9 @@ void FullItemsPage(RPGUI::FCanvas& C, const FFullMenu& M)
 		RPGUI::Button(C, 1, X + 22, Row1, Inner, 46, bEquipped ? TEXT("装備中") : TEXT("装備する"), Act::EquipSelected, true, !bEquipped, Enter);
 	}
 	const float Half = (Inner - 10) * 0.5f;
-	RPGUI::Button(C, 1, X + 22, Row2, Half, 42, I->bLocked ? TEXT("ロックを外す") : TEXT("ロックする"), Act::Lock, false, true, M.Key(TEXT("F"), TEXT("上")));
+	RPGUI::Button(C, 1, X + 22, Row2, Half, 42, I->bLocked ? TEXT("ロックを外す") : TEXT("ロックする"), Act::Lock, false, true, M.Key(TEXT("{Y|F}")));
 	RPGUI::Button(C, 1, X + 32 + Half, Row2, Half, 42, bEquipped ? TEXT("装備中は分解不可") : I->bLocked ? TEXT("ロック中") : FString::Printf(TEXT("分解  ◆+%d"), I->SalvageValue()),
-		Act::Salvage, false, !bEquipped && !I->bLocked, M.Key(TEXT("Del"), TEXT("左")));
+		Act::Salvage, false, !bEquipped && !I->bLocked, M.Key(TEXT("{X|Del}")));
 }
 
 void FullUpgradePage(RPGUI::FCanvas& C, const FFullMenu& M)
@@ -450,7 +458,7 @@ void FullUpgradePage(RPGUI::FCanvas& C, const FFullMenu& M)
 	const bool bAfford = P->GetRubies() >= Cost;
 	const FString Text = bMax ? TEXT("強化MAX") : bAfford ? FString::Printf(TEXT("強化する  ◆%s"), *FString::FormatAsNumber(Cost))
 		: FString::Printf(TEXT("ルビー不足（あと ◆%s）"), *FString::FormatAsNumber(Cost - P->GetRubies()));
-	RPGUI::Button(C, 1, X + 22, Bottom - 62, W - 44, 46, Text, Act::Upgrade, true, !bMax && bAfford, M.Key(TEXT("Enter"), TEXT("決定")));
+	RPGUI::Button(C, 1, X + 22, Bottom - 62, W - 44, 46, Text, Act::Upgrade, true, !bMax && bAfford, M.Key(TEXT("{A|Enter}")));
 }
 
 void FullTunePage(RPGUI::FCanvas& C, const FFullMenu& M)
@@ -513,9 +521,9 @@ void FullTunePage(RPGUI::FCanvas& C, const FFullMenu& M)
 	// Tunes also take shards (one to put one on, its rank to raise it).
 	RPGUI::Label(C, 1, FString::Printf(TEXT("チューンの欠片 %d"), P->GetTuneShards()), X + 22 + Inner, ButtonY - 26, 15, P->GetTuneShards() > 0 ? RPGUI::Cyan : RPGUI::Bad, ETextAlign::Right);
 	RPGUI::Button(C, 1, X + 22, ButtonY, Half, 46, !Existing ? TEXT("ランクUP（未装着）") : !bCanRank ? TEXT("ランクMAX") : FString::Printf(TEXT("ランクUP  ◆%d・欠片%d"), RankCost, Current.Rank),
-		Act::RankUp, false, bCanRank && P->GetRubies() >= RankCost && P->GetTuneShards() >= Current.Rank, M.Key(TEXT("Space"), TEXT("上")));
+		Act::RankUp, false, bCanRank && P->GetRubies() >= RankCost && P->GetTuneShards() >= Current.Rank, M.Key(TEXT("{Y|Space}")));
 	RPGUI::Button(C, 1, X + 32 + Half, ButtonY, Half, 46, FString::Printf(TEXT("付ける  ◆%d・欠片%d"), I->TuneCost(), RPGTuning::ShardsPerTune), Act::ApplyTune, true,
-		Offers.Num() > 0 && P->GetRubies() >= I->TuneCost() && P->GetTuneShards() >= RPGTuning::ShardsPerTune, M.Key(TEXT("Enter"), TEXT("決定")));
+		Offers.Num() > 0 && P->GetRubies() >= I->TuneCost() && P->GetTuneShards() >= RPGTuning::ShardsPerTune, M.Key(TEXT("{A|Enter}")));
 }
 
 /** The merchant's shop: the line-up on the left (with the merchant's level and when it changes), the chosen ball on the right. */
@@ -584,7 +592,7 @@ void FullShopPage(RPGUI::FCanvas& C, const FFullMenu& M)
 	const bool bFull = P->GetBag().Num() >= RPGTuning::BagCapacity, bAfford = P->GetRubies() >= Price;
 	const FString Text = bFull ? FString(TEXT("バッグがいっぱい（分解して空きを作ろう）")) : bAfford ? FString::Printf(TEXT("買う  ◆%s"), *FString::FormatAsNumber(Price))
 		: FString::Printf(TEXT("ルビー不足（あと ◆%s）"), *FString::FormatAsNumber(Price - P->GetRubies()));
-	RPGUI::Button(C, 1, X + 22, Row1, W - 44, 46, Text, Act::Buy, true, !bFull && bAfford, M.Key(TEXT("Enter"), TEXT("決定")));
+	RPGUI::Button(C, 1, X + 22, Row1, W - 44, 46, Text, Act::Buy, true, !bFull && bAfford, M.Key(TEXT("{A|Enter}")));
 }
 
 void FullSettingsPage(RPGUI::FCanvas& C, const FFullMenu& M)
@@ -604,8 +612,8 @@ void FullSettingsPage(RPGUI::FCanvas& C, const FFullMenu& M)
 	const bool bOwner = P->GetLocalRPGIndex() == 0;
 	struct FRow { FString Name; FString Value; bool bEnabled; bool bToggle; };
 	const FRow Rows[] = {
-		{TEXT("テストセーブ"), M.Key(TEXT("F5"), TEXT("")), true, false},
-		{TEXT("テストロード"), M.Key(TEXT("F9"), TEXT("")), true, false},
+		{TEXT("テストセーブ"), M.Key(TEXT("{kb:F5}")), true, false},
+		{TEXT("テストロード"), M.Key(TEXT("{kb:F9}")), true, false},
 		{TEXT("メニュー表示"), P->UsesMiniMenu() ? TEXT("ミニメニュー") : TEXT("全体メニュー"), true, true},
 		{TEXT("ローカル人数"), FString::Printf(TEXT("%d人"), Count), bOwner, true},
 		{TEXT("マルチ画面"), M.Mode && M.Mode->IsSharedScreenRequested() ? TEXT("一画面共有") : TEXT("分割画面"), bOwner, true},
@@ -677,8 +685,8 @@ void FullDialog(RPGUI::FCanvas& C, const FFullMenu& M)
 	TArray<FString> Lines;
 	Body.ParseIntoArray(Lines, TEXT("\n"));
 	for (int32 Line = 0; Line < Lines.Num(); ++Line) { RPGUI::Label(C, 2, Lines[Line], M.W * 0.5f, DY + 76 + Line * 28, 17, Line == 0 ? RPGUI::TextSub : RPGUI::TextDim, ETextAlign::Center); }
-	RPGUI::Button(C, 2, DX + 30, DY + DH - 70, 270, 48, TEXT("キャンセル"), Act::DialogCancel, false, true, M.Key(TEXT("Esc"), TEXT("戻る")));
-	RPGUI::Button(C, 2, DX + DW - 300, DY + DH - 70, 270, 48, Ok, Act::DialogOk, true, true, M.Key(TEXT("Enter"), TEXT("決定")));
+	RPGUI::Button(C, 2, DX + 30, DY + DH - 70, 270, 48, TEXT("キャンセル"), Act::DialogCancel, false, true, M.Key(TEXT("{B|Esc}")));
+	RPGUI::Button(C, 2, DX + DW - 300, DY + DH - 70, 270, 48, Ok, Act::DialogOk, true, true, M.Key(TEXT("{A|Enter}")));
 	C.bInModal = false;
 }
 
@@ -688,43 +696,43 @@ void FullMenuLayout(RPGUI::FCanvas& C, const FFullMenu& M)
 	C.bModalOpen = P->HasConfirmation();
 	RPGUI::Backdrop(C, M.W, M.H);
 	FullHeader(C, M);
-	const FString Enter = M.Key(TEXT("Enter"), TEXT("決定")), Move = M.Key(TEXT("↑↓"), TEXT("十字")), Pages = M.Key(TEXT("Q E"), TEXT("L R"));
+	const FString Enter = M.Key(TEXT("{A|Enter}")), Move = M.Key(TEXT("{pad:{DPad}↑↓}{kb:↑↓}")), Pages = M.Key(TEXT("{pad:{LB} {RB}}{kb:Q E}"));
 	const FString Capacity = FString::Printf(TEXT("バッグ %d/%d"), P->GetBag().Num(), RPGTuning::BagCapacity);
 	if (P->BagPage == ERPGBagPage::Settings)
 	{
 		FullSettingsPage(C, M);
-		FullFooter(C, M, {{Move, TEXT("選択")}, {M.Key(TEXT("←→"), TEXT("左右")), TEXT("切替")}, {Enter, TEXT("決定")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("Tab"), TEXT("－")), TEXT("閉じる")}});
+		FullFooter(C, M, {{Move, TEXT("選択")}, {M.Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("切替")}, {Enter, TEXT("決定")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("{Select|Tab}")), TEXT("閉じる")}});
 	}
 	else if (M.IsOverview())
 	{
 		FullOverview(C, M);
-		FullFooter(C, M, {{M.Key(TEXT("↑↓←→"), TEXT("十字")), TEXT("枠を選ぶ")}, {Enter, TEXT("装備変更")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("Tab"), TEXT("－")), TEXT("閉じる")}}, Capacity);
+		FullFooter(C, M, {{M.Key(TEXT("{DPad|↑↓←→}")), TEXT("枠を選ぶ")}, {Enter, TEXT("装備変更")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("{Select|Tab}")), TEXT("閉じる")}}, Capacity);
 	}
 	else if (P->BagPage == ERPGBagPage::Upgrade)
 	{
 		FullUpgradePage(C, M);
-		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("強化")}, {M.Key(TEXT("X"), TEXT("ZL")), TEXT("並べ替え")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("Tab"), TEXT("－")), TEXT("閉じる")}}, TEXT("ルビー工房"));
+		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("強化")}, {M.Key(TEXT("{LT|X}")), TEXT("並べ替え")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("{Select|Tab}")), TEXT("閉じる")}}, TEXT("ルビー工房"));
 	}
 	else if (P->BagPage == ERPGBagPage::Shop)
 	{
 		FullShopPage(C, M);
-		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("買う")}, {M.Key(TEXT("PgUp/Dn"), TEXT("右スティック")), TEXT("説明")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("Tab"), TEXT("－")), TEXT("閉じる")}}, TEXT("ショップ"));
+		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("買う")}, {M.Key(TEXT("{RStick|PgUp/Dn}")), TEXT("説明")}, {Pages, TEXT("ページ")}, {M.Key(TEXT("{Select|Tab}")), TEXT("閉じる")}}, TEXT("ショップ"));
 	}
 	else if (P->BagPage == ERPGBagPage::Tune)
 	{
 		FullTunePage(C, M);
-		FullFooter(C, M, {{Move, TEXT("候補")}, {M.Key(TEXT("←→"), TEXT("左右")), TEXT("枠")}, {M.Key(TEXT("PgUp/Dn"), TEXT("右スティック")), TEXT("ボール")}, {Enter, TEXT("付ける")}, {M.Key(TEXT("Space"), TEXT("上")), TEXT("ランクUP")}}, TEXT("ルビー工房"));
+		FullFooter(C, M, {{Move, TEXT("候補")}, {M.Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("枠")}, {M.Key(TEXT("{RStick|PgUp/Dn}")), TEXT("ボール")}, {Enter, TEXT("付ける")}, {M.Key(TEXT("{Y|Space}")), TEXT("ランクUP")}}, TEXT("ルビー工房"));
 	}
 	else if (P->bChoosingEquipment)
 	{
 		FullItemsPage(C, M);
-		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("変更")}, {M.Key(TEXT("PgUp/Dn"), TEXT("右スティック")), TEXT("説明")}, {M.Key(TEXT("Esc"), TEXT("戻る")), TEXT("やめる")}});
+		FullFooter(C, M, {{Move, TEXT("選択")}, {Enter, TEXT("変更")}, {M.Key(TEXT("{RStick|PgUp/Dn}")), TEXT("説明")}, {M.Key(TEXT("{B|Esc}")), TEXT("やめる")}});
 	}
 	else
 	{
 		FullItemsPage(C, M);
-		FullFooter(C, M, {{Move, TEXT("選択")}, {M.Key(TEXT("←→"), TEXT("左右")), TEXT("種類")}, {Enter, TEXT("装備")}, {M.Key(TEXT("F"), TEXT("上")), TEXT("ロック")},
-			{M.Key(TEXT("Del"), TEXT("左")), TEXT("分解")}, {M.Key(TEXT("PgUp/Dn"), TEXT("右スティック")), TEXT("説明")}, {Pages, TEXT("ページ")}});
+		FullFooter(C, M, {{Move, TEXT("選択")}, {M.Key(TEXT("{pad:{DPad}←→}{kb:←→}")), TEXT("種類")}, {Enter, TEXT("装備")}, {M.Key(TEXT("{Y|F}")), TEXT("ロック")},
+			{M.Key(TEXT("{X|Del}")), TEXT("分解")}, {M.Key(TEXT("{RStick|PgUp/Dn}")), TEXT("説明")}, {Pages, TEXT("ページ")}});
 	}
 	if (!P->IsAtMerchant() && P->BagPage != ERPGBagPage::Settings && C.IsPainting() && M.IsOverview())
 	{ RPGUI::Label(C, 0, TEXT("強化・チューン・ショップは開始地点近くのルビー商人へ"), M.W * 0.58f, M.H - 76, 13, RPGUI::TextDim, ETextAlign::Right); }
@@ -738,6 +746,7 @@ FFullMenu MakeFullMenu(const URPGPrototypeHUD* HUD, const ARPGPrototypeCharacter
 	M.Mode = HUD->GetWorld() ? HUD->GetWorld()->GetAuthGameMode<ARPGPrototypeGameMode>() : nullptr;
 	const auto* PC = Cast<AChaosImpactPlayerController>(HUD->GetOwningPlayer());
 	M.bPad = PC && PC->IsUsingGamepad();
+	M.Device = ChaosImpactHints::GetDevice(PC);
 	return M;
 }
 }

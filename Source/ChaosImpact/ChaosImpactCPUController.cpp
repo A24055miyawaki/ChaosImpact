@@ -27,7 +27,8 @@ namespace
 	constexpr float BallRadius = 24.0f;
 	constexpr float ThreatStepSeconds = 0.025f;
 	constexpr float ThreatHorizonSeconds = 1.1f;
-	constexpr float ShotStepSeconds = 0.02f;
+	// (A throw's trial flight is checked along each step, not only at its ends: a longer step misses nothing.)
+	constexpr float ShotStepSeconds = 0.03f;
 	/** Extra distance a dodge must keep from a ball beyond touching. */
 	constexpr float EvasionSafeMargin = 26.0f;
 	/** Human reaction time assumed when judging how hard a shot is to dodge. */
@@ -56,7 +57,8 @@ void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 		}
 	}
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	NextDecisionAt = Now + 0.2f;
+	// (Each CPU thinks at its own moments: not all of them in the same frame.)
+	NextDecisionAt = Now + 0.2f + FMath::FRandRange(0.0f, 0.05f);
 	NextThrowAt = Now + 0.9f * ThrowDelayScale;
 	NextBankSearchAt = Now;
 	IdleUntil = 0.0f;
@@ -84,6 +86,27 @@ void AChaosImpactCPUController::OnPossess(APawn* InPawn)
 
 double AChaosImpactCPUController::DevThinkSeconds = 0.0;
 double AChaosImpactCPUController::DevSectionSeconds[6] = {};
+double AChaosImpactCPUController::DevPartSeconds[10] = {};
+
+namespace
+{
+	/** Development: adds the time spent in a scope to one of DevPartSeconds. */
+#if !UE_BUILD_SHIPPING
+	struct FCpuPartTimer
+	{
+		explicit FCpuPartTimer(const int32 InPart) : Part(InPart), At(FPlatformTime::Seconds()) {}
+		~FCpuPartTimer() { AChaosImpactCPUController::DevPartSeconds[Part] += FPlatformTime::Seconds() - At; }
+		int32 Part;
+		double At;
+	};
+#else
+	/** (Not measured in a shipped game.) */
+	struct FCpuPartTimer
+	{
+		explicit FCpuPartTimer(int32) {}
+	};
+#endif
+}
 
 namespace
 {
@@ -115,6 +138,23 @@ namespace
 	{
 		static TMap<TWeakObjectPtr<UWorld>, TSharedPtr<FChaosImpactCPUNavGrid>> Grids;
 		return Grids;
+	}
+
+	/** Whether there is floor under each half-metre square of a world (the stage's edge), shared by its CPUs. */
+	TMap<FIntVector, bool>& GetCPUFloorCells(UWorld* World)
+	{
+		static TMap<TWeakObjectPtr<UWorld>, TMap<FIntVector, bool>> Cells;
+		if (Cells.Num() > 4)
+		{
+			for (auto It = Cells.CreateIterator(); It; ++It)
+			{
+				if (!It->Key.IsValid())
+				{
+					It.RemoveCurrent();
+				}
+			}
+		}
+		return Cells.FindOrAdd(World);
 	}
 
 	/** The VS stage's grid, built the first time any CPU needs it (a few thousand overlap tests, once). */
@@ -188,6 +228,10 @@ void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 	if (bPerfect)
 	{
 		UpdateLearning(Self, Now);
+	}
+	{
+		const AChaosImpactGameState* Match = GetWorld()->GetGameState<AChaosImpactGameState>();
+		bDuelBoss = DuelBossForTests.IsSet() ? DuelBossForTests.GetValue() : bPerfect && Match && Match->IsDuel();
 	}
 	Section(1);
 	if (Self->IsEliminated())
@@ -940,6 +984,7 @@ float AChaosImpactCPUController::EvaluateEscape(const AChaosImpactCharacter* Sel
 	const TArray<FBallThreat>& Threats, const FVector& Direction, const float TravelLimit,
 	const bool bDash, const bool bJump) const
 {
+	FCpuPartTimer PartTimer(2);
 	const UCapsuleComponent* Capsule = Self->GetCapsuleComponent();
 	const UCharacterMovementComponent* Movement = Self->GetCharacterMovement();
 	const FVector Start = Self->GetActorLocation();
@@ -1120,6 +1165,7 @@ bool AChaosImpactCPUController::UpdateTornadoEvasion(AChaosImpactCharacter* Self
 
 bool AChaosImpactCPUController::UpdateEvasion(AChaosImpactCharacter* Self, const float Now)
 {
+	FCpuPartTimer PartTimer(3);
 	if (Self->IsDashing())
 	{
 		return Now < EvadeUntil;
@@ -1592,6 +1638,7 @@ void AChaosImpactCPUController::UpdateOffense(
 
 AChaosImpactBall* AChaosImpactCPUController::SelectPickup(const AChaosImpactCharacter* Self) const
 {
+	FCpuPartTimer PartTimer(8);
 	AChaosImpactBall* Best = nullptr;
 	float BestScore = TNumericLimits<float>::Max();
 	const FVector Location = Self->GetActorLocation();
@@ -1810,12 +1857,43 @@ void AChaosImpactCPUController::UpdatePositioning(
 				Desired = RouteToward(Self, CutOff, Now);
 				Scale = 1.0f;
 				if (TargetDistance > 1200.0f && Now >= NextHuntDashAt && Self->CanDashNow() && !Self->IsChargingNova()
-					&& Self->GetStamina() >= HuntDashStaminaReserve && CountArmedThreats(Self) == 0
+					&& Self->GetStamina() >= (bDuelBoss ? DuelHuntDashStamina : HuntDashStaminaReserve) && CountArmedThreats(Self) == 0
 					&& GetFreeTravel(Location, Desired, 700.0f) > Self->GetDashDistance() * 0.9f
 					&& GetHazardAt(Self, Location + Desired * Self->GetDashDistance()) < 1.0f)
 				{
 					Self->RequestAIDash(Desired);
 					NextHuntDashAt = Now + 1.4f;
+				}
+			}
+		}
+		if (bDuelBoss && Balls > 0 && !bTargetArmed)
+		{
+			// A duel, and they have nothing to throw: stand over the ball they would go for, between it and them. To
+			// get it they must come in close, where a throw arrives before they can walk out of it.
+			const FVector TargetAt = Target->GetActorLocation();
+			const AChaosImpactBall* Prize = nullptr;
+			float PrizeDistance = DuelGuardBallRange;
+			for (TActorIterator<AChaosImpactBall> It(GetWorld()); It; ++It)
+			{
+				const float Distance = static_cast<float>(FVector::Dist2D(It->GetActorLocation(), TargetAt));
+				if (Distance < PrizeDistance && It->IsPickup() && It->IsPickupAvailable())
+				{
+					Prize = *It;
+					PrizeDistance = Distance;
+				}
+			}
+			if (Prize)
+			{
+				const FVector Guard = Prize->GetActorLocation()
+					+ (TargetAt - Prize->GetActorLocation()).GetSafeNormal2D() * FMath::Min(260.0f, PrizeDistance * 0.45f);
+				if (FVector::Dist2D(Location, Guard) > 120.0f)
+				{
+					Desired = RouteToward(Self, Guard, Now);
+					Scale = 1.0f;
+				}
+				else
+				{
+					Desired = FVector::ZeroVector;
 				}
 			}
 		}
@@ -2210,6 +2288,9 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Prison: return 2.1f;
 	case EChaosImpactBallType::Hook: return 2.0f;
 	case EChaosImpactBallType::Anchor: return 0.9f;
+	case EChaosImpactBallType::Swap: return 1.1f;
+	case EChaosImpactBallType::Barrier: return 1.2f;
+	case EChaosImpactBallType::Mine: return 1.7f;
 	case EChaosImpactBallType::Wind: return 1.6f;
 	case EChaosImpactBallType::Snow: return 1.5f;
 	default: return 1.0f;
@@ -2218,7 +2299,8 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 
 void AChaosImpactCPUController::SimulateTypedFlight(const FVector& Start, FVector Velocity, const EChaosImpactBallType Type,
 	const float Radius, const bool bArc, const float GravityScale, const float HorizonSeconds, const float StepSeconds,
-	const AActor* IgnoredA, const AActor* IgnoredB, const AChaosImpactCharacter* HomingTarget, FBallThreat& Out) const
+	const AActor* IgnoredA, const AActor* IgnoredB, const AChaosImpactCharacter* HomingTarget, FBallThreat& Out,
+	const TFunction<bool(int32 Index, const FVector& From, const FVector& To)>& StopWhen) const
 {
 	Out.Path.Reset();
 	Out.Path.Add(Start);
@@ -2283,15 +2365,17 @@ void AChaosImpactCPUController::SimulateTypedFlight(const FVector& Start, FVecto
 		{
 			// Light passes through everything, to the end of its range.
 			Travelled += static_cast<float>(FVector::Dist(Position, Next));
+			const FVector Was = Position;
 			Position = Next;
 			Out.Path.Add(Position);
-			if (Travelled >= BeamRange)
+			if (Travelled >= BeamRange || (StopWhen && StopWhen(Out.Path.Num() - 1, Was, Position)))
 			{
 				return;
 			}
 			continue;
 		}
 		FHitResult Hit;
+		const FVector Was = Position;
 		if (World->SweepSingleByChannel(Hit, Position, Next, FQuat::Identity, ECC_Visibility, Sphere, Parameters)
 			&& !Hit.bStartPenetrating)
 		{
@@ -2332,11 +2416,17 @@ void AChaosImpactCPUController::SimulateTypedFlight(const FVector& Start, FVecto
 		}
 		Velocity = NextVelocity;
 		Out.Path.Add(Position);
+		// (Whoever asked has seen what it wanted: a trial throw that has met its target.)
+		if (StopWhen && StopWhen(Out.Path.Num() - 1, Was, Position))
+		{
+			return;
+		}
 	}
 }
 
 void AChaosImpactCPUController::CollectExactThreats(const AChaosImpactCharacter* Self, TArray<FBallThreat>& OutThreats) const
 {
+	FCpuPartTimer PartTimer(1);
 	UWorld* World = GetWorld();
 	const FVector Location = Self->GetActorLocation();
 	for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
@@ -2431,6 +2521,43 @@ void AChaosImpactCPUController::CollectExactThreats(const AChaosImpactCharacter*
 			OutThreats.Add(MoveTemp(Threat));
 		}
 	}
+	// Someone flying on an anchor rams whoever is in the way, and a big snowball rolled at a run runs them over: where
+	// either is going is as dangerous as a ball's way.
+	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+	{
+		const AChaosImpactCharacter* Other = *It;
+		if (Other == Self || Other->IsEliminated() || AChaosImpactGameState::AreTeammates(World, Other, Self))
+		{
+			continue;
+		}
+		FVector Center = FVector::ZeroVector;
+		float Rolled = 0.0f;
+		const bool bFlying = Other->IsAnchorZipShown();
+		const bool bRolling = !bFlying && Other->GetRolledSnowball(false, Center, Rolled) && ChaosImpactBallTypes::IsSnowOverhead(Rolled / 24.0f)
+			&& Other->GetVelocity().Size2D() >= AChaosImpactCharacter::SnowRunOverMinSpeed;
+		FVector Velocity = Other->GetVelocity();
+		Velocity.Z = 0.0f;
+		if ((!bFlying && !bRolling) || Velocity.Size2D() < 100.0f)
+		{
+			continue;
+		}
+		FBallThreat Threat;
+		Threat.StepSeconds = ThreatStepSeconds;
+		Threat.HitRadius = bFlying ? Other->GetCapsuleComponent()->GetScaledCapsuleRadius() + AChaosImpactCharacter::AnchorRamReach : Rolled;
+		Threat.HitHeight = Other->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() * 2.0f;
+		const FVector Start = bFlying ? Other->GetActorLocation() : FVector(Center.X, Center.Y, Location.Z);
+		float Closest = TNumericLimits<float>::Max();
+		for (float Seconds = 0.0f; Seconds <= 0.6f; Seconds += ThreatStepSeconds)
+		{
+			const FVector At = Start + Velocity * Seconds;
+			Threat.Path.Add(At);
+			Closest = FMath::Min(Closest, static_cast<float>(FVector::Dist2D(At, Location)) - Threat.HitRadius);
+		}
+		if (Closest < 420.0f)
+		{
+			OutThreats.Add(MoveTemp(Threat));
+		}
+	}
 }
 
 FVector AChaosImpactCPUController::PredictTargetAt(const AChaosImpactCharacter* Target, const float Seconds) const
@@ -2449,6 +2576,19 @@ FVector AChaosImpactCPUController::PredictTargetAt(const AChaosImpactCharacter* 
 		Moving = FMath::Min(Seconds, Target->GetDashRemainingSeconds());
 	}
 	FVector Motion = Velocity * Moving;
+	if (bPerfect && !Target->IsDashing())
+	{
+		// A runner turning or speeding up keeps doing so for a moment: where its velocity is going counts (partly: a
+		// juke can always change it again).
+		FVector Acceleration = GetObservedAcceleration(Target);
+		Acceleration.Z = 0.0f;
+		Acceleration = Acceleration.GetClampedToMaxSize2D(2500.0f);
+		const float Turning = FMath::Min(Moving, 0.35f);
+		const float MaxSpeed = FMath::Max(Target->GetCharacterMovement()->MaxWalkSpeed, 1.0f);
+		const FVector Later = (Velocity + Acceleration * Turning).GetClampedToMaxSize2D(FMath::Max(MaxSpeed, static_cast<float>(Velocity.Size2D())));
+		const FVector Curved = (Velocity + Later) * 0.5f * Turning + Later * (Moving - Turning);
+		Motion = FMath::Lerp(Motion, Curved, 0.6f);
+	}
 	// A black hole draws it toward its centre.
 	for (TActorIterator<AChaosImpactHazardZone> It(GetWorld()); It; ++It)
 	{
@@ -2477,6 +2617,7 @@ FVector AChaosImpactCPUController::PredictTargetAt(const AChaosImpactCharacter* 
 AChaosImpactCPUController::FSureShot AChaosImpactCPUController::PlanSureShot(
 	const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target, const float ChargeAlpha) const
 {
+	FCpuPartTimer PartTimer(0);
 	FSureShot Best;
 	UWorld* World = GetWorld();
 	if (!Self || !Target || !World || Target->IsCarriedByWind())
@@ -2539,80 +2680,92 @@ AChaosImpactCPUController::FSureShot AChaosImpactCPUController::PlanSureShot(
 	const float Reaction = Model ? FMath::Clamp(Model->ReactionSeconds * 0.9f, 0.09f, 0.3f) : SureShotReactionSeconds;
 	const float Unpredictable = Model ? FMath::Min(Model->PredictionError, 160.0f) : 0.0f;
 
-	TArray<float, TInlineAllocator<48>> Angles{0.0f, 1.0f, -1.0f, 2.0f, -2.0f, 3.5f, -3.5f, 5.0f, -5.0f, 8.0f, -8.0f, 12.0f, -12.0f};
-	if (!bArc && Type != EChaosImpactBallType::Beam)
+	// Where the target will be at every step of a flight: the same for every throw tried, so worked out once.
+	const int32 MaxSteps = FMath::CeilToInt(Horizon / ShotStepSeconds) + 1;
+	TArray<FVector, TInlineAllocator<96>> TargetAt;
+	TargetAt.SetNumUninitialized(MaxSteps + 1);
+	for (int32 Index = 0; Index <= MaxSteps; ++Index)
 	{
-		// Straight balls can be banked off walls.
-		for (float Bank = 18.0f; Bank <= 75.0f; Bank += 6.0f)
+		TargetAt[Index] = PredictTargetAt(Target, Delay + Index * ShotStepSeconds);
+	}
+	// Teammates in the way (never thrown through).
+	TArray<FVector, TInlineAllocator<8>> Mates;
+	TArray<float, TInlineAllocator<8>> MateRadii;
+	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+	{
+		const AChaosImpactCharacter* Mate = *It;
+		if (Mate != Self && Mate != Target && !Mate->IsEliminated() && AChaosImpactGameState::AreTeammates(World, Mate, Self))
 		{
-			Angles.Add(Bank);
-			Angles.Add(-Bank);
+			Mates.Add(Mate->GetActorLocation());
+			MateRadii.Add(Mate->GetCapsuleComponent()->GetScaledCapsuleRadius());
 		}
 	}
 	FBallThreat Path;
 	float BestScore = -TNumericLimits<float>::Max();
-	for (const float Angle : Angles)
+	const auto TryAngle = [&](const float Angle)
 	{
 		const FVector Direction = Aim.RotateAngleAxis(Angle, FVector::UpVector);
 		const FVector Origin = OriginFor(Direction);
+		int32 HitIndex = INDEX_NONE;
+		// Each step of the trial flight against where the target is then (along the step: the ball's whole way).
+		const TFunction<bool(int32, const FVector&, const FVector&)> Meets = [&](const int32 Index, const FVector& From, const FVector& To)
+		{
+			if (!TargetAt.IsValidIndex(Index))
+			{
+				return false;
+			}
+			const FVector& Body = TargetAt[Index];
+			const float HeightReach = Path.HitHeight > 0.0f ? Path.HitHeight : TargetHalfHeight + Path.HitRadius;
+			if (FMath::Abs(To.Z - Body.Z) > HeightReach)
+			{
+				return false;
+			}
+			const FVector Flat(Body.X, Body.Y, 0.0f);
+			const FVector Near = FMath::ClosestPointOnSegment(Flat, FVector(From.X, From.Y, 0.0f), FVector(To.X, To.Y, 0.0f));
+			// An erratic mover gets a shot aimed closer to the middle of it.
+			if (FVector::Dist2D(Near, Flat) < TargetRadius + Path.HitRadius * 0.85f - FMath::Min(Unpredictable * 0.25f, 30.0f))
+			{
+				HitIndex = Index;
+				return true;
+			}
+			return false;
+		};
 		SimulateTypedFlight(Origin, Direction * Speed + FVector(0.0f, 0.0f, bArc ? Upward : 0.0f), Type, Radius, bArc, 1.0f,
-			Horizon, ShotStepSeconds, Self, Target, Type == EChaosImpactBallType::Normal ? Target : nullptr, Path);
+			Horizon, ShotStepSeconds, Self, Target, Type == EChaosImpactBallType::Normal ? Target : nullptr, Path, Meets);
 		float HitSeconds = -1.0f;
 		float Need = 0.0f;
-		const float HeightReach = Path.HitHeight > 0.0f ? Path.HitHeight : TargetHalfHeight + Path.HitRadius;
-		for (int32 Index = 0; Index < Path.Path.Num(); ++Index)
+		if (HitIndex != INDEX_NONE)
 		{
-			const float T = Index * ShotStepSeconds;
-			const FVector Body = PredictTargetAt(Target, Delay + T);
-			const FVector& Ball = Path.Path[Index];
-			// An erratic mover gets a shot aimed closer to the middle of it.
-			if (FMath::Abs(Ball.Z - Body.Z) <= HeightReach
-				&& FVector::Dist2D(Ball, Body) < TargetRadius + Path.HitRadius * 0.85f - FMath::Min(Unpredictable * 0.25f, 30.0f))
-			{
-				HitSeconds = T;
-				// To get out of its way it must step aside by a body and a ball.
-				Need = TargetRadius + Path.HitRadius + 10.0f - Unpredictable * 0.3f;
-				break;
-			}
+			HitSeconds = HitIndex * ShotStepSeconds;
+			// To get out of its way it must step aside by a body and a ball.
+			Need = TargetRadius + Path.HitRadius + 10.0f - Unpredictable * 0.3f;
 		}
-		if (HitSeconds < 0.0f && Path.bBursts && Path.BurstRadius > 0.0f && Path.Path.Num() > 1)
+		else if (Path.bBursts && Path.BurstRadius > 0.0f && Path.Path.Num() > 1)
 		{
-			const float T = (Path.Path.Num() - 1) * ShotStepSeconds;
-			const FVector Body = PredictTargetAt(Target, Delay + T);
+			const int32 Last = FMath::Min(Path.Path.Num() - 1, MaxSteps);
+			const FVector& Body = TargetAt[Last];
 			const float FromBurst = static_cast<float>(FVector::Dist2D(Path.Path.Last(), Body));
 			if (FromBurst < Path.BurstRadius + TargetRadius * 0.5f - Unpredictable * 0.3f)
 			{
-				HitSeconds = T;
+				HitSeconds = (Path.Path.Num() - 1) * ShotStepSeconds;
 				// Out of the whole blast.
 				Need = Path.BurstRadius + TargetRadius - FromBurst + 10.0f - Unpredictable * 0.3f;
 			}
 		}
 		if (HitSeconds < 0.0f)
 		{
-			continue;
+			return;
 		}
-		// Never through a teammate.
-		bool bBlocked = false;
-		for (TActorIterator<AChaosImpactCharacter> It(World); It && !bBlocked; ++It)
+		for (int32 Mate = 0; Mate < Mates.Num(); ++Mate)
 		{
-			const AChaosImpactCharacter* Mate = *It;
-			if (Mate == Self || Mate == Target || Mate->IsEliminated() || !AChaosImpactGameState::AreTeammates(World, Mate, Self))
-			{
-				continue;
-			}
-			const float Block = Mate->GetCapsuleComponent()->GetScaledCapsuleRadius() + Path.HitRadius;
+			const float Block = MateRadii[Mate] + Path.HitRadius;
 			for (int32 Index = 0; Index * ShotStepSeconds <= HitSeconds && Index < Path.Path.Num(); ++Index)
 			{
-				if (FVector::Dist2D(Path.Path[Index], Mate->GetActorLocation()) < Block)
+				if (FVector::Dist2D(Path.Path[Index], Mates[Mate]) < Block)
 				{
-					bBlocked = true;
-					break;
+					return;
 				}
 			}
-		}
-		if (bBlocked)
-		{
-			continue;
 		}
 		const float Arrival = Delay + HitSeconds;
 		const bool bWalkProof = TargetWalk * FMath::Max(0.0f, Arrival - Reaction) < Need;
@@ -2628,6 +2781,24 @@ AChaosImpactCPUController::FSureShot AChaosImpactCPUController::PlanSureShot(
 			Best.bWalkProof = bWalkProof;
 			Best.Direction = Direction;
 			Best.ArrivalSeconds = Arrival;
+		}
+	};
+	for (const float Angle : {0.0f, 1.0f, -1.0f, 2.0f, -2.0f, 3.5f, -3.5f, 5.0f, -5.0f, 8.0f, -8.0f, 12.0f, -12.0f})
+	{
+		// (Already certain, and nearly straight: a wider angle could only arrive a hair sooner.)
+		if (Best.bValid && Best.bSure && FMath::Abs(Angle) > 2.5f)
+		{
+			break;
+		}
+		TryAngle(Angle);
+	}
+	// Straight balls can be banked off walls: tried only when no straight throw is certain.
+	if (!bArc && Type != EChaosImpactBallType::Beam && !(Best.bValid && Best.bSure))
+	{
+		for (float Bank = 18.0f; Bank <= 75.0f; Bank += 6.0f)
+		{
+			TryAngle(Bank);
+			TryAngle(-Bank);
 		}
 	}
 	return Best;
@@ -2676,8 +2847,19 @@ void AChaosImpactCPUController::UpdateOffensePerfect(AChaosImpactCharacter* Self
 		return;
 	}
 	// Planned 20 times a second (it flies dozens of trial throws): a moment's old plan is as good as a new one.
-	if (CachedShotTarget.Get() != Target || Now - CachedShotAt >= PerfectShotPlanSeconds || CachedShotAt < 0.0f)
+	// A few CPUs plan in any one frame (the rest keep their plan a frame longer), so a frame is never all of them at once.
+	static uint64 PlanFrame = 0;
+	static int32 PlansThisFrame = 0;
+	if (PlanFrame != GFrameCounter)
 	{
+		PlanFrame = GFrameCounter;
+		PlansThisFrame = 0;
+	}
+	const bool bNewTarget = CachedShotTarget.Get() != Target || CachedShotAt < 0.0f;
+	const bool bStale = bNewTarget || Now - CachedShotAt >= PerfectShotPlanSeconds;
+	if (bStale && (PlansThisFrame < MaxShotPlansPerFrame || bNewTarget || Now - CachedShotAt >= 0.12f))
+	{
+		++PlansThisFrame;
 		CachedShot = PlanSureShot(Self, Target, Self->GetThrowChargeAlpha());
 		CachedShotAt = Now;
 		CachedShotTarget = Target;
@@ -2748,6 +2930,7 @@ void AChaosImpactCPUController::UpdateOffensePerfect(AChaosImpactCharacter* Self
 
 FVector AChaosImpactCPUController::RouteToward(const AChaosImpactCharacter* Self, const FVector& Goal, const float Now)
 {
+	FCpuPartTimer PartTimer(7);
 	const FVector Location = Self->GetActorLocation();
 	const FVector Straight = (Goal - Location).GetSafeNormal2D();
 	const float Distance = static_cast<float>(FVector::Dist2D(Goal, Location));
@@ -2930,7 +3113,8 @@ bool AChaosImpactCPUController::UpdateHunting(const AChaosImpactCharacter* Self,
 	const bool bRunning = Fleeing > Target->GetCharacterMovement()->MaxWalkSpeed * 0.45f && Apart > 700.0f;
 	// Never lets anyone keep their distance, ahead or not.
 	const bool bFar = Apart > 1300.0f;
-	if (bBehind || bClosing || bRunning || bFar)
+	// The duel's boss never lets up at all.
+	if (bBehind || bClosing || bRunning || bFar || bDuelBoss)
 	{
 		// Kept up a little while once started, so a runner pausing for a moment is not let off.
 		HuntUntil = Now + 2.5f;
@@ -3015,6 +3199,7 @@ void AChaosImpactCPUController::UpdateNovaPerfect(AChaosImpactCharacter* Self, A
 
 float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, const FVector& Point) const
 {
+	FCpuPartTimer PartTimer(5);
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -3022,17 +3207,16 @@ float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, 
 	}
 	const float Body = Self->GetCapsuleComponent()->GetScaledCapsuleRadius();
 	float Danger = 0.0f;
-	for (TActorIterator<AChaosImpactHazardZone> It(World); It; ++It)
+	if (HazardSnapshot.At != World->GetTimeSeconds())
 	{
-		const AChaosImpactHazardZone* Zone = *It;
-		if (Zone->GetSourcePawn() == Self || AChaosImpactGameState::AreTeammates(World, Zone->GetSourcePawn(), Self)
-			|| Zone->GetAge() > Zone->GetActiveSeconds())
-		{
-			continue;
-		}
-		const float Distance = static_cast<float>(FVector::Dist2D(Point, Zone->GetActorLocation()));
-		const float Reach = Zone->GetRadius() + Body;
-		switch (Zone->GetZoneType())
+		RefreshHazardSnapshot(Self);
+	}
+	const FVector2D Flat(Point.X, Point.Y);
+	for (const FHazardSnapshot::FZone& Zone : HazardSnapshot.Zones)
+	{
+		const float Distance = static_cast<float>(FVector2D::Distance(Flat, Zone.Center));
+		const float Reach = Zone.Radius + Body;
+		switch (Zone.Type)
 		{
 		case EChaosImpactBallType::Fire:
 			Danger += Distance < Reach + 50.0f ? 3.0f : 0.0f;
@@ -3050,11 +3234,65 @@ float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, 
 			break;
 		case EChaosImpactBallType::Nova:
 			// Spinning, then a ball of fire as wide as the blast: get well clear until it has shrunk away.
-			Danger += Zone->GetAge() < AChaosImpactHazardZone::NovaFireGoneAfter && Distance < Reach + 150.0f ? 8.0f : 0.0f;
+			Danger += Zone.Age < AChaosImpactHazardZone::NovaFireGoneAfter && Distance < Reach + 150.0f ? 8.0f : 0.0f;
 			break;
 		default:
 			break;
 		}
+	}
+	// Tornadoes: where each is and where it is going.
+	for (const FVector2D& Center : HazardSnapshot.Tornadoes)
+	{
+		Danger += FVector2D::Distance(Flat, Center) < AChaosImpactTornado::CatchRadius + Body + 160.0f ? 3.0f : 0.0f;
+	}
+	// A nova being charged: where it will come down, as big as it may yet grow.
+	for (const FVector& Landing : HazardSnapshot.NovaLandings)
+	{
+		Danger += FVector2D::Distance(Flat, FVector2D(Landing.X, Landing.Y)) < Landing.Z + Body + 150.0f ? 5.0f : 0.0f;
+	}
+	// Off the stage's edge (each square looked at once: the floor does not move).
+	const FIntVector Cell(FMath::FloorToInt(Point.X / 50.0), FMath::FloorToInt(Point.Y / 50.0), FMath::FloorToInt(Point.Z / 120.0));
+	TMap<FIntVector, bool>& FloorCells = GetCPUFloorCells(World);
+	bool* bKnown = FloorCells.Find(Cell);
+	if (!bKnown)
+	{
+		FHitResult Floor;
+		FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUFloor), false, Self);
+		const bool bFloor = World->LineTraceSingleByObjectType(Floor, Point + FVector(0.0f, 0.0f, 60.0f), Point - FVector(0.0f, 0.0f, 500.0f),
+			FCollisionObjectQueryParams(ECC_WorldStatic), Parameters);
+		bKnown = &FloorCells.Add(Cell, bFloor);
+	}
+	if (!*bKnown)
+	{
+		Danger += 8.0f;
+	}
+	return Danger;
+}
+
+void AChaosImpactCPUController::RefreshHazardSnapshot(const AChaosImpactCharacter* Self) const
+{
+	UWorld* World = GetWorld();
+	HazardSnapshot.At = World ? World->GetTimeSeconds() : 0.0f;
+	HazardSnapshot.Zones.Reset();
+	HazardSnapshot.Tornadoes.Reset();
+	HazardSnapshot.NovaLandings.Reset();
+	if (!World || !Self)
+	{
+		return;
+	}
+	for (TActorIterator<AChaosImpactHazardZone> It(World); It; ++It)
+	{
+		const AChaosImpactHazardZone* Zone = *It;
+		if (Zone->GetSourcePawn() == Self || AChaosImpactGameState::AreTeammates(World, Zone->GetSourcePawn(), Self)
+			|| Zone->GetAge() > Zone->GetActiveSeconds())
+		{
+			continue;
+		}
+		FHazardSnapshot::FZone& Entry = HazardSnapshot.Zones.AddDefaulted_GetRef();
+		Entry.Center = FVector2D(Zone->GetActorLocation().X, Zone->GetActorLocation().Y);
+		Entry.Radius = Zone->GetRadius();
+		Entry.Age = Zone->GetAge();
+		Entry.Type = Zone->GetZoneType();
 	}
 	for (TActorIterator<AChaosImpactTornado> It(World); It; ++It)
 	{
@@ -3064,14 +3302,12 @@ float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, 
 		{
 			continue;
 		}
-		// Where it is and where it is going.
 		for (const float Ahead : {0.0f, 0.5f, 1.0f})
 		{
 			const FVector Center = Tornado->GetCenter() + Tornado->GetTravelDirection() * AChaosImpactTornado::TravelSpeed * Ahead;
-			Danger += FVector::Dist2D(Point, Center) < AChaosImpactTornado::CatchRadius + Body + 160.0f ? 3.0f : 0.0f;
+			HazardSnapshot.Tornadoes.Add(FVector2D(Center.X, Center.Y));
 		}
 	}
-	// A nova being charged: where it will come down, as big as it may yet grow.
 	for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 	{
 		const AChaosImpactCharacter* Other = *It;
@@ -3083,25 +3319,16 @@ float AChaosImpactCPUController::GetHazardAt(const AChaosImpactCharacter* Self, 
 		}
 		FVector Landing;
 		float Radius = 0.0f;
-		if (Other->PredictThrowLanding(FMath::Min(Seconds / ChaosImpactBallTypes::NovaChargeSeconds + 0.3f, 1.0f), Landing, Radius)
-			&& FVector::Dist2D(Point, Landing) < Radius + Body + 150.0f)
+		if (Other->PredictThrowLanding(FMath::Min(Seconds / ChaosImpactBallTypes::NovaChargeSeconds + 0.3f, 1.0f), Landing, Radius))
 		{
-			Danger += 5.0f;
+			HazardSnapshot.NovaLandings.Add(FVector(Landing.X, Landing.Y, Radius));
 		}
 	}
-	// Off the stage's edge.
-	FHitResult Floor;
-	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUFloor), false, Self);
-	if (!World->LineTraceSingleByObjectType(Floor, Point + FVector(0.0f, 0.0f, 60.0f), Point - FVector(0.0f, 0.0f, 500.0f),
-		FCollisionObjectQueryParams(ECC_WorldStatic), Parameters))
-	{
-		Danger += 8.0f;
-	}
-	return Danger;
 }
 
 FVector AChaosImpactCPUController::ChooseSafeDirection(const AChaosImpactCharacter* Self, const FVector& Desired) const
 {
+	FCpuPartTimer PartTimer(4);
 	const FVector Location = Self->GetActorLocation();
 	const float Here = GetHazardAt(Self, Location);
 	const FVector Wanted = Desired.GetSafeNormal2D();
@@ -3229,6 +3456,7 @@ void AChaosImpactCPUController::NoteThrowAt(const AChaosImpactCharacter* Target,
 
 void AChaosImpactCPUController::UpdateLearning(const AChaosImpactCharacter* Self, const float Now)
 {
+	FCpuPartTimer PartTimer(9);
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -3346,10 +3574,9 @@ bool AChaosImpactCPUController::HasClearShotFrom(const FVector& Point, const ACh
 bool AChaosImpactCPUController::FindVantagePoint(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target,
 	const float Ideal, FVector& OutPoint) const
 {
+	FCpuPartTimer PartTimer(6);
 	const FVector Location = Self->GetActorLocation();
 	const FVector TargetLocation = Target->GetActorLocation();
-	float BestScore = TNumericLimits<float>::Max();
-	bool bFound = false;
 	// Points it can walk straight to (nothing in the way), on the floor, out of hazards.
 	const auto Reachable = [this, Self](const FVector& From, const FVector& Direction, const float Distance, FVector& OutWhere)
 	{
@@ -3360,31 +3587,44 @@ bool AChaosImpactCPUController::FindVantagePoint(const AChaosImpactCharacter* Se
 		OutWhere = From + Direction * Distance;
 		return GetHazardAt(Self, OutWhere) < 1.0f;
 	};
+	// Every place it might go, best first (scored without looking: near, and at its preferred distance from the target);
+	// then looked at in that order until one will do. The first that does is the best of them.
+	struct FCandidate
+	{
+		float Score;
+		FVector Corner;
+		FVector Onward;
+		float Ring;
+		float Leg;
+	};
+	TArray<FCandidate, TInlineAllocator<128>> Straight;
 	static constexpr float Rings[] = {250.0f, 500.0f, 800.0f, 1100.0f};
 	for (const float Ring : Rings)
 	{
 		for (int32 Step = 0; Step < 16; ++Step)
 		{
 			const FVector Direction = FVector::ForwardVector.RotateAngleAxis(Step * 22.5f, FVector::UpVector);
-			FVector Point;
-			if (!Reachable(Location, Direction, Ring, Point) || !HasClearShotFrom(Point, Self, Target))
-			{
-				continue;
-			}
-			const float Score = Ring + FMath::Abs(static_cast<float>(FVector::Dist2D(Point, TargetLocation)) - Ideal) * 0.6f;
-			if (Score < BestScore)
-			{
-				BestScore = Score;
-				OutPoint = Point;
-				bFound = true;
-			}
+			const FVector Point = Location + Direction * Ring;
+			Straight.Add({Ring + FMath::Abs(static_cast<float>(FVector::Dist2D(Point, TargetLocation)) - Ideal) * 0.6f, Direction, FVector::ZeroVector, Ring, 0.0f});
 		}
 	}
-	if (bFound)
+	Straight.Sort([](const FCandidate& A, const FCandidate& B) { return A.Score < B.Score; });
+	int32 Looked = 0;
+	for (const FCandidate& Candidate : Straight)
 	{
-		return true;
+		FVector Point;
+		if (++Looked > 40)
+		{
+			break;
+		}
+		if (Reachable(Location, Candidate.Corner, Candidate.Ring, Point) && HasClearShotFrom(Point, Self, Target))
+		{
+			OutPoint = Point;
+			return true;
+		}
 	}
-	// Nothing straight ahead: two legs, round the corner; head for the first.
+	// Nothing straight ahead: two legs, round the corner; head for the first (corners worked out once each).
+	TArray<FCandidate, TInlineAllocator<256>> Bent;
 	for (const float Ring : {400.0f, 800.0f})
 	{
 		for (int32 Step = 0; Step < 16; ++Step)
@@ -3400,21 +3640,26 @@ bool AChaosImpactCPUController::FindVantagePoint(const AChaosImpactCharacter* Se
 				const FVector Onward = FVector::ForwardVector.RotateAngleAxis(Turn * 30.0f, FVector::UpVector);
 				for (const float Leg : {400.0f, 800.0f})
 				{
-					FVector Point;
-					if (!Reachable(Corner, Onward, Leg, Point) || !HasClearShotFrom(Point, Self, Target))
-					{
-						continue;
-					}
-					const float Score = Ring + Leg + FMath::Abs(static_cast<float>(FVector::Dist2D(Point, TargetLocation)) - Ideal) * 0.6f;
-					if (Score < BestScore)
-					{
-						BestScore = Score;
-						OutPoint = Corner;
-						bFound = true;
-					}
+					const FVector Point = Corner + Onward * Leg;
+					Bent.Add({Ring + Leg + FMath::Abs(static_cast<float>(FVector::Dist2D(Point, TargetLocation)) - Ideal) * 0.6f, Corner, Onward, Ring, Leg});
 				}
 			}
 		}
 	}
-	return bFound;
+	Bent.Sort([](const FCandidate& A, const FCandidate& B) { return A.Score < B.Score; });
+	Looked = 0;
+	for (const FCandidate& Candidate : Bent)
+	{
+		FVector Point;
+		if (++Looked > 48)
+		{
+			break;
+		}
+		if (Reachable(Candidate.Corner, Candidate.Onward, Candidate.Leg, Point) && HasClearShotFrom(Point, Self, Target))
+		{
+			OutPoint = Candidate.Corner;
+			return true;
+		}
+	}
+	return false;
 }

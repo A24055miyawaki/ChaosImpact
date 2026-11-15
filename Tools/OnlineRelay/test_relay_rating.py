@@ -98,6 +98,107 @@ class RatingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(delta > 0 for delta in deltas), deltas)
         self.assertGreater(deltas[-1], 0, "no daily cap and no same-pair cut")
 
+    async def test_win_streak_bonus(self):
+        """1v1: the 2nd win in a row gains 1.1 times, the 3rd 1.2, the 4th 1.3, the 5th and on twice; a loss is not changed."""
+        match = await self.duel()
+        for game in range(6):
+            await self.play_duel(match, game, "A", "B")
+        a, b = ci_relay.token_id("token-A"), ci_relay.token_id("token-B")
+        gains = []
+        for game in range(6, 12):
+            # Equal ratings each time (so only the bonus changes the gain): K 20 after measuring, half of it.
+            for pid in (a, b):
+                self.relay.ranks.rating(pid, "duel")["rate"] = 1500.0
+            self.relay.ranks.records(a)[0]["streak"] = game - 6
+            await self.play_duel(match, game, "A", "B")
+            gains.append((await self.report(match, "A", game, result="win"))["rating"]["delta"])
+        self.assertEqual(gains, [10, 11, 12, 13, 20, 20])
+        # The rating told back says the streak and its bonus (the results show it).
+        told = await self.report(match, "A", 11, result="win")
+        self.assertEqual((told["rating"]["streak"], told["rating"]["streak_bonus"]), (6, 2.0))
+        first = await self.report(match, "A", 6, result="win")
+        self.assertNotIn("streak_bonus", first["rating"], "the first win: no bonus told")
+        # The loser's change is the plain one.
+        for pid in (a, b):
+            self.relay.ranks.rating(pid, "duel")["rate"] = 1500.0
+        await self.play_duel(match, 12, "A", "B")
+        lost = await self.report(match, "B", 12, result="lose")
+        self.assertEqual(lost["rating"]["delta"], -10)
+        # A loss ends the streak: the next win is plain again.
+        for pid in (a, b):
+            self.relay.ranks.rating(pid, "duel")["rate"] = 1500.0
+        await self.play_duel(match, 13, "B", "A")
+        for pid in (a, b):
+            self.relay.ranks.rating(pid, "duel")["rate"] = 1500.0
+        await self.play_duel(match, 14, "A", "B")
+        self.assertEqual((await self.report(match, "A", 14, result="win"))["rating"]["delta"], 10)
+
+    async def test_rounds_margin(self):
+        """1v1: a 2-0 moves both ratings by 1.25 times, a 2-1 by 0.75; rounds not said (an older game) or not agreeing: as before."""
+        match = await self.duel()
+        for game in range(6):
+            await self.play_duel(match, game, "A", "B")
+        a, b = ci_relay.token_id("token-A"), ci_relay.token_id("token-B")
+
+        async def game_with(game, a_says, b_says):
+            for pid in (a, b):
+                self.relay.ranks.rating(pid, "duel")["rate"] = 1500.0
+                self.relay.ranks.records(pid)[0]["streak"] = 0
+            await self.report(match, "A", game, result="win", **({"detail": {"score": a_says}} if a_says else {}))
+            await self.report(match, "B", game, result="lose", **({"detail": {"score": b_says}} if b_says else {}))
+            return ((await self.report(match, "A", game, result="win"))["rating"]["delta"],
+                    (await self.report(match, "B", game, result="lose"))["rating"]["delta"])
+        self.assertEqual(await game_with(6, [2, 0], [0, 2]), (12, -12), "a straight win: 10 x 1.25 (12.5 shown as 12)")
+        self.assertEqual(await game_with(7, [2, 1], [1, 2]), (8, -8), "a close win: 10 x 0.75")
+        self.assertEqual(await game_with(8, None, None), (10, -10), "no rounds said: as before")
+        self.assertEqual(await game_with(9, [2, 0], None), (12, -12), "one side's rounds stand")
+        self.assertEqual(await game_with(10, [2, 0], [1, 2]), (10, -10), "not agreeing: as before")
+        self.assertEqual(await game_with(11, [0, 2], None), (10, -10), "rounds against the result: as before")
+
+    async def test_upset(self):
+        """1v1: even ratings ±10; the further below the winner was, the more: about +15 at 100, +26 at 200, +50 at 400 (the
+        favourite losing the same)."""
+        match = await self.duel()
+        for game in range(6):
+            await self.play_duel(match, game, "A", "B")
+        a, b = ci_relay.token_id("token-A"), ci_relay.token_id("token-B")
+        seen = []
+        for game, gap in enumerate((0, 100, 200, 400, -400), start=6):
+            self.relay.ranks.rating(a, "duel")["rate"] = 1500.0
+            self.relay.ranks.rating(b, "duel")["rate"] = 1500.0 + gap
+            for pid in (a, b):
+                self.relay.ranks.records(pid)[0]["streak"] = 0
+            await self.play_duel(match, game, "A", "B")
+            seen.append(((await self.report(match, "A", game, result="win"))["rating"]["delta"],
+                         (await self.report(match, "B", game, result="lose"))["rating"]["delta"]))
+        self.assertEqual(seen[0], (10, -10), "even: as before")
+        self.assertEqual(seen[1], (15, -15))
+        self.assertEqual(seen[2], (26, -26))
+        self.assertEqual(seen[3], (40, -40), "a big upset (about 50, held to 40)")
+        self.assertEqual(seen[4], (2, -2), "the favourite winning: as before (no bonus)")
+
+    async def test_caps(self):
+        """1v1: the result and the upset move at most 40; with a 2-0 (x1.25) and the 5th win in a row (x2): at most 100."""
+        match = await self.duel()
+        for game in range(6):
+            await self.play_duel(match, game, "A", "B")
+        a, b = ci_relay.token_id("token-A"), ci_relay.token_id("token-B")
+
+        async def upset(game, streak, rounds):
+            self.relay.ranks.rating(a, "duel")["rate"] = 1000.0
+            self.relay.ranks.rating(b, "duel")["rate"] = 2000.0
+            self.relay.ranks.records(a)[0]["streak"] = streak - 1
+            self.relay.ranks.records(b)[0]["streak"] = 0
+            detail = {"detail": {"score": rounds}} if rounds else {}
+            await self.report(match, "A", game, result="win", **detail)
+            await self.report(match, "B", game, result="lose")
+            return ((await self.report(match, "A", game, result="win"))["rating"]["delta"],
+                    (await self.report(match, "B", game, result="lose"))["rating"]["delta"])
+        self.assertEqual(await upset(6, 1, None), (40, -40), "1000 below: held to 40")
+        self.assertEqual(await upset(7, 1, [2, 0]), (50, -50), "a 2-0: 40 x 1.25")
+        self.assertEqual(await upset(8, 5, [2, 0]), (100, -50), "5th in a row: 40 x 1.25 x 2 = 100 (the loser: no streak)")
+        self.assertEqual(await upset(9, 5, [2, 1]), (60, -30), "a 2-1 in a streak: 40 x 0.75 x 2")
+
     async def test_floor(self):
         match = await self.duel()
         for game in range(6):

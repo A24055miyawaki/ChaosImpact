@@ -80,6 +80,16 @@ namespace
 				if (bLob) { Ball->Launch(Dir, 420.0f, EChaosImpactBallFlightMode::Arc, 250.0f); }
 				else { Ball->Launch(Dir, 1700.0f, EChaosImpactBallFlightMode::Straight, 0.0f); }
 			};
+			// (Thrown by Who, along Way.)
+			const auto ThrowAs = [World](AChaosImpactCharacter* Who, const FVector& Way)
+			{
+				const FTransform At(FRotator::ZeroRotator, Who->GetActorLocation() + Way * 70.0f);
+				AChaosImpactBall* Ball = World->SpawnActorDeferred<AChaosImpactBall>(AChaosImpactBall::StaticClass(), At, Who, Who,
+					ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+				Ball->SetBallType(EChaosImpactBallType::Normal);
+				Ball->FinishSpawning(At);
+				Ball->Launch(Way, 1700.0f, EChaosImpactBallFlightMode::Straight, 0.0f);
+			};
 			const auto FindGadget = [World](const bool bMine) -> AChaosImpactGadget*
 			{
 				for (TActorIterator<AChaosImpactGadget> It(World); It; ++It)
@@ -147,7 +157,7 @@ namespace
 					FVector::Dist2D(Own->GetActorLocation(), OtherBefore), FVector::Dist2D(Other->GetActorLocation(), OwnBefore), Health, Other->GetHealth());
 				Test->TestTrue(TEXT("Swap: this player stands where the CPU stood"), FVector::Dist2D(Own->GetActorLocation(), OtherBefore) < 60.0f);
 				Test->TestTrue(TEXT("Swap: the CPU stands where this player stood"), FVector::Dist2D(Other->GetActorLocation(), OwnBefore) < 60.0f);
-				Test->TestEqual(TEXT("Swap: no damage"), Other->GetHealth(), Health);
+				Test->TestEqual(TEXT("Swap: one hit"), Other->GetHealth(), Health - 1.0f);
 				// --- Barrier ---
 				Place(Own, Floor, Dir);
 				Place(Other, Floor + Dir * 700.0f, -Dir);
@@ -186,36 +196,75 @@ namespace
 				return false;
 			}
 			case 7:
+				// Its own thrower's ball flies through it (and hits the CPU behind), the wall standing.
 				Throw(EChaosImpactBallType::Normal);
 				WaitUntil = Now + 0.9;
 				Step = 8;
 				return false;
 			case 8:
-				Test->TestEqual(TEXT("Barrier: the ball stopped at it (no damage behind)"), Other->GetHealth(), Health);
+			{
+				Test->TestEqual(TEXT("Barrier: its own side's ball goes through (the CPU behind is hit)"), Other->GetHealth(), Health - 1.0f);
+				Test->TestTrue(TEXT("Barrier: still standing after its own side's ball"), Barrier.IsValid() && !Barrier->HasEnded());
+				for (TActorIterator<AChaosImpactBall> It(World); It; ++It) { It->Destroy(); }
+				// The opponent's ball stops at it (no damage behind) and breaks it.
+				OwnHealth = Own->GetHealth();
+				ThrowAs(Other, -Dir);
+				WaitUntil = Now + 0.9;
+				Step = 80;
+				return false;
+			}
+			case 80:
+				Test->TestEqual(TEXT("Barrier: the opponent's ball stopped at it (no damage behind)"), Own->GetHealth(), OwnHealth);
 				Test->TestTrue(TEXT("Barrier: broken by that one ball"), !Barrier.IsValid() || (Barrier->HasEnded() && Barrier->GetState().bBurst));
 				Shot(TEXT("BarrierBroken.png"));
 				for (TActorIterator<AChaosImpactBall> It(World); It; ++It) { It->Destroy(); }
-				Throw(EChaosImpactBallType::Normal);
-				// (Long enough for the picture just asked for to be taken as well: the frame it is saved in is a long one.)
-				WaitUntil = Now + 1.6;
+				// A new wall, and the CPU walks into it.
+				Place(Own, Floor, Dir);
+				Place(Other, Floor + Dir * 700.0f, -Dir);
+				Throw(EChaosImpactBallType::Barrier, true);
+				WaitUntil = Now + 1.4;
+				Step = 81;
+				return false;
+			case 81:
+			{
+				AChaosImpactGadget* Wall = FindGadget(false);
+				Test->TestNotNull(TEXT("Barrier: a second wall stands"), Wall);
+				if (!Wall)
+				{
+					return true;
+				}
+				Barrier = Wall;
+				// (Full health: the 1 it takes leaves it standing, to be thrown back.)
+				Other->RefillHealth();
+				Health = Other->GetHealth();
+				// (Its body against the wall, as walking into it brings it.)
+				Place(Other, Wall->GetActorLocation() + Dir * 20.0f, -Dir);
+				MaxSpeed = 0.0f;
+				WaitUntil = Now + 0.6;
 				Step = 9;
 				return false;
+			}
 			case 9:
-				for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
-				{
-					UE_LOG(LogTemp, Display, TEXT("NEWBALLS after the wall: ball %s pickup %d at %s (%.0f cm along), CPU at %.0f along, %.0f off the line"),
-						*It->GetName(), It->IsPickup() ? 1 : 0, *It->GetActorLocation().ToCompactString(),
-						FVector::DotProduct(It->GetActorLocation() - Floor, Dir), FVector::DotProduct(Other->GetActorLocation() - Floor, Dir),
-						FVector::Dist2D(Other->GetActorLocation(), Floor + Dir * FVector::DotProduct(Other->GetActorLocation() - Floor, Dir)));
-				}
-				Test->TestEqual(TEXT("Barrier: the next ball gets through"), Other->GetHealth(), Health - 1.0f);
-				for (TActorIterator<AChaosImpactBall> It(World); It; ++It) { It->Destroy(); }
+			{
+				Test->TestEqual(TEXT("Barrier: the opponent walking into it takes 1"), Other->GetHealth(), Health - 1.0f);
+				Test->TestTrue(TEXT("Barrier: …is thrown back"), MaxSpeed > 400.0f);
+				Test->TestTrue(TEXT("Barrier: …and it breaks"), !Barrier.IsValid() || (Barrier->HasEnded() && Barrier->GetState().bBurst));
+				// A short throw goes down at once (no floating up first); a full one is lobbed.
+				float Along = 0.0f, Up = 0.0f;
+				EChaosImpactBallFlightMode Mode = EChaosImpactBallFlightMode::Arc;
+				bool bOverhead = false;
+				Own->GetThrowFlight(0.0f, EChaosImpactBallType::Barrier, 1.0f, Along, Up, Mode, bOverhead);
+				Test->TestTrue(TEXT("Barrier: a short throw is thrown down"), Up < 0.0f);
+				Own->GetThrowFlight(1.0f, EChaosImpactBallType::Barrier, 1.0f, Along, Up, Mode, bOverhead);
+				Test->TestTrue(TEXT("Barrier: a full one is lobbed"), Up > 0.0f);
+				Other->RefillHealth();
 				// --- Mine ---
 				Place(Own, Floor, Dir);
 				Place(Other, Floor + Dir * 900.0f, -Dir);
 				WaitUntil = Now + 0.4;
 				Step = 10;
 				return false;
+			}
 			case 10:
 				Throw(EChaosImpactBallType::Mine, true);
 				WaitUntil = Now + 1.2;
@@ -243,6 +292,8 @@ namespace
 				{
 					return true;
 				}
+				// (The swap and the barrier's ball have hit it already: full health again, so the blast hurts without a KO.)
+				Other->RefillHealth();
 				Health = Other->GetHealth();
 				OwnHealth = Own->GetHealth();
 				Place(Other, Mine->GetActorLocation() + Dir * 110.0f, -Dir);

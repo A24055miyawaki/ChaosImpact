@@ -140,6 +140,8 @@ struct FChaosImpactTournamentArena
 	UPROPERTY() int32 Match = INDEX_NONE;
 	UPROPERTY() FVector_NetQuantize Center = FVector::ZeroVector;
 	UPROPERTY() float HalfExtent = 1850.0f;
+	/** The 1v1 stage it is now (ChaosImpactMatch::GetDuelStageName). */
+	UPROPERTY() int32 Stage = 0;
 	UPROPERTY() FChaosImpactDuelState Duel;
 };
 
@@ -390,6 +392,12 @@ public:
 
 	static constexpr float ReadyWaitSeconds = 60.0f;
 	static constexpr float StartingSeconds = 3.0f;
+	/** A ランダムマッチ (8 players) shows its drawn rule first, so its countdown is longer. */
+	static constexpr float MatchmadeRuleStartingSeconds = 5.0f;
+	float GetStartingSeconds() const
+	{
+		return Matchmade == EChaosImpactMatchmade::Random ? MatchmadeRuleStartingSeconds : StartingSeconds;
+	}
 
 	/** A VS match is set up: from team select or the opening until the results are over. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Match")
@@ -426,6 +434,10 @@ public:
 	/** Players the relay matched into this room (a split-screen pair counts two). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	int32 MatchmadeExpected = 0;
+	/** A matched 1v1: how many rematches the same two have played already (ChaosImpactMatch::MaxDuelRematches at most). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
+	int32 RematchesPlayed = 0;
+	bool CanRematchAgain() const;
 	/** Server time the match starts with whoever has arrived (0 once it has started). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category="Chaos Impact|Online")
 	double MatchmadeDeadline = 0.0;
@@ -462,6 +474,8 @@ public:
 	/** The duel a member plays or watches: their tournament arena's, or the room's own duel. */
 	const FChaosImpactDuelState* FindDuelFor(const APlayerState* Member) const;
 	bool IsDuelAt(const FVector& Location) const { return FindDuelAt(Location) != nullptr; }
+	/** The 1v1 stage Viewer plays on (a tournament: their match's arena's; else the match's). */
+	int32 GetDuelStageFor(const AController* Viewer) const;
 	/** A round is being fought where Location is (hits count). */
 	bool IsDuelLiveAt(const FVector& Location) const;
 	static bool IsDuelStepLive(const FChaosImpactDuelState& Duel)

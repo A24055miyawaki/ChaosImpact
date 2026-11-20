@@ -171,7 +171,7 @@ void AChaosImpactSimaePerch::Tick(const float DeltaSeconds)
 	Clock += DeltaSeconds;
 	const FVector Here = GetActorLocation();
 	bool bSomeoneNear = false;
-	if (ShyDistance > 0.0f)
+	if (ShyDistance > 0.0f && !bSceneHeld)
 	{
 		for (TActorIterator<ACharacter> It(GetWorld()); It; ++It)
 		{
@@ -200,7 +200,7 @@ void AChaosImpactSimaePerch::Tick(const float DeltaSeconds)
 		if (FlightTime < Away)
 		{
 			const float T = FlightTime / Away;
-			Offset = FlightWay * (T * 700.0f) + FVector(0.0f, 0.0f, T * T * 600.0f + T * 150.0f);
+			Offset = (FlightWay * (T * 700.0f) + FVector(0.0f, 0.0f, T * T * 600.0f + T * 150.0f)) * FleeSpeed;
 			SetActorHiddenInGame(false);
 		}
 		else if (FlightTime < Away + Gone || (bSomeoneNear && FlightTime < Away + Gone + 0.1f))
@@ -220,11 +220,26 @@ void AChaosImpactSimaePerch::Tick(const float DeltaSeconds)
 		else
 		{
 			FlightTime = -1.0f;
+			FleeSpeed = 1.0f;
 		}
 		Body->SetRelativeLocationAndRotation(Home + Offset, FRotator(0.0f, FlightWay.Rotation().Yaw, 0.0f));
 		if (Wing)
 		{
 			Wing->SetRelativeScale3D(FVector(BirdScale, BirdScale, BirdScale * (0.35f + 0.65f * FMath::Abs(FMath::Sin(Clock * 30.0f)))));
+		}
+		return;
+	}
+	if (AlertTime >= 0.0f)
+	{
+		// Startled: a quick hop, then still, its head up at the sky (a tiny tremble).
+		AlertTime += DeltaSeconds;
+		const float Hop = AlertTime < 0.22f ? FMath::Sin(AlertTime / 0.22f * PI) * 16.0f * BirdScale : 0.0f;
+		const float Up = FMath::Min(AlertTime / 0.12f, 1.0f);
+		const float Tremble = FMath::Sin(Clock * 55.0f) * 1.5f;
+		Body->SetRelativeLocationAndRotation(Home + FVector(0.0f, 0.0f, Hop), HomeRotation + FRotator(32.0f * Up, Look + Tremble, 0.0f));
+		if (Wing)
+		{
+			Wing->SetRelativeScale3D(FVector(BirdScale, BirdScale, BirdScale * (AlertTime < 0.22f ? 0.4f + 0.6f * FMath::Abs(FMath::Sin(Clock * 34.0f)) : 1.0f)));
 		}
 		return;
 	}
@@ -252,4 +267,27 @@ void AChaosImpactSimaePerch::Tick(const float DeltaSeconds)
 	{
 		Wing->SetRelativeScale3D(FVector(BirdScale));
 	}
+}
+
+void AChaosImpactSimaePerch::SceneAlert()
+{
+	if (FlightTime < 0.0f)
+	{
+		AlertTime = 0.0f;
+	}
+}
+
+void AChaosImpactSimaePerch::SceneFlee(const FVector& From)
+{
+	AlertTime = -1.0f;
+	FVector Away = (GetActorLocation() - From).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = FVector::ForwardVector;
+	}
+	// (Each one a little its own way.)
+	const float Turn = (FMath::Frac(GetActorLocation().X * 0.017f + GetActorLocation().Y * 0.011f) - 0.5f) * 50.0f;
+	FlightWay = Away.RotateAngleAxis(Turn, FVector::UpVector);
+	FlightTime = 0.0f;
+	FleeSpeed = 1.7f;
 }

@@ -27,7 +27,10 @@ namespace ChaosImpactModeMenu
 	void PaintTile(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, const FTile& Tile, float Blend, bool bPressed,
 		float Alpha, float Time);
 
-	/** The bar along the bottom: the chosen tile, what it does, and the keys (confirm / back). */
+	/** スマホ版 (one player): the words for it. */
+	void SetPhone(bool bPhone);
+
+	/** The bar along the bottom: the chosen tile, what it does, and the keys (confirm / back; none: by touch). */
 	void PaintInfoBar(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, const FTile& Tile, const FSlateRect& Rect,
 		const FString& ConfirmKey, const FString& BackKey, float Alpha, float Time);
 

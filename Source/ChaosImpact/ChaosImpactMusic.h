@@ -23,7 +23,11 @@ enum class EChaosImpactBgm : uint8
 	Results,
 	/** 訓練場, トレーニング, the online lobbies (合言葉 rooms, the ランダムマッチ wait in this machine's training, a tournament's
 	 *  lobby): Tanukichi Adventure. */
-	Dojo
+	Dojo,
+	/** The solo mode's title screen (2026-11-19): 秋声に消ゆ. */
+	SoloTitle,
+	/** The final boss (ドッチ・ボール大統領), from the fight's start after the talk up to the ending: タクティカルエンカウンター. */
+	FinalBoss
 };
 
 /**

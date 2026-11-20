@@ -265,6 +265,8 @@ private:
 	void ReturnToLobbyAfterMatch();
 	void ClearMatchBalls();
 	void DestroyStageBallSpawners();
+	/** The 1v1 stage StageIndex, in the place of whatever stage stood here. */
+	void EnsureDuelStage(int32 StageIndex);
 	void StartLocalMatchFromURL();
 	void RunDevAutoVersus();
 
@@ -374,7 +376,8 @@ private:
 	/** The match's players go back to what they chose (practice, watching), its CPUs leave, the arena is cleared. */
 	void ReleaseTournamentArena(int32 Arena);
 	/** A free arena (one is made, beside the others, when none is). */
-	int32 AcquireTournamentArena();
+	/** A free arena for a match, on the 1v1 stage Stage (one already that stage if free, else rebuilt as it). */
+	int32 AcquireTournamentArena(int32 Stage);
 	void ClearArenaBalls(int32 Arena);
 	void ApplyArenaBallChances(int32 Arena, bool bWithPicks);
 
@@ -474,7 +477,7 @@ private:
 	/** ステージ6 (the molten core foundry). */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
 	TSubclassOf<AChaosImpactStageBase> ForgeStageClass;
-	/** ランクマッチ's arena (デュエルアリーナ), used by every duel whatever stage is chosen. */
+	/** ランクマッチ's arena (カオスアリーナ), used by every duel whatever stage is chosen. */
 	UPROPERTY(EditDefaultsOnly, Category="Chaos Impact|Versus", meta=(AllowPrivateAccess="true"))
 	TSubclassOf<AChaosImpactStageBase> DuelStageClass;
 

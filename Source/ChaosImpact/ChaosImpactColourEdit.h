@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Styling/SlateBrush.h"
@@ -59,6 +59,9 @@ public:
 	void Back();
 	void ShiftPreset(int32 Direction);
 	void ToggleFine();
+	/** スマホ版: shows a tab's page (0 キャラ, 1 色をぬる, 2 プリセット), as its tab pressed. */
+	void ShowPhonePage(int32 Page) { SetPhonePage(Page); }
+	int32 GetPhonePage() const { return PhonePage; }
 	EArea GetArea() const { return Area; }
 	bool IsFine() const { return bFine; }
 	int32 GetCharacter() const { return Character; }
@@ -127,6 +130,14 @@ private:
 	FBox2D RecentRect(int32 Index) const;
 	FBox2D OriginalRect() const;
 	FBox2D ButtonRect(int32 Button) const;
+	/** A click on the parts or the colour picker (true when it was on one). */
+	bool ClickColours(const FVector2D& Point);
+	/** スマホ版: its tabs (0 キャラ, 1 色をぬる, 2 プリセット), a press on its screen, and its painting. */
+	int32 PhonePage = 0;
+	double PhonePageAt = 0.0;
+	void SetPhonePage(int32 Page);
+	bool HandlePhoneClick(const FVector2D& Point);
+	int32 PaintPhone(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 
 	TWeakObjectPtr<AChaosImpactPlayerController> Controller;
 	bool bOpen = false;

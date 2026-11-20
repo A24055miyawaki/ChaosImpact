@@ -17,7 +17,7 @@ namespace ChaosImpactBallSwitch
 	inline TArray<EChaosImpactBallType> GetSwitchable()
 	{
 		TArray<EChaosImpactBallType> Out;
-		for (int32 Type = 0; Type < ChaosImpactBallTypes::Count; ++Type)
+		for (int32 Type = 0; Type < ChaosImpactBallTypes::SharedCount; ++Type)
 		{
 			Out.Add(static_cast<EChaosImpactBallType>(Type));
 		}
@@ -25,7 +25,7 @@ namespace ChaosImpactBallSwitch
 	}
 
 	/** Every kind's bit. */
-	inline int32 AllBits() { return (1 << ChaosImpactBallTypes::Count) - 1; }
+	inline int32 AllBits() { return (1 << ChaosImpactBallTypes::SharedCount) - 1; }
 
 	inline bool IsOn(const FChaosImpactMatchRules& Rules, const EChaosImpactBallType Type)
 	{

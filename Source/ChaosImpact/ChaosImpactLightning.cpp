@@ -115,6 +115,23 @@ void ChaosImpactLightning::SetMesh(UProceduralMeshComponent* Component, const Ch
 	{
 		return;
 	}
+	// The same shape again (only its points moved): updated in place, not built anew (a new section remakes the
+	// component's whole drawing, which a phone felt every frame).
+	if (const FProcMeshSection* Section = Component->GetProcMeshSection(0);
+		Section && Component->GetNumSections() == 1 && !Mesh.Vertices.IsEmpty() && Section->ProcVertexBuffer.Num() == Mesh.Vertices.Num()
+		&& Section->ProcIndexBuffer.Num() == Mesh.Triangles.Num())
+	{
+		bool bSame = true;
+		for (int32 Index = 0; Index < Mesh.Triangles.Num() && bSame; ++Index)
+		{
+			bSame = Section->ProcIndexBuffer[Index] == static_cast<uint32>(Mesh.Triangles[Index]);
+		}
+		if (bSame)
+		{
+			Component->UpdateMeshSection(0, Mesh.Vertices, Mesh.Normals, Mesh.UVs, TArray<FColor>(), TArray<FProcMeshTangent>());
+			return;
+		}
+	}
 	Component->ClearAllMeshSections();
 	if (!Mesh.Vertices.IsEmpty())
 	{

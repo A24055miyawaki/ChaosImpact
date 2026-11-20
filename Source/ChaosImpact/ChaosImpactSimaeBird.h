@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ChaosImpactBallTypes.h"
 #include "ChaosImpactSimaeBird.generated.h"
 
 class AChaosImpactCharacter;
@@ -37,7 +38,7 @@ public:
 
 	/** Server: releases one flock and distributes its birds across nearby viable enemies. */
 	static void ReleaseFlock(UWorld* World, const FVector& Location, APawn* ThrowingPawn, AActor* DirectVictim = nullptr,
-		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr);
+		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr, EChaosImpactBallType FusedWith = EChaosImpactBallType::Normal);
 	TSharedPtr<FChaosImpactDuelThrowDamage> GetDuelThrowDamage() const;
 	/** Used by CPUs and the HUD to know that a dash can shake the flock off. */
 	static bool HasPerchedBird(const AChaosImpactCharacter* Character, float* OutRemainingSeconds = nullptr,

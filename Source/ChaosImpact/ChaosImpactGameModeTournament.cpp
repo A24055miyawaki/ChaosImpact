@@ -461,37 +461,60 @@ void AChaosImpactGameMode::DecideTournamentMatch(const int32 MatchIndex, const i
 	Match->ForceNetUpdate();
 }
 
-int32 AChaosImpactGameMode::AcquireTournamentArena()
+int32 AChaosImpactGameMode::AcquireTournamentArena(const int32 Stage)
 {
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
 	if (!Match || !GetWorld())
 	{
 		return INDEX_NONE;
 	}
+	UClass* StageClass = Stage == 0 && DuelStageClass ? DuelStageClass.Get() : AChaosImpactDuelStage::GetDuelStageClass(Stage);
+	// A free one already on that stage if there is one, else the first free one, rebuilt as it.
+	int32 Free = INDEX_NONE;
 	for (int32 Index = 0; Index < Match->TournamentArenas.Num(); ++Index)
 	{
 		if (Match->TournamentArenas[Index].Match == INDEX_NONE && TournamentArenaReleaseAt.IsValidIndex(Index)
 			&& TournamentArenaReleaseAt[Index] <= 0.0)
 		{
-			return Index;
+			if (Match->TournamentArenas[Index].Stage == Stage && IsValid(TournamentStages[Index]))
+			{
+				return Index;
+			}
+			Free = Free == INDEX_NONE ? Index : Free;
 		}
+	}
+	if (Free != INDEX_NONE)
+	{
+		const FVector At = IsValid(TournamentStages[Free]) ? TournamentStages[Free]->GetActorLocation()
+			: TournamentArenaOrigin + FVector(Free * ChaosImpactTournament::ArenaSpacing, 0.0f, 0.0f);
+		if (IsValid(TournamentStages[Free]))
+		{
+			TournamentStages[Free]->Destroy();
+		}
+		FActorSpawnParameters Parameters;
+		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		TournamentStages[Free] = GetWorld()->SpawnActor<AChaosImpactStageBase>(StageClass, At, FRotator::ZeroRotator, Parameters);
+		Match->TournamentArenas[Free].Stage = Stage;
+		Match->ForceNetUpdate();
+		UE_LOG(LogChaosImpact, Log, TEXT("Tournament: arena %d rebuilt as 1v1 stage %d"), Free, Stage);
+		return IsValid(TournamentStages[Free]) ? Free : INDEX_NONE;
 	}
 	// A new duel arena beside the others.
 	const int32 Index = Match->TournamentArenas.Num();
 	const FVector Origin = TournamentArenaOrigin + FVector(Index * ChaosImpactTournament::ArenaSpacing, 0.0f, 0.0f);
 	FActorSpawnParameters Parameters;
 	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	UClass* StageClass = DuelStageClass ? DuelStageClass.Get() : AChaosImpactDuelStage::StaticClass();
-	AChaosImpactStageBase* Stage = GetWorld()->SpawnActor<AChaosImpactStageBase>(StageClass, Origin, FRotator::ZeroRotator, Parameters);
-	if (!Stage)
+	AChaosImpactStageBase* Built = GetWorld()->SpawnActor<AChaosImpactStageBase>(StageClass, Origin, FRotator::ZeroRotator, Parameters);
+	if (!Built)
 	{
 		return INDEX_NONE;
 	}
 	FChaosImpactTournamentArena Arena;
-	Arena.Center = Stage->GetCenter();
-	Arena.HalfExtent = Stage->GetHalfExtent();
+	Arena.Center = Built->GetCenter();
+	Arena.HalfExtent = Built->GetHalfExtent();
+	Arena.Stage = Stage;
 	Match->TournamentArenas.Add(Arena);
-	TournamentStages.Add(Stage);
+	TournamentStages.Add(Built);
 	TournamentArenaSpawners.AddDefaulted();
 	TournamentArenaCPUs.AddDefaulted();
 	TournamentKnockoutPending.Add(false);
@@ -507,7 +530,10 @@ void AChaosImpactGameMode::CallTournamentMatch(const int32 MatchIndex)
 	{
 		return;
 	}
-	const int32 Arena = AcquireTournamentArena();
+	// Its stage: the one set for the tournament, or one at random.
+	const int32 Stage = Match->Rules.Tournament.Stage >= 0 ? ChaosImpactMatch::SanitizeDuelStage(Match->Rules.Tournament.Stage)
+		: TournamentRandom.RandRange(0, ChaosImpactMatch::DuelStageCount - 1);
+	const int32 Arena = AcquireTournamentArena(Stage);
 	if (Arena == INDEX_NONE)
 	{
 		return;

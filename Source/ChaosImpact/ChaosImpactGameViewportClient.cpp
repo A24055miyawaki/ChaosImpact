@@ -11,6 +11,11 @@
 #include "Engine/World.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "InputKeyEventArgs.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/SOverlay.h"
 
 TFunction<bool(const FInputKeyEventArgs&)> UChaosImpactGameViewportClient::UnownedGamepadHandler;
 
@@ -56,6 +61,61 @@ void UChaosImpactGameViewportClient::Tick(const float DeltaTime)
 	bSingleDuelLayout = bSingleNow;
 	// Online rooms: everyone at no more than 60 fps (the player's own limit comes back after).
 	ChaosImpactSettings::UpdateOnlineFrameCap(GetWorld());
+	UpdateFpsDisplay(DeltaTime);
+}
+
+void UChaosImpactGameViewportClient::UpdateFpsDisplay(const float DeltaTime)
+{
+	const bool bWanted = ChaosImpactSettings::IsFpsShown() && !GIsEditor;
+	// Counted over half a second (steady to read, still quick to show a drop).
+	FpsTime += FMath::Max(FApp::GetDeltaTime(), 0.0);
+	++FpsFrames;
+	if (FpsTime >= 0.5f)
+	{
+		const int32 Fps = FMath::RoundToInt(FpsFrames / FpsTime);
+		FpsShown = FText::FromString(FString::Printf(TEXT("%d fps"), Fps));
+		FpsColor = FSlateColor(Fps >= 55 ? FLinearColor(0.45f, 1.0f, 0.5f) : Fps >= 30 ? FLinearColor(1.0f, 0.85f, 0.3f)
+			: FLinearColor(1.0f, 0.4f, 0.35f));
+		FpsTime = 0.0f;
+		FpsFrames = 0;
+	}
+	if (!bWanted)
+	{
+		if (FpsWidget.IsValid())
+		{
+			RemoveViewportWidgetContent(FpsWidget.ToSharedRef());
+			FpsWidget.Reset();
+			FpsText.Reset();
+		}
+		return;
+	}
+	// (A new map takes every viewport widget off: put back when that happens.)
+	if (!FpsWidget.IsValid() || !FpsWidget->GetParentWidget().IsValid())
+	{
+		if (FpsShown.IsEmpty())
+		{
+			FpsShown = FText::FromString(TEXT("-- fps"));
+			FpsColor = FSlateColor(FLinearColor::White);
+		}
+		FpsWidget = SNew(SBox)
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Top)
+			.Padding(FMargin(6.0f, 4.0f))
+			.Visibility(EVisibility::HitTestInvisible)
+			[
+				SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+				.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.55f))
+				.Padding(FMargin(6.0f, 1.0f))
+				[
+					SAssignNew(FpsText, STextBlock)
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+					.Text_Lambda([this]() { return FpsShown; })
+					.ColorAndOpacity_Lambda([this]() { return FpsColor; })
+				]
+			];
+		AddViewportWidgetContent(FpsWidget.ToSharedRef(), 100000);
+	}
 }
 
 bool UChaosImpactGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)

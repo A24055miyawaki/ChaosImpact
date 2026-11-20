@@ -108,6 +108,7 @@ namespace
 			Row.Character = (Index * 7) % 12;
 			Row.Colour = Index % 4;
 			Row.bMe = Index == MeAt;
+			Row.bPhone = Index % 3 == 1;
 			Rows.Add(Row);
 		}
 		return Rows;

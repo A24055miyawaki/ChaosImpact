@@ -35,6 +35,8 @@ struct FChaosImpactDriveLook
 	/** Its last flat heading, to see it snap round. */
 	FVector LastHeading = FVector::ZeroVector;
 	bool bShown = true;
+	/** How big it is drawn (操縦雪玉: as big as the snowball riding in it). */
+	float Scale = 1.0f;
 	bool IsBuilt() const { return Root.IsValid(); }
 };
 

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
@@ -23,7 +23,9 @@ struct FKeyEvent;
  *         two keys or buttons for every control, which controller layout it plays with, sticks swapped, aim assist;
  *         nicknames are made, renamed and taken off here too (and picked at character select).
  *   その他: volume, rumble, camera shake, and which button decides on a Switch controller.
- * Up and down pick a row, left and right change it, LB/RB (Q/E) change tab; on a control, A (Enter or a click) waits
+ * Two places for the cursor (2026-11-16): the column on the left (the tabs, then 保存 and もどる), moved up and down,
+ * where A (or right) goes into the tab's settings; and the settings, where up and down pick a row, left and right change
+ * it and B comes back out to the tabs. (Q/E still change tab on a keyboard.) On a control, A (Enter or a click) waits
  * for the new key, Y (Delete) takes it off. A change shows at once, and is kept when 保存 is pressed (X / S, or the
  * button above もどる); leaving with changes not saved asks whether to save them, and not saving puts everything back.
  * Drawn by the menu widget in its 1600 x 900 design space.
@@ -77,6 +79,8 @@ public:
 	/** A mouse button in design space (any button: while waiting for a key, it is the key). */
 	bool HandleMouseDown(const FVector2D& DesignPoint, const FKey& Button);
 	void HandleMouseMove(const FVector2D& DesignPoint);
+	/** The button let go (スマホ版: a press is decided here, so that a drag can scroll instead). */
+	void HandleMouseUp(const FVector2D& DesignPoint, const FKey& Button);
 	void HandleWheel(float Delta);
 
 	// What the controls do; the handlers above call these, and so do the tests.
@@ -89,7 +93,31 @@ public:
 	int32 FindRow(int32 Id) const;
 	/** Where a row is drawn now (design space; it moves as the list scrolls). */
 	FBox2D GetRowRect(int32 Row) const { return RowRect(Row); }
+	/** Picks a row (and puts the cursor in the settings, out of the tab column). */
 	void SelectRow(int32 Row, int32 Cell = 0);
+	/**
+	 * 操作 in three steps (2026-11-16, as Smash's button settings): the nicknames (＋ to make one), then the chosen
+	 * nickname's devices as cards, then that device's settings. B goes back a step (from the first, to the tabs).
+	 */
+	enum class EControlsStep : uint8 { Nicknames, Devices, Buttons };
+	EControlsStep GetControlsStep() const { return ControlsStep; }
+	/** B in a tab's settings: a step back in 操作, else out to the tabs. */
+	void StepBack();
+	/** This nickname's buttons on this device differ from the first settings. */
+	static bool IsDeviceChanged(int32 Profile, EChaosImpactDevice Device);
+	/** The cursor is in the column on the left (a tab, 保存 or もどる), not in a tab's settings. */
+	bool IsChoosingTab() const { return bSideFocus; }
+	/** Where it is in that column: 0.. the tabs, then SideSave, then SideBack. */
+	int32 GetSideCursor() const { return SideCursor; }
+	static constexpr int32 SideSave = static_cast<int32>(ETab::Count);
+	static constexpr int32 SideBack = SideSave + 1;
+	/** Up / down in the column (a tab is opened as the cursor reaches it). */
+	void MoveSide(int32 Direction);
+	/** A in the column: into the tab's settings, or 保存, or もどる. */
+	void ActivateSide();
+	/** Into the tab's settings / back out to the column. */
+	void EnterRows();
+	void BackToTabs();
 	void MoveSelection(int32 Direction);
 	/** Left or right on the selected row: its value, or which of a control's two keys. */
 	void Adjust(int32 Direction);
@@ -136,6 +164,8 @@ public:
 		RowBrightness,
 		RowQuality,
 		RowResolutionScale,
+		RowScreenOrientation,
+		RowShowFps,
 		RowQualityGroup = 100,
 		RowProfile = 200,
 		RowNewProfile,
@@ -154,6 +184,12 @@ public:
 		RowResetShoulderSensitivity,
 		RowCameraDistance,
 		RowThrowToMove,
+		RowWheelSwap,
+		RowTouchLeftHanded,
+		RowTouchFlick,
+		RowTouchAutoAim,
+		RowTouchStyle,
+		RowTouchLayout,
 		RowVolume = 300,
 		RowRumble,
 		RowShake,
@@ -164,6 +200,10 @@ public:
 		RowTutorial,
 		RowMiniGames,
 		RowMusicVolume,
+		RowMenuRumble,
+		/** 操作's first step: a nickname (RowProfileItem + its index); its second: a device (RowDeviceItem + the device). */
+		RowProfileItem = 400,
+		RowDeviceItem = 480,
 		RowBinding = 1000
 	};
 
@@ -172,6 +212,9 @@ private:
 	void BuildDisplayRows();
 	void BuildPictureRows();
 	void BuildControlRows();
+	/** スマホ版: played by touch, no controller in use (the controls are the touch settings). */
+	bool IsTouchScreenOnly() const;
+	bool IsTouchSettings() const;
 	void BuildOtherRows();
 	void ChangeValue(const FRow& Row, int32 Direction);
 	void Leave();
@@ -182,6 +225,18 @@ private:
 	FBox2D RowRect(int32 Row) const;
 	FBox2D CellRect(int32 Row, int32 Cell) const;
 	FBox2D TabRect(int32 Index) const;
+	/** A press where it lands (the mouse at once; a finger when it lifts). */
+	bool Click(const FVector2D& DesignPoint, const FKey& Button);
+	/** How many rows show at once (the device cards: all). */
+	int32 ShownRows() const;
+	/** スマホ版: 操作's back-a-step button in the panel's head. */
+	bool HasStepBackButton() const;
+	FBox2D StepBackRect() const;
+	/** スマホ版: a finger down (where, and the list's scroll then); moved far enough, it drags the list. */
+	bool bPressing = false;
+	bool bDragging = false;
+	FVector2D PressPoint = FVector2D::ZeroVector;
+	int32 PressFirstRow = 0;
 	/** What the hints name the keys of: the device being used now (not the one being set). */
 	EChaosImpactDevice HintDevice() const;
 	/** The key and controller names the hint line uses (from the last device pressed). */
@@ -199,12 +254,34 @@ private:
 	int32 SelectedRow = 0;
 	int32 SelectedCell = 0;
 	int32 FirstVisibleRow = 0;
+	/**
+	 * スマホ版: the list scrolled by pixels (a finger drags it smoothly and it glides on): how far past FirstVisibleRow's
+	 * top (0 up to a row's step), and the glide's speed (design units a second).
+	 */
+	float ScrollFrac = 0.0f;
+	float ScrollVelocity = 0.0f;
+	float PressScroll = 0.0f;
+	float LastDragY = 0.0f;
+	/** Where the finger was as it began to scroll (the list follows from there, not jumping the slop it moved first). */
+	float DragOriginY = 0.0f;
+	double LastDragAt = 0.0;
+	float GetScrollPixels() const;
+	float MaxScrollPixels() const;
+	void SetScrollPixels(float Pixels);
+	/** The rows area (drawn clipped to it while scrolled part way). */
+	FBox2D RowsArea() const;
 	int32 EditedProfile = 0;
 	EChaosImpactDevice EditedDevice = EChaosImpactDevice::KeyboardMouse;
 	bool bWaitingForKey = false;
+	bool bSideFocus = true;
+	int32 SideCursor = 0;
 	double WaitStartedAt = 0.0;
 	/** The nickname being renamed (INDEX_NONE: a new one is being made). */
 	int32 RenamingProfile = INDEX_NONE;
+	EControlsStep ControlsStep = EControlsStep::Nicknames;
+	void SetControlsStep(EControlsStep Step);
+	bool IsDeviceCardRow(int32 Row) const;
+	void PaintDeviceCard(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, int32 Row, float Alpha, double Now) const;
 	/** Taking a nickname off needs a second press. */
 	bool bDeleteArmed = false;
 	FChaosImpactNameEntry NameEntry;

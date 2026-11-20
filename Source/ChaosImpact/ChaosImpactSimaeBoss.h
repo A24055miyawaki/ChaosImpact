@@ -71,6 +71,23 @@ public:
 	/** Its aura is being drawn (flames rising off it). */
 	bool IsAuraDrawn() const;
 
+	// ---- Its scenes (登場ムービーと会話, 2026-11-19: AChaosImpactBossScene)
+	/** Held by a scene: it does nothing of its own (no thinking, no clips of its own); the scene moves and animates it. */
+	void SetSceneHold(bool bHold) { bSceneHold = bHold; if (bHold) { ShakeOffMoveEffects(); } }
+	/** Mid-attack, powering up or held by a scene: nothing moves it about (winds, hooks, ice...); hits still hurt. */
+	virtual bool IsMoveProof() const override;
+	bool IsSceneHeld() const { return bSceneHold; }
+	/** With a scene after the fight: the last hit leaves it beaten (standing, unhurt from then on) instead of knocked out. */
+	void SetSceneDefeat(bool bOn) { bSceneDefeat = bOn; }
+	/** Beaten, waiting for its scene to end (then FinishBeaten). */
+	bool IsBeaten() const { return bBeaten; }
+	/** Its scene is over: gone (the solo room counts it down). */
+	void FinishBeaten();
+	/** One of its clips by number (0 idle, 1 walk, 2 charge, 3 slam, 4 throw, 5 power-up), for a scene. */
+	void PlaySceneClip(int32 Clip, bool bLoop, float Rate) { PlayNetClip(Clip, bLoop, Rate); }
+	/** Where its eyes are (for the scene's glow): between them, and from there to one of them (a unit way when unknown). */
+	void GetEyes(FVector& OutMiddle, FVector& OutAcross) const;
+
 	/** Tests: starts a move now (as if it had chosen it), against the nearest foe. */
 	void ForceMove(EChaosImpactSimaeMove NewMove);
 	/** Tests: its attacks still throw people about, but hurt nobody. */
@@ -233,6 +250,10 @@ private:
 	void RebuildAuraFlames(float Time);
 	void UpdateHitFlash(float DeltaSeconds);
 	FVector Bone(FName Name) const;
+	/** The middle of its body as drawn (its hips: where the animation has it, not where its capsule is). */
+	FVector BodyMiddle() const;
+	/** Under its body as drawn: its feet, in the air with it when it jumps (on the ground when it stands). */
+	FVector BodyFeet() const;
 	FVector PalmLocation() const;
 	/** Heavy steps: a puff of snow under each foot as it comes down, the ground shaking a little. */
 	void SnowFootfalls(float DeltaSeconds);
@@ -242,6 +263,9 @@ private:
 	void PlayDefeat();
 
 	bool bDormant = false;
+	bool bSceneHold = false;
+	bool bSceneDefeat = false;
+	bool bBeaten = false;
 	bool bFullPower = false;
 	EChaosImpactSimaeMove Move = EChaosImpactSimaeMove::None;
 	EChaosImpactSimaeMove LastMove = EChaosImpactSimaeMove::None;
@@ -321,6 +345,10 @@ private:
 	void UpdateAuraShell(bool bVisible, float Shown);
 	float AuraOwed = 0.0f;
 	float AuraPulseOwed = 0.0f;
+	/** Its hip bone (found once per model), and how high above its feet the hips are when it stands. */
+	mutable FName HipBone;
+	mutable const USkeletalMesh* HipBoneModel = nullptr;
+	float HipRest = -1.0f;
 	FRandomStream AuraStream;
 	void FeedAura(float DeltaSeconds, float Shown);
 	/** The solo room it fights in (found the first time it is needed). */

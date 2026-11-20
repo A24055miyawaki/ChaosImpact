@@ -1,4 +1,7 @@
-#include "ChaosImpactResults.h"
+﻿#include "ChaosImpactResults.h"
+#include "ChaosImpactMenuWidget.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "ChaosImpactPaintCache.h"
 #include "ChaosImpactSettings.h"
 
@@ -413,6 +416,34 @@ void FChaosImpactResultsData::ChooseAwards()
 // Podium stage
 // =====================================================================================================================
 
+void AChaosImpactPodiumStage::FilmOnce()
+{
+	if (Camera)
+	{
+		// (Now, not with the world's drawing: スマホ版 stops drawing the world behind the results, and a deferred capture
+		// would wait for it.)
+		Camera->CaptureScene();
+	}
+}
+
+void AChaosImpactPodiumStage::SetFilming(const bool bFilm)
+{
+	bFilming = bFilm;
+	if (UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		// スマホ版: filmed by the results view itself, every other frame (FilmOnce).
+		if (Camera)
+		{
+			Camera->bCaptureEveryFrame = false;
+		}
+		return;
+	}
+	if (Camera)
+	{
+		Camera->bCaptureEveryFrame = bFilm;
+	}
+}
+
 AChaosImpactPodiumStage::AChaosImpactPodiumStage()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -423,7 +454,8 @@ AChaosImpactPodiumStage::AChaosImpactPodiumStage()
 	Camera = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("Camera"));
 	Camera->SetupAttachment(Root);
 	Camera->PrimaryComponentTick.bTickEvenWhenPaused = true;
-	Camera->bCaptureEveryFrame = true;
+	// (スマホ版: filmed every other frame by the results view instead, FilmOnce.)
+	Camera->bCaptureEveryFrame = !UChaosImpactMenuWidget::IsPhoneBuild();
 	Camera->bCaptureOnMovement = false;
 	Camera->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
 	Camera->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
@@ -581,7 +613,12 @@ void AChaosImpactPodiumStage::BuildArena()
 	Picture = NewObject<UTextureRenderTarget2D>(this);
 	Picture->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8_SRGB;
 	Picture->ClearColor = FLinearColor::Black;
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	// スマホ版: half the size (a phone's screen shows no more of it; a quarter of the work).
+	Picture->InitAutoFormat(PictureWidth / 2, PictureHeight / 2);
+#else
 	Picture->InitAutoFormat(PictureWidth, PictureHeight);
+#endif
 	Picture->UpdateResourceImmediate(true);
 	Camera->TextureTarget = Picture;
 	Camera->ShowOnlyActors.Add(this);
@@ -1091,6 +1128,11 @@ void UChaosImpactResultsView::Start(const AChaosImpactGameState* Match, APlayerC
 
 void UChaosImpactResultsView::Stop()
 {
+	// (The match behind the results drawn again.)
+	if (UChaosImpactMenuWidget::IsPhoneBuild() && GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->bDisableWorldRendering = false;
+	}
 	if (IsValid(Podium))
 	{
 		Podium->Destroy();
@@ -1115,6 +1157,11 @@ void UChaosImpactResultsView::ShowStats()
 	if (Page == 0 && CanAdvance())
 	{
 		Page = 1;
+		// (The podium is not seen on the stats page: no longer filmed.)
+		if (IsValid(Podium))
+		{
+			Podium->SetFilming(false);
+		}
 		PageChangedAt = FPlatformTime::Seconds();
 		StatsTab = 0;
 		GraphFocus = INDEX_NONE;
@@ -1230,6 +1277,23 @@ void UChaosImpactResultsView::Tick(APlayerController* Owner, const float DeltaSe
 	const UWorld* World = Owner ? Owner->GetWorld() : nullptr;
 	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
 	const bool bResultsNow = Match && Match->bVersusMatch && Match->Phase == EChaosImpactOnlinePhase::Results;
+	if (UChaosImpactMenuWidget::IsPhoneBuild() && World)
+	{
+		// スマホ版: while the results cover the screen, the match behind them is not drawn (nothing of it shows), and the
+		// podium is filmed every other frame.
+		if (UGameViewportClient* View = World->GetGameViewport())
+		{
+			View->bDisableWorldRendering = bActive && ShowSeconds > 0.3f;
+		}
+		if (IsValid(Podium) && Podium->IsFilming())
+		{
+			PodiumFrame = (PodiumFrame + 1) % 2;
+			if (PodiumFrame == 0)
+			{
+				Podium->FilmOnce();
+			}
+		}
+	}
 	// Prepared right after FINISH is called (built a little each frame behind it), shown when it ends.
 	if (bResultsNow && Match->PhaseStartedAt != ResultsKey && Match->GetPhaseElapsedSeconds() >= 0.15f)
 	{
@@ -1318,6 +1382,11 @@ int32 UChaosImpactResultsView::Paint(const FGeometry& Allotted, FSlateWindowElem
 	const float Scale = FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f);
 	const FGeometry Design = Allotted.MakeChild(FVector2f(1600.0f, 900.0f),
 		FSlateLayoutTransform(Scale, FVector2f((Size.X - 1600.0f * Scale) * 0.5f, (Size.Y - 900.0f * Scale) * 0.5f)));
+	// スマホ版 upright: the podium's words in a 900-wide plan, low on the screen (the winner stands above them).
+	const bool bUpright = UChaosImpactMenuWidget::IsPhoneBuild() && Size.Y > Size.X;
+	const float UprightScale = Size.X / 900.0f;
+	const FGeometry Words = bUpright ? Allotted.MakeChild(FVector2f(1600.0f, 900.0f),
+		FSlateLayoutTransform(UprightScale, FVector2f(0.0f, Size.Y - 820.0f * UprightScale))) : Design;
 	const ResultsPaint::FPainter Full{Allotted, Elements, Layer};
 	Full.Box(0.0f, 0.0f, Size.X, Size.Y, ResultsPaint::Ink);
 
@@ -1331,15 +1400,41 @@ int32 UChaosImpactResultsView::Paint(const FGeometry& Allotted, FSlateWindowElem
 			PictureBrush.ImageSize = FVector2D(AChaosImpactPodiumStage::PictureWidth, AChaosImpactPodiumStage::PictureHeight);
 			PictureBrush.DrawAs = ESlateBrushDrawType::Image;
 		}
-		const float Cover = FMath::Max(Size.X / AChaosImpactPodiumStage::PictureWidth, Size.Y / AChaosImpactPodiumStage::PictureHeight);
+		// Upright: the part of the picture round the winners (at 0.7 of its width) across the screen, in its upper part (the
+		// words under it), its top and bottom fading into the dark.
+		const float Cover = bUpright ? Size.X / (AChaosImpactPodiumStage::PictureWidth * 0.56f)
+			: FMath::Max(Size.X / AChaosImpactPodiumStage::PictureWidth, Size.Y / AChaosImpactPodiumStage::PictureHeight);
 		const FVector2f Drawn(AChaosImpactPodiumStage::PictureWidth * Cover, AChaosImpactPodiumStage::PictureHeight * Cover);
+		FVector2f PictureAt = (Size - Drawn) * 0.5f;
+		if (bUpright)
+		{
+			// (The middle while third and second are shown, the winners from the blackout on.)
+			const float Toward = FMath::Clamp((ShowSeconds - AChaosImpactPodiumStage::BlackoutAt) / 0.5f, 0.0f, 1.0f);
+			const float Centre = FMath::Lerp(0.5f, 0.69f, Toward);
+			PictureAt = FVector2f(FMath::Clamp(Size.X * 0.5f - Drawn.X * Centre, Size.X - Drawn.X, 0.0f), Size.Y * 0.07f);
+		}
 		FSlateDrawElement::MakeBox(Elements, Layer + 1,
-			Allotted.ToPaintGeometry(Drawn, FSlateLayoutTransform((Size - Drawn) * 0.5f)), &PictureBrush);
+			Allotted.ToPaintGeometry(Drawn, FSlateLayoutTransform(PictureAt)), &PictureBrush);
+		if (bUpright)
+		{
+			const FLinearColor Dark = ResultsPaint::Ink;
+			const FLinearColor Clear = ResultsPaint::WithAlpha(Dark, 0.0f);
+			const float Fade = Drawn.Y * 0.22f;
+			const float Top = PictureAt.Y, Bottom = PictureAt.Y + Drawn.Y;
+			ResultsPaint::HudTriangles(ResultsPaint::FPainter{Allotted, Elements, Layer + 2}, {FVector2D(0.0f, Top), FVector2D(Size.X, Top), FVector2D(Size.X, Top + Fade),
+				FVector2D(0.0f, Top + Fade)}, {Dark, Dark, Clear, Clear}, {0, 1, 2, 0, 2, 3});
+			ResultsPaint::HudTriangles(ResultsPaint::FPainter{Allotted, Elements, Layer + 2}, {FVector2D(0.0f, Bottom - Fade), FVector2D(Size.X, Bottom - Fade),
+				FVector2D(Size.X, Bottom), FVector2D(0.0f, Bottom)}, {Clear, Clear, Dark, Dark}, {0, 1, 2, 0, 2, 3});
+		}
 	}
-	int32 Top = PaintPodiumPage(Design, Allotted, Elements, Layer + 2);
+	int32 Top = PaintPodiumPage(Words, Allotted, Elements, Layer + 2);
 	if (Page == 1)
 	{
-		Top = PaintStatsPage(Design, Elements, Top + 1);
+		// (Upright: a 900 x 1600 plan, as the menu's choices over it are laid out.)
+		const float TallScale = FMath::Min(Size.X / 900.0f, Size.Y / 1600.0f);
+		const FGeometry Tall = Allotted.MakeChild(FVector2f(900.0f, 1600.0f),
+			FSlateLayoutTransform(TallScale, FVector2f((Size.X - 900.0f * TallScale) * 0.5f, (Size.Y - 1600.0f * TallScale) * 0.5f)));
+		Top = PaintStatsPage(bUpright ? Tall : Design, Elements, Top + 1);
 	}
 	if (bRated)
 	{
@@ -1482,7 +1577,8 @@ int32 UChaosImpactResultsView::PaintPodiumPage(const FGeometry& Design, const FG
 		{
 			const float Blink = 0.55f + 0.45f * FMath::Cos((S - RevealSeconds) * 4.0f);
 			const ResultsPaint::FPainter Prompt{Design, Elements, Layer + 6, EaseOutPrompt(S - RevealSeconds) * Blink};
-			const FString Go = TEXT("ボタンを押して 成績へ ▶");
+			// (スマホ版: a tap.)
+			const FString Go = UChaosImpactMenuWidget::IsPhoneBuild() ? TEXT("タップして 成績へ ▶") : TEXT("ボタンを押して 成績へ ▶");
 			Prompt.Box(96.0f, 700.0f, 440.0f, 50.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.75f));
 			Prompt.Box(96.0f, 700.0f, 440.0f, 3.0f, Data.WinnerColor);
 			Prompt.Text(Go, 316.0f, 709.0f, ResultsPaint::HudFit(Go, 24.0f, 410.0f, TEXT("BlackItalic")), ResultsPaint::Paper,
@@ -1684,6 +1780,30 @@ FSlateRect UChaosImpactResultsView::GetStatsRowRect(const int32 Index, const int
 	return FSlateRect(50.0f, Top, 790.0f, Top + RowHeight - 6.0f);
 }
 
+void UChaosImpactResultsView::GetUprightSpaces(const int32 Count, float& OutTableScale, FVector2f& OutTableOffset, float& OutGraphScale,
+	FVector2f& OutGraphOffset)
+{
+	// The table (x 50..790 sideways) across the top; the graph (x 850..1490, y 140..720 with its words) under it, as big as
+	// the room down to the choices allows.
+	OutTableScale = 1.1f;
+	OutTableOffset = FVector2f(-20.0f, 60.0f);
+	const FSlateRect LastRow = GetStatsRowRect(FMath::Max(Count, 1) - 1, FMath::Max(Count, 1));
+	const float TableEnd = static_cast<float>(LastRow.Bottom) * OutTableScale + OutTableOffset.Y;
+	const float GraphTop = TableEnd + 50.0f;
+	OutGraphScale = FMath::Clamp((1320.0f - GraphTop) / 600.0f, 0.6f, 1.25f);
+	const float Width = 660.0f * OutGraphScale;
+	OutGraphOffset = FVector2f(450.0f - Width * 0.5f - 845.0f * OutGraphScale, GraphTop - 130.0f * OutGraphScale);
+}
+
+FSlateRect UChaosImpactResultsView::ToUprightTable(const FSlateRect& Rect, const int32 Count)
+{
+	float TableScale = 1.0f, GraphScale = 1.0f;
+	FVector2f TableOffset, GraphOffset;
+	GetUprightSpaces(Count, TableScale, TableOffset, GraphScale, GraphOffset);
+	return FSlateRect(Rect.Left * TableScale + TableOffset.X, Rect.Top * TableScale + TableOffset.Y,
+		Rect.Right * TableScale + TableOffset.X, Rect.Bottom * TableScale + TableOffset.Y);
+}
+
 FSlateRect UChaosImpactResultsView::GetTabArrowRect(const int32 Tab)
 {
 	// The numbers' arrow at the right edge (on to the awards), the awards' at the left (back).
@@ -1712,27 +1832,41 @@ int32 UChaosImpactResultsView::PaintStatsPage(const FGeometry& Design, FSlateWin
 	const float In = ResultsPaint::EaseOut(static_cast<float>(Now - PageChangedAt) / 0.3f);
 	const ResultsPaint::FPainter Back{Design, Elements, Layer, In};
 	Back.Box(-800.0f, -400.0f, 3200.0f, 1700.0f, ResultsPaint::WithAlpha(ResultsPaint::Ink, 0.9f));
-	const FGeometry Slant = ResultsPaint::MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.3f);
-	const ResultsPaint::FPainter Lines{Slant, Elements, Layer, In};
-	Lines.Box(StatsTab == 0 ? 820.0f : 1240.0f, -50.0f, 6.0f, 1000.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.3f));
-	Lines.Box(StatsTab == 0 ? 840.0f : 1260.0f, -50.0f, 2.0f, 1000.0f, ResultsPaint::WithAlpha(ResultsPaint::Ice, 0.25f));
+	// (Upright, the plan is 900 x 1600: the table and the graph each moved into it.)
+	const bool bTall = Design.GetLocalSize().Y > Design.GetLocalSize().X;
+	if (!bTall)
+	{
+		const FGeometry Slant = ResultsPaint::MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.3f);
+		const ResultsPaint::FPainter Lines{Slant, Elements, Layer, In};
+		Lines.Box(StatsTab == 0 ? 820.0f : 1240.0f, -50.0f, 6.0f, 1000.0f, ResultsPaint::WithAlpha(Data.WinnerColor, 0.3f));
+		Lines.Box(StatsTab == 0 ? 840.0f : 1260.0f, -50.0f, 2.0f, 1000.0f, ResultsPaint::WithAlpha(ResultsPaint::Ice, 0.25f));
+	}
+	float TableScale = 1.0f, GraphScale = 1.0f;
+	FVector2f TableOffset(0.0f, 0.0f), GraphOffset(0.0f, 0.0f);
+	if (bTall)
+	{
+		GetUprightSpaces(Data.Entries.Num(), TableScale, TableOffset, GraphScale, GraphOffset);
+	}
+	const FGeometry Table = bTall ? Design.MakeChild(FVector2f(1600.0f, 900.0f), FSlateLayoutTransform(TableScale, TableOffset)) : Design;
+	const FGeometry Graph = bTall ? Design.MakeChild(FVector2f(1600.0f, 900.0f), FSlateLayoutTransform(GraphScale, GraphOffset)) : Design;
+	const FGeometry Awards = bTall ? Design.MakeChild(FVector2f(1600.0f, 900.0f), FSlateLayoutTransform(0.5625f, FVector2f(0.0f, 420.0f))) : Design;
 
 	// The tab coming in slides from the side it was reached from.
 	const float TabIn = ResultsPaint::EaseOut(static_cast<float>(Now - FMath::Max(TabChangedAt, PageChangedAt)) / 0.3f);
 	const float Slide = (1.0f - TabIn) * (StatsTab == 0 ? -60.0f : 60.0f);
 	if (StatsTab == 0)
 	{
-		PaintNumbersTab(Design, Elements, Layer + 1, In * TabIn, Slide);
+		PaintNumbersTab(Table, Graph, Elements, Layer + 1, In * TabIn, Slide);
 	}
 	else
 	{
-		PaintAwardsTab(Design, Elements, Layer + 1, In * TabIn, Slide);
+		PaintAwardsTab(Awards, Elements, Layer + 1, In * TabIn, Slide);
 	}
 	return Layer + 6;
 }
 
-int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer,
-	const float Alpha, const float Slide) const
+int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, const FGeometry& GraphSpace, FSlateWindowElementList& Elements,
+	const int32 Layer, const float Alpha, const float Slide) const
 {
 	const double Now = FPlatformTime::Seconds();
 	const ResultsPaint::FPainter P{Design, Elements, Layer, Alpha};
@@ -1821,7 +1955,7 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 	}
 	// A scale of whole numbers on each of the four lines.
 	Highest = FMath::Max(4, FMath::DivideAndRoundUp(Highest, 4) * 4);
-	const ResultsPaint::FPainter G{Design, Elements, Layer + 1, Alpha};
+	const ResultsPaint::FPainter G{GraphSpace, Elements, Layer + 1, Alpha};
 	G.Text(Data.bBattleRoyale ? TEXT("残りHPの流れ") : Data.bDuel ? TEXT("獲得ラウンドの流れ")
 		: Data.PartyRule == ChaosImpactMatch::PartyRuby ? TEXT("ルビーの流れ") : Data.PartyRule == ChaosImpactMatch::PartyCrown ? TEXT("王冠カウントの流れ")
 		: TEXT("ポイントの流れ"), 850.0f + Slide, 140.0f, 22.0f, ResultsPaint::Paper, ResultsPaint::ETextAlign::Left, TEXT("BlackItalic"));
@@ -1871,7 +2005,7 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 			const float Y = GraphBottom - (GraphBottom - GraphTop) * FMath::Max<int32>(Item.History[Sample], 0) / static_cast<float>(Highest);
 			Points.Add(FVector2D(X, Y));
 		}
-		const ResultsPaint::FPainter Dot{Design, Elements, Layer + 3, Alpha};
+		const ResultsPaint::FPainter Dot{GraphSpace, Elements, Layer + 3, Alpha};
 		if (bOne)
 		{
 			// Filled in under the line, with a point at each sample.
@@ -1886,7 +2020,7 @@ int32 UChaosImpactResultsView::PaintNumbersTab(const FGeometry& Design, FSlateWi
 				Dot.Disc(Point, 3.5f, Item.Color);
 			}
 		}
-		FSlateDrawElement::MakeLines(Elements, Layer + 2, Design.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+		FSlateDrawElement::MakeLines(Elements, Layer + 2, GraphSpace.ToPaintGeometry(), Points, ESlateDrawEffect::None,
 			ResultsPaint::WithAlpha(Item.Color, Alpha), true, bOne ? 5.0f : Index == 0 ? 4.0f : 2.5f);
 		Dot.Disc(Points.Last(), bOne ? 8.0f : Index == 0 ? 6.0f : 4.5f, Item.Color);
 		if (bOne && Reveal >= 1.0f)

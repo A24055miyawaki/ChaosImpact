@@ -17,7 +17,8 @@
 		{
 			"Name": "JoyShockLibrary4Unreal",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [ "Win64" ]
 		}
 	]
 }

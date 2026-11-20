@@ -1,4 +1,5 @@
 #include "ChaosImpactSoloRoom.h"
+#include "ChaosImpactBossScene.h"
 #include "ChaosImpactEase.h"
 #include "ChaosImpactSfx.h"
 
@@ -9,6 +10,7 @@
 #include "TimerManager.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSimaeBoss.h"
+#include "ChaosImpactPresidentBoss.h"
 #include "EngineUtils.h"
 #include "Components/ArrowComponent.h"
 #include "Components/BoxComponent.h"
@@ -242,7 +244,7 @@ void AChaosImpactSoloRoom::Tick(const float DeltaSeconds)
 			: FMath::FInterpConstantTo(DoorRaise, Target, DeltaSeconds, 1.0f / DoorSeconds);
 		const float Eased = ChaosImpactEase::InOut(DoorRaise);
 		Door->SetRelativeLocation(DoorUpLocation - FVector(0.0f, 0.0f, SoloRoomDoorSink * (1.0f - Eased)));
-		Door->SetVisibility(DoorRaise > 0.01f);
+		Door->SetVisibility(DoorRaise > 0.01f && !bDoorHiddenForScene);
 	}
 }
 
@@ -328,7 +330,7 @@ void AChaosImpactSoloRoom::SetDoorsClosed(const bool bClosed)
 	Door->SetCollisionEnabled(bClosed ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
 	if (bClosed)
 	{
-		Door->SetVisibility(true);
+		Door->SetVisibility(!bDoorHiddenForScene);
 	}
 	for (AActor* Extra : DoorActors)
 	{
@@ -383,9 +385,36 @@ void AChaosImpactSoloRoom::HandleEnemyDestroyed(AActor* DestroyedActor)
 	}
 }
 
+void AChaosImpactSoloRoom::WakeBossAfterScene()
+{
+	AChaosImpactCharacter* Waking = Boss.Get();
+	AChaosImpactSimaeBoss* Simae = Cast<AChaosImpactSimaeBoss>(Waking);
+	AChaosImpactPresidentBoss* President = Cast<AChaosImpactPresidentBoss>(Waking);
+	if ((Simae || President) && Phase == EChaosImpactSoloRoomPhase::Boss)
+	{
+		if (Simae)
+		{
+			Simae->SetDormant(false);
+		}
+		if (President)
+		{
+			President->SetDormant(false);
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: boss %s wakes after its scene"), *GetName(), *GetNameSafe(Waking));
+		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloBoss);
+		OnBossSpawned.Broadcast(this);
+		ReceiveBossSpawned(Waking);
+	}
+}
+
 void AChaosImpactSoloRoom::FinishRoom()
 {
 	Phase = EChaosImpactSoloRoomPhase::Cleared;
+	// (2026-11-19) A room cleared: its player back to full health for the next one.
+	if (AChaosImpactCharacter* Winner = Player.Get(); Winner && !Winner->IsEliminated())
+	{
+		Winner->RefillHealth();
+	}
 	SetDoorsClosed(false);
 	BindPlayer(nullptr);
 	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloClear);
@@ -501,6 +530,10 @@ void AChaosImpactSoloRoom::SpawnWaitingBoss()
 		{
 			Simae->SetDormant(true);
 		}
+		if (AChaosImpactPresidentBoss* President = Cast<AChaosImpactPresidentBoss>(NewBoss))
+		{
+			President->SetDormant(true);
+		}
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: boss %s waiting"), *GetName(), *GetNameSafe(NewBoss));
 }
@@ -511,9 +544,34 @@ void AChaosImpactSoloRoom::SpawnBoss()
 	{
 		// It was there all along: it wakes and the fight is on.
 		Phase = EChaosImpactSoloRoomPhase::Boss;
+		AChaosImpactSimaeBoss* SceneBoss = Cast<AChaosImpactSimaeBoss>(Waiting);
+		AChaosImpactPresidentBoss* President = Cast<AChaosImpactPresidentBoss>(Waiting);
+		const AChaosImpactPlayerController* SoloPlayer = Player.IsValid() ? Cast<AChaosImpactPlayerController>(Player->GetController()) : nullptr;
+		if ((SceneBoss || President) && SoloPlayer && SoloPlayer->IsSoloMode() && !GetWorld()->URL.HasOption(TEXT("CINoBossScene")))
+		{
+			// solo mode's shima-enaga and the President: the arrival (a scene and the words before the fight) the first
+			// time, and the words after it once it is beaten, every time.
+			if (SceneBoss)
+			{
+				AChaosImpactBossScene::Begin(this, Player.Get(), SceneBoss, !bBossSceneSeen);
+			}
+			else
+			{
+				AChaosImpactBossScene::BeginPresident(this, Player.Get(), President, !bBossSceneSeen);
+			}
+			if (!bBossSceneSeen)
+			{
+				bBossSceneSeen = true;
+				return;
+			}
+		}
 		if (AChaosImpactSimaeBoss* Simae = Cast<AChaosImpactSimaeBoss>(Waiting))
 		{
 			Simae->SetDormant(false);
+		}
+		if (President)
+		{
+			President->SetDormant(false);
 		}
 		UE_LOG(LogChaosImpact, Log, TEXT("Solo room %s: boss %s wakes"), *GetName(), *GetNameSafe(Waiting));
 		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloBoss);

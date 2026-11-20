@@ -2,6 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ChaosImpactBallTypes.h"
+#include "ChaosImpactFusionEffects.h"
+#include "ChaosImpactFusion.h"
 #include "ChaosImpactHook.generated.h"
 
 class AChaosImpactBall;
@@ -47,9 +50,14 @@ public:
 	 * Server: a hook from From (the hand), heading along Direction (flat), thrown by Source. bAnchor: an anchor ball's
 	 * anchor instead (sticks in a wall or the floor and whisks the thrower there; catches nobody and nothing).
 	 */
-	static AChaosImpactHook* Release(UWorld* World, const FVector& From, const FVector& Direction, APawn* Source, bool bAnchor = false);
+	static AChaosImpactHook* Release(UWorld* World, const FVector& From, const FVector& Direction, APawn* Source, bool bAnchor = false,
+		EChaosImpactBallType Fused = EChaosImpactBallType::Normal, float Reach = 1.0f);
 
 	virtual void Tick(float DeltaSeconds) override;
+	/** One of its hits: a nova's with a ノヴァ riding along (2026-11-19), else 1. */
+	float GetNovaRiderDamage() const;
+	/** 二段アンカー (超アンカー): its second anchor has gone out from where the first one took its thrower. */
+	bool bSecondLegFired = false;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -67,12 +75,37 @@ public:
 	FVector GetAnchorPoint() const { return AnchorPoint; }
 	/** Stuck in a wall (its thrower lands in front of it) rather than the floor. */
 	bool IsWallAnchor() const { return bAnchor && FVector::Dist2D(FVector(AnchorPoint), FVector(ZipTarget)) > 20.0f; }
+	/** 合体: how fast its head goes out, an anchor flies to where it sticks, and its thrower flies there (雷フック and 電光石火 faster). */
+	float GetOutSpeed() const;
+	float GetAnchorFlightSpeed() const;
+	float GetZipSpeed() const;
+	/** 光の跳躍 (ビーム×アンカー): it went through a thin wall and stuck beyond it; its thrower flies through after it. */
+	bool IsPhaseAnchor() const { return bAnchor && bPhaseThrough; }
+	/** 貫通フック (ビーム×フック): no wall stops it, and whoever it caught is reeled in through them. */
+	bool PassesWalls() const { return !bAnchor && FusedType == EChaosImpactBallType::Beam; }
+	/** 雷フック (サンダー×フック): it rebounds off the first wall once (how far out that is; 0: it does not). */
+	float GetBounceDistance() const { return BounceAt; }
+	/** 雪玉フック / 雪玉アンカー: the snow's size (1..1.8): it catches, or its thrower rams, that much wider. */
+	float GetFusionReach() const { return FusionReach; }
+	float GetCatchRadius() const { return CatchRadius + (FusionReach - 1.0f) * SnowCatchPerReach; }
 	/** Reeling in what it caught (the thrower's hands pull hand over hand). */
 	bool IsReeling() const { return Phase == EChaosImpactHookPhase::Pull && Caught != nullptr; }
 	/** The hook's head on this machine now. */
 	FVector GetHeadLocation() const { return Head; }
 	/** Where a pulled character is reeled to: just in front of the thrower, on the side they come from. */
 	FVector GetPullTarget(const FVector& From) const;
+	/**
+	 * Server, right after Release: a fused hook or anchor ball's second kind (合体ボール). A hook brings it where it
+	 * catches someone (or turns back); an anchor where it sticks (smoke and a mine stay where the thrower left).
+	 */
+	void SetFusedType(const EChaosImpactBallType Type) { FusedType = Type; }
+	EChaosImpactBallType GetFusedType() const { return FusedType; }
+	/**
+	 * Any machine: a black hole riding along: where it draws people in from now (the hook's head on its way, an anchor's
+	 * thrower as they fly), and how far. False when it draws nobody now.
+	 */
+	bool GetFusedPull(FVector& OutCenter, float& OutRadius) const;
+	static constexpr float FusedPullRadius = 320.0f;
 
 	static constexpr float OutSpeed = 3300.0f;
 	static constexpr float Length = 2400.0f;
@@ -94,8 +127,43 @@ public:
 	static constexpr float AnchorSpeed = 4200.0f;
 	static constexpr float ZipSpeed = 2700.0f;
 	static constexpr float ZipMaxSeconds = 1.5f;
+	/** 雷フック: its head goes out this much faster; 電光石火: the anchor flies, and its thrower after it, this much faster. */
+	static constexpr float ThunderOutScale = 1.5f;
+	static constexpr float ThunderAnchorScale = 1.6f;
+	static constexpr float ThunderZipScale = 1.9f;
+	/** 雪玉フック / 雪玉アンカー: how much wider it catches (rams) for each 1 of the snow's size over 1. */
+	static constexpr float SnowCatchPerReach = 130.0f;
+	/** 光の跳躍: a wall at most this thick is gone through. */
+	static constexpr float PhaseWallMax = 450.0f;
 
 private:
+	UPROPERTY(Replicated)
+	EChaosImpactBallType FusedType = EChaosImpactBallType::Normal;
+	UPROPERTY(Replicated)
+	float FusionReach = 1.0f;
+	/** 光の跳躍: stuck beyond a thin wall it went through. */
+	UPROPERTY(Replicated)
+	bool bPhaseThrough = false;
+	/** 雷フック: how far out it meets the wall it rebounds off (0: none), and its way on from there. */
+	UPROPERTY(Replicated)
+	float BounceAt = 0.0f;
+	UPROPERTY(Replicated)
+	FVector_NetQuantizeNormal BounceHeading;
+	/** Server, at the throw: the wall a 雷フック rebounds off. */
+	void PlanBounce();
+	/** Along its way out: Along from the hand (round the rebound, for a 雷フック). */
+	FVector PathPoint(float Along) const;
+	/** This screen showed the rebound (spark and crack). */
+	bool bBounceShown = false;
+	/** The second kind's marks on the head (a 雪玉フック's snow as big as it catches). */
+	ChaosImpactFusion::FFusionLook HeadLook;
+	bool bFusionApplied = false;
+	float FusionPuffAt = 0.0f;
+	float SuctionPuffAt = 0.0f;
+	/** Server: what rides along, carried on the way (fires, frozen floor, smoke, a crackle…). */
+	ChaosImpactFusion::FFusionCarry FusionCarry;
+	/** Server: the second kind's effect, once. */
+	void ApplyFusion(const FVector& At, AActor* Victim);
 	double ServerNow() const;
 	/** The thrower's hand on this machine (where the chain starts). */
 	FVector GetHand() const;

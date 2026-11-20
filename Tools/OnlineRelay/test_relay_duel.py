@@ -19,10 +19,12 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         for room in list(self.relay.rooms.values()):
             self.relay.remove(room, "test cleanup")
 
-    async def join(self, name, rtt, mode="duel", players=1):
+    async def join(self, name, rtt, mode="duel", players=1, device="key", platform=None):
+        profile = {"chara": 3, "color": 1, "device": device}
+        if platform:
+            profile["platform"] = platform
         reply = await self.relay.handle({"op": "mm_join", "ver": "test", "mode": mode, "token": "token-" + name,
-                                         "name": name, "players": players, "rtt": rtt,
-                                         "profile": {"chara": 3, "color": 1, "device": "key"}}, ("127.0.0.1", 1))
+                                         "name": name, "players": players, "rtt": rtt, "profile": profile}, ("127.0.0.1", 1))
         self.assertTrue(reply["ok"], reply)
         return reply["ticket"]
 
@@ -56,6 +58,17 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guest["role"], "guest")
         self.assertEqual(host["role"], "host", "the quicker way to the relay hosts")
         self.assertIn("key", host)
+
+    async def test_touch_and_phone_shown_to_the_opponent(self):
+        a = await self.join("A", 30)
+        b = await self.join("B", 20, device="touch", platform="phone")
+        await self.relay.matchmake()
+        offer = await self.poll(a)
+        self.assertEqual(offer["opponent"]["device"], "touch")
+        self.assertEqual(offer["opponent"]["platform"], "phone")
+        self.assertEqual((await self.poll(b))["opponent"]["platform"], "pc", "an older game (no platform) is a PC")
+        players = self.relay.ranks.data["players"].values()
+        self.assertEqual(next(e for e in players if e["name"] == "B").get("platform"), "phone", "kept for the ranking")
 
     async def test_decline_ends_one_search_and_keeps_the_other(self):
         a = await self.join("A", 30)

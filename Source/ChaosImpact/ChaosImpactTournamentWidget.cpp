@@ -6,6 +6,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactHints.h"
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSfx.h"
@@ -592,6 +593,14 @@ void UChaosImpactTournamentWidget::Back()
 
 FReply UChaosImpactTournamentWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	// スマホ版: only a finger's moves. Slate makes up a cursor move every frame at the (absent) cursor's old place; taken
+	// for a finger, it pulled every drag back to where it began (the lists and the 配置 editor jumped to and fro).
+	if (!InMouseEvent.IsTouchEvent())
+	{
+		return FReply::Handled();
+	}
+#endif
 	if (Panel == EPanel::None)
 	{
 		return Super::NativeOnMouseMove(InGeometry, InMouseEvent);
@@ -626,6 +635,48 @@ FReply UChaosImpactTournamentWidget::NativeOnMouseButtonDown(const FGeometry& In
 	const AChaosImpactGameState* Match = GetMatch();
 	const AChaosImpactPlayerState* Me = GetMe();
 	const FVector2D Point = ToDesign(InGeometry, InMouseEvent.GetScreenSpacePosition());
+	if (IsTouch() && Match && Me && Match->IsTournament())
+	{
+		const FChaosImpactTournamentState& Tournament = Match->Tournament;
+		// The champion's screen: a tap does what Enter does (after a moment).
+		if (Tournament.bFinished && !bChampionDismissed && Panel == EPanel::Bracket)
+		{
+			if (GetNow() - Tournament.FinishedAt > 1.5)
+			{
+				bChampionDismissed = true;
+				if (Me->bRoomHost || Match->bLocalTournament)
+				{
+					if (AChaosImpactPlayerController* Controller = GetOwner()) { Controller->ServerSkipTournamentResults(); }
+				}
+				ClosePanel();
+				ChaosImpactSfx::Play2D(GetOwningPlayer(), EChaosImpactSfx::UiSelect);
+			}
+			return FReply::Handled();
+		}
+		const int32 MineNow = Tournament.FindCurrentMatch(GetMyEntrant());
+		const bool bPlaying = Me->TournamentRole == EChaosImpactTournamentRole::Competitor
+			|| (Tournament.Matches.IsValidIndex(MineNow) && Tournament.Matches[MineNow].IsPlaying());
+		if (Panel == EPanel::None && !bPlaying && Tournament.AskingMatch == INDEX_NONE && MenuButtonRect().IsInside(Point))
+		{
+			OpenPanel(EPanel::Menu);
+			ChaosImpactSfx::Play2D(GetOwningPlayer(), EChaosImpactSfx::UiSelect);
+			return FReply::Handled();
+		}
+		if (Panel != EPanel::None && Panel != EPanel::Menu)
+		{
+			if (PanelButtonRect(0).IsInside(Point))
+			{
+				ClosePanel();
+				ChaosImpactSfx::Play2D(GetOwningPlayer(), EChaosImpactSfx::UiBack);
+				return FReply::Handled();
+			}
+			if (PanelButtonRect(1).IsInside(Point))
+			{
+				Back();
+				return FReply::Handled();
+			}
+		}
+	}
 	if (Match && Me && Me->bRoomHost && Match->Tournament.AskingMatch != INDEX_NONE)
 	{
 		for (int32 Index = 0; Index < 3; ++Index)
@@ -772,12 +823,65 @@ void UChaosImpactTournamentWidget::PaintPortrait(const FGeometry& Design, FSlate
 
 FGeometry UChaosImpactTournamentWidget::MakeDesign(const FGeometry& Allotted) const
 {
-	// 900 high and as wide as this player's part of the screen allows (a half of a split screen is narrower).
+	// 900 high and as wide as this player's part of the screen allows (a half of a split screen is narrower);
+	// スマホ版 held upright: 900 x 1600.
 	const FVector2f Size = Allotted.GetLocalSize();
-	DesignWidth = FMath::Clamp(Size.Y > 1.0f ? TwDesignH * Size.X / Size.Y : 1600.0f, 1000.0f, 1600.0f);
-	const float Scale = FMath::Min(Size.X / DesignWidth, Size.Y / TwDesignH);
-	return Allotted.MakeChild(FVector2f(DesignWidth, TwDesignH),
-		FSlateLayoutTransform(Scale, FVector2f((Size.X - DesignWidth * Scale) * 0.5f, (Size.Y - TwDesignH * Scale) * 0.5f)));
+	bTall = UChaosImpactMenuWidget::IsPhoneBuild() && Size.Y > Size.X * 1.15f;
+	DesignHeight = bTall ? 1600.0f : TwDesignH;
+	DesignWidth = bTall ? 900.0f : FMath::Clamp(Size.Y > 1.0f ? TwDesignH * Size.X / Size.Y : 1600.0f, 1000.0f, 1600.0f);
+	const float Scale = FMath::Min(Size.X / DesignWidth, Size.Y / DesignHeight);
+	return Allotted.MakeChild(FVector2f(DesignWidth, DesignHeight),
+		FSlateLayoutTransform(Scale, FVector2f((Size.X - DesignWidth * Scale) * 0.5f, (Size.Y - DesignHeight * Scale) * 0.5f)));
+}
+
+FGeometry UChaosImpactTournamentWidget::MidDesign(const FGeometry& Design) const
+{
+	return bTall ? Design.MakeChild(FVector2f(DesignWidth, TwDesignH), FSlateLayoutTransform(FVector2f(0.0f, MidOffset()))) : Design;
+}
+
+float UChaosImpactTournamentWidget::BracketTop() const
+{
+	return bTall ? 236.0f : TwBracketTop;
+}
+
+float UChaosImpactTournamentWidget::BracketBottom() const
+{
+	const AChaosImpactGameState* Match = GetMatch();
+	const bool bPlacement = Match && Match->Tournament.Settings.bPlacementMatches;
+	return bTall ? (bPlacement ? 1330.0f : 1450.0f) : TwBracketBottom;
+}
+
+bool UChaosImpactTournamentWidget::IsTouch() const
+{
+	return UChaosImpactMenuWidget::IsPhoneBuild() && !ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(GetOwningPlayer()));
+}
+
+FBox2D UChaosImpactTournamentWidget::MenuButtonRect() const
+{
+	// Top left under the round and where this player stands (the bottom left is the move stick's).
+	const float W = 380.0f, H = 68.0f;
+	return FBox2D(FVector2D(24.0f, 112.0f), FVector2D(24.0f + W, 112.0f + H));
+}
+
+FBox2D UChaosImpactTournamentWidget::PanelButtonRect(const int32 Index) const
+{
+	// Along the foot, from the right.
+	const float W = bTall ? 260.0f : 240.0f, H = 64.0f, Gap = 16.0f;
+	const float Right = DesignWidth - 24.0f - Index * (W + Gap);
+	return FBox2D(FVector2D(Right - W, DesignHeight - 12.0f - H), FVector2D(Right, DesignHeight - 12.0f));
+}
+
+void UChaosImpactTournamentWidget::PaintTouchButton(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const FBox2D& R,
+	const FString& Label, const FLinearColor& Accent) const
+{
+	const FPainter P{Design, Elements, Layer};
+	const float X = static_cast<float>(R.Min.X), Y = static_cast<float>(R.Min.Y);
+	const float W = static_cast<float>(R.GetSize().X), H = static_cast<float>(R.GetSize().Y);
+	RoundedBox(P, X, Y, W, H, 14.0f, FLinearColor(0.02f, 0.03f, 0.07f, 0.94f));
+	P.Outline(X, Y, W, H, WithAlpha(Paper, 0.22f), 1.0f);
+	FPainter{Design, Elements, Layer + 1}.Box(X, Y + 12.0f, 5.0f, H - 24.0f, Accent);
+	const float Size = HudFit(Label, 28.0f, W - 36.0f);
+	FPainter{Design, Elements, Layer + 1}.Text(Label, X + W * 0.5f + 3.0f, Y + H * 0.5f - Size * 0.74f, Size, Paper, ETextAlign::Center, TEXT("Black"));
 }
 
 FVector2D UChaosImpactTournamentWidget::ToDesign(const FGeometry& Allotted, const FVector2D& ScreenPoint) const
@@ -785,14 +889,19 @@ FVector2D UChaosImpactTournamentWidget::ToDesign(const FGeometry& Allotted, cons
 	MakeDesign(Allotted);
 	const FVector2f Local = Allotted.AbsoluteToLocal(FVector2f(ScreenPoint));
 	const FVector2f Size = Allotted.GetLocalSize();
-	const float Scale = FMath::Min(Size.X / DesignWidth, Size.Y / TwDesignH);
-	return FVector2D((Local.X - (Size.X - DesignWidth * Scale) * 0.5f) / Scale, (Local.Y - (Size.Y - TwDesignH * Scale) * 0.5f) / Scale);
+	const float Scale = FMath::Min(Size.X / DesignWidth, Size.Y / DesignHeight);
+	return FVector2D((Local.X - (Size.X - DesignWidth * Scale) * 0.5f) / Scale, (Local.Y - (Size.Y - DesignHeight * Scale) * 0.5f) / Scale);
 }
 
 float UChaosImpactTournamentWidget::CardWidth() const
 {
 	const AChaosImpactGameState* Match = GetMatch();
 	const int32 Size = Match ? Match->Tournament.BracketSize : 8;
+	if (bTall)
+	{
+		const int32 Rounds = Match ? FMath::Max(Match->Tournament.Rounds, 1) : 3;
+		return (DesignWidth - 48.0f) / Rounds - 34.0f;
+	}
 	const float Narrow = FMath::Clamp(DesignWidth / 1600.0f, 0.78f, 1.0f);
 	return (Size >= 32 ? 148.0f : Size >= 16 ? 172.0f : Size >= 8 ? 204.0f : 230.0f) * Narrow;
 }
@@ -801,6 +910,10 @@ float UChaosImpactTournamentWidget::CardHeight() const
 {
 	const AChaosImpactGameState* Match = GetMatch();
 	const int32 Size = Match ? Match->Tournament.BracketSize : 8;
+	if (bTall)
+	{
+		return FMath::Min(66.0f, (BracketBottom() - BracketTop()) / FMath::Max(Size, 2) * 0.84f);
+	}
 	return Size >= 32 ? 34.0f : Size >= 16 ? 40.0f : 50.0f;
 }
 
@@ -809,21 +922,33 @@ float UChaosImpactTournamentWidget::CardY(const int32 InRound, const int32 Match
 	const AChaosImpactGameState* Match = GetMatch();
 	if (!Match)
 	{
-		return TwBracketTop;
+		return BracketTop();
 	}
 	const FChaosImpactTournamentState& Tournament = Match->Tournament;
+	if (bTall)
+	{
+		// One-sided: the first round's cards evenly down the screen; each later card between the two that send it.
+		if (InRound <= 1)
+		{
+			const int32 Rows = FMath::Max(Tournament.MatchesInRound(1) * 2, 2);
+			const float Step = (BracketBottom() - BracketTop()) / Rows;
+			return BracketTop() + Step * (MatchSlot * 2 + Side + 0.5f) - CardHeight() * 0.5f;
+		}
+		const int32 Feeder = MatchSlot * 2 + Side;
+		return (CardY(InRound - 1, Feeder, 0) + CardY(InRound - 1, Feeder, 1)) * 0.5f;
+	}
 	if (InRound >= Tournament.Rounds)
 	{
 		// The final's two cards, side by side in the middle.
-		return (TwBracketTop + TwBracketBottom) * 0.5f - CardHeight() * 0.5f + 40.0f;
+		return (BracketTop() + BracketBottom()) * 0.5f - CardHeight() * 0.5f + 40.0f;
 	}
 	if (InRound <= 1)
 	{
 		// The first round, evenly down each half.
 		const int32 PerHalf = FMath::Max(Tournament.MatchesInRound(1) / 2, 1);
 		const int32 Row = (MatchSlot % PerHalf) * 2 + Side;
-		const float Step = (TwBracketBottom - TwBracketTop) / (PerHalf * 2);
-		return TwBracketTop + Step * (Row + 0.5f) - CardHeight() * 0.5f;
+		const float Step = (BracketBottom() - BracketTop()) / (PerHalf * 2);
+		return BracketTop() + Step * (Row + 0.5f) - CardHeight() * 0.5f;
 	}
 	// Later rounds: halfway between the two cards of the match that sends this one.
 	const int32 Feeder = MatchSlot * 2 + Side;
@@ -835,6 +960,12 @@ FVector2D UChaosImpactTournamentWidget::CardAt(const int32 InRound, const int32 
 	const AChaosImpactGameState* Match = GetMatch();
 	const int32 Rounds = Match ? Match->Tournament.Rounds : 1;
 	const float W = CardWidth();
+	if (bTall)
+	{
+		if (bOutRight) { *bOutRight = false; }
+		const float Column = (DesignWidth - 48.0f) / FMath::Max(Rounds, 1);
+		return FVector2D(24.0f + (InRound - 1) * Column, CardY(InRound, MatchSlot, Side));
+	}
 	if (InRound >= Rounds)
 	{
 		if (bOutRight) { *bOutRight = Side == 1; }
@@ -866,20 +997,26 @@ FBox2D UChaosImpactTournamentWidget::MatchBox(const int32 MatchIndex) const
 
 FBox2D UChaosImpactTournamentWidget::MenuRect(const int32 Index) const
 {
-	const FVector2D At(DesignWidth * 0.5f - 240.0f, 300.0f + Index * 104.0f);
+	const FVector2D At(DesignWidth * 0.5f - 240.0f, 300.0f + Index * 104.0f + MidOffset());
 	return FBox2D(At, At + FVector2D(480.0f, Index == 3 ? 66.0f : 90.0f));
 }
 
 FBox2D UChaosImpactTournamentWidget::WatchRect(const int32 Index) const
 {
 	const float W = FMath::Min(660.0f, DesignWidth - 60.0f);
-	const FVector2D At(DesignWidth * 0.5f - W * 0.5f, 250.0f + Index * 74.0f);
+	const FVector2D At(DesignWidth * 0.5f - W * 0.5f, 250.0f + Index * 74.0f + MidOffset());
 	return FBox2D(At, At + FVector2D(W, 64.0f));
 }
 
 FBox2D UChaosImpactTournamentWidget::AskRect(const int32 Index) const
 {
-	const FVector2D At(DesignWidth * 0.5f - 280.0f + Index * 190.0f, 520.0f);
+	if (IsTouch())
+	{
+		// (Big enough for a thumb.)
+		const FVector2D At(DesignWidth * 0.5f - 340.0f + Index * 230.0f, 506.0f + MidOffset());
+		return FBox2D(At, At + FVector2D(220.0f, 90.0f));
+	}
+	const FVector2D At(DesignWidth * 0.5f - 280.0f + Index * 190.0f, 520.0f + MidOffset());
 	return FBox2D(At, At + FVector2D(176.0f, 64.0f));
 }
 
@@ -956,6 +1093,9 @@ int32 UChaosImpactTournamentWidget::NativePaint(const FPaintArgs& Args, const FG
 	}
 	const FChaosImpactTournamentState& Tournament = Match->Tournament;
 	const FGeometry Design = MakeDesign(AllottedGeometry);
+	// (The middle band: where the calls, the menu, the questions and the champion stand, upright too.)
+	const FGeometry Mid = MidDesign(Design);
+	const bool bTouch = IsTouch();
 	const FVector2f Size = AllottedGeometry.GetLocalSize();
 	const int32 MyArena = GetMyArena();
 	const int32 Mine = Tournament.FindCurrentMatch(GetMyEntrant());
@@ -968,10 +1108,17 @@ int32 UChaosImpactTournamentWidget::NativePaint(const FPaintArgs& Args, const FG
 	if (bInArena && Panel == EPanel::None && !bOpening && GetMe() && GetMe()->TournamentRole != EChaosImpactTournamentRole::Competitor)
 	{
 		const FPainter Hint{Design, OutDrawElements, Layer + 20};
-		// (Top left, clear of the player's own HP and name at the bottom.)
-		RoundedBox(Hint, 24.0f, 96.0f, 330.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
-		const FString MenuHint = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Select|Tab}：トーナメントメニュー"));
-		Hint.Text(MenuHint, 40.0f, 104.0f, HudFit(MenuHint, 17.0f, 300.0f, TEXT("Bold")), WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
+		if (bTouch)
+		{
+			PaintTouchButton(Design, OutDrawElements, Layer + 20, MenuButtonRect(), TEXT("トーナメントメニュー"), Gold);
+		}
+		else
+		{
+			// (Top left, clear of the player's own HP and name at the bottom.)
+			RoundedBox(Hint, 24.0f, 96.0f, 330.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
+			const FString MenuHint = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Select|Tab}：トーナメントメニュー"));
+			Hint.Text(MenuHint, 40.0f, 104.0f, HudFit(MenuHint, 17.0f, 300.0f, TEXT("Bold")), WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
+		}
 	}
 	// Not in a panel: a small strip with where things stand.
 	if (Panel == EPanel::None && !bCalled && !bInArena)
@@ -981,7 +1128,7 @@ int32 UChaosImpactTournamentWidget::NativePaint(const FPaintArgs& Args, const FG
 	// (In an arena the match's own opening names the round: the band would lie on top of it.)
 	if (!bCalled && !bInArena)
 	{
-		PaintRoundBanner(Design, OutDrawElements, Layer + 30);
+		PaintRoundBanner(Mid, OutDrawElements, Layer + 30);
 	}
 	if (Panel != EPanel::None)
 	{
@@ -993,31 +1140,38 @@ int32 UChaosImpactTournamentWidget::NativePaint(const FPaintArgs& Args, const FG
 			PaintBracket(Design, OutDrawElements, Layer + 41, In);
 			if (Tournament.bFinished)
 			{
-				if (!bChampionDismissed) { PaintChampion(Design, OutDrawElements, Layer + 70, 1.0f); }
+				if (!bChampionDismissed) { PaintChampion(Mid, OutDrawElements, Layer + 70, 1.0f); }
 			}
 		}
 		else if (Panel == EPanel::Menu)
 		{
-			PaintMenu(Design, OutDrawElements, Layer + 41);
+			PaintMenu(Mid, OutDrawElements, Layer + 41);
 		}
 		else if (Panel == EPanel::Watch)
 		{
-			PaintWatchList(Design, OutDrawElements, Layer + 41);
+			PaintWatchList(Mid, OutDrawElements, Layer + 41);
+		}
+		// By touch: the way out of a panel (and from the bracket or the list, back to the menu).
+		const bool bChampion = Panel == EPanel::Bracket && Tournament.bFinished && !bChampionDismissed;
+		if (bTouch && Panel != EPanel::Menu && !bChampion)
+		{
+			PaintTouchButton(Design, OutDrawElements, Layer + 60, PanelButtonRect(0), TEXT("とじる"), Muted);
+			PaintTouchButton(Design, OutDrawElements, Layer + 60, PanelButtonRect(1), Panel == EPanel::Watch ? TEXT("もどる") : TEXT("メニュー"), Gold);
 		}
 	}
 	if (bCalled)
 	{
-		PaintCall(Design, OutDrawElements, Layer + 90, Mine);
+		PaintCall(Mid, OutDrawElements, Layer + 90, Mine);
 	}
 	if (Tournament.AskingMatch != INDEX_NONE)
 	{
-		PaintAsk(Design, OutDrawElements, Layer + 100);
+		PaintAsk(Mid, OutDrawElements, Layer + 100);
 	}
 	// A short notice.
 	const double Since = FPlatformTime::Seconds() - ToastAt;
 	if (Since < 2.2)
 	{
-		const FPainter Note{Design, OutDrawElements, Layer + 110, FMath::Clamp(static_cast<float>(2.2 - Since) / 0.3f, 0.0f, 1.0f)};
+		const FPainter Note{Mid, OutDrawElements, Layer + 110, FMath::Clamp(static_cast<float>(2.2 - Since) / 0.3f, 0.0f, 1.0f)};
 		const float W = HudMeasure(Toast, 22.0f, TEXT("Bold")) + 60.0f;
 		RoundedBox(Note, (DesignWidth * 0.5f) - W * 0.5f, 770.0f, W, 50.0f, 14.0f, FLinearColor(0.01f, 0.015f, 0.04f, 0.94f));
 		Note.Text(Toast, (DesignWidth * 0.5f), 780.0f, 22.0f, Gold, ETextAlign::Center, TEXT("Bold"));
@@ -1181,10 +1335,15 @@ void UChaosImpactTournamentWidget::PaintStatus(const FGeometry& Design, FSlateWi
 		FPainter{Design, Elements, Layer + 1}.Text(Where, 126.0f + RoundW, 34.0f, 15.0f, Ice, ETextAlign::Left, TEXT("Bold"));
 	}
 	P.Text(Status, 104.0f, 62.0f, 19.0f, WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
-	// Bottom-left: how to open the menu.
-	RoundedBox(P, 24.0f, 838.0f, 330.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
+	// Bottom-left: how to open the menu (by touch, a button).
+	if (IsTouch())
+	{
+		PaintTouchButton(Design, Elements, Layer + 2, MenuButtonRect(), TEXT("トーナメントメニュー"), Gold);
+		return;
+	}
+	RoundedBox(P, 24.0f, DesignHeight - 62.0f, 330.0f, 38.0f, 12.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.7f));
 	const FString MenuHint = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Select|Tab}：トーナメントメニュー"));
-	P.Text(MenuHint, 40.0f, 846.0f, HudFit(MenuHint, 17.0f, 300.0f, TEXT("Bold")), WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
+	P.Text(MenuHint, 40.0f, DesignHeight - 54.0f, HudFit(MenuHint, 17.0f, 300.0f, TEXT("Bold")), WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Bold"));
 }
 
 void UChaosImpactTournamentWidget::PaintRoundBanner(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
@@ -1318,25 +1477,29 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 	const FPainter P{Design, Elements, Layer, Alpha};
 
 	// Behind: faint rings round the middle and a soft floor of light where the final is.
-	for (int32 Ring = 0; Ring < 5; ++Ring)
+	for (int32 Ring = 0; Ring < 5 && !bTall; ++Ring)
 	{
 		P.Ring(FVector2D((DesignWidth * 0.5f), 480.0f), 120.0f + Ring * 90.0f, FLinearColor(0.2f, 0.35f, 0.7f, 0.05f - Ring * 0.008f), 2.0f, 96);
 	}
-	P.Box(0.0f, 132.0f, DesignWidth, 1.0f, WithAlpha(TwLineDim, 0.6f));
+	P.Box(0.0f, bTall ? 178.0f : 132.0f, DesignWidth, 1.0f, WithAlpha(TwLineDim, 0.6f));
 
 	// The title, and where the tournament stands.
 	const float TitleIn = TwEase(Since / 0.6f);
-	HudText3D(FPainter{Design, Elements, Layer + 2, Alpha * TitleIn}, Tournament.Title, 40.0f - (1.0f - TitleIn) * 60.0f, 28.0f, 44.0f, Paper,
-		ETextAlign::Left);
+	HudText3D(FPainter{Design, Elements, Layer + 2, Alpha * TitleIn}, Tournament.Title, 40.0f - (1.0f - TitleIn) * 60.0f, 28.0f,
+		HudFit(Tournament.Title, 44.0f, bTall ? DesignWidth - 80.0f : DesignWidth - 520.0f, TEXT("BlackItalic")), Paper, ETextAlign::Left);
 	const FString Sub = FString::Printf(TEXT("%d人  ・  %s  ・  2本先取"), Tournament.Entrants.Num(),
 		*(FString(Tournament.IsSimultaneous() ? TEXT("同時進行") : TEXT("1試合ずつ")) + (Tournament.Settings.bPlacementMatches ? TEXT("・順位決定戦あり") : TEXT(""))));
-	P.Text(Sub, 44.0f, 90.0f, 18.0f, WithAlpha(Paper, 0.7f), ETextAlign::Left, TEXT("Bold"));
 	{
+		// (Upright: the state under the line of rules, on the left.)
 		const FString State = Tournament.bFinished ? FString(TEXT("大会終了")) : Tournament.Round <= 0 ? FString(TEXT("まもなく開始"))
 			: FString::Printf(TEXT("%s  進行中"), *Tournament.GetRoundName(Tournament.Round));
 		const float SW = HudMeasure(State, 22.0f, TEXT("BlackItalic")) + 44.0f;
-		RoundedBox(P, DesignWidth - 40.0f - SW, 34.0f, SW, 44.0f, 14.0f, Tournament.bFinished ? WithAlpha(Gold, 0.9f) : FLinearColor(0.05f, 0.08f, 0.18f, 0.95f));
-		FPainter{Design, Elements, Layer + 1, Alpha}.Text(State, DesignWidth - 40.0f - SW * 0.5f, 42.0f, 22.0f, Tournament.bFinished ? Ink : Paper,
+		const float SX = bTall ? 40.0f : DesignWidth - 40.0f - SW;
+		const float SY = bTall ? 124.0f : 34.0f;
+		P.Text(Sub, 44.0f, bTall ? 88.0f : 90.0f, HudFit(Sub, bTall ? 22.0f : 18.0f, DesignWidth - 88.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), ETextAlign::Left,
+			TEXT("Bold"));
+		RoundedBox(P, SX, SY, SW, 44.0f, 14.0f, Tournament.bFinished ? WithAlpha(Gold, 0.9f) : FLinearColor(0.05f, 0.08f, 0.18f, 0.95f));
+		FPainter{Design, Elements, Layer + 1, Alpha}.Text(State, SX + SW * 0.5f, SY + 8.0f, 22.0f, Tournament.bFinished ? Ink : Paper,
 			ETextAlign::Center, TEXT("BlackItalic"));
 	}
 
@@ -1346,6 +1509,13 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 		const bool bNow = Round == Tournament.Round && !Tournament.bFinished;
 		const FLinearColor Color = bNow ? Gold : WithAlpha(Paper, Round < Tournament.Round ? 0.45f : 0.7f);
 		const FString Name = Tournament.GetRoundName(Round);
+		if (bTall)
+		{
+			// Over each column.
+			const FVector2D At = CardAt(Round, 0, 0);
+			P.Text(Name, At.X + W * 0.5f, BracketTop() - 46.0f, HudFit(Name, 24.0f, W + 20.0f, TEXT("BlackItalic")), Color, ETextAlign::Center, TEXT("BlackItalic"));
+			continue;
+		}
 		if (Round >= Tournament.Rounds)
 		{
 			P.Text(Name, (DesignWidth * 0.5f), TwBracketTop - 6.0f, 24.0f, Color, ETextAlign::Center, TEXT("BlackItalic"));
@@ -1418,8 +1588,17 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 		const FVector2D L = CardAt(Tournament.Rounds, 0, 0);
 		const FVector2D R = CardAt(Tournament.Rounds, 0, 1);
 		const float Draw = TwEase((Since - 0.6f - Tournament.Rounds * 0.25f) / 0.6f);
-		TwPaintTrophy(FPainter{Design, Elements, Layer + 3, Alpha * Draw}, FVector2D((DesignWidth * 0.5f), L.Y - 34.0f), 120.0f, FMath::Frac(LocalTime * 0.2f));
-		P.Text(TEXT("VS"), (DesignWidth * 0.5f), L.Y + H * 0.5f - 13.0f, 22.0f, WithAlpha(Gold, Draw), ETextAlign::Center, TEXT("BlackItalic"));
+		if (bTall)
+		{
+			// Upright: the final's two cards one over the other in the last column, the cup above them, VS between.
+			TwPaintTrophy(FPainter{Design, Elements, Layer + 3, Alpha * Draw}, FVector2D(L.X + W * 0.5f, L.Y - 18.0f), 110.0f, FMath::Frac(LocalTime * 0.2f));
+			P.Text(TEXT("VS"), L.X + W * 0.5f, (L.Y + H + R.Y) * 0.5f - 13.0f, 22.0f, WithAlpha(Gold, Draw), ETextAlign::Center, TEXT("BlackItalic"));
+		}
+		else
+		{
+			TwPaintTrophy(FPainter{Design, Elements, Layer + 3, Alpha * Draw}, FVector2D((DesignWidth * 0.5f), L.Y - 34.0f), 120.0f, FMath::Frac(LocalTime * 0.2f));
+			P.Text(TEXT("VS"), (DesignWidth * 0.5f), L.Y + H * 0.5f - 13.0f, 22.0f, WithAlpha(Gold, Draw), ETextAlign::Center, TEXT("BlackItalic"));
+		}
 		if (Tournament.Matches.IsValidIndex(Final))
 		{
 			const FChaosImpactTournamentMatch& Each = Tournament.Matches[Final];
@@ -1429,7 +1608,7 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 			if (Each.IsPlaying())
 			{
 				const float Pulse = 0.5f + 0.5f * FMath::Sin(LocalTime * 5.0f);
-				FPainter{Design, Elements, Layer + 9, Alpha}.Outline(L.X - 4.0f, L.Y - 4.0f, R.X + W - L.X + 8.0f, H + 8.0f, WithAlpha(TwLive, 0.5f + 0.5f * Pulse), 2.0f);
+				FPainter{Design, Elements, Layer + 9, Alpha}.Outline(L.X - 4.0f, L.Y - 4.0f, R.X + W - L.X + 8.0f, R.Y + H - L.Y + 8.0f, WithAlpha(TwLive, 0.5f + 0.5f * Pulse), 2.0f);
 			}
 		}
 	}
@@ -1446,7 +1625,7 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 		{
 			bool bRight = false;
 			const FVector2D At = CardAt(Each.Round, Each.Slot, Side, &bRight);
-			const float Delay = 0.15f + (Each.Round - 1) * 0.25f + (At.Y - TwBracketTop) / (TwBracketBottom - TwBracketTop) * 0.35f;
+			const float Delay = 0.15f + (Each.Round - 1) * 0.25f + (At.Y - BracketTop()) / (BracketBottom() - BracketTop()) * 0.35f;
 			const float In = TwEase((Since - Delay) / 0.4f);
 			// A winner arriving in the next round pops in as its line reaches it.
 			float Arrive = 1.0f;
@@ -1475,8 +1654,16 @@ void UChaosImpactTournamentWidget::PaintBracket(const FGeometry& Design, FSlateW
 			static_cast<float>(Box.GetSize().X) + 12.0f, static_cast<float>(Box.GetSize().Y) + 12.0f, WithAlpha(Gold, Pulse), 3.0f);
 	}
 
-	// Hints along the bottom.
+	// Hints along the bottom (by touch: what a tap does, the buttons beside it).
 	const FPainter Hint{Design, Elements, Layer + 12, Alpha};
+	if (IsTouch())
+	{
+		Hint.Box(0.0f, DesignHeight - 90.0f, DesignWidth, 90.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.8f));
+		const FString Tap = TEXT("LIVEの試合をタップで観戦");
+		const float Room = static_cast<float>(PanelButtonRect(1).Min.X) - 48.0f;
+		Hint.Text(Tap, 32.0f, DesignHeight - 58.0f, HudFit(Tap, 22.0f, Room, TEXT("Bold")), WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
+		return;
+	}
 	Hint.Box(0.0f, 842.0f, DesignWidth, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.8f));
 	// (In the names of what this player is holding: the keyboard's arrows, Enter, BackSpace and Tab.)
 	const FString Keys = ChaosImpactHints::Text(GetOwningPlayer(), DesignWidth < 1400.0f
@@ -1508,28 +1695,30 @@ void UChaosImpactTournamentWidget::PaintPlacementStrip(const FGeometry& Design, 
 		}
 	}
 	const FPainter P{Design, Elements, Layer, Alpha};
-	const float Y = 806.0f;
+	const float Y = bTall ? BracketBottom() + 18.0f : 806.0f;
 	P.Text(TEXT("順位決定戦"), 40.0f, Y + 6.0f, 18.0f, Gold, ETextAlign::Left, TEXT("BlackItalic"), 2.0f, Ink);
 	if (Shown.IsEmpty())
 	{
-		P.Text(ShowRound <= 1 ? FString(TEXT("1回戦のあとから始まります")) : FString(TEXT("このラウンドはありません")), 150.0f, Y + 8.0f, 16.0f,
+		P.Text(ShowRound <= 1 ? FString(TEXT("1回戦のあとから始まります")) : FString(TEXT("このラウンドはありません")), 160.0f, Y + 8.0f, 16.0f,
 			WithAlpha(Paper, 0.6f), ETextAlign::Left, TEXT("Bold"));
 		return;
 	}
 	const float Room = DesignWidth - 190.0f;
-	const float ChipW = FMath::Min(330.0f, Room / Shown.Num() - 8.0f);
-	for (int32 Row = 0; Row < Shown.Num(); ++Row)
+	// (Upright: two to a row under the label.)
+	const float ChipW = bTall ? (DesignWidth - 88.0f) * 0.5f : FMath::Min(330.0f, Room / Shown.Num() - 8.0f);
+	for (int32 Row = 0; Row < Shown.Num() && (!bTall || Row < 4); ++Row)
 	{
 		const FChaosImpactTournamentMatch& Each = Tournament.Matches[Shown[Row]];
-		const float X = 150.0f + Row * (ChipW + 8.0f);
+		const float X = bTall ? 40.0f + (Row % 2) * (ChipW + 8.0f) : 150.0f + Row * (ChipW + 8.0f);
+		const float ChipY = bTall ? BracketBottom() + 50.0f + (Row / 2) * 38.0f : 806.0f;
 		const bool bLive = Each.IsPlaying();
-		RoundedBox(P, X, Y, ChipW, 32.0f, 9.0f, bLive ? WithAlpha(TwLive, 0.35f) : FLinearColor(0.03f, 0.045f, 0.1f, 0.92f));
+		RoundedBox(P, X, ChipY, ChipW, 32.0f, 9.0f, bLive ? WithAlpha(TwLive, 0.35f) : FLinearColor(0.03f, 0.045f, 0.1f, 0.92f));
 		const auto Who = [&Tournament](const int32 Entrant) { return Tournament.Entrants.IsValidIndex(Entrant) ? Tournament.Entrants[Entrant].Name : FString(TEXT("？")); };
 		const int32 Wins0 = bLive && Match->TournamentArenas.IsValidIndex(Each.Arena) ? Match->TournamentArenas[Each.Arena].Duel.Wins[0] : Each.Wins[0];
 		const int32 Wins1 = bLive && Match->TournamentArenas.IsValidIndex(Each.Arena) ? Match->TournamentArenas[Each.Arena].Duel.Wins[1] : Each.Wins[1];
 		const FString Score = Each.IsOver() || bLive ? FString::Printf(TEXT("%d-%d"), Wins0, Wins1) : FString(TEXT("vs"));
 		const FString Line = FString::Printf(TEXT("%s  %s %s %s"), *Tournament.GetMatchName(Shown[Row]), *Who(Each.Entrants[0]), *Score, *Who(Each.Entrants[1]));
-		HudAbove(P, 1).Text(Line, X + 12.0f, Y + 6.0f, HudFit(Line, 16.0f, ChipW - 24.0f, TEXT("Bold")), Each.IsOver() ? WithAlpha(Paper, 0.6f) : Paper,
+		HudAbove(P, 1).Text(Line, X + 12.0f, ChipY + 6.0f, HudFit(Line, 16.0f, ChipW - 24.0f, TEXT("Bold")), Each.IsOver() ? WithAlpha(Paper, 0.6f) : Paper,
 			ETextAlign::Left, TEXT("Bold"));
 	}
 }
@@ -1550,7 +1739,7 @@ void UChaosImpactTournamentWidget::PaintChampion(const FGeometry& Design, FSlate
 	const float In = TwEase((T - 0.6f) / 0.6f);
 	// A darker veil, light rising behind the champion, falling paper.
 	const FPainter P{Design, Elements, Layer, Alpha * In};
-	P.Box(0.0f, 0.0f, DesignWidth, TwDesignH, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+	P.Box(0.0f, -MidOffset(), DesignWidth, DesignHeight, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 	for (int32 Ray = 0; Ray < 14; ++Ray)
 	{
 		const float Angle = Ray * UE_TWO_PI / 14.0f + LocalTime * 0.12f;
@@ -1588,9 +1777,11 @@ void UChaosImpactTournamentWidget::PaintChampion(const FGeometry& Design, FSlate
 	const float Left = FMath::Max(0.0f, ChaosImpactTournament::ChampionSeconds - T);
 	const AChaosImpactPlayerState* Me = GetMe();
 	const bool bCanEnd = (Me && Me->bRoomHost) || Match->bLocalTournament;
-	const FString Foot = FString::Printf(TEXT("%d秒後にロビーへ戻ります　　%s：%s"), FMath::CeilToInt(Left),
+	const FString Foot = IsTouch() ? FString::Printf(TEXT("%d秒後にロビーへ戻ります　　タップ：%s"), FMath::CeilToInt(Left), bCanEnd ? TEXT("すぐ戻る") : TEXT("とじる"))
+		: FString::Printf(TEXT("%d秒後にロビーへ戻ります　　%s：%s"), FMath::CeilToInt(Left),
 		*ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}")), bCanEnd ? TEXT("すぐ戻る") : TEXT("とじる"));
-	P.Text(Foot, (DesignWidth * 0.5f), 760.0f, HudFit(Foot, 20.0f, 900.0f, TEXT("Bold")), WithAlpha(Paper, 0.75f), ETextAlign::Center, TEXT("Bold"));
+	P.Text(Foot, (DesignWidth * 0.5f), 760.0f, HudFit(Foot, IsTouch() ? 26.0f : 20.0f, DesignWidth - 60.0f, TEXT("Bold")), WithAlpha(Paper, 0.75f),
+		ETextAlign::Center, TEXT("Bold"));
 	// 順位決定戦: everyone's place, down the right.
 	if (Tournament.Settings.bPlacementMatches)
 	{
@@ -1600,14 +1791,17 @@ void UChaosImpactTournamentWidget::PaintChampion(const FGeometry& Design, FSlate
 			if (Tournament.Entrants[Index].Place > 1) { Order.Add(Index); }
 		}
 		Order.Sort([&Tournament](const int32 A, const int32 B) { return Tournament.Entrants[A].Place < Tournament.Entrants[B].Place; });
-		const float ListX = DesignWidth - 380.0f;
+		// (Upright: under the champion, eight at most.)
+		const float ListX = bTall ? DesignWidth * 0.5f - 170.0f : DesignWidth - 380.0f;
+		const float ListY = bTall ? 812.0f : 250.0f;
+		const int32 Shown = FMath::Min(Order.Num(), bTall ? 8 : 11);
 		const FPainter List{Design, Elements, Layer + 8, Alpha * In};
-		RoundedBox(List, ListX, 250.0f, 340.0f, 46.0f + FMath::Min(Order.Num(), 11) * 38.0f, 16.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.88f));
-		HudAbove(List, 1).Text(TEXT("最終順位"), ListX + 22.0f, 260.0f, 22.0f, Gold, ETextAlign::Left, TEXT("BlackItalic"));
-		for (int32 Row = 0; Row < FMath::Min(Order.Num(), 11); ++Row)
+		RoundedBox(List, ListX, ListY, 340.0f, 46.0f + Shown * 38.0f, 16.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.88f));
+		HudAbove(List, 1).Text(TEXT("最終順位"), ListX + 22.0f, ListY + 10.0f, 22.0f, Gold, ETextAlign::Left, TEXT("BlackItalic"));
+		for (int32 Row = 0; Row < Shown; ++Row)
 		{
 			const FChaosImpactTournamentEntrant& Who = Tournament.Entrants[Order[Row]];
-			const float Y = 300.0f + Row * 38.0f;
+			const float Y = ListY + 50.0f + Row * 38.0f;
 			const FLinearColor PlaceColor = Who.Place == 2 ? TwSilver : Who.Place == 3 ? FLinearColor(0.95f, 0.6f, 0.35f) : WithAlpha(Paper, 0.8f);
 			HudAbove(List, 1).Text(FString::Printf(TEXT("%d位"), Who.Place), ListX + 70.0f, Y, 22.0f, PlaceColor, ETextAlign::Right, TEXT("BlackItalic"));
 			HudAbove(List, 1).Text(Who.Name, ListX + 86.0f, Y + 2.0f, HudFit(Who.Name, 20.0f, 230.0f, TEXT("Bold")), Paper, ETextAlign::Left, TEXT("Bold"));
@@ -1621,7 +1815,7 @@ void UChaosImpactTournamentWidget::PaintMenu(const FGeometry& Design, FSlateWind
 	const float In = TwEase(static_cast<float>(FPlatformTime::Seconds() - PanelOpenedAt) / 0.3f);
 	const FPainter P{Design, Elements, Layer, In};
 	HudText3D(FPainter{Design, Elements, Layer + 2, In}, TEXT("トーナメント"), (DesignWidth * 0.5f), 170.0f, 54.0f, Paper, ETextAlign::Center);
-	P.Text(DescribeMyStatus(), (DesignWidth * 0.5f), 240.0f, 20.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center, TEXT("Bold"));
+	P.Text(DescribeMyStatus(), (DesignWidth * 0.5f), 252.0f, 20.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center, TEXT("Bold"));
 	struct FItem { const TCHAR* Title; const TCHAR* Detail; FLinearColor Accent; };
 	const FItem Items[] = {
 		{TEXT("練習する"), TEXT("自分の練習場で、出番まで体を動かす"), Ice},
@@ -1630,10 +1824,10 @@ void UChaosImpactTournamentWidget::PaintMenu(const FGeometry& Design, FSlateWind
 		{TEXT("とじる"), TEXT(""), Muted}};
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
-		const FBox2D R = MenuRect(Index);
+		const FBox2D R = MenuRect(Index).ShiftBy(FVector2D(0.0, -MidOffset()));
 		const float Delay = Index * 0.05f;
 		const float ItemIn = TwEase((static_cast<float>(FPlatformTime::Seconds() - PanelOpenedAt) - Delay) / 0.3f);
-		const bool bOn = Index == MenuCursor;
+		const bool bOn = Index == MenuCursor && !IsTouch();
 		const bool bDisabled = Index == 0 && Me && Me->bSpectating;
 		const float X = static_cast<float>(R.Min.X) + (1.0f - ItemIn) * 60.0f;
 		const FPainter Item{Design, Elements, Layer + 1, ItemIn * (bDisabled ? 0.45f : 1.0f)};
@@ -1657,7 +1851,8 @@ void UChaosImpactTournamentWidget::PaintMenu(const FGeometry& Design, FSlateWind
 				static_cast<float>(R.GetSize().Y) + 6.0f, WithAlpha(Gold, Pulse), 3.0f);
 		}
 	}
-	const FString Keys = ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad}：えらぶ　　{Confirm}：決定　　{Back|BackSpace} / {Select|Tab}：とじる"));
+	const FString Keys = IsTouch() ? FString(TEXT("タップでえらぶ"))
+		: ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad}：えらぶ　　{Confirm}：決定　　{Back|BackSpace} / {Select|Tab}：とじる"));
 	P.Text(Keys, (DesignWidth * 0.5f), 760.0f, HudFit(Keys, 18.0f, DesignWidth - 80.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), ETextAlign::Center,
 		TEXT("Bold"));
 }
@@ -1676,8 +1871,8 @@ void UChaosImpactTournamentWidget::PaintWatchList(const FGeometry& Design, FSlat
 	const TArray<int32> LiveMatches = GetLiveMatches();
 	for (int32 Index = 0; Index <= LiveMatches.Num(); ++Index)
 	{
-		const FBox2D R = WatchRect(Index);
-		const bool bOn = Index == WatchCursor;
+		const FBox2D R = WatchRect(Index).ShiftBy(FVector2D(0.0, -MidOffset()));
+		const bool bOn = Index == WatchCursor && !IsTouch();
 		RoundedBox(P, static_cast<float>(R.Min.X), static_cast<float>(R.Min.Y), static_cast<float>(R.GetSize().X), static_cast<float>(R.GetSize().Y), 14.0f,
 			bOn ? FLinearColor(0.08f, 0.12f, 0.26f, 0.98f) : FLinearColor(0.025f, 0.035f, 0.075f, 0.95f));
 		const FPainter Text{Design, Elements, Layer + 1, In};
@@ -1710,8 +1905,10 @@ void UChaosImpactTournamentWidget::PaintWatchList(const FGeometry& Design, FSlat
 				static_cast<float>(R.GetSize().X) + 6.0f, static_cast<float>(R.GetSize().Y) + 6.0f, WithAlpha(Gold, Pulse), 3.0f);
 		}
 	}
-	P.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}：観戦する　　{Back|BackSpace}：もどる")), (DesignWidth * 0.5f), (DesignWidth * 0.5f), 18.0f,
-		WithAlpha(Paper, 0.7f), ETextAlign::Center, TEXT("Bold"));
+	const FString Keys = IsTouch() ? FString(TEXT("観たい試合をタップ"))
+		: ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}：観戦する　　{Back|BackSpace}：もどる"));
+	P.Text(Keys, (DesignWidth * 0.5f), 760.0f, HudFit(Keys, IsTouch() ? 24.0f : 18.0f, DesignWidth - 80.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f),
+		ETextAlign::Center, TEXT("Bold"));
 }
 
 bool UChaosImpactTournamentWidget::CoversPlay() const
@@ -1739,7 +1936,7 @@ void UChaosImpactTournamentWidget::PaintCall(const FGeometry& Design, FSlateWind
 	const float T = static_cast<float>(GetNow() - Each.CalledAt);
 	const float In = TwEase(T / 0.3f);
 	const FPainter P{Design, Elements, Layer, In};
-	P.Box(0.0f, 0.0f, DesignWidth, TwDesignH, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
+	P.Box(0.0f, -MidOffset(), DesignWidth, DesignHeight, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
 	P.Box(0.0f, 300.0f, DesignWidth, 300.0f, FLinearColor(0.01f, 0.015f, 0.04f, 0.92f));
 	P.Box((1.0f - In) * -DesignWidth, 300.0f, DesignWidth, 4.0f, Gold);
 	P.Box((1.0f - In) * DesignWidth, 596.0f, DesignWidth, 4.0f, Gold);
@@ -1933,20 +2130,22 @@ void UChaosImpactTournamentWidget::PaintAsk(const FGeometry& Design, FSlateWindo
 	RoundedBox(P, DesignWidth * 0.5f - 360.0f, 330.0f, 720.0f, 290.0f, 24.0f, FLinearColor(0.01f, 0.015f, 0.04f, 0.96f));
 	P.Box(DesignWidth * 0.5f - 360.0f, 330.0f, 720.0f, 4.0f, Gold);
 	const FPainter T{Design, Elements, Layer + 1};
-	T.Text(TEXT("つぎはCPU同士の試合です"), (DesignWidth * 0.5f), 352.0f, 28.0f, Paper, ETextAlign::Center, TEXT("Black"));
-	T.Text(FString::Printf(TEXT("%s  vs  %s"), *Name(Each.Entrants[0]), *Name(Each.Entrants[1])), (DesignWidth * 0.5f), 404.0f, 24.0f, Gold, ETextAlign::Center,
-		TEXT("BlackItalic"));
+	const bool bBig = IsTouch();
+	T.Text(TEXT("つぎはCPU同士の試合です"), (DesignWidth * 0.5f), 350.0f, bBig ? 34.0f : 28.0f, Paper, ETextAlign::Center, TEXT("Black"));
+	T.Text(FString::Printf(TEXT("%s  vs  %s"), *Name(Each.Entrants[0]), *Name(Each.Entrants[1])), (DesignWidth * 0.5f), 404.0f, bBig ? 30.0f : 24.0f, Gold,
+		ETextAlign::Center, TEXT("BlackItalic"));
 	const float Left = FMath::Max(0.0f, ChaosImpactTournament::AskSeconds - static_cast<float>(GetNow() - Tournament.RoundStartedAt));
-	T.Text(TEXT("えらばないと観戦になります"), (DesignWidth * 0.5f), 456.0f, 17.0f, WithAlpha(Paper, 0.65f), ETextAlign::Center, TEXT("Bold"));
+	T.Text(TEXT("えらばないと観戦になります"), (DesignWidth * 0.5f), 452.0f, bBig ? 22.0f : 17.0f, WithAlpha(Paper, 0.65f), ETextAlign::Center, TEXT("Bold"));
 	(void)Left;
 	const TCHAR* Choices[] = {TEXT("観る"), TEXT("とばす"), TEXT("全部とばす")};
 	for (int32 Index = 0; Index < 3; ++Index)
 	{
-		const FBox2D R = AskRect(Index);
+		const FBox2D R = AskRect(Index).ShiftBy(FVector2D(0.0, -MidOffset()));
 		const bool bOn = Index == AskCursor;
 		RoundedBox(T, static_cast<float>(R.Min.X), static_cast<float>(R.Min.Y), static_cast<float>(R.GetSize().X), static_cast<float>(R.GetSize().Y), 14.0f,
 			bOn ? Gold : FLinearColor(0.05f, 0.07f, 0.15f, 1.0f));
-		FPainter{Design, Elements, Layer + 2}.Text(Choices[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 16.0f, 24.0f,
+		const float ChoiceSize = HudFit(Choices[Index], bBig ? 32.0f : 24.0f, static_cast<float>(R.GetSize().X) - 20.0f);
+		FPainter{Design, Elements, Layer + 2}.Text(Choices[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - ChoiceSize * 0.74f, ChoiceSize,
 			bOn ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
 	}
 }

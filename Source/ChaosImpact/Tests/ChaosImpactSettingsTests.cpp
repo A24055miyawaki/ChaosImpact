@@ -204,6 +204,10 @@ namespace
 				Test->TestTrue(TEXT("Enter makes the nickname"), Profile > 0 && !Settings->IsNameEntryOpen());
 				Test->TestEqual(TEXT("The controls tab shows the new nickname"), Settings->GetEditedProfile(), Profile);
 				Test->TestTrue(TEXT("Keyboard and mouse first (P1's device)"), Settings->GetEditedDevice() == EChaosImpactDevice::KeyboardMouse);
+				// Made: on to its devices; Enter on the keyboard's card opens its settings.
+				Test->TestTrue(TEXT("A new nickname goes on to its devices"), Settings->GetControlsStep() == FScreen::EControlsStep::Devices);
+				PressKey(EKeys::Enter);
+				Test->TestTrue(TEXT("Enter on a device's card opens its settings"), Settings->GetControlsStep() == FScreen::EControlsStep::Buttons);
 				// 投げる, first key: H.
 				Settings->SelectRow(Settings->FindRow(FScreen::RowBinding + static_cast<int32>(EChaosImpactAction::Throw)), 0);
 				PressKey(EKeys::Enter);
@@ -239,8 +243,11 @@ namespace
 				PressKey(EKeys::Delete);
 				Test->TestFalse(TEXT("Delete takes a key off"), GetKey(Profile, EChaosImpactDevice::KeyboardMouse, EChaosImpactAction::DropBall, 1).IsValid());
 				// The Switch layout: its own names, A (the right button) jumps.
-				Settings->SelectRow(Settings->FindRow(FScreen::RowDevice));
+				// (Back a step to the cards; left goes round to the Switch controller's; Enter opens it.)
+				PressKey(EKeys::Escape);
+				Test->TestTrue(TEXT("Escape goes back to the devices"), Settings->GetControlsStep() == FScreen::EControlsStep::Devices);
 				PressKey(EKeys::Left);
+				PressKey(EKeys::Enter);
 				Test->TestTrue(TEXT("Left goes round to the Switch controller"), Settings->GetEditedDevice() == EChaosImpactDevice::Switch);
 				{
 					const int32 JumpRow = Settings->FindRow(FScreen::RowBinding + static_cast<int32>(EChaosImpactAction::Jump));
@@ -259,7 +266,10 @@ namespace
 				return Next(0.5);
 			case 8:
 				SettingsShot(TEXT("06-Other.png"));
-				// Changes not saved: Escape asks first; Enter on its first answer saves them and goes back.
+				// Changes not saved: Escape from the settings goes back to the tabs, then asks first; Enter on its first
+				// answer saves them and goes back.
+				PressKey(EKeys::Escape);
+				Test->TestTrue(TEXT("Escape from a tab's settings goes back to the tabs"), Settings->IsChoosingTab() && Settings->IsOpen());
 				PressKey(EKeys::Escape);
 				Test->TestTrue(TEXT("Escape with changes not saved asks whether to save"), Settings->IsAskingToSave() && Settings->IsOpen());
 				PressKey(EKeys::Enter);

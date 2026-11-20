@@ -31,6 +31,12 @@ namespace
 	constexpr double DirectStaleSeconds = 2.5;
 	/** A guest's line the relay has not mentioned for this long is forgotten (they left). */
 	constexpr double DirectForgetSeconds = 15.0;
+	/**
+	 * A guest sending through the relay this recently: the host answers through the relay too, even while its own probes
+	 * of the guest are answered (a line can carry the guest's packets and not the host's: a phone's Wi-Fi did, and the
+	 * host's packets were all lost while it went on sending them directly).
+	 */
+	constexpr double FollowGuestRelaySeconds = 1.0;
 	/** A guest tells the relay its addresses this often; that also keeps it in the room while its packets go directly. */
 	constexpr double GuestIntroduceSeconds = 1.0;
 	/** b"CI2P...." + client id + token. */
@@ -785,6 +791,7 @@ uint32 FChaosImpactRelayTunnel::Run()
 				if (FClient* Client = FindOrOpenClient(ReadId(Buffer + 4), Now))
 				{
 					Client->LastSeen = Now;
+					Client->LastRelayedAt = Now;
 					int32 Sent = 0;
 					Client->Socket->SendTo(Buffer + 8, Read - 8, Sent, *LocalGameAddr);
 					++ToGame;
@@ -809,7 +816,13 @@ uint32 FChaosImpactRelayTunnel::Run()
 				bBusy = true;
 				Client.LastSeen = Now;
 				++FromGame;
-				if (const FInternetAddr* Direct = Peer ? Peer->GetDirect(Now) : nullptr)
+				// (Directly only while the guest sends directly too: the guest is the one who knows it hears the host.)
+				const FInternetAddr* Direct = Peer ? Peer->GetDirect(Now) : nullptr;
+				if (Direct && Now - Client.LastRelayedAt < FollowGuestRelaySeconds)
+				{
+					Direct = nullptr;
+				}
+				if (Direct)
 				{
 					int32 Sent = 0;
 					RelaySocket->SendTo(Buffer + 8, Read, Sent, *Direct);

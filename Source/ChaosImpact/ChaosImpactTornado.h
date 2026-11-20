@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ChaosImpactFusion.h"
+#include "ChaosImpactFusionEffects.h"
 #include "ChaosImpactTornado.generated.h"
 
 class AChaosImpactBall;
@@ -33,11 +35,15 @@ public:
 	AChaosImpactTornado();
 
 	/** Server: starts a tornado at From (moved down to the floor) heading along Direction. */
-	static AChaosImpactTornado* Release(UWorld* World, const FVector& From, const FVector& Direction, APawn* Source);
+	static AChaosImpactTornado* Release(UWorld* World, const FVector& From, const FVector& Direction, APawn* Source,
+		EChaosImpactBallType Fused = EChaosImpactBallType::Normal, EChaosImpactBallType Tint = EChaosImpactBallType::Normal,
+		float TintAmount = 0.0f);
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
+	/** One of its hits: a nova's with a ノヴァ riding along (2026-11-19), else 1. */
+	float GetNovaRiderDamage() const;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/**
@@ -59,6 +65,13 @@ public:
 	/** The foot of the funnel now, on this machine. */
 	FVector GetCenter() const { return Center; }
 	bool IsActive() const { return bActive; }
+	/** How fast it goes (雷雲竜巻: as fast as thunder). */
+	float GetTravelSpeed() const { return TravelSpeed * SpeedScale; }
+	/** Server, right after Release: a fused wind ball's second kind (合体ボール): along its way and where it ends. */
+	void SetFusedType(const EChaosImpactBallType Type) { FusedType = Type; }
+	/** Any machine: a black hole riding along on it (大渦竜巻): it draws in whoever is near as it goes. */
+	bool IsFusedPullActive() const { return FusedType == EChaosImpactBallType::Black && bActive && !bVisualOnly; }
+	static constexpr float FusedPullRadius = 450.0f;
 
 	static constexpr float ActiveSeconds = 4.0f;
 	static constexpr float CollapseSeconds = 0.45f;
@@ -72,6 +85,31 @@ public:
 
 private:
 	TSharedPtr<FChaosImpactDuelThrowDamage> DuelThrowDamage;
+	UPROPERTY(Replicated)
+	EChaosImpactBallType FusedType = EChaosImpactBallType::Normal;
+	/** 合体ボール: its colours turned toward this kind's (percent). */
+	UPROPERTY(Replicated)
+	EChaosImpactBallType TintType = EChaosImpactBallType::Normal;
+	/** 雷雲竜巻: how many times as fast as a tornado it goes (and how much straighter); the same on every machine. */
+	UPROPERTY(Replicated)
+	float SpeedScale = 1.0f;
+	static constexpr float ThunderSpeedScale = 3.5f;
+	UPROPERTY(Replicated)
+	uint8 TintPercent = 0;
+	/** One of its colours as shown (turned by TintType). */
+	FLinearColor Hue(const FLinearColor& Color) const
+	{
+		return TintType == EChaosImpactBallType::Normal || TintPercent == 0 ? Color
+			: ChaosImpactFusion::TintToward(Color, TintType, TintPercent / 100.0f);
+	}
+	/** Fused: its look on the funnel, the trail puffs, a fire's line along the way, the second effect once at the end. */
+	void TickFusion(float Age, float DeltaSeconds);
+	ChaosImpactFusion::FFusionLook FusionLook;
+	float FusionPuffAt = 0.0f;
+	bool bFusionApplied = false;
+	ChaosImpactFusion::FFusionCarry FusionCarry;
+	/** Server: whoever it caught gets what rides along (once each). */
+	void StrikeFused(class AChaosImpactCharacter* Victim);
 	void StepPath(float Seconds);
 	void CatchCharacters();
 	bool CanCatch(const AActor* Victim) const;
@@ -128,7 +166,10 @@ private:
 	FVector Center = FVector::ZeroVector;
 	bool bActive = true;
 	/** Characters and targets already caught, on this machine. */
-	TSet<TWeakObjectPtr<AActor>> Caught;
+	/** Who it has caught, and when (a fused one catches again after a while, outside the one-hit rule: 2026-11-19). */
+	TMap<TWeakObjectPtr<AActor>, double> Caught;
+	bool IsStillCaught(const AActor* Victim) const;
+	void MarkCaught(AActor* Victim);
 	/** Server: flying balls already turned by this tornado. */
 	TSet<TWeakObjectPtr<AChaosImpactBall>> Deflected;
 	struct FCarriedBall

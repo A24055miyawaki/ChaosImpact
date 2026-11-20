@@ -157,6 +157,15 @@ private:
 	double ImeEndedAt = -100.0;
 	/** Where it was last drawn (the IME's candidate list goes under the name). */
 	mutable FGeometry PaintedDesign;
+	/**
+	 * スマホ版 upright (a 900 x 1600 plan): the keyboard (laid out in 1600 x 900) scaled to the width, at the foot of the
+	 * screen where the thumbs are: its scale and offset (1 and none sideways), for the taps too.
+	 */
+	mutable float KeyboardScale = 1.0f;
+	mutable FVector2D KeyboardOffset = FVector2D::ZeroVector;
+	FVector2D ToKeyboard(const FVector2D& DesignPoint) const { return (DesignPoint - KeyboardOffset) / KeyboardScale; }
+	/** やめる, top right of the panel (a tap or a click: no keys needed to leave). */
+	static FBox2D CancelRect() { return FBox2D(FVector2D(1214.0, 124.0), FVector2D(1350.0, 174.0)); }
 	mutable float PaintedLift = 0.0f;
 	mutable bool bPainted = false;
 };

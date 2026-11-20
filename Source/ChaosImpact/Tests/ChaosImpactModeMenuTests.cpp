@@ -46,10 +46,10 @@ namespace
 			{
 				FScreenshotRequest::RequestScreenshot(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("MenuQA"), Name), true, false);
 			};
-			// The walk: a key, then where it must land (ModeSelect indices 0 ソロ 1 VS 2 トレーニング 3 タイトルへ 4 設定 5 カラー 6 訓練場).
+			// The walk: a key, then where it must land (ModeSelect indices 0 ソロ 1 VS 2 トレーニング 3 タイトルへ 4 設定 5 カラー 6 訓練場 7 ゲーム終了).
 			struct FStep { FKey Key; int32 Want; };
 			static const FStep ModeWalk[] = {{EKeys::Right, 1}, {EKeys::Right, 6}, {EKeys::Down, 4}, {EKeys::Left, 5}, {EKeys::Left, 2},
-				{EKeys::Down, 3}, {EKeys::Up, 2}, {EKeys::Up, 0}};
+				{EKeys::Down, 3}, {EKeys::Right, 7}, {EKeys::Left, 3}, {EKeys::Up, 2}, {EKeys::Up, 0}};
 			switch (Stage)
 			{
 			case 0:
@@ -58,7 +58,7 @@ namespace
 				Stage = 1;
 				return false;
 			case 1:
-				Test->TestEqual(TEXT("Mode select has its seven tiles"), Menu->GetEntryCount(), 7);
+				Test->TestEqual(TEXT("Mode select has its seven tiles (and ゲーム終了 on the PC)"), Menu->GetEntryCount(), UChaosImpactMenuWidget::IsPhoneBuild() ? 7 : 8);
 				Shot(TEXT("mode_00.png"));
 				Step = 0;
 				Stage = 2;

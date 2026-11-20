@@ -1,4 +1,6 @@
-#include "ChaosImpactMenuWidget.h"
+﻿#include "ChaosImpactMenuWidget.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "ChaosImpactTouchLayoutEditor.h"
 #include "ChaosImpactParty.h"
 #include "ChaosImpactRuleCard.h"
 #include "Misc/CommandLine.h"
@@ -17,6 +19,7 @@
 #include "ChaosImpactCharacterSelect.h"
 #include "ChaosImpact.h"
 #include "ChaosImpactColourEdit.h"
+#include "ChaosImpactPaintStudio.h"
 #include "ChaosImpactGallery.h"
 #include "ChaosImpactRecordBoards.h"
 #include "ChaosImpactDojoMenu.h"
@@ -46,6 +49,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "ImageUtils.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "ChaosImpactSoloStages.h"
 #include "InputCoreTypes.h"
 #include "Misc/Paths.h"
@@ -163,11 +167,25 @@ namespace
 		return !Controller || !Controller->IsTrainingMode() || !Controller->IsPrimaryUsingGamepad();
 	}
 
-	// Drawing and pointer hit testing both use this 1600 x 900 design space.
+	// Drawing and pointer hit testing both use this design space: 1600 x 900, or 900 x 1600 on a phone held upright
+	// (スマホ版, for the screens laid out that way: UChaosImpactMenuWidget::HasPortraitLayout).
+	FVector2D GMenuCanvas(1600.0, 900.0);
+
+	bool IsPortraitCanvas()
+	{
+		return GMenuCanvas.Y > GMenuCanvas.X;
+	}
+
+	/** A part of a landscape page drawn somewhere else on an upright one: its point From lands on To, sized by Scale. */
+	FGeometry MoveDesign(const FGeometry& Design, const FVector2D& From, const FVector2D& To, const float Scale)
+	{
+		return Design.MakeChild(FVector2f(Design.GetLocalSize()), FSlateLayoutTransform(Scale, FVector2f(To - From * Scale)));
+	}
+
 	float DesignScale(const FGeometry& Geometry)
 	{
-		return FMath::Max(0.01f, FMath::Min(Geometry.GetLocalSize().X / 1600.0f,
-			Geometry.GetLocalSize().Y / 900.0f));
+		return FMath::Max(0.01f, FMath::Min(Geometry.GetLocalSize().X / static_cast<float>(GMenuCanvas.X),
+			Geometry.GetLocalSize().Y / static_cast<float>(GMenuCanvas.Y)));
 	}
 
 
@@ -340,6 +358,33 @@ namespace
 		const float Time, const FSlateBrush* Demo = nullptr, const float DemoAlpha = 0.0f)
 	{
 		const FMenuPainter Flat{Design, Elements, Layer};
+		if (IsPortraitCanvas())
+		{
+			// Upright: the same navy field, the blue slab across the top-left corner and the red across the bottom-right,
+			// the white streaks running down between them.
+			for (int32 Band = 0; Band < 32; ++Band)
+			{
+				const float T = Band / 31.0f;
+				Flat.Box(-1400.0f, Band * 50.0f, 3700.0f, 51.0f, FMath::Lerp(
+					FLinearColor(0.022f, 0.03f, 0.06f, 1.0f), FLinearColor(0.003f, 0.004f, 0.01f, 1.0f), T));
+			}
+			const FGeometry Upright = MakeSkewed(Design, 0.0f, 0.0f, 900.0f, 1600.0f, -0.12f);
+			const FMenuPainter S{Upright, Elements, Layer};
+			S.Box(-2000.0f, -40.0f, 2090.0f, 1680.0f, FLinearColor(0.0f, 0.10f, 0.40f, 0.62f));
+			S.Box(90.0f, -40.0f, 9.0f, 1680.0f, WithAlpha(Ice, 0.9f));
+			S.Box(111.0f, -40.0f, 3.0f, 1680.0f, WithAlpha(Ice, 0.35f));
+			S.Box(800.0f, -40.0f, 2000.0f, 1680.0f, FLinearColor(0.40f, 0.0f, 0.03f, 0.62f));
+			S.Box(791.0f, -40.0f, 9.0f, 1680.0f, WithAlpha(Fire, 0.9f));
+			S.Box(776.0f, -40.0f, 3.0f, 1680.0f, WithAlpha(Fire, 0.35f));
+			for (int32 Stripe = 0; Stripe < 16; ++Stripe)
+			{
+				const float X = FMath::Fmod(Stripe * 283.0f + Time * (70.0f + Stripe * 11.0f), 2400.0f) - 700.0f;
+				S.Box(X, -40.0f, 1.5f + Stripe % 3, 1680.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.016f + (Stripe % 4) * 0.007f));
+			}
+			Flat.Box(-1400.0f, 0.0f, 3700.0f, 54.0f, WithAlpha(Ink, 0.55f));
+			Flat.Box(-1400.0f, 1546.0f, 3700.0f, 54.0f, WithAlpha(Ink, 0.65f));
+			return;
+		}
 		for (int32 Band = 0; Band < 18; ++Band)
 		{
 			const float T = Band / 17.0f;
@@ -385,7 +430,8 @@ namespace
 			return;
 		}
 		const float E = EaseOut(Time / 0.45f);
-		const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, 1600.0f, 900.0f, -0.36f);
+		const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, static_cast<float>(GMenuCanvas.X), static_cast<float>(GMenuCanvas.Y),
+			IsPortraitCanvas() ? -0.12f : -0.36f);
 		const FMenuPainter S{Slant, Elements, Layer, 1.0f - E};
 		S.Box(FMath::Lerp(1750.0f, -900.0f, E), -40.0f, 300.0f, 980.0f, Fire);
 		S.Box(FMath::Lerp(2120.0f, -560.0f, E), -40.0f, 90.0f, 980.0f, Ice);
@@ -395,9 +441,12 @@ namespace
 		const FString& Label, const float Time)
 	{
 		const float E = EaseOut((Time - 0.06f) / 0.4f);
-		const FGeometry Header = MakeSkewed(Design, 110.0f - (1.0f - E) * 90.0f, 66.0f, 900.0f, 120.0f, -0.2f);
+		// (Upright: lower and a little smaller, under the back button, kept inside the narrow screen.)
+		const bool bUpright = IsPortraitCanvas();
+		const FGeometry Header = MakeSkewed(Design, (bUpright ? 70.0f : 110.0f) - (1.0f - E) * 90.0f, bUpright ? 110.0f : 66.0f,
+			bUpright ? 760.0f : 900.0f, 120.0f, -0.2f);
 		const FMenuPainter P{Header, Elements, Layer, E};
-		P.Text(Label, 0.0f, 0.0f, 60.0f, Paper, ETextAlign::Left, TEXT("Black"));
+		P.Text(Label, 0.0f, 0.0f, bUpright ? ChaosImpactPaint::HudFit(Label, 60.0f, 720.0f) : 60.0f, Paper, ETextAlign::Left, TEXT("Black"));
 		// The short blue tick sits before the red bar so it never crosses the backdrop's blue edge.
 		P.Box(4.0f, 100.0f, 44.0f * E, 10.0f, Ice);
 		P.Box(60.0f, 100.0f, 230.0f * E, 10.0f, Fire);
@@ -759,18 +808,19 @@ namespace
 		CP::HudText3D(Top, Big, 34.0f, 22.0f, BigSize, FMath::Lerp(WithAlpha(Paper, 0.85f), Paper, B), CP::ETextAlign::Left, TEXT("BlackItalic"), 3.0f);
 		const float NameSize = CP::HudFit(Name, H >= 240.0f ? 30.0f : 26.0f, TextW);
 		Top.Text(Name, 36.0f, 30.0f + BigSize * 1.25f, NameSize, Paper, CP::ETextAlign::Left, TEXT("Black"));
-		const FString Line = Kind == TEXT("random") ? TEXT("8人で3分間の個人戦。たりない分はCPU")
+		const FString Line = Kind == TEXT("random") ? TEXT("最大8人・3分。ルールは3種から抽選・CPUなし")
 			: Kind == TEXT("duel") ? (bDisabled ? TEXT("1v1は1人で参加してください") : TEXT("1対1・2本先取のデュエル"))
 			: Kind == TEXT("tourney") ? TEXT("大会にエントリー・大会をひらく")
 			: Kind == TEXT("private") ? TEXT("あいことばで友だちと部屋をつくる・入る")
 			: Kind == TEXT("record") ? TEXT("これまでの成績")
-			: Kind == TEXT("ranking") ? TEXT("レート上位100人")
+			: Kind == TEXT("ranking") ? TEXT("ランダムマッチのレート順")
 			: Kind == TEXT("linecheck") ? TEXT("中継サーバーまでの回線をはかる")
 			: Kind == TEXT("gallery") ? TEXT("カラーを投稿・みんなの作品を保存") : TEXT("");
 		if (!Line.IsEmpty() && H >= 150.0f)
 		{
-			Top.Text(Line, 37.0f, H - 50.0f, CP::HudFit(Line, 18.0f, W - 60.0f, TEXT("Bold")), WithAlpha(Paper, 0.6f + 0.3f * B),
-				CP::ETextAlign::Left, TEXT("Bold"));
+			// (スマホ版: bigger, to read on a phone; fitted to the tile.)
+			const float LineSize = CP::HudFit(Line, UChaosImpactMenuWidget::IsPhoneBuild() ? 23.0f : 18.0f, W - 60.0f, TEXT("Bold"));
+			Top.Text(Line, 37.0f, H - 26.0f - LineSize * 1.3f, LineSize, WithAlpha(Paper, 0.6f + 0.3f * B), CP::ETextAlign::Left, TEXT("Bold"));
 		}
 		if (B > 0.01f)
 		{
@@ -806,7 +856,7 @@ namespace
 			Top.Line(Arrow, Arrow + FVector2D(12.0, 12.0), Ink2, 5.0f);
 			TextX = 60.0f;
 		}
-		const float Size = CP::HudFit(Name, 24.0f, W - TextX - 20.0f);
+		const float Size = CP::HudFit(Name, UChaosImpactMenuWidget::IsPhoneBuild() && H >= 80.0f ? 30.0f : 24.0f, W - TextX - 20.0f);
 		Top.Text(Name, TextX, (H - Size * 1.38f) * 0.5f, Size, Ink2, CP::ETextAlign::Left, TEXT("Black"));
 	}
 
@@ -1293,14 +1343,23 @@ namespace
 
 	FSlateRect PasswordDigitRect(const int32 Index)
 	{
+		if (IsPortraitCanvas())
+		{
+			// Upright: across the middle, a thumb's width each.
+			const float X = 75.0f + Index * 190.0f;
+			return FSlateRect(X, 600.0f, X + 160.0f, 830.0f);
+		}
 		const float X = 455.0f + Index * 180.0f;
 		return FSlateRect(X, 300.0f, X + 150.0f, 510.0f);
 	}
 
+	/** スマホ版: every menu (not the title) has a back button at its top left, a tap doing what Esc does. */
+	const FBox2D TouchBackRect(FVector2D(14.0, 12.0), FVector2D(164.0, 64.0));
+
 	FVector2D ToDesignPoint(const FGeometry& Geometry, const FVector2D& ScreenPosition)
 	{
 		const float Scale = DesignScale(Geometry);
-		const FVector2D Offset = (Geometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+		const FVector2D Offset = (Geometry.GetLocalSize() - GMenuCanvas * Scale) * 0.5f;
 		return (Geometry.AbsoluteToLocal(ScreenPosition) - Offset) / Scale;
 	}
 }
@@ -1367,6 +1426,25 @@ void UChaosImpactMenuWidget::NativeOnInitialized()
 			StageShotBrushes[Index].DrawAs = ESlateBrushDrawType::Image;
 		}
 	}
+	DuelShots.SetNum(ChaosImpactMatch::DuelStageCount);
+	DuelShotBrushes.SetNum(ChaosImpactMatch::DuelStageCount);
+	for (int32 Index = 0; Index < ChaosImpactMatch::DuelStageCount; ++Index)
+	{
+		const FString File = FPaths::Combine(FPaths::ProjectContentDir(), FString::Printf(TEXT("UI/StageSelect/Duel%d.png"), Index + 1));
+		DuelShots[Index] = FPaths::FileExists(File) ? FImageUtils::ImportFileAsTexture2D(File) : nullptr;
+		if (DuelShots[Index])
+		{
+			DuelShotBrushes[Index].SetResourceObject(DuelShots[Index]);
+			DuelShotBrushes[Index].ImageSize = FVector2D(DuelShots[Index]->GetSizeX(), DuelShots[Index]->GetSizeY());
+			DuelShotBrushes[Index].DrawAs = ESlateBrushDrawType::Image;
+		}
+	}
+}
+
+bool UChaosImpactMenuWidget::IsDuelStageSelect() const
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	return Controller && Controller->GetStageCardCount() != ChaosImpactMatch::StageCount;
 }
 
 void UChaosImpactMenuWidget::NativeDestruct()
@@ -1423,6 +1501,15 @@ bool UChaosImpactMenuWidget::HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent)
 			ChaosImpactSettings::ToggleFullscreen();
 		}
 		// Consume repeats too: never let the engine's own fullscreen shortcut run after ours.
+		return true;
+	}
+	if (IsTouchLayoutEditorOpen())
+	{
+		// ボタン・画面の配置 takes every key while it is open.
+		if (!InKeyEvent.IsRepeat())
+		{
+			TouchLayoutEditor->HandleKey(InKeyEvent);
+		}
 		return true;
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
@@ -1724,7 +1811,7 @@ void UChaosImpactMenuWidget::ShowScreen(const EChaosImpactScreen NewScreen)
 	if (Screen == EChaosImpactScreen::StageSelect && Controller)
 	{
 		// The stage chosen last time is picked again by just pressing 決定.
-		SelectedIndex = ChaosImpactMatch::SanitizeStage(Controller->GetPendingMatchRules().StageIndex);
+		SelectedIndex = Controller->GetStageCardChosen();
 	}
 	else if (Screen == EChaosImpactScreen::MatchRules && PreviousScreen == EChaosImpactScreen::StageSelect)
 	{
@@ -1904,7 +1991,9 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 	}
 	const FChaosImpactRecords& Records = Sessions->GetRecords();
 	const float ChipIn = EaseOut((Time - 0.1f) / 0.3f);
-	const FMenuPainter Chip{MakeSkewed(Design, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f), Elements, Layer, ChipIn};
+	const bool bUpright = IsPortraitCanvas();
+	const FGeometry ChipSide = bUpright ? MoveDesign(Design, FVector2D(1070.0, 96.0), FVector2D(480.0, 150.0), 1.0f) : Design;
+	const FMenuPainter Chip{MakeSkewed(ChipSide, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f), Elements, Layer, ChipIn};
 	Chip.Box(0.0f, 0.0f, 360.0f, 70.0f, Violet);
 	{
 		const FString NameLine = FString::Printf(TEXT("なまえ  %s"), *Sessions->GetPlayerName());
@@ -1913,7 +2002,8 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 	if (!Records.bKnown)
 	{
 		const float In = EaseOut((Time - 0.2f) / 0.3f);
-		const FMenuPainter Card{MakeSkewed(Design, 380.0f, 320.0f, 840.0f, 200.0f, -0.08f), Elements, Layer + 1, In};
+		const FMenuPainter Card{MakeSkewed(bUpright ? MoveDesign(Design, FVector2D(380.0, 320.0), FVector2D(30.0, 500.0), 1.0f) : Design,
+			380.0f, 320.0f, 840.0f, 200.0f, -0.08f), Elements, Layer + 1, In};
 		Card.Box(0.0f, 0.0f, 840.0f, 200.0f, FLinearColor(0.015f, 0.02f, 0.04f, 0.94f));
 		Card.Box(0.0f, 0.0f, 840.0f, 6.0f, Violet);
 		Card.Text(Sessions->IsRecordsPending() ? TEXT("戦績を読みこんでいます") : TEXT("中継サーバーにつながりません"), 420.0f, 70.0f, 36.0f,
@@ -1936,7 +2026,10 @@ void UChaosImpactMenuWidget::PaintOnlineRecord(const FGeometry& Design, FSlateWi
 		const FChaosImpactRating& Rating = bDuel ? Records.Duel.Rating : Records.FfaRating;
 		const int32 Games = bDuel ? Records.Duel.GetGames() : Records.FfaGames;
 		const float In = EaseOut((Time - 0.14f - 0.06f * Index) / 0.35f);
-		const FGeometry Space = MakeSkewed(Design, Panels[Index].X + (1.0f - In) * 100.0f, 212.0f, PW, PH, -0.08f);
+		// (Upright: one above the other, each with its 最近50戦 under it.)
+		const float PanelX = bUpright ? 140.0f : Panels[Index].X;
+		const float PanelY = bUpright ? (Index == 0 ? 280.0f : 860.0f) : 212.0f;
+		const FGeometry Space = MakeSkewed(Design, PanelX + (1.0f - In) * 100.0f, PanelY, PW, PH, -0.08f);
 		const CP::FPainter Back{Space, Elements, Layer + 1, In};
 		const CP::FPainter P = CP::HudAbove(Back, 1);
 		const CP::FPainter Top = CP::HudAbove(Back, 2);
@@ -2220,6 +2313,9 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 		int32 Character;
 		int32 Colour;
 		bool bKeyboard;
+		/** How they play ("key", "pad", "touch") and on what. */
+		FString Device;
+		bool bPhone;
 		bool bKnownRecord;
 		FChaosImpactDuelRecord Record;
 		bool bAccepted;
@@ -2227,21 +2323,25 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 	};
 	const FSide Sides[] = {
 		{TEXT("あなた"), Sessions->GetPlayerName(), Own.Character, FMath::Max(0, Own.Colour), KeyboardPlayer == 0,
+			IsPhoneBuild() ? Sessions->GetLocalDeviceKey() : FString(KeyboardPlayer == 0 ? TEXT("key") : TEXT("pad")), IsPhoneBuild(),
 			Sessions->GetRecords().bKnown, Sessions->GetRecords().Duel, Offer.bAccepted || bStarting, Ice},
-		{TEXT("相手"), Offer.Name, Offer.Character, Offer.Colour, Offer.bKeyboard, true, Offer.Record,
+		{TEXT("相手"), Offer.Name, Offer.Character, Offer.Colour, Offer.bKeyboard, Offer.Device, Offer.bPhone, true, Offer.Record,
 			Offer.bOpponentAccepted || bStarting, Fire}};
 
 	// The title: MATCH FOUND, slammed in, and what it means under it.
 	{
 		const float In = EaseOut(Time / 0.28f);
 		const float Scale = FMath::Lerp(1.6f, 1.0f, In);
-		const CP::FPainter Title{CP::MakeAnchor(Design, 800.0f, 92.0f, Scale), Elements, Layer + 2, In};
-		CP::HudText3D(Title, TEXT("MATCH FOUND"), 0.0f, -62.0f, 74.0f, Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
+		// (Upright: the title over the two cards, in the middle of the narrow screen.)
+		const float TitleX = IsPortraitCanvas() ? 450.0f : 800.0f;
+		const CP::FPainter Title{CP::MakeAnchor(Design, TitleX, IsPortraitCanvas() ? 104.0f : 92.0f, Scale), Elements, Layer + 2, In};
+		CP::HudText3D(Title, TEXT("MATCH FOUND"), 0.0f, -62.0f, CP::HudFit(TEXT("MATCH FOUND"), 74.0f, 820.0f, TEXT("BlackItalic")), Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
 		// Under it, on a ribbon of its own (both sides' colours at its ends): what it means, large and clear.
 		const float RibbonIn = EaseOut((Time - 0.2f) / 0.3f);
 		constexpr float RibbonW = 580.0f;
 		constexpr float RibbonH = 40.0f;
-		const CP::FPainter Ribbon{MakeSkewed(Design, 800.0f - RibbonW * 0.5f, 140.0f + (1.0f - RibbonIn) * 12.0f, RibbonW, RibbonH, -0.25f), Elements, Layer + 2, RibbonIn};
+		const CP::FPainter Ribbon{MakeSkewed(Design, TitleX - RibbonW * 0.5f, (IsPortraitCanvas() ? 152.0f : 140.0f) + (1.0f - RibbonIn) * 12.0f, RibbonW, RibbonH, -0.25f),
+			Elements, Layer + 2, RibbonIn};
 		Ribbon.Box(6.0f, 6.0f, RibbonW, RibbonH, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
 		CP::HudPoly(Ribbon, {FVector2D(0.0, 0.0), FVector2D(RibbonW, 0.0), FVector2D(RibbonW, RibbonH), FVector2D(0.0, RibbonH)},
 			CP::MakeFill(FLinearColor(0.03f, 0.045f, 0.09f, 0.96f), FLinearColor(0.008f, 0.01f, 0.024f, 0.96f)));
@@ -2263,8 +2363,10 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 		const bool bRight = Index == 1;
 		const float In = EaseOut((Time - 0.1f - 0.08f * Index) / 0.38f);
 		const float Slide = (1.0f - In) * (bRight ? 160.0f : -160.0f);
-		const float Left = (bRight ? 1600.0f - 70.0f - CardW : 70.0f) + Slide;
-		const FGeometry CardSpace = MakeSkewed(Design, Left, CardTop, CardW, CardH, -0.08f);
+		// (Upright: one above the other, VS between them.)
+		const bool bUprightCards = IsPortraitCanvas();
+		const float Left = (bUprightCards ? 140.0f : bRight ? 1600.0f - 70.0f - CardW : 70.0f) + Slide;
+		const FGeometry CardSpace = MakeSkewed(Design, Left, bUprightCards ? (bRight ? 880.0f : 214.0f) : CardTop, CardW, CardH, -0.08f);
 		const CP::FPainter Card{CardSpace, Elements, Layer, In};
 		const CP::FPainter Up = CP::HudAbove(Card, 1);
 		const CP::FPainter Top = CP::HudAbove(Card, 3);
@@ -2327,11 +2429,12 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 		CP::RoundedBox(Top, TX, 164.0f, 26.0f, 26.0f, 6.0f, Swatch);
 		const FString CharacterName = ChaosImpactRoster::Get(Side.Character).Name;
 		Top.Text(CharacterName, TX + 38.0f, 160.0f, CP::HudFit(CharacterName, 24.0f, TW - 38.0f), Paper, CP::ETextAlign::Left, TEXT("Black"));
-		// Pad or keyboard, on a small tag.
-		const FString Device = Side.bKeyboard ? TEXT("キーボード") : TEXT("パッド");
-		const float DeviceW = CP::HudMeasure(Device, 15.0f, TEXT("Black")) + 24.0f;
+		// On what (a PC or a phone) and how (keyboard, pad or touch), on a small tag.
+		const FString Device = FString(Side.bPhone ? TEXT("スマホ・") : TEXT("PC・")) + CP::DeviceWord(Side.Device);
+		const float DeviceW = CP::HudMeasure(Device, 15.0f, TEXT("Black")) + 54.0f;
 		CP::RoundedBox(Top, TX, 206.0f, DeviceW, 26.0f, 13.0f, WithAlpha(Paper, 0.14f));
-		Top.Text(Device, TX + DeviceW * 0.5f, 209.0f, 15.0f, WithAlpha(Paper, 0.85f), CP::ETextAlign::Center, TEXT("Black"));
+		const float MarkW = CP::PaintPlatformMark(CP::HudAbove(Top, 1), TX + 12.0f, 211.0f, 16.0f, Side.bPhone, WithAlpha(Paper, 0.85f));
+		Top.Text(Device, TX + 12.0f + MarkW + 6.0f, 209.0f, 15.0f, WithAlpha(Paper, 0.85f), CP::ETextAlign::Left, TEXT("Black"));
 		Top.Box(TX, 254.0f, TW, 1.0f, WithAlpha(Paper, 0.16f));
 		Top.Text(TEXT("1v1の戦績"), TX, 268.0f, 18.0f, Muted, CP::ETextAlign::Left, TEXT("Bold"));
 		const FMenuPainter Words{CardSpace, Elements, Layer + 3, In};
@@ -2396,28 +2499,33 @@ void UChaosImpactMenuWidget::PaintDuelFound(const FGeometry& Design, FSlateWindo
 	// Between them: VS inside the clock's ring, the connection under it.
 	const float MidIn = EaseOut((Time - 0.25f) / 0.3f);
 	const CP::FPainter Mid{Design, Elements, Layer + 4, MidIn};
-	const FVector2D Hub(800.0, 420.0);
+	// (Upright: between the two cards; the line beside it.)
+	const bool bUprightHub = IsPortraitCanvas();
+	const FVector2D Hub = bUprightHub ? FVector2D(450.0, 820.0) : FVector2D(800.0, 420.0);
 	const float TimeLeft = bStarting ? 0.0f : FMath::Max(0.0f, static_cast<float>(Offer.EndsAt - FPlatformTime::Seconds()));
 	const float Fill = bStarting ? 1.0f : FMath::Clamp(TimeLeft / 15.0f, 0.0f, 1.0f);
 	const bool bHurry = !bStarting && TimeLeft < 5.0f;
 	Mid.Disc(Hub, 92.0f, FLinearColor(0.008f, 0.012f, 0.03f, 0.95f));
 	Mid.Ring(Hub, 92.0f, WithAlpha(Paper, 0.12f), 10.0f, 72);
 	CP::HudAbove(Mid, 1).Arc(Hub, 92.0f, -90.0f, -90.0f + 360.0f * Fill, bStarting ? Gold : bHurry ? Fire : Ice, 10.0f);
-	CP::HudText3D(CP::HudAbove(Mid, 2), TEXT("VS"), 800.0f, 352.0f, 76.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 4.0f);
+	CP::HudText3D(CP::HudAbove(Mid, 2), TEXT("VS"), static_cast<float>(Hub.X), static_cast<float>(Hub.Y) - 68.0f, 76.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 4.0f);
 	if (bStarting)
 	{
-		const CP::FPainter Banner{Design, Elements, Layer + 7, MidIn};
+		const CP::FPainter Banner{bUprightHub ? MoveDesign(Design, FVector2D(800.0, 540.0), FVector2D(450.0, 1446.0), 1.0f) : Design, Elements, Layer + 7, MidIn};
 		CP::HudPoly(Banner, {FVector2D(480.0, 540.0), FVector2D(1140.0, 540.0), FVector2D(1120.0, 610.0), FVector2D(460.0, 610.0)},
 			CP::MakeFill(FMath::Lerp(Gold, Paper, 0.3f), Gold));
 		CP::HudText3D(CP::HudAbove(Banner, 1), TEXT("対戦開始！"), 800.0f, 546.0f, 46.0f, Paper, CP::ETextAlign::Center, TEXT("Black"), 3.0f);
 		return;
 	}
-	CP::HudAbove(Mid, 2).Text(FString::Printf(TEXT("%d"), FMath::CeilToInt(TimeLeft)), 800.0f, 448.0f, 28.0f, bHurry ? Fire : Paper, CP::ETextAlign::Center,
-		TEXT("BlackItalic"));
+	CP::HudAbove(Mid, 2).Text(FString::Printf(TEXT("%d"), FMath::CeilToInt(TimeLeft)), static_cast<float>(Hub.X), static_cast<float>(Hub.Y) + 28.0f, 28.0f,
+		bHurry ? Fire : Paper, CP::ETextAlign::Center, TEXT("BlackItalic"));
+	// The line: under the ring (upright: beside it, right).
+	const float LineX = bUprightHub ? 700.0f : 800.0f;
+	const float LineY = bUprightHub ? 770.0f : 530.0f;
 	const FMenuPainter Signal{Design, Elements, Layer + 4, MidIn};
-	Mid.Text(TEXT("回線"), 800.0f, 530.0f, 18.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
-	PaintSignal(Signal, Offer.PingMs, 768.0f, 600.0f, 1.0f);
-	Mid.Text(Offer.PingMs > 0 && Offer.PingMs < 999 ? FString::Printf(TEXT("約%dms"), Offer.PingMs) : FString(TEXT("―")), 800.0f, 608.0f,
+	Mid.Text(TEXT("回線"), LineX, LineY, IsPhoneLayout() ? 22.0f : 18.0f, Muted, CP::ETextAlign::Center, TEXT("Bold"));
+	PaintSignal(Signal, Offer.PingMs, LineX - 32.0f, LineY + 70.0f, 1.0f);
+	Mid.Text(Offer.PingMs > 0 && Offer.PingMs < 999 ? FString::Printf(TEXT("約%dms"), Offer.PingMs) : FString(TEXT("―")), LineX, LineY + 78.0f,
 		22.0f, Paper, CP::ETextAlign::Center, TEXT("Black"));
 }
 
@@ -2537,7 +2645,9 @@ void UChaosImpactMenuWidget::PaintOnlinePlayerCard(const FGeometry& Design, FSla
 	const float In = EaseOut((Time - 0.1f) / 0.35f);
 	constexpr float W = 720.0f;
 	constexpr float H = 96.0f;
-	const CP::FPainter P{MakeSkewed(Design, 770.0f + (1.0f - In) * 80.0f, 66.0f, W, H, -0.12f), Elements, Layer, In};
+	// (Upright: across the screen under the header.)
+	const FGeometry CardSide = IsPortraitCanvas() ? MoveDesign(Design, FVector2D(770.0, 66.0), FVector2D(90.0, 254.0), 1.0f) : Design;
+	const CP::FPainter P{MakeSkewed(CardSide, 770.0f + (1.0f - In) * 80.0f, 66.0f, W, H, -0.12f), Elements, Layer, In};
 	OlPageCard(P, W, H, Gold);
 	const CP::FPainter T = CP::HudAbove(P, 2);
 	T.Text(TEXT("PLAYER"), 24.0f, 14.0f, 14.0f, Gold, CP::ETextAlign::Left, TEXT("BlackItalic"));
@@ -2603,7 +2713,9 @@ void UChaosImpactMenuWidget::PaintLineCheck(const FGeometry& Design, FSlateWindo
 	const float InL = EaseOut((Time - 0.1f) / 0.35f);
 	constexpr float LW = 610.0f;
 	constexpr float LH = 500.0f;
-	const FGeometry LeftSpace = MakeSkewed(Design, 110.0f - (1.0f - InL) * 80.0f, 196.0f, LW, LH, -0.06f);
+	// (Upright: the meter above, the numbers under it.)
+	const bool bUprightCheck = IsPortraitCanvas();
+	const FGeometry LeftSpace = MakeSkewed(Design, (bUprightCheck ? 145.0f : 110.0f) - (1.0f - InL) * 80.0f, bUprightCheck ? 270.0f : 196.0f, LW, LH, -0.06f);
 	const CP::FPainter L{LeftSpace, Elements, Layer, InL};
 	OlPageCard(L, LW, LH, bShowResult ? V.Color : Ice);
 	const CP::FPainter LT = CP::HudAbove(L, 2);
@@ -2662,7 +2774,7 @@ void UChaosImpactMenuWidget::PaintLineCheck(const FGeometry& Design, FSlateWindo
 	const float InR = EaseOut((Time - 0.18f) / 0.35f);
 	constexpr float RW = 730.0f;
 	constexpr float RH = 500.0f;
-	const FGeometry RightSpace = MakeSkewed(Design, 760.0f + (1.0f - InR) * 80.0f, 196.0f, RW, RH, -0.06f);
+	const FGeometry RightSpace = MakeSkewed(Design, (bUprightCheck ? 85.0f : 760.0f) + (1.0f - InR) * 80.0f, bUprightCheck ? 810.0f : 196.0f, RW, RH, -0.06f);
 	const CP::FPainter R{RightSpace, Elements, Layer, InR};
 	OlPageCard(R, RW, RH, bShowResult ? V.Color : Ice);
 	const CP::FPainter RT = CP::HudAbove(R, 2);
@@ -2781,22 +2893,29 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 	}
 	const TArray<AChaosImpactPlayerController::FTourneySeat>& Seats = Owner->GetTourneySeats();
 	const bool bMatch = Owner->IsTourneySeatForMatch();
+	// スマホ版: a tap takes the place (the phone is the one way to play), laid out upright too.
+	const bool bTouch = IsPhoneBuild();
+	const bool bUpright = IsUprightCanvas();
+	const float MidX = bUpright ? 450.0f : 800.0f;
 	// The title: which match (or the tournament), and what to do.
 	{
 		const float In = EaseOut(Time / 0.3f);
-		const CP::FPainter Title{CP::MakeAnchor(Design, 800.0f, 86.0f, FMath::Lerp(1.4f, 1.0f, In)), Elements, Layer + 4, In};
+		const CP::FPainter Title{CP::MakeAnchor(Design, MidX, bUpright ? 110.0f : 86.0f, FMath::Lerp(1.4f, 1.0f, In)), Elements, Layer + 4, In};
 		const FString Name = Owner->GetTourneySeatTitle();
-		CP::HudText3D(Title, Name, 0.0f, -46.0f, CP::HudFit(Name, 68.0f, 1300.0f, TEXT("BlackItalic")), Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 4.0f);
+		CP::HudText3D(Title, Name, 0.0f, -46.0f, CP::HudFit(Name, 68.0f, bUpright ? 820.0f : 1300.0f, TEXT("BlackItalic")), Gold, CP::ETextAlign::Center,
+			TEXT("BlackItalic"), 4.0f);
 		const CP::FPainter Under{Design, Elements, Layer + 4, EaseOut((Time - 0.15f) / 0.3f)};
-		const FString Line = bMatch ? TEXT("この試合で遊ぶ人は、自分のコントローラーのボタンを押してください（キーボードは何かのキー）")
-			: TEXT("それぞれ、自分のコントローラーのボタンを押してください（キーボードは何かのキー）");
-		Under.Text(Line, 800.0f, 150.0f, CP::HudFit(Line, 22.0f, 1400.0f, TEXT("Black")), Paper, CP::ETextAlign::Center, TEXT("Black"));
+		const FString Line = bTouch ? FString(TEXT("この試合で遊ぶ人は、画面をタップしてください"))
+			: bMatch ? FString(TEXT("この試合で遊ぶ人は、自分のコントローラーのボタンを押してください（キーボードは何かのキー）"))
+			: FString(TEXT("それぞれ、自分のコントローラーのボタンを押してください（キーボードは何かのキー）"));
+		Under.Text(Line, MidX, bUpright ? 170.0f : 150.0f, CP::HudFit(Line, bTouch ? 30.0f : 22.0f, bUpright ? 820.0f : 1400.0f, TEXT("Black")), Paper,
+			CP::ETextAlign::Center, TEXT("Black"));
 	}
-	// A card per place.
+	// A card per place (upright: one over the other, VS between).
 	const int32 Count = FMath::Max(1, Seats.Num());
-	const float CardW = Count <= 2 ? 420.0f : 330.0f;
+	const float CardW = bUpright ? (Count <= 2 ? 560.0f : 390.0f) : Count <= 2 ? 420.0f : 330.0f;
 	const float Gap = Count <= 2 ? 180.0f : 34.0f;
-	const float CardH = 490.0f;
+	const float CardH = bUpright ? 460.0f : 490.0f;
 	const float Left = 800.0f - (Count * CardW + (Count - 1) * Gap) * 0.5f;
 	const float CardTop = 200.0f;
 	const double Now = FPlatformTime::Seconds();
@@ -2806,8 +2925,14 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 		const bool bTaken = Seat.Device != -2 || Seat.bCPU;
 		const FLinearColor Tone = Seat.bCPU ? Muted : PlayerAccents[Index % 4];
 		const float In = EaseOut((Time - 0.1f - 0.07f * Index) / 0.35f);
-		const float X = Left + Index * (CardW + Gap);
-		const FGeometry CardSpace = MakeSkewed(Design, X, CardTop + (1.0f - In) * 40.0f, CardW, CardH, -0.06f);
+		float X = Left + Index * (CardW + Gap);
+		float Y = CardTop;
+		if (bUpright)
+		{
+			X = Count <= 2 ? 170.0f : 50.0f + (Index % 2) * 410.0f;
+			Y = Count <= 2 ? 250.0f + Index * 620.0f : 250.0f + (Index / 2) * 520.0f;
+		}
+		const FGeometry CardSpace = MakeSkewed(Design, X, Y + (1.0f - In) * 40.0f, CardW, CardH, -0.06f);
 		const CP::FPainter C{CardSpace, Elements, Layer, In};
 		FLinearColor Deep = Tone * 0.18f;
 		Deep.A = 0.97f;
@@ -2817,11 +2942,14 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 		// The person, cut to the card.
 		if (DuelPreviewBrushes.IsValidIndex(Index) && DuelPreviewBrushes[Index].GetResourceObject())
 		{
-			const float PicW = CardW + 40.0f;
-			const float PicH = PicW * AChaosImpactCharacterPreview::PictureHeight / AChaosImpactCharacterPreview::PictureWidth;
+			// (A card wider than tall, upright: the person by its height, on the right of it, the name on the left.)
+			const bool bWide = CardW > CardH;
+			const float PicH = bWide ? CardH * 1.2f : (CardW + 40.0f) * AChaosImpactCharacterPreview::PictureHeight / AChaosImpactCharacterPreview::PictureWidth;
+			const float PicW = bWide ? PicH * AChaosImpactCharacterPreview::PictureWidth / AChaosImpactCharacterPreview::PictureHeight : CardW + 40.0f;
+			const FVector2f PicAt = bWide ? FVector2f(CardW - PicW + 10.0f, CardH - PicH + 30.0f) : FVector2f(-20.0f, CardH - PicH - 40.0f);
 			Elements.PushClip(FSlateClippingZone(CardSpace));
 			FSlateDrawElement::MakeBox(Elements, Layer + 1, CardSpace.ToPaintGeometry(FVector2f(PicW, PicH),
-				FSlateLayoutTransform(FVector2f(-20.0f, CardH - PicH - 40.0f))), &DuelPreviewBrushes[Index], ESlateDrawEffect::None,
+				FSlateLayoutTransform(PicAt)), &DuelPreviewBrushes[Index], ESlateDrawEffect::None,
 				WithAlpha(FLinearColor::White, In * (Seat.bCPU ? 0.7f : 1.0f)));
 			const CP::FPainter Fade{CardSpace, Elements, Layer + 1, In};
 			for (int32 Step = 0; Step < 14; ++Step)
@@ -2842,7 +2970,7 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 		CP::HudAbove(T, 1).Text(Label, 18.0f + LabelW * 0.5f, 23.0f, 16.0f, Paper, CP::ETextAlign::Center, TEXT("Black"));
 		CP::HudText3D(CP::HudAbove(T, 1), Seat.Name, 18.0f, 58.0f, CP::HudFit(Seat.Name, 40.0f, CardW - 36.0f), Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
 		const FString CharacterName = ChaosImpactRoster::Get(Seat.Character).Name;
-		T.Text(CharacterName, 20.0f, 108.0f, CP::HudFit(CharacterName, 18.0f, CardW - 40.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), CP::ETextAlign::Left, TEXT("Bold"));
+		T.Text(CharacterName, 20.0f, 114.0f, CP::HudFit(CharacterName, 18.0f, CardW - 40.0f, TEXT("Bold")), WithAlpha(Paper, 0.7f), CP::ETextAlign::Left, TEXT("Bold"));
 		// Its controller: taken (which), or waiting for a button; a CPU needs none.
 		const float BoxY = CardH - 76.0f;
 		if (Seat.bCPU)
@@ -2853,7 +2981,7 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 		}
 		else if (Seat.Device != -2)
 		{
-			const FString Device = Seat.Device == -1 ? FString(TEXT("キーボード")) : FString::Printf(TEXT("コントローラー %d"), Seat.Device);
+			const FString Device = Seat.Device == -1 ? FString(bTouch ? TEXT("タッチ") : TEXT("キーボード")) : FString::Printf(TEXT("コントローラー %d"), Seat.Device);
 			CP::HudPoly(T, {FVector2D(18.0, BoxY), FVector2D(CardW - 18.0f, BoxY), FVector2D(CardW - 18.0f, BoxY + 56.0f), FVector2D(18.0, BoxY + 56.0f)},
 				CP::MakeFill(FLinearColor(0.3f, 0.95f, 0.5f, 1.0f), FLinearColor(0.08f, 0.6f, 0.28f, 1.0f)));
 			CP::HudText3D(CP::HudAbove(T, 1), FString::Printf(TEXT("OK!  %s"), *Device), CardW * 0.5f, BoxY + 12.0f,
@@ -2864,7 +2992,7 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 			const float Breath = 0.55f + 0.45f * FMath::Sin(Time * 5.0f + Index);
 			CP::RoundedBox(T, 18.0f, BoxY, CardW - 36.0f, 56.0f, 14.0f, WithAlpha(Paper, 0.06f + 0.06f * Breath));
 			CP::HudAbove(T, 1).Outline(18.0f, BoxY, CardW - 36.0f, 56.0f, WithAlpha(Tone, Breath), 2.0f);
-			const FString Ask = TEXT("ボタンを押して参加");
+			const FString Ask = bTouch ? TEXT("タップして参加") : TEXT("ボタンを押して参加");
 			T.Text(Ask, CardW * 0.5f, BoxY + 14.0f, CP::HudFit(Ask, 22.0f, CardW - 60.0f), WithAlpha(Paper, 0.6f + 0.4f * Breath), CP::ETextAlign::Center, TEXT("Black"));
 		}
 	}
@@ -2872,7 +3000,7 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 	if (bMatch && Seats.Num() == 2)
 	{
 		const CP::FPainter Mid{Design, Elements, Layer + 6, EaseOut((Time - 0.25f) / 0.3f)};
-		CP::HudText3D(Mid, TEXT("VS"), 800.0f, 392.0f, 96.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
+		CP::HudText3D(Mid, TEXT("VS"), MidX, bUpright ? 735.0f : 392.0f, 96.0f, Paper, CP::ETextAlign::Center, TEXT("BlackItalic"), 5.0f);
 	}
 	// Everyone in: a moment, then it starts (any of them can still give theirs back).
 	const double FullAt = Owner->GetTourneySeatsFullAt();
@@ -2880,14 +3008,16 @@ void UChaosImpactMenuWidget::PaintTourneySeat(const FGeometry& Design, FSlateWin
 	if (FullAt > 0.0)
 	{
 		const float Left01 = FMath::Clamp(static_cast<float>((Now - FullAt) / 1.4), 0.0f, 1.0f);
-		CP::HudText3D(Foot, bMatch ? TEXT("試合開始！") : TEXT("トーナメント開始！"), 800.0f, 712.0f, 44.0f, Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
-		CP::RoundedBox(Foot, 600.0f, 780.0f, 400.0f, 10.0f, 5.0f, WithAlpha(Paper, 0.12f));
-		CP::RoundedBox(CP::HudAbove(Foot, 1), 600.0f, 780.0f, 400.0f * Left01, 10.0f, 5.0f, Gold);
+		const float FootY = bUpright ? 1360.0f : 712.0f;
+		CP::HudText3D(Foot, bMatch ? TEXT("試合開始！") : TEXT("トーナメント開始！"), MidX, FootY, 44.0f, Gold, CP::ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
+		CP::RoundedBox(Foot, MidX - 200.0f, FootY + 68.0f, 400.0f, 10.0f, 5.0f, WithAlpha(Paper, 0.12f));
+		CP::RoundedBox(CP::HudAbove(Foot, 1), MidX - 200.0f, FootY + 68.0f, 400.0f * Left01, 10.0f, 5.0f, Gold);
 	}
 	// (Only the keyboard's Esc goes back: shown to it alone.)
-	const FString Guide = bMatch ? FString(TEXT("もう一度同じボタンで取り消し"))
+	const FString Guide = bTouch ? FString(TEXT("もう一度タップで取り消し")) : bMatch ? FString(TEXT("もう一度同じボタンで取り消し"))
 		: ChaosImpactHints::Text(ChaosImpactHints::GetLastDevice(), TEXT("もう一度同じボタンで取り消し{kb:　・　Esc：登録画面にもどる}"));
-	Foot.Text(Guide, 800.0f, 830.0f, CP::HudFit(Guide, 17.0f, 1300.0f, TEXT("Bold")), Muted, CP::ETextAlign::Center, TEXT("Bold"));
+	Foot.Text(Guide, MidX, bUpright ? 1500.0f : 830.0f, CP::HudFit(Guide, bTouch ? 24.0f : 17.0f, bUpright ? 820.0f : 1300.0f, TEXT("Bold")), Muted,
+		CP::ETextAlign::Center, TEXT("Bold"));
 }
 
 FString UChaosImpactMenuWidget::GetPasswordString() const
@@ -2973,12 +3103,26 @@ void UChaosImpactMenuWidget::BuildEntries()
 	{
 
 	case EChaosImpactScreen::Title:
-		Entries.Add({FSlateRect(520, 700, 1080, 800), TEXT("PRESS START"), TEXT(""), TEXT(""), Gold});
+		Entries.Add({IsPortraitCanvas() ? FSlateRect(150, 1180, 750, 1300) : FSlateRect(520, 700, 1080, 800), TEXT("PRESS START"),
+			TEXT(""), TEXT(""), Gold});
 		break;
 	case EChaosImpactScreen::ModeSelect:
 		// The online menu's mosaic: ソロ / VS / 訓練場 across the top; トレーニング / カラーエディット / 設定 under them;
 		// タイトルへ and the bar saying what the chosen one is along the bottom. (The indices stay as they were: 0 ソロ,
 		// 1 VS, 2 トレーニング, 3 タイトルへ, 4 設定, 5 カラーエディット, 6 訓練場.)
+		if (IsPortraitCanvas())
+		{
+			// Upright: VS big at the top, ソロ and 訓練場 side by side, トレーニング across, カラーエディット and 設定,
+			// the bar saying what the chosen one is, and タイトルへ at the bottom (the thumb's end of the screen).
+			Entries.Add({FSlateRect(60, 560, 440, 850), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
+			Entries.Add({FSlateRect(60, 250, 840, 530), TEXT("VSモード"), TEXT(""), TEXT("VERSUS"), Fire});
+			Entries.Add({FSlateRect(60, 880, 840, 1050), TEXT("トレーニング"), TEXT(""), TEXT("TRAINING"), Gold});
+			Entries.Add({FSlateRect(60, 1440, 400, 1520), TEXT("タイトルへ"), TEXT(""), TEXT(""), Muted});
+			Entries.Add({FSlateRect(460, 1080, 840, 1250), TEXT("設定"), TEXT("settings"), TEXT("SETTINGS"), FLinearColor(0.42f, 0.6f, 0.95f, 1.0f)});
+			Entries.Add({FSlateRect(60, 1080, 440, 1250), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT("COLOR EDIT"), Violet});
+			Entries.Add({FSlateRect(460, 560, 840, 850), TEXT("訓練場"), TEXT("dojo"), TEXT("DOJO"), FLinearColor(0.08f, 0.86f, 0.78f, 1.0f)});
+			break;
+		}
 		Entries.Add({FSlateRect(110, 190, 600, 490), TEXT("ソロモード"), TEXT(""), TEXT("SOLO"), Ice});
 		Entries.Add({FSlateRect(630, 190, 1120, 490), TEXT("VSモード"), TEXT(""), TEXT("VERSUS"), Fire});
 		Entries.Add({FSlateRect(110, 515, 700, 680), TEXT("トレーニング"), TEXT(""), TEXT("TRAINING"), Gold});
@@ -2986,12 +3130,35 @@ void UChaosImpactMenuWidget::BuildEntries()
 		Entries.Add({FSlateRect(1130, 515, 1490, 680), TEXT("設定"), TEXT("settings"), TEXT("SETTINGS"), FLinearColor(0.42f, 0.6f, 0.95f, 1.0f)});
 		Entries.Add({FSlateRect(730, 515, 1100, 680), TEXT("カラーエディット"), TEXT("colour_edit"), TEXT("COLOR EDIT"), Violet});
 		Entries.Add({FSlateRect(1150, 190, 1490, 490), TEXT("訓練場"), TEXT("dojo"), TEXT("DOJO"), FLinearColor(0.08f, 0.86f, 0.78f, 1.0f)});
+		if (!IsPhoneBuild())
+		{
+			// PC版: ゲーム終了 beside タイトルへ (pressed twice).
+			Entries.Add({FSlateRect(420, 718, 710, 790), TEXT("ゲーム終了"), TEXT("quit"), TEXT(""), Muted});
+		}
+		QuitArmedAt = -100.0;
 		break;
 	case EChaosImpactScreen::TrainingSetup:
 	{
 		// (Who plays with which device is decided on the entry screen that follows, by who presses first.)
 		const AChaosImpactPlayerController* Controller =
 			Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		if (Controller && Controller->IsPhoneSolo())
+		{
+			// スマホ版 VS ローカル: one player: against CPUs, or watching them (drawn as the mode menu's tiles).
+			if (IsPortraitCanvas())
+			{
+				Entries.Add({FSlateRect(60, 250, 840, 680), TEXT("CPUと対戦"), TEXT("play"), TEXT("VS CPU"), Fire});
+				Entries.Add({FSlateRect(60, 710, 840, 1250), TEXT("観戦"), TEXT("spectate"), TEXT("WATCH"), Ice});
+				Entries.Add({FSlateRect(60, 1440, 400, 1520), TEXT("戻る"), TEXT("back"), TEXT(""), Muted});
+			}
+			else
+			{
+				Entries.Add({FSlateRect(110, 190, 780, 680), TEXT("CPUと対戦"), TEXT("play"), TEXT("VS CPU"), Fire});
+				Entries.Add({FSlateRect(820, 190, 1490, 680), TEXT("観戦"), TEXT("spectate"), TEXT("WATCH"), Ice});
+				Entries.Add({FSlateRect(110, 718, 400, 790), TEXT("戻る"), TEXT("back"), TEXT(""), Muted});
+			}
+			break;
+		}
 		for (int32 Players = 1; Players <= 4; ++Players)
 		{
 			const float X = 150.0f + (Players - 1) * 331.0f;
@@ -3009,6 +3176,15 @@ void UChaosImpactMenuWidget::BuildEntries()
 		break;
 	}
 	case EChaosImpactScreen::VSSelect:
+		if (IsPortraitCanvas())
+		{
+			// Upright: ローカル and 通信 stacked, トーナメント under them, the bar, and the way back at the bottom.
+			Entries.Add({FSlateRect(60, 250, 840, 600), TEXT("ローカル"), TEXT(""), TEXT("LOCAL"), Ice});
+			Entries.Add({FSlateRect(60, 630, 840, 980), TEXT("通信"), TEXT(""), TEXT("ONLINE"), Fire});
+			Entries.Add({FSlateRect(60, 1440, 400, 1520), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
+			Entries.Add({FSlateRect(60, 1010, 840, 1250), TEXT("トーナメント"), TEXT("tourney"), TEXT("TOURNAMENT"), Gold});
+			break;
+		}
 		Entries.Add({FSlateRect(110, 190, 560, 680), TEXT("ローカル"), TEXT(""), TEXT("LOCAL"), Ice});
 		Entries.Add({FSlateRect(590, 190, 1040, 680), TEXT("通信"), TEXT(""), TEXT("ONLINE"), Fire});
 		Entries.Add({FSlateRect(110, 718, 400, 790), TEXT("モード選択へ"), TEXT(""), TEXT(""), Muted});
@@ -3421,7 +3597,7 @@ void UChaosImpactMenuWidget::BuildEntries()
 		}
 		if (bTrainingBallPickerOpen)
 		{
-			for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
+			for (int32 Index = 0; Index < ChaosImpactBallTypes::SharedCount; ++Index)
 			{
 				const EChaosImpactBallType Type = ChaosImpactBallTypes::FromIndex(Index);
 				const float X = 78 + (Index % TrainingBallColumns) * 139, Y = 174 + (Index / TrainingBallColumns) * 94;
@@ -3465,19 +3641,21 @@ void UChaosImpactMenuWidget::BuildEntries()
 		// すべてオフ (in that order after the tiles; drawn もどる, すべてオン, すべてオフ from the left).
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const TArray<EChaosImpactBallType> Kinds = ChaosImpactBallSwitch::GetSwitchable();
+		const bool bUprightSwitch = IsPortraitCanvas();
 		for (int32 Index = 0; Index < Kinds.Num(); ++Index)
 		{
-			const float Left = 110.0f + (Index % BallSwitchColumns) * 154.0f - (Index / BallSwitchColumns) * 22.0f * 0.06f;
-			const float Top = 214.0f + (Index / BallSwitchColumns) * 222.0f;
+			// (Upright: five to a row.)
+			const float Left = bUprightSwitch ? 60.0f + (Index % 5) * 162.0f : 110.0f + (Index % BallSwitchColumns) * 154.0f - (Index / BallSwitchColumns) * 22.0f * 0.06f;
+			const float Top = bUprightSwitch ? 290.0f + (Index / 5) * 230.0f : 214.0f + (Index / BallSwitchColumns) * 222.0f;
 			const bool bOn = !Controller || ChaosImpactBallSwitch::IsOn(Controller->GetPendingMatchRules(), Kinds[Index]);
 			Entries.Add({FSlateRect(Left, Top, Left + 142.0f, Top + 200.0f), ChaosImpactBallTypes::GetDisplayName(Kinds[Index]), TEXT("ball"),
 				FString::FromInt(static_cast<int32>(Kinds[Index])), bOn ? ChaosImpactBallTypes::GetColor(Kinds[Index]) : Muted});
 		}
-		Entries.Add({FSlateRect(430, 726, 800, 790), TEXT("すべてオン"), TEXT("all_on"), TEXT(""), Gold});
-		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("switch_back"), TEXT(""), Muted});
+		Entries.Add({bUprightSwitch ? FSlateRect(310, 1450, 590, 1514) : FSlateRect(430, 726, 800, 790), TEXT("すべてオン"), TEXT("all_on"), TEXT(""), Gold});
+		Entries.Add({bUprightSwitch ? FSlateRect(60, 1450, 290, 1514) : FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("switch_back"), TEXT(""), Muted});
 		// With every ball off there is no way back: もどる greyed out (and B / Esc refused).
 		Entries.Last().bDisabled = Controller && ChaosImpactBallSwitch::IsNoneOn(Controller->GetPendingMatchRules());
-		Entries.Add({FSlateRect(830, 726, 1200, 790), TEXT("すべてオフ"), TEXT("all_off"), TEXT(""), Muted});
+		Entries.Add({bUprightSwitch ? FSlateRect(610, 1450, 840, 1514) : FSlateRect(830, 726, 1200, 790), TEXT("すべてオフ"), TEXT("all_off"), TEXT(""), Muted});
 		break;
 	}
 	if (bModePicker)
@@ -3487,8 +3665,16 @@ void UChaosImpactMenuWidget::BuildEntries()
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		static const int32 Grid[ModePickerRows][4] = {{0, 1, 2, 3}, {6, 7, 8, 9}, {4, 5, 10, AChaosImpactPlayerController::TournamentAllAtOnceChoice},
 			{11, 12, -1, -1}};
+		// (Upright: each kind under its own heading, two to a row.)
+		const bool bUprightPicker = IsPortraitCanvas();
+		float UprightY = 220.0f;
 		for (int32 GridRow = 0; GridRow < ModePickerRows; ++GridRow)
 		{
+			ModePickerHeadY[GridRow] = UprightY;
+			int32 InRow = 0;
+			for (int32 Column = 0; Column < 4; ++Column) { InRow += Grid[GridRow][Column] >= 0 ? 1 : 0; }
+			const float RowsTop = UprightY + 44.0f;
+			UprightY = RowsTop + ((InRow + 1) / 2) * 118.0f + 16.0f;
 			for (int32 Column = 0; Column < 4; ++Column)
 			{
 				const int32 Mode = Grid[GridRow][Column];
@@ -3498,20 +3684,20 @@ void UChaosImpactMenuWidget::BuildEntries()
 				}
 				FChaosImpactMatchRules Kind;
 				AChaosImpactPlayerController::ApplyMatchMode(Kind, Mode);
-				const float Left = 300.0f + Column * 300.0f - GridRow * ModePickerStep * 0.1f;
-				const float Top = ModePickerTop + GridRow * ModePickerStep;
+				const float Left = bUprightPicker ? 60.0f + (Column % 2) * 400.0f : 300.0f + Column * 300.0f - GridRow * ModePickerStep * 0.1f;
+				const float Top = bUprightPicker ? RowsTop + (Column / 2) * 118.0f : ModePickerTop + GridRow * ModePickerStep;
 				// (Short names: the row says which kind it is.)
 				static const TCHAR* Names[] = {TEXT("個人戦"), TEXT("2チーム"), TEXT("3チーム"), TEXT("4チーム"), TEXT("クラッシュボール"),
 					TEXT("デュエル 1対1"), TEXT("個人戦"), TEXT("2チーム"), TEXT("3チーム"), TEXT("4チーム"), TEXT("トーナメント 1試合ずつ"),
 					TEXT("ルビーラッシュ"), TEXT("クラウンキープ"), TEXT("トーナメント 同時進行")};
 				static_assert(UE_ARRAY_COUNT(Names) == AChaosImpactPlayerController::TournamentAllAtOnceChoice + 1);
-				FMenuEntry Tile{FSlateRect(Left, Top, Left + 284.0f, Top + ModePickerTile), Names[Mode],
+				FMenuEntry Tile{FSlateRect(Left, Top, Left + (bUprightPicker ? 380.0f : 284.0f), Top + (bUprightPicker ? 106.0f : ModePickerTile)), Names[Mode],
 					TEXT("mode"), FString::FromInt(Mode), ModePickerRowColor(GridRow)};
 				Tile.bDisabled = Controller && !Controller->GetMatchModeBlocker(AChaosImpactPlayerController::GetChoiceMode(Mode)).IsEmpty();
 				Entries.Add(Tile);
 			}
 		}
-		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("picker_back"), TEXT(""), Muted});
+		Entries.Add({bUprightPicker ? FSlateRect(60, 1480, 330, 1548) : FSlateRect(110, 726, 400, 790), TEXT("もどる"), TEXT("picker_back"), TEXT(""), Muted});
 		break;
 	}
 	else
@@ -3520,10 +3706,20 @@ void UChaosImpactMenuWidget::BuildEntries()
 		// 戻る. Title: the setting, Number: its value, Detail: "fixed" when it cannot be changed.
 		const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const FChaosImpactMatchRules Rules = Controller ? Controller->GetPendingMatchRules() : FChaosImpactMatchRules();
-		const auto Row = [this](const int32 Index, const TCHAR* Label, const FString& Value, const FLinearColor& Accent, const bool bFixed)
+		// (With the fifth row, 合体ボール, the rows sit a little closer, so all five stay above the count of players under them.)
+		const bool bFiveRows = Controller && Controller->CanChooseFusionRule();
+		// (Upright: the rows across the whole width, lower under the heading.)
+		const bool bUprightRules = IsPortraitCanvas();
+		const float RowStep = bUprightRules ? 94.0f : bFiveRows ? 76.0f : 92.0f;
+		const float RowHeight = bUprightRules ? 80.0f : bFiveRows ? 64.0f : 76.0f;
+		const float RowTop = bUprightRules ? 236.0f : bFiveRows ? 196.0f : 200.0f;
+		const float RowLeft = bUprightRules ? 64.0f : 110.0f;
+		const float RowRight = bUprightRules ? 836.0f : 880.0f;
+		const auto Row = [this, RowStep, RowHeight, RowTop, RowLeft, RowRight](const int32 Index, const TCHAR* Label, const FString& Value,
+			const FLinearColor& Accent, const bool bFixed)
 		{
-			const float Top = 200.0f + Index * 92.0f;
-			FMenuEntry Entry{FSlateRect(110.0f - Index * 92.0f * 0.12f, Top, 880.0f - Index * 92.0f * 0.12f, Top + 76.0f), Label,
+			const float Top = RowTop + Index * RowStep;
+			FMenuEntry Entry{FSlateRect(RowLeft - Index * RowStep * 0.12f, Top, RowRight - Index * RowStep * 0.12f, Top + RowHeight), Label,
 				bFixed ? TEXT("fixed") : TEXT(""), Value, Accent};
 			Entry.bDisabled = bFixed;
 			Entries.Add(Entry);
@@ -3579,17 +3775,53 @@ void UChaosImpactMenuWidget::BuildEntries()
 			Row(3, TEXT("CPUの強さ"), Rules.CPUCount > 0 ? ChaosImpactMatch::GetCPULevelName(Rules.CPULevel) : TEXT("CPUなし"), StrengthColor, false);
 			Entries.Last().bDisabled = Rules.CPUCount <= 0;
 		}
-		Entries.Add({FSlateRect(1010, 718, 1490, 800), Rules.bDuel ? TEXT("試合開始") : TEXT("決定"), TEXT(""), TEXT(""), Gold});
-		Entries.Add({FSlateRect(110, 726, 400, 790), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
+		Entries.Add({bUprightRules ? FSlateRect(470, 1420, 840, 1500) : FSlateRect(1010, 718, 1490, 800), Rules.bDuel ? TEXT("試合開始") : TEXT("決定"), TEXT(""),
+			TEXT(""), Gold});
+		Entries.Add({bUprightRules ? FSlateRect(60, 1516, 320, 1580) : FSlateRect(110, 726, 400, 790), TEXT("戻る"), TEXT(""), TEXT(""), Muted});
 		// (Index 6, after 決定 and 戻る: their indices stay as they were.)
 		const int32 On = ChaosImpactBallSwitch::CountOn(Rules);
 		const int32 All = ChaosImpactBallSwitch::GetSwitchable().Num();
-		Entries.Add({FSlateRect(430, 726, 980, 790), On >= All ? FString(TEXT("ボールスイッチ（すべてオン）"))
+		Entries.Add({bUprightRules ? FSlateRect(60, 1426, 450, 1494) : FSlateRect(430, 726, 980, 790), On >= All ? FString(TEXT("ボールスイッチ（すべてオン）"))
 			: FString::Printf(TEXT("ボールスイッチ（%d / %d）"), On, All), TEXT("ball_switch"), TEXT(""), Violet});
+		// (Index 7: the fifth row, 合体ボール, where it can be chosen: local matches and 合言葉 rooms.)
+		if (Controller && Controller->CanChooseFusionRule())
+		{
+			Row(4, TEXT("合体ボール"), Rules.bFusionBalls ? TEXT("あり") : TEXT("なし"), Rules.bFusionBalls ? Gold : Muted, false);
+		}
 		break;
 	}
 	case EChaosImpactScreen::StageSelect:
-		// Six stages in a 3x2 grid (StageIndex order) above a back button. Picking a card starts.
+		if (IsDuelStageSelect())
+		{
+			// A duel or a tournament: the four 1v1 stages and ランダム in the same 3x2 grid, above the back button.
+			const FLinearColor Accents[] = {Gold, Ice, Fire, Violet, Muted};
+			for (int32 Index = 0; Index <= ChaosImpactMatch::DuelStageCount; ++Index)
+			{
+				const bool bUprightStages = IsPortraitCanvas();
+				const float Left = bUprightStages ? 60.0f + (Index % 2) * 400.0f : 110.0f + (Index % 3) * 465.0f;
+				const float Top = bUprightStages ? 230.0f + (Index / 2) * 268.0f : Index < 3 ? 184.0f : 456.0f;
+				const bool bRandom = Index == ChaosImpactMatch::DuelStageCount;
+				Entries.Add({FSlateRect(Left, Top, Left + (IsPortraitCanvas() ? 380.0f : 450.0f), Top + 250.0f),
+					bRandom ? FString(TEXT("ランダム")) : FString(ChaosImpactMatch::GetDuelStageName(Index)), TEXT(""),
+					bRandom ? FString(TEXT("RANDOM")) : FString::Printf(TEXT("1v1 STAGE %d"), Index + 1), Accents[Index]});
+			}
+			Entries.Add({IsPortraitCanvas() ? FSlateRect(60, 1500, 380, 1564) : FSlateRect(146, 736, 470, 800), TEXT("ルールへ戻る"), TEXT(""), TEXT(""), Muted});
+			break;
+		}
+		// Six stages in a 3x2 grid (StageIndex order) above a back button. Picking a card starts. (Upright: two to a row.)
+		if (IsPortraitCanvas())
+		{
+			const FLinearColor StageAccents[] = {Gold, Ice, Violet, Ice, Gold, Fire};
+			for (int32 Index = 0; Index < 6; ++Index)
+			{
+				const float Left = 60.0f + (Index % 2) * 400.0f;
+				const float Top = 230.0f + (Index / 2) * 268.0f;
+				Entries.Add({FSlateRect(Left, Top, Left + 380.0f, Top + 250.0f), ChaosImpactMatch::GetStageLabel(Index), TEXT(""),
+					FString::Printf(TEXT("STAGE %d"), Index + 1), StageAccents[Index]});
+			}
+			Entries.Add({FSlateRect(60, 1500, 380, 1564), TEXT("ルールへ戻る"), TEXT(""), TEXT(""), Muted});
+			break;
+		}
 		Entries.Add({FSlateRect(110, 184, 560, 434), ChaosImpactMatch::GetStageLabel(0), TEXT(""), TEXT("STAGE 1"), Gold});
 		Entries.Add({FSlateRect(575, 184, 1025, 434), ChaosImpactMatch::GetStageLabel(1), TEXT(""), TEXT("STAGE 2"), Ice});
 		Entries.Add({FSlateRect(1040, 184, 1490, 434), ChaosImpactMatch::GetStageLabel(2), TEXT(""), TEXT("STAGE 3"), Violet});
@@ -3652,10 +3884,12 @@ void UChaosImpactMenuWidget::BuildEntries()
 				bool bAsked = false;
 				const bool bHere = Controller->IsRematchOpponentHere(bAsked);
 				const bool bMine = Controller->HasRequestedRematch();
-				FMenuEntry Rematch{FSlateRect(230, 776, 630, 846), !bHere ? TEXT("相手は抜けました")
+				// (The same two play three games at most: two rematches.)
+				const bool bNoMore = !EndRoom->CanRematchAgain();
+				FMenuEntry Rematch{FSlateRect(230, 776, 630, 846), bNoMore ? TEXT("再戦は2回まで") : !bHere ? TEXT("相手は抜けました")
 					: bMine ? TEXT("相手の入力を待っています") : bAsked ? TEXT("再戦する（相手はOK）") : TEXT("同じ相手と再戦"),
 					TEXT("rematch_vote"), TEXT(""), Gold};
-				Rematch.bDisabled = !bHere || bMine;
+				Rematch.bDisabled = bNoMore || !bHere || bMine;
 				Entries.Add(Rematch);
 			}
 			// Asked for the rematch (and the other player still here): nothing else until they answer (leaving now left
@@ -3693,7 +3927,87 @@ void UChaosImpactMenuWidget::BuildEntries()
 	default:
 		break;
 	}
-	if (Screen == EChaosImpactScreen::Pause && PauseConfirm.IsEmpty() && !Entries.IsEmpty())
+	if (Screen == EChaosImpactScreen::MatchEnd && IsPortraitCanvas() && !Entries.IsEmpty())
+	{
+		// Upright: the rows where the results draw them (the table moved to the top), the choices big at the foot: the
+		// first across, the rest two to a row under it.
+		TArray<int32> Choices;
+		const AChaosImpactPlayerController* EndController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const UChaosImpactResultsView* EndResults = EndController ? EndController->GetResultsView() : nullptr;
+		const int32 RowCount = EndResults ? EndResults->GetData().Entries.Num() : 1;
+		for (int32 Index = 0; Index < Entries.Num(); ++Index)
+		{
+			FMenuEntry& Entry = Entries[Index];
+			if (Entry.Detail == TEXT("row"))
+			{
+				Entry.Rect = UChaosImpactResultsView::ToUprightTable(Entry.Rect, RowCount);
+			}
+			else if (Entry.Detail == TEXT("awards"))
+			{
+				Entry.Rect = FSlateRect(826.0f, 220.0f, 894.0f, 460.0f);
+			}
+			else if (Entry.Detail == TEXT("stats"))
+			{
+				Entry.Rect = FSlateRect(6.0f, 220.0f, 74.0f, 460.0f);
+			}
+			else
+			{
+				Choices.Add(Index);
+			}
+		}
+		const float Foot = 1530.0f, Height = 84.0f, Gap = 14.0f;
+		const int32 Under = Choices.Num() - (Choices.Num() % 2 == 1 ? 1 : 0);
+		const int32 UnderRows = Under / 2;
+		for (int32 Place = 0; Place < Choices.Num(); ++Place)
+		{
+			FSlateRect& Rect = Entries[Choices[Place]].Rect;
+			if (Choices.Num() % 2 == 1 && Place == 0)
+			{
+				const float Top = Foot - (UnderRows + 1) * (Height + Gap) + Gap;
+				Rect = FSlateRect(60.0f, Top, 840.0f, Top + Height);
+				continue;
+			}
+			const int32 Pair = Place - (Choices.Num() % 2 == 1 ? 1 : 0);
+			const float Top = Foot - (UnderRows - Pair / 2) * (Height + Gap) + Gap;
+			const float Left = Pair % 2 == 0 ? 60.0f : 457.0f;
+			Rect = FSlateRect(Left, Top, Left + 383.0f, Top + Height);
+		}
+	}
+	if (Screen == EChaosImpactScreen::Pause && PauseConfirm.IsEmpty() && !Entries.IsEmpty() && IsPortraitCanvas())
+	{
+		// Upright: the items down the screen under PAUSE, a thumb's room apart, leaning with the panel's edge.
+		const int32 Count = Entries.Num();
+		const float Step = FMath::Min(108.0f, 1120.0f / Count);
+		const float Height = FMath::Min(86.0f, Step - 14.0f);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Top = 330.0f + Index * Step;
+			const float Lean = (Top - 330.0f) * 0.05f;
+			Entries[Index].Rect = FSlateRect(70.0f - Lean, Top, 790.0f - Lean, Top + Height);
+		}
+	}
+	else if (Screen == EChaosImpactScreen::Pause && !PauseConfirm.IsEmpty() && IsPortraitCanvas())
+	{
+		// Upright: the answers under the question's card, in the middle of the screen.
+		for (FMenuEntry& Entry : Entries)
+		{
+			Entry.Rect = FSlateRect(Entry.Rect.Left - 350.0f, Entry.Rect.Top + 330.0f, Entry.Rect.Right - 350.0f, Entry.Rect.Bottom + 340.0f);
+		}
+	}
+	else if (Screen == EChaosImpactScreen::Pause && PauseConfirm.IsEmpty() && !Entries.IsEmpty() && IsPhoneLayout())
+	{
+		// スマホ版, held sideways: the items down the left panel, taller (a thumb's room) and further apart.
+		const int32 Count = Entries.Num();
+		const float Step = FMath::Min(86.0f, 600.0f / Count);
+		const float Height = FMath::Min(72.0f, Step - 10.0f);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Top = 256.0f + Index * Step;
+			const float Lean = (Top - 256.0f) * 0.178f;
+			Entries[Index].Rect = FSlateRect(150.0f - Lean, Top, 690.0f - Lean, Top + Height);
+		}
+	}
+	else if (Screen == EChaosImpactScreen::Pause && PauseConfirm.IsEmpty() && !Entries.IsEmpty())
 	{
 		// The pause menu: its items down the left panel, closer together the more there are.
 		const int32 Count = Entries.Num();
@@ -3706,6 +4020,116 @@ void UChaosImpactMenuWidget::BuildEntries()
 			const float Lean = (Top - 272.0f) * 0.178f;
 			Entries[Index].Rect = FSlateRect(150.0f - Lean, Top, 660.0f - Lean, Top + Height);
 		}
+	}
+	if (IsPhoneLayout() && IsOnlineMenuScreen(Screen))
+	{
+		PlaceOnlineEntriesForPhone();
+	}
+}
+
+void UChaosImpactMenuWidget::PlaceOnlineEntriesForPhone()
+{
+	// スマホ版 (2026-11-18). Sideways: the PC's places, the bottom row taller (a thumb's height, its words bigger).
+	// Upright: each screen laid out down the narrow screen, 戻る at the bottom left and what goes on at the bottom right.
+	const FSlateRect BackRect(60.0f, 1440.0f, 440.0f, 1530.0f);
+	const FSlateRect GoRect(460.0f, 1440.0f, 840.0f, 1530.0f);
+	if (!IsPortraitCanvas())
+	{
+		// (MATCH FOUND keeps its buttons under its cards.)
+		for (FMenuEntry& Entry : Entries)
+		{
+			if (Entry.Rect.Top >= 700.0f && Screen != EChaosImpactScreen::DuelFound)
+			{
+				Entry.Rect = FSlateRect(Entry.Rect.Left, 700.0f, Entry.Rect.Right, 800.0f);
+			}
+		}
+		return;
+	}
+	const auto IsBack = [](const FMenuEntry& Entry)
+	{
+		return Entry.Title == TEXT("戻る") || Entry.Detail == TEXT("back");
+	};
+	switch (Screen)
+	{
+	case EChaosImpactScreen::MultiReady:
+		if (Entries.Num() == 11)
+		{
+			// 8人 and 1v1 big; 合言葉 and トーナメント; 戦績 / ランキング / みんなのカラー; カラーエディット and 回線チェック;
+			// 戻る and なまえ at the bottom.
+			const FSlateRect Places[] = {FSlateRect(60, 380, 840, 620), FSlateRect(60, 640, 840, 880), FSlateRect(60, 900, 440, 1070),
+				FSlateRect(60, 1090, 310, 1270), FSlateRect(460, 1440, 840, 1530), BackRect, FSlateRect(460, 900, 840, 1070),
+				FSlateRect(60, 1290, 440, 1390), FSlateRect(460, 1290, 840, 1390), FSlateRect(590, 1090, 840, 1270), FSlateRect(325, 1090, 575, 1270)};
+			for (int32 Index = 0; Index < 11; ++Index)
+			{
+				Entries[Index].Rect = Places[Index];
+			}
+		}
+		break;
+	case EChaosImpactScreen::OnlinePrivate:
+		if (Entries.Num() == 3)
+		{
+			Entries[0].Rect = FSlateRect(60, 320, 840, 820);
+			Entries[1].Rect = FSlateRect(60, 860, 840, 1360);
+			Entries[2].Rect = BackRect;
+		}
+		break;
+	case EChaosImpactScreen::OnlineRecord:
+		if (Entries.Num() == 3)
+		{
+			// Under each panel (one above the other), its last 50 games.
+			Entries[0].Rect = BackRect;
+			Entries[1].Rect = FSlateRect(140, 762, 760, 840);
+			Entries[2].Rect = FSlateRect(140, 1342, 760, 1420);
+		}
+		break;
+	case EChaosImpactScreen::TourneyCreate:
+		for (int32 Index = 0; Index < Entries.Num(); ++Index)
+		{
+			FMenuEntry& Entry = Entries[Index];
+			if (IsBack(Entry)) { Entry.Rect = BackRect; }
+			else if (Entry.Detail == TEXT("create")) { Entry.Rect = GoRect; }
+			else { Entry.Rect = FSlateRect(60.0f, 290.0f + Index * 106.0f, 840.0f, 380.0f + Index * 106.0f); }
+		}
+		break;
+	case EChaosImpactScreen::RoomList:
+	case EChaosImpactScreen::TourneyList:
+	{
+		int32 Row = 0;
+		for (FMenuEntry& Entry : Entries)
+		{
+			if (IsBack(Entry)) { Entry.Rect = BackRect; }
+			else if (Entry.Detail == TEXT("create")) { Entry.Rect = GoRect; }
+			else if (Entry.Detail == TEXT("refresh"))
+			{
+				Entry.Rect = Screen == EChaosImpactScreen::RoomList ? GoRect : FSlateRect(60.0f, 1340.0f, 840.0f, 1420.0f);
+			}
+			else
+			{
+				// A room / a tournament: a tall row each, the whole width.
+				Entry.Rect = FSlateRect(40.0f, 330.0f + Row * 150.0f, 860.0f, 460.0f + Row * 150.0f);
+				++Row;
+			}
+		}
+		break;
+	}
+	case EChaosImpactScreen::DuelFound:
+		for (FMenuEntry& Entry : Entries)
+		{
+			Entry.Rect = Entry.Detail == TEXT("accept") ? GoRect : Entry.Detail == TEXT("decline") ? BackRect : FSlateRect(150.0f, 1440.0f, 750.0f, 1530.0f);
+		}
+		break;
+	default:
+		// The rest: 戻る bottom left, the other at the bottom right (or alone in the middle).
+		if (Entries.Num() == 1)
+		{
+			Entries[0].Rect = FSlateRect(150.0f, 1440.0f, 750.0f, 1530.0f);
+			break;
+		}
+		for (FMenuEntry& Entry : Entries)
+		{
+			Entry.Rect = IsBack(Entry) ? BackRect : GoRect;
+		}
+		break;
 	}
 }
 
@@ -3743,8 +4167,149 @@ void UChaosImpactMenuWidget::KeepMenuFocus(AChaosImpactPlayerController* Player)
 	FSlateApplication::Get().SetUserFocus(User->GetUserIndex(), Mine, EFocusCause::SetDirectly);
 }
 
+void UChaosImpactMenuWidget::OpenTouchLayoutEditor(const int32 Profile, const FString& StartMode)
+{
+	if (!TouchLayoutEditor)
+	{
+		TouchLayoutEditor = NewObject<UChaosImpactTouchLayoutEditor>(this);
+	}
+	TouchLayoutEditor->Open(Cast<AChaosImpactPlayerController>(GetOwningPlayer()), Profile, StartMode);
+}
+
+bool UChaosImpactMenuWidget::IsTouchLayoutEditorOpen() const
+{
+	return TouchLayoutEditor && TouchLayoutEditor->IsOpen();
+}
+
+FReply UChaosImpactMenuWidget::NativeOnTouchStarted(const FGeometry& InGeometry, const FPointerEvent& InGestureEvent)
+{
+	if (IsPaintStudioTouch())
+	{
+		// ペイント: every finger to the studio itself (drawing and moving the view told apart there).
+		ColourEdit->GetStudio()->TouchStart(static_cast<int32>(InGestureEvent.GetPointerIndex()), ToDesignPoint(InGeometry, InGestureEvent.GetScreenSpacePosition()));
+		return FReply::Handled().CaptureMouse(TakeWidget());
+	}
+	if (!IsTouchLayoutEditorOpen())
+	{
+		return Super::NativeOnTouchStarted(InGeometry, InGestureEvent);
+	}
+	// The first finger moves things; any other is ignored until it lifts.
+	if (EditorTouch == INDEX_NONE)
+	{
+		EditorTouch = static_cast<int32>(InGestureEvent.GetPointerIndex());
+		TouchLayoutEditor->HandleDown(InGeometry.AbsoluteToLocal(InGestureEvent.GetScreenSpacePosition()), InGeometry.GetLocalSize());
+		return FReply::Handled().CaptureMouse(TakeWidget());
+	}
+	return FReply::Handled();
+}
+
+FReply UChaosImpactMenuWidget::NativeOnTouchMoved(const FGeometry& InGeometry, const FPointerEvent& InGestureEvent)
+{
+	if (IsPaintStudioTouch())
+	{
+		ColourEdit->GetStudio()->TouchMove(static_cast<int32>(InGestureEvent.GetPointerIndex()), ToDesignPoint(InGeometry, InGestureEvent.GetScreenSpacePosition()));
+		return FReply::Handled();
+	}
+	if (!IsTouchLayoutEditorOpen())
+	{
+		return Super::NativeOnTouchMoved(InGeometry, InGestureEvent);
+	}
+	if (static_cast<int32>(InGestureEvent.GetPointerIndex()) == EditorTouch)
+	{
+		TouchLayoutEditor->HandleMove(InGeometry.AbsoluteToLocal(InGestureEvent.GetScreenSpacePosition()), InGeometry.GetLocalSize());
+	}
+	return FReply::Handled();
+}
+
+FReply UChaosImpactMenuWidget::NativeOnTouchEnded(const FGeometry& InGeometry, const FPointerEvent& InGestureEvent)
+{
+	if (ColourEdit && ColourEdit->GetStudio() && UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		// (A finger lifting after ペイント closed is still let go there: nothing left held.)
+		ColourEdit->GetStudio()->TouchEnd(static_cast<int32>(InGestureEvent.GetPointerIndex()), ToDesignPoint(InGeometry, InGestureEvent.GetScreenSpacePosition()));
+		if (IsPaintStudioTouch() || ColourEdit->GetStudio()->IsOpen())
+		{
+			return FReply::Handled().ReleaseMouseCapture();
+		}
+	}
+	if (!IsTouchLayoutEditorOpen())
+	{
+		EditorTouch = INDEX_NONE;
+		return Super::NativeOnTouchEnded(InGeometry, InGestureEvent);
+	}
+	if (static_cast<int32>(InGestureEvent.GetPointerIndex()) == EditorTouch)
+	{
+		EditorTouch = INDEX_NONE;
+		TouchLayoutEditor->HandleUp(InGeometry.AbsoluteToLocal(InGestureEvent.GetScreenSpacePosition()), InGeometry.GetLocalSize());
+		return FReply::Handled().ReleaseMouseCapture();
+	}
+	return FReply::Handled();
+}
+
+bool UChaosImpactMenuWidget::IsPhoneLayout() const
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	return Controller && Controller->ShouldUseTouchControls();
+}
+
+bool UChaosImpactMenuWidget::IsUprightCanvas()
+{
+	return IsPortraitCanvas();
+}
+
+bool UChaosImpactMenuWidget::IsQuitArmed() const
+{
+	return Screen == EChaosImpactScreen::ModeSelect && SelectedIndex == 7 && FPlatformTime::Seconds() - QuitArmedAt < 3.0;
+}
+
+bool UChaosImpactMenuWidget::IsPhoneBuild()
+{
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	return true;
+#else
+	static const bool bTouch = FParse::Param(FCommandLine::Get(), TEXT("CITouch"));
+	return bTouch;
+#endif
+}
+
+bool UChaosImpactMenuWidget::IsOnlineMenuScreen(const EChaosImpactScreen Which)
+{
+	// The online menus laid out for a phone (both ways): the online menu, 合言葉マッチ and its screens, 戦績, 回線チェック,
+	// トーナメント.
+	return Which == EChaosImpactScreen::MultiReady || Which == EChaosImpactScreen::OnlinePrivate || Which == EChaosImpactScreen::OnlineName
+		|| Which == EChaosImpactScreen::OnlinePassword || Which == EChaosImpactScreen::OnlineRoomName || Which == EChaosImpactScreen::RoomList
+		|| Which == EChaosImpactScreen::OnlineStatus || Which == EChaosImpactScreen::OnlineConnecting || Which == EChaosImpactScreen::OnlineRecord
+		|| Which == EChaosImpactScreen::LineCheck || Which == EChaosImpactScreen::TourneyList || Which == EChaosImpactScreen::TourneyCreate
+		|| Which == EChaosImpactScreen::OnlineHistory || Which == EChaosImpactScreen::OnlineRanking
+		|| Which == EChaosImpactScreen::Gallery || Which == EChaosImpactScreen::DuelFound;
+}
+
+bool UChaosImpactMenuWidget::HasPortraitLayout(const EChaosImpactScreen Which)
+{
+	// The screens laid out upright too (the rest stay landscape, letterboxed, until they are).
+	return Which == EChaosImpactScreen::Title || Which == EChaosImpactScreen::ModeSelect || Which == EChaosImpactScreen::VSSelect
+		|| Which == EChaosImpactScreen::TrainingSetup || Which == EChaosImpactScreen::CharacterSelect || Which == EChaosImpactScreen::MatchRules
+		|| Which == EChaosImpactScreen::StageSelect || Which == EChaosImpactScreen::Pause || Which == EChaosImpactScreen::Settings
+		|| Which == EChaosImpactScreen::ColourEdit || Which == EChaosImpactScreen::DojoSelect || Which == EChaosImpactScreen::TourneyEntry
+		|| Which == EChaosImpactScreen::TourneySeat || Which == EChaosImpactScreen::MatchEnd || IsOnlineMenuScreen(Which);
+}
+
+void UChaosImpactMenuWidget::UpdateMenuCanvas(const FGeometry& Geometry)
+{
+	const FVector2D View = Geometry.GetLocalSize();
+	const bool bUpright = IsPhoneLayout() && View.Y > View.X && HasPortraitLayout(Screen);
+	const FVector2D Wanted = bUpright ? FVector2D(900.0, 1600.0) : FVector2D(1600.0, 900.0);
+	if (!GMenuCanvas.Equals(Wanted))
+	{
+		GMenuCanvas = Wanted;
+		BuildEntries();
+	}
+}
+
 void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIMenuTick);
+	UpdateMenuCanvas(MyGeometry);
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	// (The menus pause the game: the cursor follows the device from here too.)
 	if (AChaosImpactPlayerController* Player = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
@@ -3927,7 +4492,15 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	{
 		// (Not once the VS card is up: its pictures are filmed with the level's drawing.)
 		const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		const bool bHideLevel = ((Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
+#if PLATFORM_ANDROID || PLATFORM_IOS
+		// スマホ版: every menu that covers the screen (not the ones over the match: pause, training's, the results).
+		const bool bPhoneMenu = Screen != EChaosImpactScreen::Playing && Screen != EChaosImpactScreen::Pause
+			&& Screen != EChaosImpactScreen::TrainingSettings && Screen != EChaosImpactScreen::TrainingOverlay
+			&& Screen != EChaosImpactScreen::MatchEnd && Screen != EChaosImpactScreen::TeamSelect && Screen != EChaosImpactScreen::DuelFound;
+#else
+		const bool bPhoneMenu = false;
+#endif
+		const bool bHideLevel = (bPhoneMenu || (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
 			|| (Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen())
 			|| (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
 			|| (IsBoardScreen() && RecordBoards && RecordBoards->IsOpen())
@@ -3950,7 +4523,7 @@ void UChaosImpactMenuWidget::NativeTick(const FGeometry& MyGeometry, const float
 	if (NameInput && (Screen == EChaosImpactScreen::OnlineName || Screen == EChaosImpactScreen::OnlineRoomName))
 	{
 		const float Scale = DesignScale(MyGeometry);
-		const FVector2D Offset = (MyGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+		const FVector2D Offset = (MyGeometry.GetLocalSize() - GMenuCanvas * Scale) * 0.5f;
 		if (UCanvasPanelSlot* InputSlot = Cast<UCanvasPanelSlot>(NameInput->Slot))
 		{
 			InputSlot->SetPosition(Offset + FVector2D(440.0f, 372.0f) * Scale);
@@ -4051,18 +4624,36 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIMenuPaint);
 	const int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
 		OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	if (IsTouchLayoutEditorOpen())
+	{
+		// ボタン・画面の配置: the whole screen, in its own units (as play is laid out), over everything.
+		return TouchLayoutEditor->Paint(AllottedGeometry, OutDrawElements, BaseLayer + 1);
+	}
 	if (Screen == EChaosImpactScreen::Playing)
 	{
 		return BaseLayer;
 	}
 	const float Scale = DesignScale(AllottedGeometry);
-	const FVector2D Offset = (AllottedGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+	const FVector2D Offset = (AllottedGeometry.GetLocalSize() - GMenuCanvas * Scale) * 0.5f;
 	const FGeometry DesignGeometry = AllottedGeometry.MakeChild(
-		FVector2f(1600, 900), FSlateLayoutTransform(Scale, FVector2f(Offset)));
+		FVector2f(GMenuCanvas), FSlateLayoutTransform(Scale, FVector2f(Offset)));
 	const float T = AnimationSeconds;
 	const double Now = FPlatformTime::Seconds();
+	if (HasTouchBackButton())
+	{
+		// スマホ版: the back button, over everything on the screen.
+		namespace CP = ChaosImpactPaint;
+		const CP::FPainter Back{DesignGeometry, OutDrawElements, BaseLayer + 400};
+		const FBox2D& R = TouchBackRect;
+		CP::HudShard(Back, {FVector2D(R.Min.X + 10.0, R.Min.Y), FVector2D(R.Max.X, R.Min.Y), FVector2D(R.Max.X - 10.0, R.Max.Y),
+			FVector2D(R.Min.X, R.Max.Y)}, CP::NightFill, 2.5f, FVector2D(3.0, 4.0));
+		const FString Word = TEXT("◀ もどる");
+		CP::HudAbove(Back, 3).Text(Word, static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 12.0f,
+			CP::HudFit(Word, 22.0f, static_cast<float>(R.GetSize().X) - 24.0f), CP::Paper, CP::ETextAlign::Center, TEXT("Black"));
+	}
 	const bool bFrontEnd = Screen != EChaosImpactScreen::TrainingOverlay
 		&& Screen != EChaosImpactScreen::Pause && Screen != EChaosImpactScreen::TrainingSettings
 		&& Screen != EChaosImpactScreen::MatchEnd;
@@ -4091,13 +4682,18 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		Full.Box(0.0f, 0.0f, ViewSize.X, ViewSize.Y, FLinearColor(0.0f, 0.004f, 0.018f, 0.5f * BackIn));
 		const ChaosImpactPaint::FPainter Back{DesignGeometry, OutDrawElements, BaseLayer + 1, BackIn};
 		const float Slide = (1.0f - BackIn) * -160.0f;
-		ChaosImpactPaint::HudPoly(Back, {FVector2D(-900.0f, 0.0), FVector2D(800.0f + Slide, 0.0), FVector2D(640.0f + Slide, 900.0),
-			FVector2D(-900.0f, 900.0)}, ChaosImpactPaint::MakeFill(FLinearColor(0.03f, 0.05f, 0.1f, 0.93f), FLinearColor(0.004f, 0.006f, 0.016f, 0.96f)));
+		// (Upright: the panel nearly the whole screen, its slanted edge at the right; its height the canvas's.)
+		const bool bUprightPause = IsPortraitCanvas();
+		const float PanelTop = bUprightPause ? 850.0f : 800.0f;
+		const float PanelFoot = bUprightPause ? 780.0f : 640.0f;
+		const float PanelH = static_cast<float>(GMenuCanvas.Y);
+		ChaosImpactPaint::HudPoly(Back, {FVector2D(-900.0f, 0.0), FVector2D(PanelTop + Slide, 0.0), FVector2D(PanelFoot + Slide, PanelH),
+			FVector2D(-900.0f, PanelH)}, ChaosImpactPaint::MakeFill(FLinearColor(0.03f, 0.05f, 0.1f, 0.93f), FLinearColor(0.004f, 0.006f, 0.016f, 0.96f)));
 		const ChaosImpactPaint::FPainter Edge = ChaosImpactPaint::HudAbove(Back, 1);
-		ChaosImpactPaint::HudPoly(Edge, {FVector2D(800.0f + Slide, 0.0), FVector2D(812.0f + Slide, 0.0), FVector2D(652.0f + Slide, 900.0),
-			FVector2D(640.0f + Slide, 900.0)}, ChaosImpactPaint::MakeFill(FMath::Lerp(Ice, Paper, 0.3f), Ice));
-		ChaosImpactPaint::HudPoly(Edge, {FVector2D(830.0f + Slide, 0.0), FVector2D(836.0f + Slide, 0.0), FVector2D(676.0f + Slide, 900.0),
-			FVector2D(670.0f + Slide, 900.0)}, ChaosImpactPaint::MakeFill(Fire, FLinearColor(0.5f, 0.02f, 0.06f, 1.0f)));
+		ChaosImpactPaint::HudPoly(Edge, {FVector2D(PanelTop + Slide, 0.0), FVector2D(PanelTop + 12.0f + Slide, 0.0), FVector2D(PanelFoot + 12.0f + Slide, PanelH),
+			FVector2D(PanelFoot + Slide, PanelH)}, ChaosImpactPaint::MakeFill(FMath::Lerp(Ice, Paper, 0.3f), Ice));
+		ChaosImpactPaint::HudPoly(Edge, {FVector2D(PanelTop + 30.0f + Slide, 0.0), FVector2D(PanelTop + 36.0f + Slide, 0.0), FVector2D(PanelFoot + 36.0f + Slide, PanelH),
+			FVector2D(PanelFoot + 30.0f + Slide, PanelH)}, ChaosImpactPaint::MakeFill(Fire, FLinearColor(0.5f, 0.02f, 0.06f, 1.0f)));
 		// Faint speed streaks across the panel.
 		for (int32 Streak = 0; Streak < 6; ++Streak)
 		{
@@ -4161,19 +4757,23 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		PaintEnterWipe(DesignGeometry, OutDrawElements, ListLayer + 1, T);
 		return ListLayer + 2;
 	}
-	if ((Screen == EChaosImpactScreen::ModeSelect && Entries.Num() == 7) || (Screen == EChaosImpactScreen::VSSelect && Entries.Num() == 4))
+	const bool bPhoneLocal = Screen == EChaosImpactScreen::TrainingSetup && Entries.Num() == 3 && Entries[0].Detail == TEXT("play");
+	if ((Screen == EChaosImpactScreen::ModeSelect && Entries.Num() >= 7) || (Screen == EChaosImpactScreen::VSSelect && Entries.Num() == 4) || bPhoneLocal)
 	{
 		// The online menu's tiles: the chosen one drawn last (its glow over its neighbours), the bar along the bottom.
 		const bool bMode = Screen == EChaosImpactScreen::ModeSelect;
-		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, bMode ? TEXT("MODE SELECT") : TEXT("VS MODE"), T);
-		static const TCHAR* ModeKinds[] = {TEXT("solo"), TEXT("vs"), TEXT("training"), TEXT("back"), TEXT("settings"), TEXT("colour"), TEXT("dojo")};
+		ChaosImpactModeMenu::SetPhone(IsPhoneLayout());
+		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, bMode ? TEXT("MODE SELECT") : bPhoneLocal ? TEXT("VS LOCAL") : TEXT("VS MODE"), T);
+		static const TCHAR* ModeKinds[] = {TEXT("solo"), TEXT("vs"), TEXT("training"), TEXT("back"), TEXT("settings"), TEXT("colour"), TEXT("dojo"),
+			TEXT("quit")};
 		static const TCHAR* VersusKinds[] = {TEXT("local"), TEXT("online"), TEXT("vsback"), TEXT("tourney")};
+		static const TCHAR* LocalKinds[] = {TEXT("cpuvs"), TEXT("watch"), TEXT("localback")};
 		const auto TileOf = [&](const int32 Index, const FSlateRect& At)
 		{
 			ChaosImpactModeMenu::FTile Tile;
 			Tile.Rect = At;
 			Tile.Name = Entries[Index].Title;
-			Tile.Kind = bMode ? ModeKinds[Index] : VersusKinds[Index];
+			Tile.Kind = bMode ? (Index == 7 && IsQuitArmed() ? TEXT("quitarmed") : ModeKinds[Index]) : bPhoneLocal ? LocalKinds[Index] : VersusKinds[Index];
 			Tile.Big = Entries[Index].Number;
 			Tile.Accent = Entries[Index].Accent;
 			Tile.bDisabled = Entries[Index].bDisabled;
@@ -4200,9 +4800,11 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			// The keys of what this player is using now.
 			const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(GetOwningPlayer());
 			const float BarIn = EaseOut((T - 0.35f) / 0.35f);
+			const bool bTouchKeys = IsPhoneLayout() && !ChaosImpactHints::IsPad(Device);
 			ChaosImpactModeMenu::PaintInfoBar(DesignGeometry, OutDrawElements, TileLayer, TileOf(SelectedIndex, Entries[SelectedIndex].Rect),
-				FSlateRect(430.0f + (1.0f - BarIn) * 80.0f, 718.0f, 1490.0f, 790.0f), ChaosImpactHints::Confirm(Device),
-				ChaosImpactHints::Back(Device), BarIn, T);
+				IsPortraitCanvas() ? FSlateRect(60.0f + (1.0f - BarIn) * 60.0f, 1290.0f, 840.0f, 1400.0f)
+					: FSlateRect((Entries.Num() > 7 ? 730.0f : 430.0f) + (1.0f - BarIn) * 80.0f, 718.0f, 1490.0f, 790.0f),
+				bTouchKeys ? FString() : ChaosImpactHints::Confirm(Device), bTouchKeys ? FString() : ChaosImpactHints::Back(Device), BarIn, T);
 		}
 		if (bDojoInvite)
 		{
@@ -4238,37 +4840,42 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const float Zoom = FMath::Lerp(1.9f, 1.0f, Ease) + 0.008f * FMath::Sin(T * 2.2f);
 		const float Shake = T > ImpactAt && T < 1.2f
 			? FMath::Sin(T * 80.0f) * (1.2f - T) * 26.0f : 0.0f;
-		const float Width = 1080.0f * Zoom;
+		const bool bUprightTitle = IsPortraitCanvas();
+		const FVector2D LogoAt = bUprightTitle ? FVector2D(450.0, 620.0) : FVector2D(800.0, 408.0);
+		const float Width = (bUprightTitle ? 800.0f : 1080.0f) * Zoom;
 		const float Height = Width * LogoBrush.ImageSize.Y / FMath::Max(LogoBrush.ImageSize.X, 1.0f);
 
 		// Incoming slashes converge on the logo right before it lands.
 		if (T < ImpactAt + 0.1f)
 		{
 			const float Slash = EaseOut(T / ImpactAt);
-			const FGeometry Slant = MakeSkewed(DesignGeometry, 0, 0, 1600, 900, -0.36f);
+			const FGeometry Slant = MakeSkewed(DesignGeometry, 0, 0, static_cast<float>(GMenuCanvas.X), static_cast<float>(GMenuCanvas.Y),
+				bUprightTitle ? -0.12f : -0.36f);
 			const FMenuPainter S{Slant, OutDrawElements, BaseLayer + 2, 1.0f - FMath::Max(0.0f, T - ImpactAt) * 10.0f};
-			S.Box(FMath::Lerp(-700.0f, 560.0f, Slash), 380, 520, 14, Ice);
-			S.Box(FMath::Lerp(1780.0f, 520.0f, Slash), 432, 520, 14, Fire);
+			const float SlashY = static_cast<float>(LogoAt.Y) - 28.0f;
+			const float Mid = static_cast<float>(LogoAt.X);
+			S.Box(FMath::Lerp(-700.0f, Mid - 240.0f, Slash), SlashY, 520, 14, Ice);
+			S.Box(FMath::Lerp(static_cast<float>(GMenuCanvas.X) + 180.0f, Mid - 280.0f, Slash), SlashY + 52.0f, 520, 14, Fire);
 		}
 		if (T > ImpactAt && T < ImpactAt + 0.8f)
 		{
 			const float Wave = (T - ImpactAt) / 0.8f;
 			const FMenuPainter Rings{DesignGeometry, OutDrawElements, BaseLayer + 2, 1.0f - Wave};
-			Rings.Ring(FVector2D(800, 412), 120.0f + 820.0f * EaseOut(Wave), Paper, 3.0f + 12.0f * (1.0f - Wave), 96);
-			Rings.Ring(FVector2D(800, 412), 60.0f + 560.0f * EaseOut(Wave), Fire, 6.0f, 96);
-			Rings.Ring(FVector2D(800, 412), 30.0f + 380.0f * EaseOut(Wave), Ice, 6.0f, 96);
+			Rings.Ring(LogoAt, 120.0f + 820.0f * EaseOut(Wave), Paper, 3.0f + 12.0f * (1.0f - Wave), 96);
+			Rings.Ring(LogoAt, 60.0f + 560.0f * EaseOut(Wave), Fire, 6.0f, 96);
+			Rings.Ring(LogoAt, 30.0f + 380.0f * EaseOut(Wave), Ice, 6.0f, 96);
 		}
 
 		if (LogoTexture)
 		{
 			FSlateDrawElement::MakeBox(OutDrawElements, BaseLayer + 3,
 				DesignGeometry.ToPaintGeometry(FVector2f(Width, Height),
-					FSlateLayoutTransform(FVector2f(800.0f - Width * 0.5f + Shake, 408.0f - Height * 0.5f))),
+					FSlateLayoutTransform(FVector2f(static_cast<float>(LogoAt.X) - Width * 0.5f + Shake, static_cast<float>(LogoAt.Y) - Height * 0.5f))),
 				&LogoBrush, ESlateDrawEffect::None, FLinearColor(1, 1, 1, FMath::Clamp(Arrival * 1.6f, 0.0f, 1.0f)));
 		}
 		else
 		{
-			P.Text(TEXT("カオスインパクト"), 800 + Shake, 330, 96, Paper, ETextAlign::Center);
+			P.Text(TEXT("カオスインパクト"), static_cast<float>(LogoAt.X) + Shake, static_cast<float>(LogoAt.Y) - 78.0f, 96, Paper, ETextAlign::Center);
 		}
 
 		if (T > ImpactAt && T < ImpactAt + 0.3f)
@@ -4282,18 +4889,18 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		if (PromptIn > 0.0f)
 		{
 			const float Blink = 0.4f + 0.6f * (0.5f + 0.5f * FMath::Cos((T - 1.25f) * 4.2f));
-			const FGeometry Prompt = MakeSkewed(DesignGeometry, 520, 716, 560, 70, -0.25f);
+			const FGeometry Prompt = bUprightTitle ? MakeSkewed(DesignGeometry, 170, 1200, 560, 70, -0.25f) : MakeSkewed(DesignGeometry, 520, 716, 560, 70, -0.25f);
 			const FMenuPainter Row{Prompt, OutDrawElements, BaseLayer + 3, PromptIn};
 			Row.Box(280.0f - 260.0f * PromptIn, 28, 80, 12, Ice);
 			Row.Box(200.0f + 260.0f * PromptIn, 28, 80, 12, Fire);
-			Row.Text(TEXT("PRESS START"), 280, 4, 44, WithAlpha(Paper, Blink), ETextAlign::Center);
+			Row.Text(IsPhoneLayout() ? TEXT("TAP TO START") : TEXT("PRESS START"), 280, 4, 44, WithAlpha(Paper, Blink), ETextAlign::Center);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::ModeSelect)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("MODE SELECT"), T);
 	}
-	else if (Screen == EChaosImpactScreen::TrainingSetup)
+	else if (Screen == EChaosImpactScreen::TrainingSetup && !(Entries.Num() == 3 && Entries[0].Detail == TEXT("play")))
 	{
 		const AChaosImpactPlayerController* SetupController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 		const bool bVersus = SetupController && SetupController->GetPlayFlow() == EChaosImpactPlayFlow::VersusLocal;
@@ -4359,8 +4966,13 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		if (!Sessions || Sessions->GetRoomListings().IsEmpty())
 		{
 			const FMenuPainter Note{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
-			Note.Text(TEXT("いま募集中の大会はありません"), 800.0f, 330.0f, 30.0f, Paper, ETextAlign::Center, TEXT("Black"));
-			Note.Text(TEXT("右下の「大会を作る」から、開催時間とルールを決めて募集できます"), 800.0f, 386.0f, 20.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+			const float MidX = IsPortraitCanvas() ? 450.0f : 800.0f;
+			const float Room = IsPortraitCanvas() ? 820.0f : 1300.0f;
+			Note.Text(TEXT("いま募集中の大会はありません"), MidX, IsPortraitCanvas() ? 560.0f : 330.0f, ChaosImpactPaint::HudFit(TEXT("いま募集中の大会はありません"), 34.0f, Room),
+				Paper, ETextAlign::Center, TEXT("Black"));
+			const FString How = IsPortraitCanvas() ? TEXT("右下の「大会を作る」から募集できます") : TEXT("右下の「大会を作る」から、開催時間とルールを決めて募集できます");
+			Note.Text(How, MidX, IsPortraitCanvas() ? 624.0f : 386.0f, ChaosImpactPaint::HudFit(How, IsPhoneLayout() ? 24.0f : 20.0f, Room, TEXT("Bold")), Muted,
+				ETextAlign::Center, TEXT("Bold"));
 		}
 	}
 	if (Screen == EChaosImpactScreen::TourneyList)
@@ -4371,6 +4983,16 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		{
 			const FMenuEntry& Entry = Entries[Row];
 			const float Middle = static_cast<float>(Entry.Rect.Top + Entry.Rect.Bottom) * 0.5f;
+			if (IsPortraitCanvas())
+			{
+				// Upright: how it runs under its name (the bar has the name up top), its places at the right.
+				Rows.Text(Entry.Detail, static_cast<float>(Entry.Rect.Left) + 40.0f, static_cast<float>(Entry.Rect.Bottom) - 40.0f,
+					ChaosImpactPaint::HudFit(Entry.Detail, 21.0f, static_cast<float>(Entry.Rect.GetSize().X) - 180.0f, TEXT("Bold")),
+					WithAlpha(Paper, Entry.bDisabled ? 0.45f : 0.9f), ETextAlign::Left, TEXT("Bold"));
+				Rows.Text(Entry.Number, static_cast<float>(Entry.Rect.Right) - 40.0f, static_cast<float>(Entry.Rect.Bottom) - 46.0f, 30.0f,
+					Entry.bDisabled ? Muted : Paper, ETextAlign::Right, TEXT("BlackItalic"));
+				continue;
+			}
 			Rows.Text(Entry.Detail, static_cast<float>(Entry.Rect.Right) - 190.0f, Middle - 11.0f, 17.0f,
 				WithAlpha(Paper, Entry.bDisabled ? 0.45f : 0.9f), ETextAlign::Right, TEXT("Bold"));
 			Rows.Text(Entry.Number, static_cast<float>(Entry.Rect.Right) - 64.0f, Middle - 16.0f, 26.0f,
@@ -4381,9 +5003,24 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("大会を作る"), T);
 		const FMenuPainter Note{DesignGeometry, OutDrawElements, BaseLayer + 3, EaseOut((T - 0.2f) / 0.3f)};
-		Note.Text(TEXT("開始時刻に2人以上そろっていれば始まります　・　全試合1対1・2本先取"), 800.0f, 584.0f, 19.0f, Muted, ETextAlign::Center, TEXT("Bold"));
-		Note.Text(TEXT("開始までは大会の部屋で練習しながら待てます（作った人は部屋を開けておいてください）"), 800.0f, 616.0f, 19.0f, Muted,
-			ETextAlign::Center, TEXT("Bold"));
+		if (IsPortraitCanvas())
+		{
+			// Upright: under the rows, a line each, big enough to read.
+			const TCHAR* const Lines[] = {TEXT("開始時刻に2人以上そろっていれば始まります"), TEXT("全試合1対1・2本先取"),
+				TEXT("開始までは大会の部屋で練習しながら待てます"), TEXT("（作った人は部屋を開けておいてください）")};
+			for (int32 Line = 0; Line < 4; ++Line)
+			{
+				Note.Text(Lines[Line], 450.0f, 960.0f + Line * 40.0f, ChaosImpactPaint::HudFit(Lines[Line], 24.0f, 800.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
+			}
+		}
+		else
+		{
+			const float NoteSize = IsPhoneLayout() ? 22.0f : 19.0f;
+			const FString First = TEXT("開始時刻に2人以上そろっていれば始まります　・　全試合1対1・2本先取");
+			const FString Second = TEXT("開始までは大会の部屋で練習しながら待てます（作った人は部屋を開けておいてください）");
+			Note.Text(First, 800.0f, 584.0f, ChaosImpactPaint::HudFit(First, NoteSize, 1300.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
+			Note.Text(Second, 800.0f, 620.0f, ChaosImpactPaint::HudFit(Second, NoteSize, 1300.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
+		}
 	}
 	else if (Screen == EChaosImpactScreen::OnlineRecord)
 	{
@@ -4407,7 +5044,9 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2,
 			Screen == EChaosImpactScreen::OnlineRoomName ? TEXT("部屋のなまえ") : TEXT("なまえ"), T);
 		const float E = EaseOut((T - 0.1f) / 0.35f);
-		const FGeometry Panel = MakeSkewed(DesignGeometry, 400.0f + (1.0f - E) * 120.0f, 340.0f, 800.0f, 160.0f, -0.18f);
+		// (Upright: the field in the middle of the narrow screen.)
+		const FGeometry FieldSide = IsPortraitCanvas() ? MoveDesign(DesignGeometry, FVector2D(400.0, 340.0), FVector2D(50.0, 560.0), 1.0f) : DesignGeometry;
+		const FGeometry Panel = MakeSkewed(FieldSide, 400.0f + (1.0f - E) * 120.0f, 340.0f, 800.0f, 160.0f, -0.18f);
 		const FMenuPainter Field{Panel, OutDrawElements, BaseLayer + 2, E};
 		Field.Box(12.0f, 14.0f, 800.0f, 160.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 		Field.Box(0.0f, 0.0f, 800.0f, 160.0f, FLinearColor(0.02f, 0.027f, 0.047f, 0.97f));
@@ -4423,14 +5062,15 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			NameText.Box(400.0f + Width * 0.5f + 8.0f, 40.0f, 5.0f, 80.0f, Ice);
 		}
 		P.Text(FString::Printf(TEXT("%d/%d"), Typed.Len(), UChaosImpactSessionSubsystem::MaxNameLength),
-			1180.0f, 520.0f, 26.0f, Muted, ETextAlign::Right);
+			IsPortraitCanvas() ? 830.0f : 1180.0f, IsPortraitCanvas() ? 740.0f : 520.0f, 26.0f, Muted, ETextAlign::Right);
 	}
 	else if (Screen == EChaosImpactScreen::RoomList)
 	{
 		PaintHeader(DesignGeometry, OutDrawElements, BaseLayer + 2, TEXT("部屋をさがす"), T);
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 		const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
-		const FMenuPainter ChipPainter{MakeSkewed(DesignGeometry, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f),
+		const FGeometry ChipSide = IsPortraitCanvas() ? MoveDesign(DesignGeometry, FVector2D(1070.0, 96.0), FVector2D(480.0, 236.0), 1.0f) : DesignGeometry;
+		const FMenuPainter ChipPainter{MakeSkewed(ChipSide, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f),
 			OutDrawElements, BaseLayer + 2, ChipIn};
 		ChipPainter.Box(0.0f, 0.0f, 360.0f, 70.0f, Fire);
 		ChipPainter.Text(FString::Printf(TEXT("あいことば  %s"), Sessions ? *Sessions->GetPassword() : TEXT("")),
@@ -4439,7 +5079,8 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		{
 			// Nothing yet: keep looking. A panel with the balls hopping, how long it has been, and a tip.
 			const float In = EaseOut((T - 0.2f) / 0.3f);
-			const FMenuPainter Card{MakeSkewed(DesignGeometry, 380.0f, 300.0f + (1.0f - In) * 40.0f, 840.0f, 330.0f, -0.08f),
+			const FGeometry CardSide = IsPortraitCanvas() ? MoveDesign(DesignGeometry, FVector2D(380.0, 300.0), FVector2D(30.0, 440.0), 1.0f) : DesignGeometry;
+			const FMenuPainter Card{MakeSkewed(CardSide, 380.0f, 300.0f + (1.0f - In) * 40.0f, 840.0f, 330.0f, -0.08f),
 				OutDrawElements, BaseLayer + 3, In};
 			Card.Box(12.0f, 14.0f, 840.0f, 330.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
 			Card.Box(0.0f, 0.0f, 840.0f, 330.0f, FLinearColor(0.015f, 0.02f, 0.04f, 0.94f));
@@ -4463,7 +5104,8 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const bool bCreate = !Controller || Controller->IsPendingCreateRoom();
 		const FLinearColor ModeColor = bCreate ? Ice : Fire;
 		const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
-		const FGeometry Chip = MakeSkewed(DesignGeometry, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f);
+		const FGeometry ChipSide = IsPortraitCanvas() ? MoveDesign(DesignGeometry, FVector2D(1070.0, 96.0), FVector2D(480.0, 236.0), 1.0f) : DesignGeometry;
+		const FGeometry Chip = MakeSkewed(ChipSide, 1070.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 360.0f, 70.0f, -0.3f);
 		const FMenuPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 2, ChipIn};
 		ChipPainter.Box(0.0f, 0.0f, 360.0f, 70.0f, ModeColor);
 		ChipPainter.Text(bCreate ? TEXT("部屋をつくる") : TEXT("部屋をさがす"), 180.0f, 10.0f, 34.0f, Paper,
@@ -4508,16 +5150,20 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		Panel.Box(0, 0, 1960, 240, FLinearColor(.015f, .018f, .035f, .96f));
 		Panel.Box(0, 0, 1960, 7, bWaiting ? Ice : Fire);
 		const FMenuPainter Label{DesignGeometry, OutDrawElements, BaseLayer + 3, E};
-		Label.Text(bWaiting ? TEXT("接続しています…") : TEXT("接続できませんでした"), 800, 350, 54,
-			Paper, ETextAlign::Center, TEXT("Black"), 3, Ink);
+		// (Upright: the band and its words lower, in the middle of the narrow screen.)
+		const float MidX = IsPortraitCanvas() ? 450.0f : 800.0f;
+		const float Room = IsPortraitCanvas() ? 820.0f : 1400.0f;
+		const FString Head = bWaiting ? TEXT("接続しています…") : TEXT("接続できませんでした");
+		Label.Text(Head, MidX, 350, ChaosImpactPaint::HudFit(Head, 54.0f, Room), Paper, ETextAlign::Center, TEXT("Black"), 3, Ink);
 		if (bWaiting)
 		{
 			ChaosImpactPaint::HudWaitBalls(ChaosImpactPaint::FPainter{Label.Geometry, Label.Elements, Label.Layer + 1, Label.Alpha},
-				FVector2D(800, 465), T, 30);
+				FVector2D(MidX, 515), T, 28);
 		}
 		else if (Controller)
 		{
-			Label.Text(Controller->GetOnlineConnectionError(), 800, 458, 26, Paper, ETextAlign::Center);
+			const FString Error = Controller->GetOnlineConnectionError();
+			Label.Text(Error, MidX, 458, ChaosImpactPaint::HudFit(Error, 26.0f, Room), Paper, ETextAlign::Center);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::OnlineStatus)
@@ -4525,38 +5171,53 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this);
 		const FString Error = Sessions ? Sessions->GetCreateError() : FString();
 		const float E = EaseOut(T / 0.35f);
-		const FGeometry Band = MakeSkewed(DesignGeometry, -200.0f - (1.0f - E) * 400.0f, 300.0f, 2000.0f, 240.0f, -0.3f);
+		// (Upright: the band lower, in the middle of the narrow screen.)
+		const float BandY = IsPortraitCanvas() ? 500.0f : 300.0f;
+		const FGeometry Band = MakeSkewed(DesignGeometry, -200.0f - (1.0f - E) * 400.0f, BandY, 2000.0f, 240.0f, -0.3f);
 		const FMenuPainter BandPainter{Band, OutDrawElements, BaseLayer + 2, E};
 		BandPainter.Box(0.0f, 0.0f, 2000.0f, 240.0f, FLinearColor(0.015f, 0.018f, 0.035f, 0.92f));
 		BandPainter.Box(0.0f, 0.0f, 2000.0f, 8.0f, Error.IsEmpty() ? Ice : Fire);
 		BandPainter.Box(0.0f, 232.0f, 2000.0f, 8.0f, Error.IsEmpty() ? Fire : Fire);
 		const FMenuPainter Label{DesignGeometry, OutDrawElements, BaseLayer + 3, E};
-		Label.Text(Error.IsEmpty() ? FString(TEXT("部屋をつくっています")) : Error, 800.0f, 350.0f, 54.0f,
-			Error.IsEmpty() ? Paper : Fire, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+		const float MidX = IsPortraitCanvas() ? 450.0f : 800.0f;
+		const float Room = IsPortraitCanvas() ? 820.0f : 1400.0f;
+		const FString Head = Error.IsEmpty() ? FString(TEXT("部屋をつくっています")) : Error;
+		const float Shift = BandY - 300.0f;
+		Label.Text(Head, MidX, 326.0f + Shift, ChaosImpactPaint::HudFit(Head, 54.0f, Room), Error.IsEmpty() ? Paper : Fire, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 		Label.Text(FString::Printf(TEXT("あいことば  %s"), Sessions ? *Sessions->GetPassword() : TEXT("")),
-			800.0f, 450.0f, 30.0f, Muted, ETextAlign::Center);
+			MidX, 410.0f + Shift, 30.0f, Muted, ETextAlign::Center);
 		if (Error.IsEmpty())
 		{
+			const FString Tip = FString::Printf(TEXT("ヒント：%s"), OnlineWaitTip(T));
+			Label.Text(Tip, MidX, 462.0f + Shift, ChaosImpactPaint::HudFit(Tip, IsPhoneLayout() ? 26.0f : 22.0f, Room), WithAlpha(Paper, 0.8f), ETextAlign::Center);
+			// The balls hopping under the band (their hop clear of the words).
 			ChaosImpactPaint::HudWaitBalls(ChaosImpactPaint::FPainter{Label.Geometry, Label.Elements, Label.Layer + 1, Label.Alpha},
-				FVector2D(800.0, 618.0), T, 34.0f);
-			Label.Text(FString::Printf(TEXT("ヒント：%s"), OnlineWaitTip(T)), 800.0f, 494.0f, 22.0f, WithAlpha(Paper, 0.8f), ETextAlign::Center);
+				FVector2D(MidX, 660.0 + Shift), T, 30.0f);
 		}
 	}
 	else if (Screen == EChaosImpactScreen::Pause)
 	{
 		const float PauseIn = EaseOut((T - 0.05f) / 0.3f);
 		const ChaosImpactPaint::FPainter PauseTitle{DesignGeometry, OutDrawElements, BaseLayer + 3, PauseIn};
-		ChaosImpactPaint::HudText3D(PauseTitle, TEXT("PAUSE"), 150.0f - (1.0f - PauseIn) * 60.0f, 62.0f, 94.0f, Paper, ChaosImpactPaint::ETextAlign::Left,
+		// (Upright: PAUSE lower, under the phone's edge; no keys named by touch.)
+		const bool bUprightPause = IsPortraitCanvas();
+		const float TitleX = bUprightPause ? 70.0f : 150.0f;
+		const float TitleY = bUprightPause ? 110.0f : 62.0f;
+		ChaosImpactPaint::HudText3D(PauseTitle, TEXT("PAUSE"), TitleX - (1.0f - PauseIn) * 60.0f, TitleY, 94.0f, Paper, ChaosImpactPaint::ETextAlign::Left,
 			TEXT("BlackItalic"), 5.0f);
-		PauseTitle.Box(156.0f, 206.0f, 130.0f, 7.0f, Ice);
-		PauseTitle.Box(290.0f, 206.0f, 64.0f, 7.0f, Fire);
+		PauseTitle.Box(TitleX + 6.0f, TitleY + 144.0f, 130.0f, 7.0f, Ice);
+		PauseTitle.Box(TitleX + 140.0f, TitleY + 144.0f, 64.0f, 7.0f, Fire);
 		const FString Context = GetPauseContext();
 		if (!Context.IsEmpty())
 		{
-			PauseTitle.Text(Context, 156.0f, 222.0f, ChaosImpactPaint::HudFit(Context, 22.0f, 560.0f), Gold, ChaosImpactPaint::ETextAlign::Left, TEXT("Black"));
+			PauseTitle.Text(Context, TitleX + 6.0f, TitleY + 160.0f, ChaosImpactPaint::HudFit(Context, 22.0f, bUprightPause ? 720.0f : 560.0f), Gold,
+				ChaosImpactPaint::ETextAlign::Left, TEXT("Black"));
 		}
-		PauseTitle.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}：決定　　{Back}：もどる")), 96.0f, 852.0f, 17.0f, WithAlpha(Paper, 0.55f), ChaosImpactPaint::ETextAlign::Left,
-			TEXT("Bold"));
+		if (!IsPhoneLayout())
+		{
+			PauseTitle.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{Confirm}：決定　　{Back}：もどる")), 96.0f, 852.0f, 17.0f, WithAlpha(Paper, 0.55f),
+				ChaosImpactPaint::ETextAlign::Left, TEXT("Bold"));
+		}
 		if (!PauseConfirm.IsEmpty())
 		{
 			// 本当に〜よろしいですか？ on a card of its own, the answers under it.
@@ -4566,7 +5227,9 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const float Age = static_cast<float>(FPlatformTime::Seconds() - PauseConfirmAt);
 			const float CardIn = EaseOut(Age / 0.22f);
 			Full.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, FLinearColor(0.0f, 0.0f, 0.02f, 0.6f * CardIn));
-			const FGeometry Card = MakeSkewed(DesignGeometry, 430.0f, 330.0f + (1.0f - CardIn) * 24.0f, 740.0f, 290.0f, -0.08f);
+			// (Upright: in the middle of the screen; the answers moved with it, BuildEntries.)
+			const FGeometry Card = MakeSkewed(IsPortraitCanvas() ? MoveDesign(DesignGeometry, FVector2D(430.0, 330.0), FVector2D(80.0, 660.0), 1.0f) : DesignGeometry,
+				430.0f, 330.0f + (1.0f - CardIn) * 24.0f, 740.0f, 290.0f, -0.08f);
 			const FMenuPainter C{Card, OutDrawElements, BaseLayer + 4, CardIn};
 			const ChaosImpactPaint::FPainter CardBody{Card, OutDrawElements, BaseLayer + 4, CardIn};
 			C.Box(14.0f, 16.0f, 740.0f, 290.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
@@ -4603,10 +5266,18 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const FLinearColor ModeColor = Rules.IsParty() ? ChaosImpactParty::GetRuleColor(Rules) : Rules.bTournament || Rules.bCrashBall ? Violet
 				: Rules.bDuel ? Ice : Rules.IsTeamBattle() ? Gold : Fire;
 			// How the rows change, beside the title.
+			const bool bUprightPage = IsPortraitCanvas();
+			// (Upright: the rows end lower; the count and the card go under them, moved and sized as they are drawn.)
+			const int32 RuleRows = Controller->CanChooseFusionRule() ? 5 : 4;
+			const float RowsBottom = 236.0f + RuleRows * 94.0f;
+			const FGeometry SumSide = bUprightPage ? MoveDesign(DesignGeometry, FVector2D(62.0, 578.0), FVector2D(40.0, RowsBottom + 18.0f), 0.96f) : DesignGeometry;
+			const FGeometry RuleSide = bUprightPage ? MoveDesign(DesignGeometry, FVector2D(920.0, 196.0), FVector2D(450.0 - 570.0 * 0.82 * 0.5, RowsBottom + 160.0f),
+				0.82f) : DesignGeometry;
 			if (!bModePicker && !bBallSwitch)
 			{
-				const FString Hint = TEXT("◀ ▶ で変更　・　ルールは決定で一覧から選べます");
-				P.Text(Hint, 880.0f, 156.0f, ChaosImpactPaint::HudFit(Hint, 18.0f, 500.0f, TEXT("Bold")), Muted, ETextAlign::Right, TEXT("Bold"));
+				const FString Hint = IsPhoneLayout() ? TEXT("◀ ▶ をタップで変更　・　ルール名をタップで一覧") : TEXT("◀ ▶ で変更　・　ルールは決定で一覧から選べます");
+				P.Text(Hint, bUprightPage ? 836.0f : 880.0f, bUprightPage ? 196.0f : 156.0f, ChaosImpactPaint::HudFit(Hint, 18.0f, bUprightPage ? 700.0f : 500.0f, TEXT("Bold")),
+					Muted, ETextAlign::Right, TEXT("Bold"));
 			}
 
 			// Under the rows: who plays, as a sum (not while the list of kinds is open over the page).
@@ -4615,7 +5286,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				const float In = EaseOut((T - 0.25f) / 0.35f);
 				constexpr float SW = 818.0f;
 				constexpr float SH = 112.0f;
-				const CP::FPainter S{MakeSkewed(DesignGeometry, 62.0f - (1.0f - In) * 60.0f, 578.0f, SW, SH, -0.12f), OutDrawElements, BaseLayer + 3, In};
+				const CP::FPainter S{MakeSkewed(SumSide, 62.0f - (1.0f - In) * 60.0f, 578.0f, SW, SH, -0.12f), OutDrawElements, BaseLayer + 3, In};
 				S.Box(8.0f, 9.0f, SW, SH, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
 				CP::HudPoly(S, {FVector2D(0.0, 0.0), FVector2D(SW, 0.0), FVector2D(SW, SH), FVector2D(0.0, SH)},
 					CP::MakeFill(FLinearColor(0.04f, 0.055f, 0.1f, 0.94f), FLinearColor(0.008f, 0.012f, 0.026f, 0.96f)));
@@ -4658,14 +5329,14 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			}
 			else if (Rules.bCrashBall)
 			{
-				PaintCrashRuleGuide(DesignGeometry, OutDrawElements, BaseLayer + 2, T);
+				PaintCrashRuleGuide(RuleSide, OutDrawElements, BaseLayer + 2, T);
 			}
 			else
 			{
 				const float In = EaseOut((T - 0.18f) / 0.35f);
 				constexpr float CW = 570.0f;
 				constexpr float CH = 494.0f;
-				const FGeometry CardSpace = MakeSkewed(DesignGeometry, 920.0f + (1.0f - In) * 80.0f, 196.0f, CW, CH, -0.06f);
+				const FGeometry CardSpace = MakeSkewed(RuleSide, 920.0f + (1.0f - In) * 80.0f, 196.0f, CW, CH, -0.06f);
 				const CP::FPainter C{CardSpace, OutDrawElements, BaseLayer + 2, In};
 				C.Box(14.0f, 16.0f, CW, CH, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
 				FLinearColor Deep = ModeColor * 0.2f;
@@ -4694,8 +5365,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 					CT.Text(Points[Index], 62.0f, Y, CP::HudFit(Points[Index], 21.0f, CW - 96.0f, TEXT("Bold")), Index == 0 ? Paper : WithAlpha(Paper, 0.8f),
 						CP::ETextAlign::Left, TEXT("Bold"));
 				}
-				const FString Stage = Rules.bDuel || Rules.bTournament ? FString::Printf(TEXT("ステージ：%s"), ChaosImpactMatch::GetDuelStageName())
-					: FString(TEXT("ステージは次の画面で選びます"));
+				const FString Stage = TEXT("ステージは次の画面で選びます");
 				CT.Box(34.0f, CH - 60.0f, CW - 68.0f, 1.0f, WithAlpha(Paper, 0.14f));
 				CT.Text(Stage, 34.0f, CH - 46.0f, CP::HudFit(Stage, 18.0f, CW - 68.0f, TEXT("Bold")), Muted, CP::ETextAlign::Left, TEXT("Bold"));
 			}
@@ -4706,13 +5376,15 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				FMenuPainter{AllottedGeometry, OutDrawElements, BaseLayer + 7}.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y,
 					FLinearColor(0.0f, 0.004f, 0.02f, 0.9f * Veil));
 				const CP::FPainter Head{DesignGeometry, OutDrawElements, BaseLayer + 8, Veil};
-				CP::HudText3D(Head, TEXT("ボールスイッチ"), 110.0f, 92.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
+				const float HeadX = bUprightPage ? 60.0f : 110.0f;
+				CP::HudText3D(Head, TEXT("ボールスイッチ"), HeadX, bUprightPage ? 100.0f : 92.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
 				const int32 On = ChaosImpactBallSwitch::CountOn(Rules);
 				const int32 All = ChaosImpactBallSwitch::GetSwitchable().Num();
 				const FString Count = FString::Printf(TEXT("オン %d / %d"), On, All);
-				const float ChipX = 110.0f + CP::HudMeasure(TEXT("ボールスイッチ"), 54.0f) + 36.0f;
-				CP::RoundedBox(Head, ChipX, 112.0f, CP::HudMeasure(Count, 22.0f) + 36.0f, 40.0f, 20.0f, On > 0 ? FLinearColor(0.12f, 0.6f, 0.32f, 1.0f) : Fire);
-				CP::HudAbove(Head, 1).Text(Count, ChipX + 18.0f, 117.0f, 22.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
+				const float ChipX = HeadX + CP::HudMeasure(TEXT("ボールスイッチ"), 54.0f) + 36.0f;
+				const float ChipY = bUprightPage ? 120.0f : 112.0f;
+				CP::RoundedBox(Head, ChipX, ChipY, CP::HudMeasure(Count, 22.0f) + 36.0f, 40.0f, 20.0f, On > 0 ? FLinearColor(0.12f, 0.6f, 0.32f, 1.0f) : Fire);
+				CP::HudAbove(Head, 1).Text(Count, ChipX + 18.0f, ChipY + 5.0f, 22.0f, Paper, CP::ETextAlign::Left, TEXT("Black"));
 				// Leaving with nothing on was just refused: the note flashes.
 				const double Denied = FPlatformTime::Seconds() - BallSwitchDeniedAt;
 				const bool bNormalOff = !ChaosImpactBallSwitch::IsOn(Rules, EChaosImpactBallType::Normal);
@@ -4720,9 +5392,19 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 					: bNormalOff ? TEXT("ノーマルがオフ：オンにした特殊ボールだけが出てきます")
 					: TEXT("オフにしたボールは出てきません（デュエル・トーナメントのスロットにも）");
 				const FLinearColor NoteColor = On == 0 ? (Denied < 1.2 && FMath::Fmod(Denied, 0.3) < 0.15 ? Paper : Fire) : bNormalOff ? Gold : Muted;
-				Head.Text(Note, 1490.0f, 112.0f, CP::HudFit(Note, 18.0f, 740.0f, TEXT("Bold")), NoteColor, CP::ETextAlign::Right, TEXT("Bold"));
-				Head.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad|矢印}：えらぶ　　{Confirm}：オン・オフ　　{Back}：もどる")), 1490.0f, 160.0f,
-					17.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
+				if (bUprightPage)
+				{
+					Head.Text(Note, 60.0f, 196.0f, CP::HudFit(Note, 18.0f, 780.0f, TEXT("Bold")), NoteColor, CP::ETextAlign::Left, TEXT("Bold"));
+				}
+				else
+				{
+					Head.Text(Note, 1490.0f, 112.0f, CP::HudFit(Note, 18.0f, 740.0f, TEXT("Bold")), NoteColor, CP::ETextAlign::Right, TEXT("Bold"));
+				}
+				if (!IsPhoneLayout())
+				{
+					Head.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad|矢印}：えらぶ　　{Confirm}：オン・オフ　　{Back}：もどる")), 1490.0f, 160.0f,
+						17.0f, Muted, CP::ETextAlign::Right, TEXT("Bold"));
+				}
 			}
 			if (bModePicker)
 			{
@@ -4731,13 +5413,24 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 				FMenuPainter{AllottedGeometry, OutDrawElements, BaseLayer + 7}.Box(0.0f, 0.0f, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y,
 					FLinearColor(0.0f, 0.004f, 0.02f, 0.9f * Veil));
 				const CP::FPainter Head{DesignGeometry, OutDrawElements, BaseLayer + 8, Veil};
-				CP::HudText3D(Head, TEXT("ルールをえらぶ"), 110.0f, 100.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
-				Head.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad|矢印}：えらぶ　　{Confirm}：決定　　{Back}：もどる")), 1490.0f, 128.0f, 17.0f,
-					Muted, CP::ETextAlign::Right, TEXT("Bold"));
+				CP::HudText3D(Head, TEXT("ルールをえらぶ"), bUprightPage ? 60.0f : 110.0f, 100.0f, 54.0f, Paper, CP::ETextAlign::Left, TEXT("Black"), 3.0f);
+				if (!IsPhoneLayout())
+				{
+					Head.Text(ChaosImpactHints::Text(GetOwningPlayer(), TEXT("{DPad|矢印}：えらぶ　　{Confirm}：決定　　{Back}：もどる")), 1490.0f, 128.0f, 17.0f,
+						Muted, CP::ETextAlign::Right, TEXT("Bold"));
+				}
 				const TCHAR* Kinds[] = {TEXT("バトル"), TEXT("バトルロイヤル"), TEXT("そのほか"), TEXT("パーティ")};
 				static_assert(UE_ARRAY_COUNT(Kinds) == ModePickerRows);
 				for (int32 GridRow = 0; GridRow < ModePickerRows; ++GridRow)
 				{
+					if (bUprightPage)
+					{
+						// (Upright: the kind's name over its tiles.)
+						const float HeadTop = ModePickerHeadY[GridRow];
+						Head.Box(60.0f, HeadTop + 6.0f, 6.0f, 28.0f, ModePickerRowColor(GridRow));
+						Head.Text(Kinds[GridRow], 78.0f, HeadTop + 2.0f, 24.0f, ModePickerRowColor(GridRow), CP::ETextAlign::Left, TEXT("Black"));
+						continue;
+					}
 					const float Top = ModePickerTop + GridRow * ModePickerStep;
 					const float Shift = GridRow * ModePickerStep * 0.1f;
 					Head.Box(110.0f - Shift, Top + 8.0f, 6.0f, ModePickerTile - 16.0f, ModePickerRowColor(GridRow));
@@ -4755,14 +5448,17 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			// The rules just chosen, as a reminder of what the stage is for.
 			const FChaosImpactMatchRules& Rules = Controller->GetPendingMatchRules();
 			const float ChipIn = EaseOut((T - 0.1f) / 0.3f);
-			const FMenuPainter Chip{MakeSkewed(DesignGeometry, 770.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 680.0f, 70.0f, -0.3f),
+			const FGeometry ChipSide = IsPortraitCanvas() ? MoveDesign(DesignGeometry, FVector2D(770.0, 96.0), FVector2D(110.0, 1400.0), 1.0f) : DesignGeometry;
+			const FMenuPainter Chip{MakeSkewed(ChipSide, 770.0f + (1.0f - ChipIn) * 80.0f, 96.0f, 680.0f, 70.0f, -0.3f),
 				OutDrawElements, BaseLayer + 2, ChipIn};
 			Chip.Box(0.0f, 0.0f, 680.0f, 70.0f, FLinearColor(0.012f, 0.016f, 0.03f, 0.92f));
 			Chip.Box(0.0f, 0.0f, 10.0f, 70.0f, Rules.bSpectate ? Ice : Gold);
-			Chip.Text(FString::Printf(TEXT("%s%s ・ %d分 ・ CPU %d人%s"), Rules.bSpectate ? TEXT("観戦 ・ ") : TEXT(""),
-				*ChaosImpactMatch::DescribeRule(Rules), Rules.Minutes, Rules.CPUCount,
-				Rules.CPUCount > 0 ? *FString::Printf(TEXT("（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel)) : TEXT("")),
-				346.0f, 18.0f, 24.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+			const FString About = Rules.bTournament || Rules.bDuel
+				? FString::Printf(TEXT("%s%s"), *ChaosImpactMatch::DescribeRule(Rules), Rules.bTournament ? TEXT(" ・ ランダム：試合ごとに抽選") : TEXT(""))
+				: FString::Printf(TEXT("%s%s ・ %d分 ・ CPU %d人%s"), Rules.bSpectate ? TEXT("観戦 ・ ") : TEXT(""),
+					*ChaosImpactMatch::DescribeRule(Rules), Rules.Minutes, Rules.CPUCount,
+					Rules.CPUCount > 0 ? *FString::Printf(TEXT("（%s）"), ChaosImpactMatch::GetCPULevelName(Rules.CPULevel)) : TEXT(""));
+			Chip.Text(About, 346.0f, 18.0f, ChaosImpactPaint::HudFit(About, 24.0f, 640.0f, TEXT("Bold")), Paper, ETextAlign::Center, TEXT("Bold"));
 		}
 	}
 	else if (Screen == EChaosImpactScreen::TeamSelect)
@@ -4823,7 +5519,20 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const FString Kind = Index == 5 ? TEXT("back") : Index == 7 ? TEXT("colour_edit") : Index == 8 ? TEXT("linecheck") : TEXT("name");
 			PaintOnlineBar(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Kind, Entry.Title, Entry.Accent, Blend, bPressed, EntryIn);
 		}
-		else if (Screen == EChaosImpactScreen::StageSelect && Index < ChaosImpactMatch::StageCount)
+		else if (Screen == EChaosImpactScreen::StageSelect && IsDuelStageSelect() && Index <= ChaosImpactMatch::DuelStageCount)
+		{
+			if (DuelShots.IsValidIndex(Index) && DuelShots[Index])
+			{
+				PaintStageShotCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, DuelShotBrushes[Index],
+					Entry.Number, Entry.Title, Entry.Accent, Blend, bPressed, EntryIn, T);
+			}
+			else
+			{
+				PaintCard(DesignGeometry, OutDrawElements, BaseLayer + 3, Rect, Entry.Number, Entry.Title,
+					Entry.Accent, Blend, bPressed, EntryIn, T, 56.0f, 0);
+			}
+		}
+		else if (Screen == EChaosImpactScreen::StageSelect && !IsDuelStageSelect() && Index < ChaosImpactMatch::StageCount)
 		{
 			if (StageShots.IsValidIndex(Index) && StageShots[Index])
 			{
@@ -4900,7 +5609,7 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 		{
 			PaintBar(DesignGeometry, OutDrawElements, BaseLayer + 9, Rect, Entry.Title, Entry.Accent, Blend, bPressed, Entry.bDisabled, 1.0f, T);
 		}
-		else if (Screen == EChaosImpactScreen::MatchRules && Index < 4)
+		else if (Screen == EChaosImpactScreen::MatchRules && (Index < 4 || Index == 7))
 		{
 			PaintRuleRow(DesignGeometry, OutDrawElements, BaseLayer + 4, Rect, Entry.Title, Entry.Number, Entry.Accent, Blend, bPressed,
 				Entry.bDisabled, Entry.Detail == TEXT("fixed"), EntryIn, T);
@@ -4923,9 +5632,14 @@ int32 UChaosImpactMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			Row.Box(0.0f, 0.0f, W, H, FMath::Lerp(FLinearColor(0.02f, 0.027f, 0.047f, 0.95f),
 				FLinearColor(0.05f, 0.09f, 0.16f, 0.98f), Blend));
 			Row.Box(0.0f, 0.0f, 12.0f + 10.0f * Blend, H, Entry.bDisabled ? Muted : Entry.Accent);
-			Row.Text(Entry.Title, 44.0f, 6.0f, 34.0f, Entry.bDisabled ? Muted : Paper, ETextAlign::Left, TEXT("Black"));
-			Row.Text(FString::Printf(TEXT("ホスト  %s"), *Entry.Detail), 46.0f, 48.0f, 20.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-			Row.Text(Entry.Number, W - 210.0f, 20.0f, 32.0f, Entry.bDisabled ? Muted : Paper, ETextAlign::Right, TEXT("Bold"));
+			// (Fitted: an upright row is narrower. Taller rows put the words lower and bigger.)
+			const bool bTall = H >= 110.0f;
+			const float NameRoom = W - 44.0f - (bTall ? 200.0f : 260.0f);
+			Row.Text(Entry.Title, 44.0f, bTall ? 14.0f : 6.0f, ChaosImpactPaint::HudFit(Entry.Title, bTall ? 38.0f : 34.0f, NameRoom), Entry.bDisabled ? Muted : Paper,
+				ETextAlign::Left, TEXT("Black"));
+			const FString Host = FString::Printf(TEXT("ホスト  %s"), *Entry.Detail);
+			Row.Text(Host, 46.0f, bTall ? 72.0f : 48.0f, ChaosImpactPaint::HudFit(Host, bTall ? 24.0f : 20.0f, NameRoom, TEXT("Bold")), Muted, ETextAlign::Left, TEXT("Bold"));
+			Row.Text(Entry.Number, W - 210.0f, bTall ? 70.0f : 20.0f, 32.0f, Entry.bDisabled ? Muted : Paper, ETextAlign::Right, TEXT("Bold"));
 			if (Sessions && Sessions->GetRoomListings().IsValidIndex(Index))
 			{
 				const FChaosImpactRoomListing& Listing = Sessions->GetRoomListings()[Index];
@@ -5133,13 +5847,13 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 			}
 			return;
 		}
-		if (Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && SelectedIndex <= 3)
+		if (Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && (SelectedIndex <= 3 || SelectedIndex == 7))
 		{
 			if (Entries[SelectedIndex].bDisabled)
 			{
 				return;
 			}
-			Controller->AdjustMatchRule(SelectedIndex, bRight ? 1 : -1);
+			Controller->AdjustMatchRule(SelectedIndex == 7 ? 4 : SelectedIndex, bRight ? 1 : -1);
 			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
 			BuildEntries();
 			return;
@@ -5166,7 +5880,7 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	}
 	if (Screen == EChaosImpactScreen::TrainingOverlay && bTrainingBallPickerOpen && Key != EKeys::Tab)
 	{
-		const int32 Back = ChaosImpactBallTypes::Count;
+		const int32 Back = ChaosImpactBallTypes::SharedCount;
 		if (SelectedIndex == Back)
 		{
 			const AChaosImpactPlayerController* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
@@ -5191,17 +5905,18 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 	{
 		NavigateResults(Key);
 	}
-	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() == 7)
+	else if (Screen == EChaosImpactScreen::ModeSelect && Key != EKeys::Tab && Entries.Num() >= 7)
 	{
-		// The mosaic: ソロ (0) VS (1) 訓練場 (6) / トレーニング (2) カラーエディット (5) 設定 (4) / タイトルへ (3).
+		// The mosaic: ソロ (0) VS (1) 訓練場 (6) / トレーニング (2) カラーエディット (5) 設定 (4) / タイトルへ (3) ゲーム終了 (7, PC版).
 		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
 		const bool bDown = Key == EKeys::Down || Key == EKeys::Gamepad_DPad_Down;
-		const int32 ToRight[] = {1, 6, 5, 3, 2, 4, 0};
-		const int32 ToLeft[] = {6, 0, 4, 3, 5, 2, 1};
-		const int32 Down[] = {2, 5, 3, 0, 3, 3, 4};
-		const int32 Up[] = {3, 3, 0, 2, 6, 1, 3};
-		const int32 From = FMath::Clamp(SelectedIndex, 0, 6);
-		if (bUp && From == 3)
+		const bool bQuit = Entries.Num() > 7;
+		const int32 ToRight[] = {1, 6, 5, bQuit ? 7 : 3, 2, 4, 0, 7};
+		const int32 ToLeft[] = {6, 0, 4, 3, 5, 2, 1, 3};
+		const int32 Down[] = {2, 5, 3, 0, 3, 3, 4, 1};
+		const int32 Up[] = {3, 3, 0, 2, 6, 1, 3, 3};
+		const int32 From = FMath::Clamp(SelectedIndex, 0, Entries.Num() - 1);
+		if (bUp && (From == 3 || From == 7))
 		{
 			// Up from タイトルへ: back to the tile last left for it.
 			SelectedIndex = LastModeBottom >= 0 && LastModeBottom <= 6 && LastModeBottom != 3 ? LastModeBottom : 2;
@@ -5245,7 +5960,8 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		const bool bHorizontal = Key == EKeys::Left || Key == EKeys::Right
 			|| Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right;
 		const bool bUp = Key == EKeys::Up || Key == EKeys::Gamepad_DPad_Up;
-		const int32 Stages = ChaosImpactMatch::StageCount;
+		const AChaosImpactPlayerController* CardOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+		const int32 Stages = CardOwner ? CardOwner->GetStageCardCount() : ChaosImpactMatch::StageCount;
 		constexpr int32 Cols = 3;
 		if (bHorizontal)
 		{
@@ -5307,18 +6023,26 @@ void UChaosImpactMenuWidget::Navigate(const FKey Key)
 		const bool bSideways = bLeft || bRight;
 		static const int32 Bottom[] = {5, 6, 4};
 		const int32 BottomAt = SelectedIndex == 5 ? 0 : SelectedIndex == 6 ? 1 : SelectedIndex == 4 ? 2 : INDEX_NONE;
-		const auto NextRow = [this](int32 From, const int32 Step)
+		// The rows top to bottom: 0 to 3, then 合体ボール (entry 7) where it is shown. From is a place in that order (-1: above
+		// them all; Order.Num(): below).
+		TArray<int32, TInlineAllocator<5>> Order = {0, 1, 2, 3};
+		if (Entries.IsValidIndex(7))
 		{
-			for (int32 Tries = 0; Tries < 4; ++Tries)
+			Order.Add(7);
+		}
+		const auto NextRow = [this, &Order](const int32 FromEntry, const int32 Step)
+		{
+			int32 From = FromEntry < 0 ? -1 : FromEntry >= 4 && FromEntry != 7 ? Order.Num() : Order.IndexOfByKey(FromEntry);
+			for (int32 Tries = 0; Tries < Order.Num(); ++Tries)
 			{
 				From += Step;
-				if (From < 0 || From > 3)
+				if (!Order.IsValidIndex(From))
 				{
 					return static_cast<int32>(INDEX_NONE);
 				}
-				if (!Entries[From].bDisabled)
+				if (!Entries[Order[From]].bDisabled)
 				{
-					return From;
+					return Order[From];
 				}
 			}
 			return static_cast<int32>(INDEX_NONE);
@@ -5602,10 +6326,19 @@ void UChaosImpactMenuWidget::GetPauseConfirmText(FString& OutQuestion, FString& 
 	}
 }
 
+namespace
+{
+	/** The 訓練場 invitation's card is laid out for 1600 x 900: kept in the middle of an upright screen too. */
+	FVector2D InviteShift()
+	{
+		return (GMenuCanvas - FVector2D(1600.0, 900.0)) * 0.5;
+	}
+}
+
 FBox2D UChaosImpactMenuWidget::DojoInviteButton(const int32 Index)
 {
 	const float Left = Index == 0 ? 470.0f : 820.0f;
-	return FBox2D(FVector2D(Left, 730.0f), FVector2D(Left + 310.0f, 796.0f));
+	return FBox2D(FVector2D(Left, 730.0f) + InviteShift(), FVector2D(Left + 310.0f, 796.0f) + InviteShift());
 }
 
 void UChaosImpactMenuWidget::CloseDojoInvite(const bool bGo)
@@ -5659,11 +6392,11 @@ void UChaosImpactMenuWidget::PaintDojoInvite(const FGeometry& Design, FSlateWind
 	const float In = EaseOut(Time / 0.35f);
 	const FLinearColor Teal(0.08f, 0.86f, 0.78f, 1.0f);
 	// The menu dimmed under it.
-	CP::FPainter{Design, Elements, Layer, In}.Box(-400.0f, -300.0f, 2400.0f, 1500.0f, FLinearColor(0.0f, 0.005f, 0.02f, 0.72f));
+	CP::FPainter{Design, Elements, Layer, In}.Box(-400.0f, -300.0f, 2400.0f, 2400.0f, FLinearColor(0.0f, 0.005f, 0.02f, 0.72f));
 	// The card, rising in a little.
 	const float Rise = (1.0f - In) * 40.0f;
-	const float CX = 400.0f;
-	const float CY = 86.0f + Rise;
+	const float CX = 400.0f + static_cast<float>(InviteShift().X);
+	const float CY = 86.0f + static_cast<float>(InviteShift().Y) + Rise;
 	const float CW = 800.0f;
 	const float CH = 736.0f;
 	const CP::FPainter Card{Design, Elements, Layer + 1, In};
@@ -5725,7 +6458,9 @@ void UChaosImpactMenuWidget::PaintDojoInvite(const FGeometry& Design, FSlateWind
 	// The two choices.
 	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(GetOwningPlayer());
 	const TCHAR* Labels[] = {TEXT("訓練場へ行く"), TEXT("あとで")};
-	const FString Keys[] = {ChaosImpactHints::Confirm(Device), ChaosImpactHints::Back(Device)};
+	// (Played by touch: no keys on them, they are tapped.)
+	const bool bKeyless = IsPhoneLayout() && !ChaosImpactHints::IsPad(Device);
+	const FString Keys[] = {bKeyless ? FString() : ChaosImpactHints::Confirm(Device), bKeyless ? FString() : ChaosImpactHints::Back(Device)};
 	const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 5.0f);
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
@@ -5744,6 +6479,12 @@ void UChaosImpactMenuWidget::PaintDojoInvite(const FGeometry& Design, FSlateWind
 		CP::RoundedBox(CP::HudAbove(Button, 1), BX, BY + 5.0f, BW, BH, BH * 0.5f, WithAlpha(CP::Navy, 0.8f));
 		CP::RoundedBox(CP::HudAbove(Button, 2), BX, BY, BW, BH, BH * 0.5f, bOn ? (Index == 0 ? Teal : Paper) : FLinearColor(0.08f, 0.12f, 0.22f, 1.0f));
 		const FLinearColor Ink2 = bOn ? CP::Navy : Paper;
+		if (Keys[Index].IsEmpty())
+		{
+			const float LabelSize = CP::HudFit(Labels[Index], 26.0f, BW - 40.0f);
+			CP::HudAbove(Button, 4).Text(Labels[Index], BX + BW * 0.5f, BY + (BH - LabelSize * 1.38f) * 0.5f, LabelSize, Ink2, CP::ETextAlign::Center, TEXT("Black"));
+			continue;
+		}
 		const float KeyW = CP::HudMeasure(Keys[Index], 15.0f) + 18.0f;
 		const float LabelSize = CP::HudFit(Labels[Index], 24.0f, BW - KeyW - 60.0f);
 		const float LabelW = CP::HudMeasure(Labels[Index], LabelSize);
@@ -5834,6 +6575,18 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		else if (SelectedIndex == 4) { Controller->OpenSettings(); }
 		else if (SelectedIndex == 5) { Controller->OpenColourEdit(EChaosImpactScreen::ModeSelect); }
 		else if (SelectedIndex == 6) { Controller->OpenDojo(); }
+		else if (SelectedIndex == 7)
+		{
+			// ゲーム終了: once more within a few seconds to really quit.
+			if (IsQuitArmed())
+			{
+				UKismetSystemLibrary::QuitGame(this, Controller, EQuitPreference::Quit, false);
+			}
+			else
+			{
+				QuitArmedAt = FPlatformTime::Seconds();
+			}
+		}
 		else { Controller->ShowMenuScreen(EChaosImpactScreen::Title); }
 		break;
 
@@ -5852,13 +6605,17 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		break;
 	case EChaosImpactScreen::TrainingSetup:
-		if (SelectedIndex >= 0 && SelectedIndex < 4)
-		{
-			Controller->PrepareTrainingControllerAssignment(SelectedIndex + 1);
-		}
-		else if (Entries[SelectedIndex].Detail == TEXT("spectate"))
+		if (Entries[SelectedIndex].Detail == TEXT("spectate"))
 		{
 			Controller->BeginLocalSpectate();
+		}
+		else if (Entries[SelectedIndex].Detail == TEXT("play"))
+		{
+			Controller->PrepareTrainingControllerAssignment(1);
+		}
+		else if (SelectedIndex >= 0 && SelectedIndex < 4 && Entries[SelectedIndex].Detail != TEXT("back"))
+		{
+			Controller->PrepareTrainingControllerAssignment(SelectedIndex + 1);
 		}
 		else
 		{
@@ -6106,11 +6863,11 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 			// The kind of match: every one listed to pick from.
 			OpenModePicker(true);
 		}
-		else if (SelectedIndex <= 3)
+		else if (SelectedIndex <= 3 || SelectedIndex == 7)
 		{
 			if (!Entries[SelectedIndex].bDisabled)
 			{
-				Controller->AdjustMatchRule(SelectedIndex, 1);
+				Controller->AdjustMatchRule(SelectedIndex == 7 ? 4 : SelectedIndex, 1);
 				BuildEntries();
 			}
 		}
@@ -6128,7 +6885,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		break;
 	case EChaosImpactScreen::StageSelect:
-		if (SelectedIndex < ChaosImpactMatch::StageCount)
+		if (SelectedIndex < Controller->GetStageCardCount())
 		{
 			Controller->ChooseStage(SelectedIndex);
 		}
@@ -6381,7 +7138,7 @@ void UChaosImpactMenuWidget::ConfirmSelection()
 		}
 		if (bTrainingBallPickerOpen)
 		{
-			if (SelectedIndex < ChaosImpactBallTypes::Count) { Controller->SetTrainingSummonBallType(ChaosImpactBallTypes::FromIndex(SelectedIndex)); }
+			if (SelectedIndex < ChaosImpactBallTypes::SharedCount) { Controller->SetTrainingSummonBallType(ChaosImpactBallTypes::FromIndex(SelectedIndex)); }
 			CloseTrainingBallPicker(); break;
 		}
 		if (SelectedIndex == 0)
@@ -6598,6 +7355,10 @@ void UChaosImpactMenuWidget::ConfirmSecretChoice()
 
 FReply UChaosImpactMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
+	if (IsTouchLayoutEditorOpen())
+	{
+		return FReply::Handled();
+	}
 	// (The 訓練場 invitation answers its keys itself, through HandleAnyUserKeyDown: nothing moves under it.)
 	if (Screen == EChaosImpactScreen::ModeSelect && bDojoInvite)
 	{
@@ -6765,7 +7526,7 @@ FReply UChaosImpactMenuWidget::NativeOnAnalogValueChanged(
 int32 UChaosImpactMenuWidget::HitTestEntry(const FGeometry& Geometry, const FVector2D& ScreenPosition) const
 {
 	const float Scale = DesignScale(Geometry);
-	const FVector2D Offset = (Geometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+	const FVector2D Offset = (Geometry.GetLocalSize() - GMenuCanvas * Scale) * 0.5f;
 	const FVector2D Point = (Geometry.AbsoluteToLocal(ScreenPosition) - Offset) / Scale;
 	for (int32 Index = 0; Index < Entries.Num(); ++Index)
 	{
@@ -6806,6 +7567,10 @@ FReply UChaosImpactMenuWidget::NativeOnKeyChar(const FGeometry& InGeometry, cons
 
 FReply UChaosImpactMenuWidget::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	if (IsTouchLayoutEditorOpen())
+	{
+		return FReply::Handled();
+	}
 	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
 	{
 		Gallery->HandleWheel(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetWheelDelta());
@@ -7128,8 +7893,53 @@ int32 UChaosImpactMenuWidget::PaintTeamCards(const FGeometry& Design, FSlateWind
 	return Layer + 11;
 }
 
+bool UChaosImpactMenuWidget::IsOtherFinger(const FPointerEvent& Event, const bool bDown, const bool bUp)
+{
+	if (!Event.IsTouchEvent())
+	{
+		return false;
+	}
+	const int32 Pointer = static_cast<int32>(Event.GetPointerIndex());
+	const double Now = FPlatformTime::Seconds();
+	if (MenuPointer != INDEX_NONE && Now - MenuPointerAt > 4.0)
+	{
+		MenuPointer = INDEX_NONE;
+	}
+	if (bDown && MenuPointer == INDEX_NONE)
+	{
+		MenuPointer = Pointer;
+	}
+	if (MenuPointer != INDEX_NONE && Pointer != MenuPointer)
+	{
+		return true;
+	}
+	MenuPointerAt = Now;
+	if (bUp)
+	{
+		MenuPointer = INDEX_NONE;
+	}
+	return false;
+}
+
 FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	if (IsOtherFinger(InMouseEvent, false, false))
+	{
+		return FReply::Handled();
+	}
+	// スマホ版: only a finger's moves. Slate makes up a cursor move every frame at the (absent) cursor's old place; taken
+	// for a finger, it pulled every drag back to where it began (the lists and the 配置 editor jumped to and fro).
+	if (!InMouseEvent.IsTouchEvent())
+	{
+		return FReply::Handled();
+	}
+#endif
+	if (IsTouchLayoutEditorOpen())
+	{
+		TouchLayoutEditor->HandleMove(InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()), InGeometry.GetLocalSize());
+		return FReply::Handled();
+	}
 	// One player on a controller: the mouse is put away (its cursor hidden), and the moves made up for a cursor sitting
 	// still must not point at whatever is under it (they took the choice back from the stick). Moving the mouse for real
 	// brings it back (ChaosImpactHints notes that before this).
@@ -7146,7 +7956,12 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 	}
 	if (IsSettingsActive())
 	{
-		SettingsScreen->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		// Only the mouse really moving points at a row: Slate makes up moves for a cursor sitting still whenever what is
+		// under it changes (a tab opened), and those took the cursor out of the tab column (2026-11-17).
+		if (!InMouseEvent.GetCursorDelta().IsNearlyZero())
+		{
+			SettingsScreen->HandleMouseMove(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		}
 		return FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen())
@@ -7210,8 +8025,50 @@ FReply UChaosImpactMenuWidget::NativeOnMouseMove(const FGeometry& InGeometry, co
 	return FReply::Handled();
 }
 
+bool UChaosImpactMenuWidget::IsPaintStudioTouch() const
+{
+	return IsPhoneBuild() && Screen == EChaosImpactScreen::ColourEdit && ColourEdit && ColourEdit->IsOpen() && ColourEdit->IsPainting()
+		&& ColourEdit->GetStudio();
+}
+
+bool UChaosImpactMenuWidget::HasTouchBackButton() const
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	return Controller && Controller->ShouldUseTouchControls() && Screen != EChaosImpactScreen::Title && Screen != EChaosImpactScreen::Playing
+		&& Screen != EChaosImpactScreen::ModeSelect && Screen != EChaosImpactScreen::VSSelect && Screen != EChaosImpactScreen::TrainingSetup
+		&& Screen != EChaosImpactScreen::CharacterSelect && Screen != EChaosImpactScreen::Settings && Screen != EChaosImpactScreen::ColourEdit && SecretChoice == INDEX_NONE
+		&& !IsBoardScreen() && Screen != EChaosImpactScreen::Gallery && Screen != EChaosImpactScreen::DojoSelect
+		&& Screen != EChaosImpactScreen::TourneyEntry && Screen != EChaosImpactScreen::TourneySeat && Screen != EChaosImpactScreen::MatchEnd
+		&& !Entries.ContainsByPredicate([](const FMenuEntry& Entry)
+			{
+				// (A screen with its own 戻る / もどる / やめる has no need of another.)
+				return Entry.Title == TEXT("戻る") || Entry.Title == TEXT("もどる") || Entry.Title == TEXT("やめる") || Entry.Detail == TEXT("back");
+			});
+}
+
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	if (IsOtherFinger(InMouseEvent, true, false))
+	{
+		return FReply::Handled();
+	}
+#endif
+	if (IsTouchLayoutEditorOpen())
+	{
+		if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			TouchLayoutEditor->HandleDown(InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()), InGeometry.GetLocalSize());
+			bEditorMousePress = true;
+		}
+		return FReply::Handled().CaptureMouse(TakeWidget());
+	}
+	if (HasTouchBackButton() && TouchBackRect.ExpandBy(10.0).IsInside(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition())))
+	{
+		// スマホ版: the back button, as Esc.
+		HandleAnyUserKeyDown(FKeyEvent(EKeys::Escape, FModifierKeysState(), 0, false, 0, 0));
+		return FReply::Handled();
+	}
 	if (SecretChoice != INDEX_NONE)
 	{
 		const FVector2D At = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
@@ -7226,7 +8083,8 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	{
 		SettingsScreen->HandleMouseDown(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()),
 			InMouseEvent.GetEffectingButton());
-		return FReply::Handled().SetUserFocus(TakeWidget());
+		// (Held: its moves and its release come here wherever it goes, for a phone's drag and press.)
+		return FReply::Handled().SetUserFocus(TakeWidget()).CaptureMouse(TakeWidget());
 	}
 	if (Screen == EChaosImpactScreen::MatchEnd && Entries.IsEmpty())
 	{
@@ -7241,7 +8099,7 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	if (IsBoardScreen() && RecordBoards)
 	{
 		RecordBoards->HandleMouseDown(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());
-		return FReply::Handled();
+		return FReply::Handled().CaptureMouse(TakeWidget());
 	}
 	if (Screen == EChaosImpactScreen::ColourEdit && ColourEdit)
 	{
@@ -7273,6 +8131,14 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 	}
 	if (Screen == EChaosImpactScreen::TourneySeat)
 	{
+		// スマホ版: a tap takes the place (or gives it back), as a key does.
+		if (IsPhoneBuild())
+		{
+			if (AChaosImpactPlayerController* Seats = Cast<AChaosImpactPlayerController>(GetOwningPlayer()))
+			{
+				Seats->PressTourneySeat(true, 0);
+			}
+		}
 		return FReply::Handled();
 	}
 	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect)
@@ -7283,9 +8149,10 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 			return FReply::Handled();
 		}
 		const float Scale = DesignScale(InGeometry);
-		const FVector2D Offset = (InGeometry.GetLocalSize() - FVector2D(1600, 900) * Scale) * 0.5f;
+		const FVector2D Offset = (InGeometry.GetLocalSize() - GMenuCanvas * Scale) * 0.5f;
 		CharacterSelect->HandleClick((InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()) - Offset) / Scale);
-		return FReply::Handled();
+		// (Held: its moves and its release come here, for a phone's drag and tap.)
+		return FReply::Handled().CaptureMouse(TakeWidget());
 	}
 	if (Screen == EChaosImpactScreen::TeamSelect && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
@@ -7350,6 +8217,39 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeomet
 
 FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	if (IsOtherFinger(InMouseEvent, false, true))
+	{
+		return FReply::Handled();
+	}
+#endif
+	// (Only a press begun in the editor: once it had been opened, this took every later release with the mouse held by
+	// the menu, so the settings and the other screens, which act as the finger lifts, no longer answered a tap.)
+	if (IsTouchLayoutEditorOpen() || (bEditorMousePress && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton))
+	{
+		bEditorMousePress = false;
+		if (IsTouchLayoutEditorOpen() && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			TouchLayoutEditor->HandleUp(InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()), InGeometry.GetLocalSize());
+		}
+		return FReply::Handled().ReleaseMouseCapture();
+	}
+	if (Screen == EChaosImpactScreen::CharacterSelect && CharacterSelect && CharacterSelect->IsOpen()
+		&& InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		CharacterSelect->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return InMouseEvent.GetPressedButtons().Num() == 0 ? FReply::Handled().ReleaseMouseCapture() : FReply::Handled();
+	}
+	if (IsSettingsActive())
+	{
+		SettingsScreen->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());
+		return InMouseEvent.GetPressedButtons().Num() == 0 ? FReply::Handled().ReleaseMouseCapture() : FReply::Handled();
+	}
+	if (IsBoardScreen() && RecordBoards && RecordBoards->IsOpen() && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		RecordBoards->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()));
+		return FReply::Handled().ReleaseMouseCapture();
+	}
 	if (Screen == EChaosImpactScreen::Gallery && Gallery && Gallery->IsOpen())
 	{
 		Gallery->HandleMouseUp(ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition()), InMouseEvent.GetEffectingButton());
@@ -7377,8 +8277,8 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry
 		PressedIndex = INDEX_NONE;
 		// A rules row: a click on its left half (the ◀ side of its value) goes back a step, on its right half on.
 		AChaosImpactPlayerController* RulesController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		if (bActivate && Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && Released <= 3 && Released != 1 && Entries.IsValidIndex(Released)
-			&& RulesController)
+		if (bActivate && Screen == EChaosImpactScreen::MatchRules && !bModePicker && !bBallSwitch && (Released <= 3 || Released == 7) && Released != 1
+			&& Entries.IsValidIndex(Released) && RulesController)
 		{
 			SelectedIndex = Released;
 			if (!Entries[Released].bDisabled)
@@ -7386,7 +8286,7 @@ FReply UChaosImpactMenuWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry
 				const FSlateRect& Row = Entries[Released].Rect;
 				const float ValueMid = Row.Left + (Row.Right - Row.Left) * 0.3f + (Row.Right - Row.Left) * 0.7f * 0.5f;
 				const FVector2D Point = ToDesignPoint(InGeometry, InMouseEvent.GetScreenSpacePosition());
-				RulesController->AdjustMatchRule(Released, Point.X < ValueMid ? -1 : 1);
+				RulesController->AdjustMatchRule(Released == 7 ? 4 : Released, Point.X < ValueMid ? -1 : 1);
 				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiValue);
 				BuildEntries();
 			}

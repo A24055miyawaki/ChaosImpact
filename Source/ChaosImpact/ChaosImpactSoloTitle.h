@@ -100,5 +100,9 @@ private:
 	FChaosImpactSoloFileView Files[3];
 	float StickX = 0.0f;
 	FVector2D LastMouse = FVector2D(-1.0, -1.0);
+	/** スマホ版: the finger (a tap acts as the finger lifts, where it went down). */
+	bool bFingerDown = false;
+	FVector2D FingerAt = FVector2D::ZeroVector;
+	FVector2D FingerStart = FVector2D::ZeroVector;
 	bool bPawnHidden = false;
 };

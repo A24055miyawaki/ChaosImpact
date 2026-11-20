@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
@@ -26,6 +26,10 @@ public:
 	static FBox2D CardRect(const FVector2D& Size, int32 Index);
 	static FBox2D EraseRect(const FVector2D& Size, int32 Index);
 	static FBox2D AnswerRect(const FVector2D& Size, bool bYes);
+	/** スマホ版: played by touch (no keys named; every file's けす shown; its own もどる), and laid out upright on an upright screen. */
+	static bool IsPhone();
+	static bool IsUpright(const FVector2D& Size);
+	static FBox2D BackRect(const FVector2D& Size);
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,

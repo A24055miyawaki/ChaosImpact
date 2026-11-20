@@ -798,12 +798,18 @@ bool FChaosImpactNameEntry::HandleClick(const FVector2D& DesignPoint)
 	{
 		return false;
 	}
+	if (CancelRect().ExpandBy(6.0).IsInside(ToKeyboard(DesignPoint)))
+	{
+		ChaosImpactSfx::Play2D(nullptr, EChaosImpactSfx::UiBack);
+		Cancel();
+		return true;
+	}
 	const TArray<FRow>& All = Rows();
 	for (int32 Row = 0; Row < All.Num(); ++Row)
 	{
 		for (int32 Column = 0; Column < All[Row].Cells.Num(); ++Column)
 		{
-			if (IsSelectable(Row, Column) && CellRect(Row, Column).IsInside(DesignPoint))
+			if (IsSelectable(Row, Column) && CellRect(Row, Column).IsInside(ToKeyboard(DesignPoint)))
 			{
 				CursorRow = Row;
 				CursorColumn = Column;
@@ -827,7 +833,7 @@ void FChaosImpactNameEntry::HandleMouseMove(const FVector2D& DesignPoint)
 	{
 		for (int32 Column = 0; Column < All[Row].Cells.Num(); ++Column)
 		{
-			if (IsSelectable(Row, Column) && CellRect(Row, Column).IsInside(DesignPoint))
+			if (IsSelectable(Row, Column) && CellRect(Row, Column).IsInside(ToKeyboard(DesignPoint)))
 			{
 				CursorRow = Row;
 				CursorColumn = Column;
@@ -967,7 +973,7 @@ void FChaosImpactNameEntry::ImeBounds(const int32 Begin, const int32 Length, FVe
 
 // ---- Drawing ------------------------------------------------------------------------------------------------------------
 
-int32 FChaosImpactNameEntry::Paint(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
+int32 FChaosImpactNameEntry::Paint(const FGeometry& Plan, FSlateWindowElementList& Elements, const int32 Layer) const
 {
 	if (!bOpen)
 	{
@@ -976,8 +982,17 @@ int32 FChaosImpactNameEntry::Paint(const FGeometry& Design, FSlateWindowElementL
 	using namespace ChaosImpactPaint;
 	const double Now = FPlatformTime::Seconds();
 	const float In = EaseOut(static_cast<float>(Now - OpenedAt) / 0.22f);
-	const FPainter Shade{Design, Elements, Layer, In};
-	Shade.Box(-1400.0f, -200.0f, 4400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f));
+	{
+		const FPainter Shade{Plan, Elements, Layer, In};
+		Shade.Box(-1400.0f, -1400.0f, 4400.0f, 4400.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.62f));
+	}
+	// Upright: the panel (x 230..1370, y 112..834) across the width, its foot near the screen's.
+	const FVector2f PlanSize = Plan.GetLocalSize();
+	const bool bUpright = PlanSize.Y > PlanSize.X;
+	KeyboardScale = bUpright ? (PlanSize.X - 30.0f) / 1140.0f : 1.0f;
+	KeyboardOffset = bUpright ? FVector2D(15.0f - 230.0f * KeyboardScale, PlanSize.Y - 40.0f - 834.0f * KeyboardScale) : FVector2D::ZeroVector;
+	const FGeometry Design = bUpright ? Plan.MakeChild(FVector2f(1600.0f, 900.0f), FSlateLayoutTransform(KeyboardScale, FVector2f(KeyboardOffset)))
+		: Plan;
 	const FPainter P{Design, Elements, Layer + 1, In};
 	const float Lift = (1.0f - In) * 30.0f;
 	PaintedDesign = Design;
@@ -987,7 +1002,14 @@ int32 FChaosImpactNameEntry::Paint(const FGeometry& Design, FSlateWindowElementL
 	P.Box(260.0f, 112.0f + Lift, 160.0f, 6.0f, Ice);
 	P.Box(420.0f, 112.0f + Lift, 160.0f, 6.0f, Fire);
 	const FPainter T{Design, Elements, Layer + 2, In};
-	T.Text(Title, 800.0f, 128.0f + Lift, 30.0f, Paper, ETextAlign::Center, TEXT("Black"));
+	T.Text(Title, 800.0f, 128.0f + Lift, HudFit(Title, 30.0f, 760.0f), Paper, ETextAlign::Center, TEXT("Black"));
+	{
+		const FBox2D R = CancelRect();
+		RoundedBox(T, static_cast<float>(R.Min.X), static_cast<float>(R.Min.Y) + Lift, static_cast<float>(R.GetSize().X), static_cast<float>(R.GetSize().Y), 12.0f,
+			FLinearColor(0.05f, 0.065f, 0.1f, 1.0f));
+		const FPainter Word{Design, Elements, Layer + 3, In};
+		Word.Text(TEXT("やめる"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 10.0f + Lift, 24.0f, Paper, ETextAlign::Center, TEXT("Black"));
+	}
 
 	// The name so far, with a blinking caret (the IME's letters not yet decided underlined), and how many letters.
 	RoundedBox(T, 330.0f, 186.0f + Lift, 940.0f, 86.0f, 18.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
@@ -1085,7 +1107,8 @@ int32 FChaosImpactNameEntry::Paint(const FGeometry& Design, FSlateWindowElementL
 	// Only the keys of what is being typed with (the keys come menu-translated, so A is the menus' decide).
 	const FString Help = ChaosImpactHints::Text(HintPlayer.Get(),
 		TEXT("{pad:{Confirm}：えらぶ　{Back}：けす（空ならやめる）　{LB}/{RB}：もじの種類　{RT}：大文字　{Start}：おわり}")
-		TEXT("{kb:キーボードでそのまま入力（半角/全角キーで日本語・変換）　Enter：おわり　Esc：やめる}"));
+		TEXT("{kb:キーボードでそのまま入力（半角/全角キーで日本語・変換）　Enter：おわり　Esc：やめる}")
+		TEXT("{touch:キーをタップして入力　おわったら「おわり」}"));
 	// (Inside the panel, under the keys: the screen behind never shows through it.)
 	V.Text(Help, 800.0f, 780.0f + Lift, HudFit(Help, 16.0f, 1100.0f, TEXT("Bold")), WithAlpha(Paper, 0.75f), ETextAlign::Center, TEXT("Bold"));
 	return Layer + 4;

@@ -13,12 +13,14 @@ do); where that does not work, every packet passes through this relay, so no one
     close  {room, key}                            -> {ok}
 
     Matchmaking (mode "random": up to 8 players, free-for-all; mode "duel": 1 v 1 for fun; mode "rank": 1 v 1 ranked):
-    mm_join  {ver, mode, token, name, players, rtt, profile:{chara, color, device}}  -> {ok, ticket}
+    mm_join  {ver, mode, token, name, players, rtt, profile:{chara, color, device, platform}}  -> {ok, ticket}
+             (device "key" | "pad" | "touch"; platform "pc" | "phone": shown to the other side and in the ranking)
     mm_poll  {ticket, rtt}                        -> {ok, state:"waiting", waiting, elapsed, starts_in, notice}
                                                      {ok, state:"proposed", match, left, accepted, opponent_accepted,
                                                       ping, opponent:{name, chara, color, device, record}}   (duel)
                                                      {ok, state:"matched", match, mode, role:"host"|"guest", port,
-                                                      key (host only), host_ready, expect, names:[...], opponent}
+                                                      key (host only), host_ready, expect, names:[...],
+                                                      kinds:[[platform, device], ...] (as names), opponent}
                                                      {ok, state:"expired"}   (a duel this player did not accept in time)
                                                      {ok, state:"gone"}   (expired or the match fell through)
     mm_accept {ticket, accept}                    -> {ok}   (duel: both accept the opponent shown, or neither plays)
@@ -37,7 +39,8 @@ do); where that does not work, every packet passes through this relay, so no one
     record_history {token, mode:"duel"|"ffa", page}  -> {ok, mode, page, pages, total, entries:[...]} (newest first,
                                                       HISTORY_PAGE a page, the last HISTORY_KEEP games)
     ranking       {token, name, mode:"duel"|"ffa", page}  -> {ok, mode, page, pages, total, entries:[{k, n, r, g, w, l, t,
-                                                      c, o, me}], me:{rank, rate, measured, left, games, best}}
+                                                      c, o, p, me}], me:{rank, rate, measured, left, games, best}}
+                                                      (p: "pc" | "phone", what the player last played on)
                                                       (rated players only, RANKING_PAGE a page, the top RANKING_TOP)
 
     Rank (仮, the preseason: a JSON file on this VM, see --data):
@@ -122,19 +125,19 @@ PAIR_DAY = 24 * 3600.0    # the same two players: half the change from their 6th
 RATE_START = 1500
 RATE_FLOOR = 500
 RATE_MEASURING = 5        # games played before the rating shows
-DUEL_K = (40.0, 20.0)     # (while measuring, after)
+DUEL_K = (120.0, 60.0)    # (while measuring, after); three times the first values (2026-11-16: bigger swings)
 # 1v1 win streak bonus: the rating a win gains is multiplied by this (the 2nd win in a row on); a loss is not changed.
 DUEL_STREAK_BONUS = {2: 1.1, 3: 1.2, 4: 1.3}
 DUEL_STREAK_TOP = 2.0     # the 5th win in a row and on
 # 1v1 by the rounds: a 2-0 moves both ratings more, a 2-1 less (when the players' machines said the rounds; else as before).
 DUEL_MARGIN_STRAIGHT = 1.25
 # 1v1 upsets: the further the winner was below, the more both ratings move (1 + UPSET * x^2, x = how far below even the
-# winner's chance was: 0 even, 1 none). Close ratings ±10 as before; 400 below: about ±50.
+# winner's chance was: 0 even, 1 none). Close ratings ±30; 400 below: about ±150.
 DUEL_UPSET = 2.6
-# ...the change from the result and the upset is held to this (before the rounds and the streak: at most 40 x 1.25 x 2 = 100).
-DUEL_CHANGE_CAP = 40.0
+# ...the change from the result and the upset is held to this (before the rounds and the streak: at most 120 x 1.25 x 2 = 300).
+DUEL_CHANGE_CAP = 120.0
 DUEL_MARGIN_CLOSE = 0.75
-FFA_K = (48.0, 32.0)
+FFA_K = (144.0, 96.0)    # (while measuring, after); three times the first values, as the 1v1 (2026-11-16)
 RATE_HISTORY = 20         # the last ratings kept (the 戦績 graph)
 FFA_REPORT_WAIT = 30.0    # an 8-player game is settled this long after its first report (who never said is last)
 HISTORY_KEEP = 50         # the 対戦履歴: the last games kept, each mode
@@ -179,7 +182,8 @@ def clean_detail(detail, mode):
 
 
 def clean_profile(profile):
-    """What a player shows of themselves to a 1 v 1 opponent: character, colour and pad or keyboard."""
+    """What a player shows of themselves to a 1 v 1 opponent: character, colour, how they play (keyboard, pad or touch)
+    and on what (a PC or a phone)."""
     profile = profile if isinstance(profile, dict) else {}
 
     def number(key):
@@ -187,7 +191,9 @@ def clean_profile(profile):
             return max(0, min(63, int(profile.get(key, 0))))
         except (TypeError, ValueError):
             return 0
-    return {"chara": number("chara"), "color": number("color"), "device": "key" if profile.get("device") == "key" else "pad"}
+    device = profile.get("device")
+    return {"chara": number("chara"), "color": number("color"), "device": device if device in ("key", "pad", "touch") else "pad",
+            "platform": "phone" if profile.get("platform") == "phone" else "pc"}
 
 
 class Room:
@@ -441,7 +447,7 @@ class RankBook:
             os.fsync(target.fileno())
         os.replace(temporary, self.path)
 
-    def player(self, pid, name=None):
+    def player(self, pid, name=None, platform=None):
         entry = self.data["players"].get(pid)
         if entry is None:
             entry = {"name": "", "mmr": RANK_START, "games": 0, "wins": 0, "losses": 0, "draws": 0,
@@ -449,6 +455,9 @@ class RankBook:
             self.data["players"][pid] = entry
         if name:
             entry["name"] = str(name)[:16]
+        if platform in ("pc", "phone"):
+            # What they last played on (the ranking shows it).
+            entry["platform"] = platform
         return entry
 
     # ---- the ランダムマッチ ratings (1v1 "duel", 8 players "ffa")
@@ -660,7 +669,7 @@ class RankBook:
             rating = entry[mode + "_rating"]
             duel, ffa = self.records(other)
             row = {"k": ranks[other], "n": entry.get("name", ""), "r": -negative, "g": rating.get("games", 0),
-                   "c": rating.get("chara", 0), "o": rating.get("color", -1), "me": other == pid}
+                   "c": rating.get("chara", 0), "o": rating.get("color", -1), "p": entry.get("platform", "pc"), "me": other == pid}
             if mode == "duel":
                 row.update(w=duel["wins"], l=duel["losses"])
             else:
@@ -783,7 +792,7 @@ class Relay:
             if not request.get("token"):
                 return {"ok": False, "error": "bad request"}
             pid = token_id(request["token"])
-            self.ranks.player(pid, request.get("name"))
+            self.ranks.player(pid, request.get("name"), request.get("platform"))
             return dict(ok=True, **self.ranks.describe_records(pid))
         if op == "record_report":
             return self.record_report(request)
@@ -792,7 +801,7 @@ class Relay:
             if not request.get("token") or mode not in ("duel", "ffa"):
                 return {"ok": False, "error": "bad request"}
             pid = token_id(request["token"])
-            self.ranks.player(pid, request.get("name"))
+            self.ranks.player(pid, request.get("name"), request.get("platform"))
             try:
                 page = int(request.get("page", 0))
             except (TypeError, ValueError):
@@ -809,7 +818,7 @@ class Relay:
             if not request.get("token"):
                 return {"ok": False, "error": "bad request"}
             pid = token_id(request["token"])
-            self.ranks.player(pid, request.get("name"))
+            self.ranks.player(pid, request.get("name"), request.get("platform"))
             return dict(ok=True, **self.ranks.describe(pid))
         if op == "rank_report":
             return self.rank_report(request)
@@ -875,7 +884,7 @@ class Relay:
         for old in [t for t in self.tickets.values() if t.pid == pid and t.match is None]:
             del self.tickets[old.id]
         ticket = Ticket(secrets.token_hex(8), request, pid)
-        self.ranks.player(pid, ticket.name)
+        self.ranks.player(pid, ticket.name, ticket.profile["platform"])
         if mode == "rank":
             self.ranks.player(pid, ticket.name)
             ticket.mmr = self.ranks.mmr(pid)
@@ -927,7 +936,8 @@ class Relay:
                  "role": "host" if ticket is host else "guest", "port": match.room.port,
                  "host_ready": match.room.host_addr is not None,
                  "expect": sum(t.players for t in match.tickets),
-                 "names": [t.name for t in match.tickets]}
+                 "names": [t.name for t in match.tickets],
+                 "kinds": [[t.profile.get("platform", "pc"), t.profile.get("device", "pad")] for t in match.tickets]}
         if ticket is host:
             reply["key"] = match.room.key
             reply["room"] = match.room.id
@@ -1043,14 +1053,15 @@ class Relay:
             if ticket.id in taken:
                 continue
             mine = self.ranks.rating(ticket.pid, "duel")["rate"]
-            window = 150 if now - ticket.joined < 6.0 else 350 if now - ticket.joined < 12.0 else 1 << 30
+            # (Three times the first windows, as the ratings move three times as far: 2026-11-16.)
+            window = 450 if now - ticket.joined < 6.0 else 1050 if now - ticket.joined < 12.0 else 1 << 30
             candidates = sorted((o for o in waiting if o is not ticket), key=lambda o: abs(self.ranks.rating(o.pid, "duel")["rate"] - mine))
             for other in candidates:
                 if other.id in taken or other.pid == ticket.pid:
                     continue
                 if ticket.avoid.get(other.pid, 0) > now or other.avoid.get(ticket.pid, 0) > now:
                     continue
-                if abs(self.ranks.rating(other.pid, "duel")["rate"] - mine) > max(window, 150 if now - other.joined < 6.0 else 350
+                if abs(self.ranks.rating(other.pid, "duel")["rate"] - mine) > max(window, 450 if now - other.joined < 6.0 else 1050
                                                                                  if now - other.joined < 12.0 else 1 << 30):
                     continue
                 taken.update((ticket.id, other.id))
@@ -1122,7 +1133,8 @@ class Relay:
                     # The opponent as the relay matched them.
                     other = next((t for t in match.tickets if t.pid != pid), None)
                     if other:
-                        logged["op"] = {"n": other.name, "ch": other.profile.get("chara", 0), "co": other.profile.get("color", -1)}
+                        logged["op"] = {"n": other.name, "ch": other.profile.get("chara", 0), "co": other.profile.get("color", -1),
+                                      "p": other.profile.get("platform", "pc")}
                     self.ranks.add_duel(pid, result, logged)
                 else:
                     of = max(2, min(RANDOM_MAX_PLAYERS, int(request.get("of", RANDOM_MAX_PLAYERS))))

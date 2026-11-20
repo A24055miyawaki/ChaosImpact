@@ -86,6 +86,8 @@ public:
 	bool ConfirmFocused();
 	/** Development (not in shipping builds): the focused stage counts as cleared (the C key on the map). */
 	bool DevClearFocused();
+	/** The focused stage counted as cleared (what it opens comes out of the fog as after a real clear). */
+	bool ClearFocused();
 	/** Walks the player along the paths to a node (as a click on it does). */
 	void WalkTo(int32 Id);
 	/** Straight onto a pedestal (from the whole map's view: a stage already open). */
@@ -291,6 +293,11 @@ private:
 	float OverviewLinear = 0.0f;
 	float OverviewBlend = 0.0f;
 	bool bOverviewKeyHeld = true;
+	/** スマホ版: the finger on the screen (a tap on the card plays, on the whole map's button toggles it). */
+	bool bTapDown = false;
+	FVector2D TapStart = FVector2D::ZeroVector;
+	FVector2D TapLast = FVector2D::ZeroVector;
+	double TapStartAt = 0.0;
 	FBox2D NodeBounds = FBox2D(ForceInit);
 	/** The birds (their roots), hopping in Tick. */
 	UPROPERTY(Transient)

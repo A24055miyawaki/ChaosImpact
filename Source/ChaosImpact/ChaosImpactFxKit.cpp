@@ -1,6 +1,7 @@
 #include "ChaosImpactFxKit.h"
 
 #include "ChaosImpactEase.h"
+#include "ChaosImpactFusion.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -79,13 +80,24 @@ AChaosImpactFxKit* AChaosImpactFxKit::Spawn(UObject* WorldContext, const FVector
 	FActorSpawnParameters Parameters;
 	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	Parameters.ObjectFlags |= RF_Transient;
-	return World->SpawnActor<AChaosImpactFxKit>(AChaosImpactFxKit::StaticClass(), Location, FRotator::ZeroRotator, Parameters);
+	AChaosImpactFxKit* Kit = World->SpawnActor<AChaosImpactFxKit>(AChaosImpactFxKit::StaticClass(), Location, FRotator::ZeroRotator, Parameters);
+	if (Kit)
+	{
+		// Drawn for a fused ball's effect: in the two colours (ChaosImpactFusion::RegisterTint).
+		ChaosImpactFusion::FindTint(WorldContext, Kit->TintToward, Kit->TintAmount);
+	}
+	return Kit;
 }
 
 void AChaosImpactFxKit::Add(const FChaosImpactFxPiece& Piece)
 {
 	FLive Live;
 	Live.Piece = Piece;
+	if (TintToward != EChaosImpactBallType::Normal)
+	{
+		Live.Piece.Color = ChaosImpactFusion::TintToward(Piece.Color, TintToward, TintAmount);
+		Live.Piece.CoreColor = ChaosImpactFusion::TintToward(Piece.CoreColor, TintToward, TintAmount);
+	}
 	Live.Piece.Location *= Scale;
 	Live.Piece.Velocity *= Scale;
 	Live.Piece.Gravity *= Scale;
@@ -104,6 +116,11 @@ void AChaosImpactFxKit::AddEmitter(const FChaosImpactFxPiece& Template, const fl
 {
 	FEmitter Emitter;
 	Emitter.Template = Template;
+	if (TintToward != EChaosImpactBallType::Normal)
+	{
+		Emitter.Template.Color = ChaosImpactFusion::TintToward(Template.Color, TintToward, TintAmount);
+		Emitter.Template.CoreColor = ChaosImpactFusion::TintToward(Template.CoreColor, TintToward, TintAmount);
+	}
 	Emitter.Rate = Rate;
 	Emitter.Left = Seconds;
 	Emitter.Radius = Radius;

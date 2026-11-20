@@ -10,6 +10,7 @@
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactPlayerController.generated.h"
 
+enum class EChaosImpactSfx : uint8;
 class UInputMappingContext;
 class UUserWidget;
 class UChaosImpactMenuWidget;
@@ -145,6 +146,9 @@ public:
 	void SetSustainedRumble(float Small, float Big);
 	void StopRumble();
 	static bool IsRumbleEnabled();
+	/** メニュー中の振動: a light tick for a menu's sound, on the controller of whoever's menu it is (Context: their controller,
+	 *  their widget, or anything in the world for the first player). Off with メニュー中の振動 or the controller's rumble. */
+	static void PlayMenuRumble(const UObject* Context, EChaosImpactSfx Sound);
 	void ToggleRumbleEnabled();
 	/** True when this device's key belongs to this player (its assigned device, or any device online). */
 	bool AcceptsInputKey(const FKey Key) const { return IsKeyAllowedForThisPlayer(Key); }
@@ -181,6 +185,8 @@ public:
 	void BeginVersusLocal();
 	/** VS local: one player watches a CPU-only match (chosen before players and characters; no split screen). */
 	void BeginLocalSpectate();
+	/** スマホ版: the one player set (any device), straight on to the characters; ReturnTo: where 戻る from them leads. */
+	void BeginPhoneSolo(EChaosImpactScreen ReturnTo);
 	void BeginVersusOnline();
 	void CancelOnlineConnection();
 	bool IsCheckingOnlineConnection() const { return bCheckingOnlineConnection; }
@@ -347,6 +353,8 @@ public:
 	void OpenMatchRules(EChaosImpactScreen ReturnScreen);
 	/** Row 0 = minutes, 1 = free-for-all / teams, 2 = CPUs, 3 = CPU strength (only with CPUs). */
 	void AdjustMatchRule(int32 Row, int32 Direction);
+	/** The rules screen's 合体ボール row: offered for local matches and a 合言葉 room's (never a ranked / random / public one). */
+	bool CanChooseFusionRule() const;
 	const FChaosImpactMatchRules& GetPendingMatchRules() const { return PendingMatchRules; }
 	/** ボールスイッチ on the rules being chosen: one ball on / off, or every one on / off. */
 	void SetBallSwitchOn(EChaosImpactBallType Type, bool bOn);
@@ -369,7 +377,14 @@ public:
 	/** The rules screen's 決定: on to stage select (every VS flow: local, spectate, online room, rule changes). */
 	void OpenStageSelect();
 	/** Stage select: picks the stage and starts, the same as the rules used to. */
+	/** A stage card: 0.. the stages; for a duel or a tournament, ChaosImpactMatch::DuelStageCount is ランダム. */
 	void ChooseStage(int32 StageIndex);
+	/** A duel's stage select: the cards to pick from (the 1v1 stages and ランダム), else the stages. */
+	int32 GetStageCardCount() const;
+	/** The card to start on (the one picked last time). */
+	int32 GetStageCardChosen() const;
+	/** The last local duel's stage was ランダム (the card it came from). */
+	bool bDuelStageRandom = false;
 	void CancelStageSelect();
 	/** Team select: this player's own team. Other local players change theirs from their own devices. */
 	void ChangeOwnTeam(int32 Direction);
@@ -813,8 +828,19 @@ protected:
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
 
-	/** Returns true if the player should use UMG touch controls */
+public:
+	/** True when this player plays by touch (a phone, or -CITouch on a PC). */
 	bool ShouldUseTouchControls() const;
+	/**
+	 * スマホ版: one player (no player count, no controller entry; local play is against CPUs or watching them).
+	 * Docs/モバイル対応企画.md.
+	 */
+	bool IsPhoneSolo() const;
+	/** スマホ版: the settings were opened from the game's pause (the controls can be placed over it now). */
+
+	/** スマホ版: out of the settings and the pause, straight back to the game (to place the controls over it). */
+
+protected:
 
 	/** ソロモード実行中フラグ */
 	bool bSoloMode = false;

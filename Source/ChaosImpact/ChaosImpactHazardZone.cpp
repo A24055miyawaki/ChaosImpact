@@ -4,6 +4,10 @@
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactBall.h"
+#include "ChaosImpactFusion.h"
+#include "ChaosImpactHook.h"
+#include "ChaosImpactTornado.h"
 #include "Engine/GameInstance.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactIceMeshes.h"
@@ -22,6 +26,8 @@
 #include "EngineUtils.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -672,9 +678,14 @@ void ChaosImpactBallTypes::SetEffectColor(UNiagaraComponent* Effect, const TCHAR
 {
 	if (Effect)
 	{
+		// 合体ボール: an effect of a fused ball's burst (or the ball) in the two colours.
+		EChaosImpactBallType Toward = EChaosImpactBallType::Normal;
+		float Amount = 0.0f;
+		const FLinearColor Shown = ChaosImpactFusion::FindTint(Effect, Toward, Amount)
+			? ChaosImpactFusion::TintToward(Color, Toward, Amount) : Color;
 		for (const FName& Parameter : EffectParameterNames(Name))
 		{
-			Effect->SetVariableLinearColor(Parameter, Color);
+			Effect->SetVariableLinearColor(Parameter, Shown);
 		}
 	}
 }
@@ -753,6 +764,9 @@ void AChaosImpactHazardZone::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactHazardZone, ZoneType);
+	DOREPLIFETIME_CONDITION(AChaosImpactHazardZone, FusionTint, COND_InitialOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactHazardZone, FusionTintPercent, COND_InitialOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactHazardZone, ReachScale, COND_InitialOnly);
 	DOREPLIFETIME(AChaosImpactHazardZone, BurstHeight);
 	DOREPLIFETIME(AChaosImpactHazardZone, SourcePawn);
 	DOREPLIFETIME(AChaosImpactHazardZone, VisualSeed);
@@ -767,7 +781,7 @@ float AChaosImpactHazardZone::GetRadius() const
 		if (ZoneType == EChaosImpactBallType::Black) { return ChaosImpactDuelBallBalance::BlackRadius; }
 		if (ZoneType == EChaosImpactBallType::Smoke) { return ChaosImpactDuelBallBalance::SmokeRadius; }
 	}
-	return VisualRadius > 0.0f ? VisualRadius : GetTypeRadius(ZoneType, bFireTrail, BurstScale);
+	return (VisualRadius > 0.0f ? VisualRadius : GetTypeRadius(ZoneType, bFireTrail, BurstScale)) * ReachScale;
 }
 
 float AChaosImpactHazardZone::GetVisualScale() const
@@ -828,7 +842,8 @@ float AChaosImpactHazardZone::GetActiveSeconds() const
 
 AChaosImpactHazardZone* AChaosImpactHazardZone::Detonate(UWorld* World, const EChaosImpactBallType Type,
 	const FVector& Location, APawn* Source, AActor* Victim, const float Scale,
-	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage)
+	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage, const EChaosImpactBallType FusionTint, const float FusionTintAmount,
+	const float ReachScale)
 {
 	if (!World || Type == EChaosImpactBallType::Normal)
 	{
@@ -857,6 +872,9 @@ AChaosImpactHazardZone* AChaosImpactHazardZone::Detonate(UWorld* World, const EC
 	Zone->DirectVictim = Victim;
 	Zone->VisualSeed = FMath::Rand();
 	Zone->BurstScale = FMath::Max(Scale, 0.1f);
+	Zone->FusionTint = FusionTint;
+	Zone->ReachScale = FMath::Clamp(ReachScale, 0.5f, 3.0f);
+	Zone->FusionTintPercent = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(FusionTintAmount * 100.0f), 0, 100));
 	Zone->FinishSpawning(SpawnTransform);
 	return Zone;
 }
@@ -864,7 +882,7 @@ AChaosImpactHazardZone* AChaosImpactHazardZone::Detonate(UWorld* World, const EC
 AChaosImpactHazardZone* AChaosImpactHazardZone::SpawnVisual(UWorld* World, const EChaosImpactBallType Type,
 	const FVector& Location, const float Radius, const float Seconds, APawn* Source, const float Scale)
 {
-	if (!World || Type == EChaosImpactBallType::Normal || Type == EChaosImpactBallType::Nova || World->GetNetMode() == NM_DedicatedServer)
+	if (!World || Type == EChaosImpactBallType::Normal || World->GetNetMode() == NM_DedicatedServer)
 	{
 		return nullptr;
 	}
@@ -994,6 +1012,79 @@ FVector AChaosImpactHazardZone::GetBlackHolePullOffset(const UWorld* World, AAct
 			bDuel ? ChaosImpactDuelBallBalance::BlackEdgePull : BlackHolePullSpeed, Distance / Zone->GetRadius()) * Strength;
 		Offset += Flat / Distance * FMath::Min(Speed * DeltaSeconds, Distance);
 	}
+	// 合体ボール: a black hole riding along on a flying ball draws in whoever it passes near (more gently than an open one).
+	for (TActorIterator<AChaosImpactBall> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		const AChaosImpactBall* Ball = *It;
+		if (!Ball->IsFusedPullActive())
+		{
+			continue;
+		}
+		const APawn* Source = Ball->GetFusionSource();
+		if (Character == Source || AChaosImpactGameState::AreTeammates(World, Source, Character))
+		{
+			continue;
+		}
+		const FVector ToBall = Ball->GetActorLocation() - Character->GetActorLocation();
+		const FVector Flat(ToBall.X, ToBall.Y, 0.0f);
+		const float Distance = static_cast<float>(Flat.Size());
+		const float Reach = Ball->GetFusedPullRadius();
+		if (Distance > Reach || Distance < 6.0f || FMath::Abs(ToBall.Z) > 320.0f)
+		{
+			continue;
+		}
+		float Speed = FMath::Lerp(BlackHolePullSpeed * 0.85f, BlackHolePullSpeed * 0.4f, Distance / Reach);
+		if (Ball->IsDragDrive())
+		{
+			// 吸引ドライブ: drawn in hard, and near it carried along at its own speed (a dash still breaks free).
+			const float Near = FMath::Clamp(1.0f - (Distance - 120.0f) / (Reach - 120.0f), 0.0f, 1.0f);
+			Speed = FMath::Lerp(BlackHolePullSpeed * 0.7f, Ball->GetFusedPullSpeed() + BlackHolePullSpeed * 0.6f, Near * Near);
+		}
+		Offset += Flat / Distance * FMath::Min(Speed * DeltaSeconds, Distance);
+	}
+	// A tornado, a hook's head or an anchor's flying thrower with a black hole riding along draws in whoever is near.
+	const auto PullToward = [&](const FVector& Center, const float Reach, const APawn* Source)
+	{
+		if (Character == Source || AChaosImpactGameState::AreTeammates(World, Source, Character))
+		{
+			return;
+		}
+		const FVector To = Center - Character->GetActorLocation();
+		const FVector Flat(To.X, To.Y, 0.0f);
+		const float Distance = static_cast<float>(Flat.Size());
+		if (Distance > Reach || Distance < 6.0f || FMath::Abs(To.Z) > 360.0f)
+		{
+			return;
+		}
+		const float Speed = FMath::Lerp(BlackHolePullSpeed * 0.8f, BlackHolePullSpeed * 0.35f, Distance / Reach);
+		Offset += Flat / Distance * FMath::Min(Speed * DeltaSeconds, Distance);
+	};
+	for (TActorIterator<AChaosImpactTornado> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		if (It->IsFusedPullActive())
+		{
+			PullToward(It->GetCenter(), AChaosImpactTornado::FusedPullRadius, It->GetSourcePawn());
+		}
+	}
+	for (TActorIterator<AChaosImpactHook> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		FVector Center;
+		float Reach = 0.0f;
+		if (It->GetFusedPull(Center, Reach))
+		{
+			PullToward(Center, Reach, It->GetSourcePawn());
+		}
+	}
+	// 重力雪玉: a snowball with a black hole in it, rolled along.
+	for (TActorIterator<AChaosImpactCharacter> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		FVector Center;
+		float Reach = 0.0f;
+		if (*It != Character && It->GetFusedRollPull(Center, Reach))
+		{
+			PullToward(Center, Reach, *It);
+		}
+	}
 	return Offset;
 }
 
@@ -1001,9 +1092,19 @@ void AChaosImpactHazardZone::BeginPlay()
 {
 	Super::BeginPlay();
 	SpawnedAt = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	const bool bFusionTinted = FusionTint != EChaosImpactBallType::Normal && FusionTintPercent > 0;
+	if (bFusionTinted)
+	{
+		// 合体: everything this burst draws (its soft pieces, its effects' colours) takes the other kind's colour too.
+		ChaosImpactFusion::RegisterTint(this, FusionTint, FusionTintPercent / 100.0f);
+	}
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		BuildPresentation();
+		if (bFusionTinted)
+		{
+			ChaosImpactFusion::TintActorLooks(this, FusionTint, FusionTintPercent / 100.0f);
+		}
 	}
 	if (bVisualOnly)
 	{
@@ -1677,13 +1778,24 @@ void AChaosImpactHazardZone::BuildSmokePresentation(FRandomStream& Stream)
 	// (many small ones piled up translucent smoke far too thick to draw).
 	// (Four plumes round the centre and fewer, slightly larger puffs cover the same area as five did, for about a
 	// third less translucent overdraw: smoke is the heaviest thing on screen.)
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	// スマホ版: the plumes are the heaviest thing a phone's GPU draws (big translucent sprites over each other): the
+	// centre and three round it, each a little bigger and slower, for about half the overdraw.
+	Plume(FVector::ZeroVector, 860.0f * Size, 5.0f);
+	constexpr int32 Ring = 3;
+	constexpr float RingRate = 3.5f;
+	constexpr float RingSizeUp = 1.12f;
+#else
 	Plume(FVector::ZeroVector, 800.0f * Size, 9.0f);
 	constexpr int32 Ring = 4;
+	constexpr float RingRate = 6.0f;
+	constexpr float RingSizeUp = 1.0f;
+#endif
 	for (int32 Index = 0; Index < Ring; ++Index)
 	{
 		const float Angle = (Index + Stream.FRandRange(-0.2f, 0.2f)) * UE_TWO_PI / Ring;
 		const float Distance = Radius * Stream.FRandRange(0.55f, 0.68f);
-		Plume(FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.0f), Stream.FRandRange(690.0f, 780.0f) * Size, 6.0f);
+		Plume(FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.0f), Stream.FRandRange(690.0f, 780.0f) * Size * RingSizeUp, RingRate);
 	}
 }
 
@@ -3023,3 +3135,23 @@ void AChaosImpactHazardZone::UpdatePresentation(const float Age)
 		ZoneLight->SetRelativeLocation(FVector(0.0f, 0.0f, 90.0f + BurstHeight * FMath::Exp(-Age * 5.0f)));
 	}
 }
+
+#if !UE_BUILD_SHIPPING
+// Measuring on a phone (2026-11-18): "CI.Detonate Smoke" bursts that ball a little in front of the first player, as
+// if it had landed there (no thrower: everyone sees the full cloud), to time how heavy each burst is to draw.
+static FAutoConsoleCommandWithWorldAndArgs GChaosImpactDetonateCommand(TEXT("CI.Detonate"),
+	TEXT("CI.Detonate <ball type, e.g. Smoke>: bursts that ball in front of the first player (measuring)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	{
+		const UEnum* Types = StaticEnum<EChaosImpactBallType>();
+		const int64 Value = Types && Args.Num() > 0 ? Types->GetValueByNameString(Args[0]) : INDEX_NONE;
+		const APlayerController* Viewer = World ? World->GetFirstPlayerController() : nullptr;
+		const APawn* Pawn = Viewer ? Viewer->GetPawn() : nullptr;
+		if (Value == INDEX_NONE || !Pawn)
+		{
+			return;
+		}
+		AChaosImpactHazardZone::Detonate(World, static_cast<EChaosImpactBallType>(Value),
+			Pawn->GetActorLocation() + Pawn->GetActorForwardVector() * 250.0f, nullptr, nullptr);
+	}));
+#endif

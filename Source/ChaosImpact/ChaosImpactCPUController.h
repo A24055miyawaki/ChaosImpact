@@ -20,6 +20,8 @@ class AChaosImpactCPUController : public AAIController
 	GENERATED_BODY()
 
 public:
+	/** The stage changed in this world (a new one in the old one's place): its route grid is worked out again. */
+	static void ForgetStageGrid(const UWorld* World);
 	/** Development: seconds spent thinking by every CPU so far (to measure how heavy they are). */
 	static double DevThinkSeconds;
 	/** Development: the same split up (perception, learning, target, dodging, offence, positioning). */
@@ -52,6 +54,9 @@ public:
 	/** The duel's boss (さいきょう in a duel), whether it plays as one. Tests: set either way (unset: as in play). */
 	bool IsDuelBoss() const { return bDuelBoss; }
 	void SetDuelBossForTests(const TOptional<bool> bBoss) { DuelBossForTests = bBoss; }
+	/** Tests: whether this CPU sees a wall it jumps ahead (Origin: a character's middle), and how far it can walk. */
+	bool HasLowObstacleAheadForTests(const FVector& Origin, const FVector& Direction) const { return HasLowObstacleAhead(Origin, Direction); }
+	float GetFreeTravelForTests(const FVector& Origin, const FVector& Direction, float MaxDistance) const { return GetFreeTravel(Origin, Direction, MaxDistance); }
 
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
@@ -70,6 +75,11 @@ private:
 		float ArrivalSeconds = 0.0f;
 		float Quality = 0.0f;
 	};
+
+	/** スマホ版: the plan re-solved while charging, kept for a frame (its target and when). */
+	FShotPlan ChargingPlan;
+	TWeakObjectPtr<const AChaosImpactCharacter> ChargingPlanTarget;
+	float ChargingPlanAt = -10.0f;
 
 	struct FBallThreat
 	{
@@ -126,6 +136,11 @@ private:
 		const FVector& TargetVelocity, float LaunchDelay) const;
 	float ChooseDesiredCharge(const AChaosImpactCharacter* Self, const AChaosImpactCharacter* Target) const;
 	void UpdateOffense(AChaosImpactCharacter* Self, AChaosImpactCharacter* Target, float Now);
+	/** 合体ボール (rules あり): holding a pair that joins, a moment later it joins them (the weaker, the later and the less often). */
+	void UpdateFusion(AChaosImpactCharacter* Self, float Now);
+	float FusionPairSeenAt = -1.0f;
+	float FusionDelay = 0.0f;
+	bool bFusionWanted = false;
 	/** Opportunistic close-range disarm, with a visible reaction delay and the human tackle's rules. */
 	bool TryTackle(AChaosImpactCharacter* Self, float Now);
 	TWeakObjectPtr<AChaosImpactCharacter> TackleTarget;

@@ -291,6 +291,8 @@ bool ARPGRubyGem::Collect(ARPGPrototypeCharacter* Player)
 {
     if(bCollected || !IsValid(Player) || !IsFor(Player)) { return false; }
     bCollected=true; Player->PickUpRubies(Value);
+    // A slight tick in the hands (more for a bigger gem).
+    Player->PlayControllerRumble(Value>=20?.28f:.14f,Value>=20?.12f:.03f,Value>=20?.09f:.045f);
     ChaosImpactSfx::PlayAt(this,EChaosImpactSfx::CoinPick,GetActorLocation(),.8f,1.0f+FMath::Min(Value,50)*.008f);
     Destroy(); return true;
 }

@@ -76,6 +76,7 @@ void AChaosImpactGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AChaosImpactGameState, bRulesDecided);
 	DOREPLIFETIME(AChaosImpactGameState, ReadyDeadline);
 	DOREPLIFETIME(AChaosImpactGameState, Matchmade);
+	DOREPLIFETIME(AChaosImpactGameState, RematchesPlayed);
 	DOREPLIFETIME(AChaosImpactGameState, MatchmadeExpected);
 	DOREPLIFETIME(AChaosImpactGameState, MatchmadeDeadline);
 	DOREPLIFETIME(AChaosImpactGameState, Duel);
@@ -125,6 +126,17 @@ const FChaosImpactDuelState* AChaosImpactGameState::FindDuelFor(const APlayerSta
 		return TournamentArenas.IsValidIndex(Arena) && TournamentArenas[Arena].Match != INDEX_NONE ? &TournamentArenas[Arena].Duel : nullptr;
 	}
 	return IsDuel() ? &Duel : nullptr;
+}
+
+int32 AChaosImpactGameState::GetDuelStageFor(const AController* Viewer) const
+{
+	if (Tournament.bActive)
+	{
+		const AChaosImpactPlayerState* State = Viewer ? Viewer->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
+		const int32 Arena = State ? State->TournamentArena : INDEX_NONE;
+		return TournamentArenas.IsValidIndex(Arena) ? TournamentArenas[Arena].Stage : 0;
+	}
+	return ChaosImpactMatch::SanitizeDuelStage(Rules.StageIndex);
 }
 
 bool AChaosImpactGameState::IsDuelLiveAt(const FVector& Location) const
@@ -413,4 +425,9 @@ bool AChaosImpactGameState::AreTeammates(const UWorld* World, const AActor* A, c
 	const AChaosImpactPlayerState* StateA = PawnA ? PawnA->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
 	const AChaosImpactPlayerState* StateB = PawnB ? PawnB->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
 	return StateA && StateB && StateA->TeamIndex >= 0 && StateA->TeamIndex == StateB->TeamIndex;
+}
+
+bool AChaosImpactGameState::CanRematchAgain() const
+{
+	return RematchesPlayed < ChaosImpactMatch::MaxDuelRematches;
 }

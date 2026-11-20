@@ -134,6 +134,8 @@ protected:
 	float BarrierBallChance = 0.05f;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Mine (マイン・VS/トレーニング限定)"))
 	float MineBallChance = 0.05f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Chaos Impact|Ball Chances", meta=(ClampMin="0.0", DisplayName="Heal (ヒール・ソロ限定)"))
+	float HealBallChance = 0.07f;
 
 	/** What the weights come to, in percent (follows them as they change). */
 	UPROPERTY(VisibleAnywhere, Transient, Category="Chaos Impact|Ball Chances", meta=(DisplayName="確率の内訳 (%)", MultiLine="true"))

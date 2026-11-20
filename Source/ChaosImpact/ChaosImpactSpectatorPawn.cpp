@@ -4,6 +4,9 @@
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactMenuWidget.h"
+#include "ChaosImpactTournamentWidget.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactVersusStage.h"
 #include "Camera/PlayerCameraManager.h"
@@ -287,6 +290,8 @@ void AChaosImpactSpectatorPawn::UpdateFreeFlight(APlayerController* Viewer, cons
 		View.Yaw += MouseX * SpectatorMouseTurnRate * 10.0f;
 		View.Pitch += MouseY * SpectatorMouseTurnRate * 10.0f;
 	}
+	View.Yaw += TouchLook.X;
+	View.Pitch += TouchLook.Y;
 	View.Pitch = FMath::ClampAngle(View.Pitch, -89.0f, 60.0f);
 	View.Roll = 0.0f;
 	Viewer->SetControlRotation(View);
@@ -298,7 +303,8 @@ void AChaosImpactSpectatorPawn::UpdateFreeFlight(APlayerController* Viewer, cons
 	float MoveRight = Viewer->GetInputAnalogKeyState(EKeys::Gamepad_LeftX);
 	MoveForward = FMath::Abs(MoveForward) > 0.15f ? MoveForward : 0.0f;
 	MoveRight = FMath::Abs(MoveRight) > 0.15f ? MoveRight : 0.0f;
-	MoveForward += (Viewer->IsInputKeyDown(EKeys::W) ? 1.0f : 0.0f) - (Viewer->IsInputKeyDown(EKeys::S) ? 1.0f : 0.0f);
+	MoveForward += (Viewer->IsInputKeyDown(EKeys::W) ? 1.0f : 0.0f) - (Viewer->IsInputKeyDown(EKeys::S) ? 1.0f : 0.0f) + TouchMove.X;
+	MoveRight += TouchMove.Y;
 	MoveRight += (Viewer->IsInputKeyDown(EKeys::D) ? 1.0f : 0.0f) - (Viewer->IsInputKeyDown(EKeys::A) ? 1.0f : 0.0f);
 	const float Rise = Viewer->GetInputAnalogKeyState(EKeys::Gamepad_RightTriggerAxis)
 		- Viewer->GetInputAnalogKeyState(EKeys::Gamepad_LeftTriggerAxis)
@@ -309,6 +315,87 @@ void AChaosImpactSpectatorPawn::UpdateFreeFlight(APlayerController* Viewer, cons
 	// Eases in and out so the view glides rather than jerks.
 	FlyVelocity = FMath::VInterpTo(FlyVelocity, Wish, DeltaSeconds, 8.0f);
 	SetActorLocation(ClampToStage(GetActorLocation() + FlyVelocity * DeltaSeconds));
+}
+
+void AChaosImpactSpectatorPawn::UpdateTouch(APlayerController* Viewer)
+{
+	TouchLook = FVector2D::ZeroVector;
+	TouchMove = FVector2D::ZeroVector;
+	if (!UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		return;
+	}
+	bool bDown[2] = {false, false};
+	FVector2D At[2];
+	for (int32 Finger = 0; Finger < 2; ++Finger)
+	{
+		float X = 0.0f, Y = 0.0f;
+		Viewer->GetInputTouchState(Finger == 0 ? ETouchIndex::Touch1 : ETouchIndex::Touch2, X, Y, bDown[Finger]);
+		At[Finger] = FVector2D(X, Y);
+	}
+	// (Fingers are in the screen's pixels; the HUD's buttons in its own units.)
+	const float DpiScale = FMath::Max(UWidgetLayoutLibrary::GetViewportScale(Viewer), 0.01f);
+	int32 SizeX = 0, SizeY = 0;
+	Viewer->GetViewportSize(SizeX, SizeY);
+	const FVector2D HudSize(SizeX / DpiScale, SizeY / DpiScale);
+	const float Short = FMath::Max(1.0f, static_cast<float>(FMath::Min(SizeX, SizeY)));
+	const double Now = FPlatformTime::Seconds();
+	if (bDown[0] && !bTouchWasDown[0])
+	{
+		TouchStart = At[0];
+		TouchStartAt = Now;
+		bTouchMoved = false;
+	}
+	if (bDown[0] && bTouchWasDown[0])
+	{
+		const FVector2D Delta = At[0] - TouchLast[0];
+		bTouchMoved |= FVector2D::Distance(At[0], TouchStart) > Short * 0.025f;
+		if (bDown[1] && bTouchWasDown[1])
+		{
+			// Two fingers: the free camera moves the way they slide (up: forward).
+			const FVector2D Both = (Delta + (At[1] - TouchLast[1])) * 0.5f;
+			TouchMove = FVector2D(-Both.Y, Both.X) / (Short * 0.012f);
+			TouchMove = TouchMove.ClampAxes(-1.0f, 1.0f);
+		}
+		else if (bTouchMoved)
+		{
+			// One finger: the free camera looks round (across the screen's short side: half a turn).
+			TouchLook = FVector2D(Delta.X, -Delta.Y) * (180.0f / Short);
+		}
+	}
+	const AChaosImpactPlayerController* TouchOwner = Cast<AChaosImpactPlayerController>(Viewer);
+	const bool bCovered = TouchOwner && TouchOwner->GetTournamentWidget() && TouchOwner->GetTournamentWidget()->CoversPlay();
+	if (bCovered)
+	{
+		TouchLook = FVector2D::ZeroVector;
+		TouchMove = FVector2D::ZeroVector;
+	}
+	if (!bCovered && !bDown[0] && bTouchWasDown[0] && !bTouchMoved && Now - TouchStartAt < 0.35)
+	{
+		// A tap: on one of the buttons.
+		const FVector2D Point = TouchStart / DpiScale;
+		for (int32 Button = 0; Button < 3; ++Button)
+		{
+			if (!UChaosImpactChargeWidget::SpectatorTouchButton(Button, HudSize).ExpandBy(8.0).IsInside(Point))
+			{
+				continue;
+			}
+			if (Button == 1)
+			{
+				if (Followed.IsValid()) { StopFollowing(); } else { CycleFollow(1); }
+			}
+			else
+			{
+				CycleFollow(Button == 0 ? -1 : 1);
+			}
+			break;
+		}
+	}
+	for (int32 Finger = 0; Finger < 2; ++Finger)
+	{
+		bTouchWasDown[Finger] = bDown[Finger];
+		TouchLast[Finger] = At[Finger];
+	}
 }
 
 void AChaosImpactSpectatorPawn::ServerSyncView_Implementation(const FVector_NetQuantize Location)
@@ -389,6 +476,7 @@ void AChaosImpactSpectatorPawn::Tick(const float DeltaSeconds)
 	{
 		return;
 	}
+	UpdateTouch(Viewer);
 	if (Viewer->WasInputKeyJustPressed(EKeys::Right) || Viewer->WasInputKeyJustPressed(EKeys::Gamepad_RightShoulder))
 	{
 		CycleFollow(1);

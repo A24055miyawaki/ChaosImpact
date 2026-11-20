@@ -134,8 +134,22 @@ private:
 	float DevWatchAskedAt = -100.0f;
 	float DevWatchSince = -1.0f;
 	bool bDevWatchBracket = false;
-	/** The design space's width for this player's part of the screen (900 high; 1000 to 1600 wide). */
+	/** The design space's width for this player's part of the screen (900 high; 1000 to 1600 wide; スマホ版 upright: 900 x 1600). */
 	mutable float DesignWidth = 1600.0f;
+	mutable float DesignHeight = 900.0f;
+	/** スマホ版 upright: the bracket down the tall screen; the other screens in its middle (a 900 x 900 band). */
+	mutable bool bTall = false;
+	/** The middle band (as the landscape screens are laid out) of the design. */
+	FGeometry MidDesign(const FGeometry& Design) const;
+	float MidOffset() const { return bTall ? (DesignHeight - 900.0f) * 0.5f : 0.0f; }
+	float BracketTop() const;
+	float BracketBottom() const;
+	/** スマホ版 (touch): the button that opens the menu (no panel open), and the buttons along a panel's foot: 0 とじる, 1 メニュー / もどる. */
+	bool IsTouch() const;
+	FBox2D MenuButtonRect() const;
+	FBox2D PanelButtonRect(int32 Index) const;
+	void PaintTouchButton(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, const FBox2D& R, const FString& Label,
+		const FLinearColor& Accent) const;
 	FString Toast;
 	double ToastAt = -100.0;
 };

@@ -1,5 +1,6 @@
-#include "ChaosImpactVersusCard.h"
+﻿#include "ChaosImpactVersusCard.h"
 #include "ChaosImpactSfx.h"
+#include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactPaint.h"
 #include "Engine/Texture.h"
@@ -17,13 +18,31 @@ namespace
 	const FLinearColor LeftSide(0.0f, 0.10f, 0.40f, 1.0f);
 	const FLinearColor RightSide(0.40f, 0.0f, 0.03f, 1.0f);
 
-	/** The 1600x900 design space, fitted in the middle of the widget like the menus. */
+	/**
+	 * スマホ版 held upright (2026-11-18): a 900 x 1600 page instead. Two sides face each other above and below the VS; three
+	 * or more stand round it on a tall ring.
+	 */
+	bool IsUprightCard(const FGeometry& Allotted)
+	{
+		const FVector2f Size = Allotted.GetLocalSize();
+		return UChaosImpactMenuWidget::IsPhoneBuild() && Size.Y > Size.X * 1.15f;
+	}
+	/** Where VS lands. */
+	FVector2f VersusCentre(const bool bUpright)
+	{
+		return bUpright ? FVector2f(450.0f, 800.0f) : FVector2f(800.0f, 430.0f);
+	}
+
+	/** The 1600x900 design space (upright 900 x 1600), fitted in the middle of the widget like the menus. */
 	FGeometry MakeDesign(const FGeometry& Allotted, const FVector2f Shake = FVector2f::ZeroVector)
 	{
 		const FVector2f Size = Allotted.GetLocalSize();
-		const float Scale = FMath::Min(Size.X / DesignWidth, Size.Y / DesignHeight);
-		const FVector2f Offset = (Size - FVector2f(DesignWidth, DesignHeight) * Scale) * 0.5f + Shake * Scale;
-		return Allotted.MakeChild(FVector2f(DesignWidth, DesignHeight), FSlateLayoutTransform(Scale, Offset));
+		const bool bUpright = IsUprightCard(Allotted);
+		const float W = bUpright ? DesignHeight : DesignWidth;
+		const float H = bUpright ? DesignWidth : DesignHeight;
+		const float Scale = FMath::Min(Size.X / W, Size.Y / H);
+		const FVector2f Offset = (Size - FVector2f(W, H) * Scale) * 0.5f + Shake * Scale;
+		return Allotted.MakeChild(FVector2f(W, H), FSlateLayoutTransform(Scale, Offset));
 	}
 
 	/** The navy backdrop of the menus (dark bands, a little lighter at the top). */
@@ -32,9 +51,10 @@ namespace
 		const FPainter Full{Allotted, Elements, Layer};
 		Full.Box(0.0f, 0.0f, Allotted.GetLocalSize().X, Allotted.GetLocalSize().Y, Ink);
 		const FPainter Flat{Design, Elements, Layer};
-		for (int32 Band = 0; Band < 18; ++Band)
+		const int32 Bands = IsUprightCard(Allotted) ? 32 : 18;
+		for (int32 Band = 0; Band < Bands; ++Band)
 		{
-			const float T = Band / 17.0f;
+			const float T = Band / static_cast<float>(Bands - 1);
 			Flat.Box(-1200.0f, Band * 50.0f, 4000.0f, 51.0f, FMath::Lerp(
 				FLinearColor(0.022f, 0.03f, 0.06f, 1.0f), FLinearColor(0.003f, 0.004f, 0.01f, 1.0f), T));
 		}
@@ -125,6 +145,10 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	const FVector2f Shake(FMath::Sin(T * 95.0f) * Jolt, FMath::Cos(T * 80.0f) * Jolt * 0.6f);
 	const FGeometry Design = MakeDesign(AllottedGeometry, Shake);
 	PaintBackdrop(AllottedGeometry, Design, OutDrawElements, LayerId);
+	const bool bUpright = IsUprightCard(AllottedGeometry);
+	const FVector2f Hub = VersusCentre(bUpright);
+	const float PageW = bUpright ? DesignHeight : DesignWidth;
+	const float PageH = bUpright ? DesignWidth : DesignHeight;
 
 	// Two sides facing each other for a 1-on-1 or two teams; anything else stands in a ring round the VS.
 	const int32 Count = Info.Entrants.Num();
@@ -147,9 +171,19 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 			for (int32 Slot = 0; Slot < SideCount; ++Slot)
 			{
 				FCardPlace& Place = Places[Halves[Half][Slot]];
-				Place.Width = 490.0f;
 				Place.Height = CardHeight;
 				Place.bLeft = Half == 0;
+				if (bUpright)
+				{
+					// Upright: one side above the VS, the other under it, each the width of the screen.
+					Place.Width = 760.0f;
+					Place.X = 70.0f;
+					const float Middle = Place.bLeft ? 440.0f : 1160.0f;
+					Place.Y = Middle - (SideCount * CardHeight + (SideCount - 1) * Gap) * 0.5f + Slot * (CardHeight + Gap);
+					Place.From = FVector2f(Place.bLeft ? -1.0f : 1.0f, 0.0f);
+					continue;
+				}
+				Place.Width = 490.0f;
 				Place.X = Place.bLeft ? 80.0f : DesignWidth - 80.0f - Place.Width;
 				Place.Y = 430.0f - (SideCount * CardHeight + (SideCount - 1) * Gap) * 0.5f + Slot * (CardHeight + Gap);
 				Place.From = FVector2f(Place.bLeft ? -1.0f : 1.0f, 0.0f);
@@ -166,8 +200,26 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 			const float Angle = FMath::DegreesToRadians(-90.0f - Step * 0.5f + Index * Step);
 			const FVector2f Out(FMath::Cos(Angle), FMath::Sin(Angle));
 			FCardPlace& Place = Places[Index];
-			Place.Width = 300.0f;
 			Place.Height = 146.0f;
+			if (bUpright)
+			{
+				// Upright: two across, the first rows above the VS and the rest under it (a lone last one in the middle).
+				const int32 Rows = (Count + 1) / 2;
+				const int32 RowsAbove = (Rows + 1) / 2;
+				const int32 Row = Index / 2;
+				const bool bAbove = Row < RowsAbove;
+				const int32 InGroup = bAbove ? RowsAbove : Rows - RowsAbove;
+				const int32 GroupRow = bAbove ? Row : Row - RowsAbove;
+				const float Middle = bAbove ? 440.0f : 1160.0f;
+				const bool bAlone = Index == Count - 1 && Count % 2 == 1;
+				Place.Width = 370.0f;
+				Place.X = bAlone ? 450.0f - Place.Width * 0.5f : Index % 2 == 0 ? 60.0f : 470.0f;
+				Place.Y = Middle - (InGroup * 146.0f + (InGroup - 1) * 18.0f) * 0.5f + GroupRow * 164.0f;
+				Place.bLeft = bAlone ? true : Index % 2 == 0;
+				Place.From = FVector2f(Place.bLeft ? -1.0f : 1.0f, 0.0f);
+				continue;
+			}
+			Place.Width = 300.0f;
 			Place.X = 800.0f + Out.X * 560.0f - Place.Width * 0.5f;
 			Place.Y = 430.0f + Out.Y * 250.0f - Place.Height * 0.5f;
 			Place.bLeft = Out.X < -0.01f || (FMath::Abs(Out.X) <= 0.01f && Index % 2 == 0);
@@ -178,9 +230,20 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	// Behind them: for two sides, the halves slide in and meet along a slanted seam in the middle; for a ring, one
 	// field with a warm glow at the middle and the ring the fighters stand on.
 	const float SidesIn = EaseOut(T / 0.38f);
-	const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, DesignWidth, DesignHeight, -0.36f);
+	const FGeometry Slant = MakeSkewed(Design, 0.0f, 0.0f, PageW, PageH, -0.36f);
 	const FPainter Sides{Slant, OutDrawElements, LayerId + 1};
-	if (bSides)
+	if (bSides && bUpright)
+	{
+		// Upright: the halves come down and up, meeting across the middle.
+		const FPainter Flat{Design, OutDrawElements, LayerId + 1};
+		Flat.Box(-400.0f, -400.0f - (1.0f - SidesIn) * 1200.0f, 1700.0f, 1190.0f, WithAlpha(LeftSide, 0.5f));
+		Flat.Box(-400.0f, 778.0f - (1.0f - SidesIn) * 1200.0f, 1700.0f, 12.0f, WithAlpha(Ice, 0.9f));
+		Flat.Box(-400.0f, 810.0f + (1.0f - SidesIn) * 1200.0f, 1700.0f, 1190.0f, WithAlpha(RightSide, 0.5f));
+		Flat.Box(-400.0f, 810.0f + (1.0f - SidesIn) * 1200.0f, 1700.0f, 12.0f, WithAlpha(Fire, 0.9f));
+		const FPainter Seam{Design, OutDrawElements, LayerId + 1, FMath::Clamp((T - 0.4f) / 0.2f, 0.0f, 1.0f)};
+		Seam.Box(-400.0f, 797.0f, 1700.0f, 6.0f, Gold);
+	}
+	else if (bSides)
 	{
 		Sides.Box(-1700.0f - (1.0f - SidesIn) * 1100.0f, -60.0f, 2490.0f, 1020.0f, WithAlpha(LeftSide, 0.5f));
 		Sides.Box(778.0f - (1.0f - SidesIn) * 1100.0f, -60.0f, 12.0f, 1020.0f, WithAlpha(Ice, 0.9f));
@@ -194,20 +257,23 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		const FPainter Field{Design, OutDrawElements, LayerId + 1, SidesIn};
 		for (int32 Glow = 0; Glow < 8; ++Glow)
 		{
-			Field.Ring(FVector2D(800.0, 430.0), 120.0f + Glow * 70.0f, WithAlpha(Gold, 0.05f - Glow * 0.005f), 70.0f, 96);
+			Field.Ring(FVector2D(Hub), 120.0f + Glow * 70.0f, WithAlpha(Gold, 0.05f - Glow * 0.005f), 70.0f, 96);
 		}
-		// The ring the fighters stand on: an ellipse, drawn as a circle in a space squashed about the middle.
-		const FGeometry Squashed = Design.MakeChild(FVector2f(DesignWidth, DesignHeight),
-			FSlateLayoutTransform(FVector2f(0.0f, 430.0f * (1.0f - 250.0f / 560.0f))),
-			FSlateRenderTransform(FScale2f(1.0f, 250.0f / 560.0f)), FVector2f::ZeroVector);
+		// The ring the fighters stand on: an ellipse, drawn as a circle in a space squashed about the middle (upright:
+		// narrow and tall).
+		const float Across = bUpright ? 220.0f / 560.0f : 1.0f;
+		const float Down = bUpright ? 1.0f : 250.0f / 560.0f;
+		const FGeometry Squashed = Design.MakeChild(FVector2f(PageW, PageH),
+			FSlateLayoutTransform(FVector2f(Hub.X * (1.0f - Across), Hub.Y * (1.0f - Down))),
+			FSlateRenderTransform(FScale2f(Across, Down)), FVector2f::ZeroVector);
 		const FPainter Orbit{Squashed, OutDrawElements, LayerId + 1, SidesIn * FMath::Clamp((T - 0.3f) / 0.3f, 0.0f, 1.0f)};
-		Orbit.Ring(FVector2D(800.0, 430.0), 560.0f, WithAlpha(Gold, 0.35f), 3.0f, 128);
-		Orbit.Ring(FVector2D(800.0, 430.0), 560.0f, WithAlpha(Gold, 0.08f), 26.0f, 128);
+		Orbit.Ring(FVector2D(Hub), 560.0f, WithAlpha(Gold, 0.35f), 3.0f, 128);
+		Orbit.Ring(FVector2D(Hub), 560.0f, WithAlpha(Gold, 0.08f), 26.0f, 128);
 	}
 	for (int32 Stripe = 0; Stripe < 14; ++Stripe)
 	{
 		const float X = FMath::Fmod(Stripe * 173.0f + T * (90.0f + Stripe * 13.0f), 2100.0f) - 250.0f;
-		Sides.Box(X, -60.0f, 1.5f + Stripe % 3, 1020.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.02f + (Stripe % 4) * 0.008f));
+		Sides.Box(X, -60.0f, 1.5f + Stripe % 3, PageH + 120.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.02f + (Stripe % 4) * 0.008f));
 	}
 
 	for (int32 Index = 0; Index < Count; ++Index)
@@ -299,10 +365,13 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	if (FooterIn > 0.0f && !Info.Footer.IsEmpty())
 	{
 		const FPainter Band{Design, OutDrawElements, LayerId + 3, FooterIn};
-		Band.Box(-1200.0f, 772.0f, 4000.0f, 70.0f, WithAlpha(Ink, 0.82f));
-		Band.Box(-1200.0f, 772.0f, 4000.0f, 3.0f, Gold);
+		// (Upright: at the foot of the page.)
+		const float BandY = bUpright ? 1470.0f : 772.0f;
+		Band.Box(-1200.0f, BandY, 4000.0f, 70.0f, WithAlpha(Ink, 0.82f));
+		Band.Box(-1200.0f, BandY, 4000.0f, 3.0f, Gold);
 		const FPainter Rules{Design, OutDrawElements, LayerId + 5, FooterIn};
-		Rules.Text(Info.Footer, 800.0f, 788.0f + (1.0f - FooterIn) * 12.0f, 28.0f, Paper, ETextAlign::Center, TEXT("Bold"));
+		Rules.Text(Info.Footer, PageW * 0.5f, BandY + 16.0f + (1.0f - FooterIn) * 12.0f, FitSize(Info.Footer, TEXT("Bold"), 28.0f, PageW - 80.0f), Paper,
+			ETextAlign::Center, TEXT("Bold"));
 	}
 
 	// VS slams down, flashes and sends rings out.
@@ -311,16 +380,16 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		const float Since = T - VersusLandsAt;
 		const float Land = EaseOut(Since / 0.16f);
 		const float Scale = FMath::Lerp(2.6f, 1.0f, Land) * (1.0f + 0.025f * FMath::Sin(Since * 5.0f) * FMath::Clamp(Since - 0.3f, 0.0f, 1.0f));
-		const FPainter Emblem{MakeEmblem(Design, FVector2f(800.0f, 430.0f), Scale), OutDrawElements, LayerId + 7,
+		const FPainter Emblem{MakeEmblem(Design, Hub, Scale), OutDrawElements, LayerId + 7,
 			FMath::Clamp(Since / 0.08f, 0.0f, 1.0f)};
 		PaintVersusLetters(Emblem, 210.0f);
 		const float Wave = Since / 0.75f;
 		if (Wave < 1.0f)
 		{
 			const FPainter Rings{Design, OutDrawElements, LayerId + 6, 1.0f - Wave};
-			Rings.Ring(FVector2D(800.0, 430.0), 90.0f + 900.0f * EaseOut(Wave), Gold, 3.0f + 10.0f * (1.0f - Wave), 96);
-			Rings.Ring(FVector2D(800.0, 430.0), 50.0f + 620.0f * EaseOut(Wave), Ice, 5.0f, 96);
-			Rings.Ring(FVector2D(800.0, 430.0), 30.0f + 420.0f * EaseOut(Wave), Fire, 5.0f, 96);
+			Rings.Ring(FVector2D(Hub), 90.0f + 900.0f * EaseOut(Wave), Gold, 3.0f + 10.0f * (1.0f - Wave), 96);
+			Rings.Ring(FVector2D(Hub), 50.0f + 620.0f * EaseOut(Wave), Ice, 5.0f, 96);
+			Rings.Ring(FVector2D(Hub), 30.0f + 420.0f * EaseOut(Wave), Fire, 5.0f, 96);
 		}
 		const float Flash = 1.0f - Since / 0.3f;
 		if (Flash > 0.0f)
@@ -334,11 +403,13 @@ int32 SChaosImpactVersusCard::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	if (T > IntroSeconds - 0.2f)
 	{
 		const FPainter Loading{Design, OutDrawElements, LayerId + 5, FMath::Clamp((T - IntroSeconds + 0.2f) / 0.2f, 0.0f, 1.0f)};
-		Loading.Text(TEXT("LOADING"), 1440.0f, 856.0f, 20.0f, Muted, ETextAlign::Right, TEXT("BlackItalic"));
+		const float DotsX = PageW - 160.0f;
+		const float DotsY = PageH - 44.0f;
+		Loading.Text(TEXT("LOADING"), DotsX, DotsY - 14.0f, bUpright ? 26.0f : 20.0f, Muted, ETextAlign::Right, TEXT("BlackItalic"));
 		for (int32 Dot = 0; Dot < 3; ++Dot)
 		{
 			const float Lit = 0.5f + 0.5f * FMath::Sin(T * 7.0f - Dot * 0.9f);
-			Loading.Box(1452.0f + Dot * 16.0f, 870.0f, 9.0f, 9.0f, WithAlpha(Gold, 0.35f + 0.65f * Lit));
+			Loading.Box(DotsX + 12.0f + Dot * 16.0f, DotsY, 9.0f, 9.0f, WithAlpha(Gold, 0.35f + 0.65f * Lit));
 		}
 	}
 	return LayerId + 11;
@@ -427,7 +498,7 @@ int32 SChaosImpactVersusReveal::OnPaint(const FPaintArgs& Args, const FGeometry&
 	if (EmblemAlpha > 0.0f)
 	{
 		const float Pulse = 1.0f + 0.025f * FMath::Sin(static_cast<float>(Now - CreatedAt) * 5.0f);
-		const FPainter Emblem{MakeEmblem(Design, FVector2f(800.0f, 430.0f), Pulse * (1.0f + Open * 1.4f)), OutDrawElements,
+		const FPainter Emblem{MakeEmblem(Design, VersusCentre(IsUprightCard(AllottedGeometry)), Pulse * (1.0f + Open * 1.4f)), OutDrawElements,
 			LayerId + 2, EmblemAlpha};
 		PaintVersusLetters(Emblem, 210.0f);
 	}

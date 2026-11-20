@@ -9,6 +9,9 @@
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactMatchTypes.h"
 #include "ChaosImpactEasyControls.h"
+#include "ChaosImpactTouchControls.h"
+#include "ChaosImpactFusion.h"
+#include "ChaosImpactFusionEffects.h"
 #include "InputCoreTypes.h"
 #include "ChaosImpactCharacter.generated.h"
 
@@ -119,12 +122,43 @@ public:
 	virtual bool HandleEasyPointerKey(const FKey& Key, EInputEvent Event);
 	virtual bool IsPointerOverGameplayUI() const;
 	void ResetEasyControls();
+	/** スマホ版: this player plays by touch (a phone, or -CITouch on a PC). */
+	bool IsTouchControlled() const;
+	/**
+	 * スマホ版を縦に持っているとき: 0 (横・正方形) .. 1 (9:16 より細い). The camera then keeps its width (not its height),
+	 * a little narrower and further back, so the field is not seen through a slit.
+	 */
+	float GetUprightViewBlend() const;
+	/** The knockout shards follow the character (while they fly) or stay still in the world (hidden: no per-frame updates). */
+	void SetEliminationPiecesFollow(bool bFollow);
+	/** (Measuring: this player's in-play HUD.) */
+	class UUserWidget* GetChargeWidgetForTests() const;
+	static constexpr float UprightFieldOfView = 74.0f;
+	static constexpr float UprightArmScale = 1.22f;
+	/** スマホ版: the left thumb's stick as drawn (screen pixels), while it is down. */
+	bool GetTouchStick(FVector2D& OutAnchor, FVector2D& OutThumb) const;
+	/** スマホ版: the fingers' last frame (the HUD draws the buttons held, the stick, the throw's drag), and the style. */
+	const FChaosImpactTouchFrame& GetLastTouchFrame() const { return LastTouchFrame; }
+	/** The placing of the controls and the HUD in use now (設定 → ボタン・画面の配置, for this kind of play). */
+	const FChaosImpactTouchCustom& GetTouchCustom() const { return TouchGestures.Custom; }
+	bool IsTouchSwapShown() const { return TouchGestures.bSwapShown; }
+	bool IsTouchFuseShown() const { return TouchGestures.bFuseShown; }
+	bool IsTouchAimStickShown() const { return TouchGestures.bAimStickShown; }
+	bool IsTouchButtonStyle() const { return TouchGestures.bButtons; }
+	/** 片手モード (the third touch style). */
+	bool IsTouchOneHand() const { return TouchGestures.bOneHand && !TouchGestures.bButtons; }
+	bool IsTouchLeftHanded() const { return TouchGestures.bLeftHanded; }
+	/** Tests: fingers as if on the screen (used instead of the real ones until cleared). */
+	void SetTouchForTests(const TArray<FVector2D>& Down) { bTouchForTests = true; TouchForTests = Down; }
+	void ClearTouchForTests() { bTouchForTests = false; TouchForTests.Reset(); }
 	bool HasClickMoveGoal() const { return bClickMoveActive; }
 	FVector GetClickMoveGoal() const { return ClickMoveGoal; }
 	bool WasClickMoveRejected() const { return bClickMoveRejected; }
 	void RecoverStaminaFromBallHit();
 	/** Called on the eliminating character so its own HUD can play the KO banner. */
 	void NotifyOpponentEliminated(const FString& VictimName);
+	/** A hit that did not knock out: the HIT card at the top right (bDealt: this player hit Name; else Name hit them). */
+	void NotifyHitFeed(bool bDealt, const FString& Name);
 	/** Rumbles this character's controller when it is played on this machine (see AChaosImpactPlayerController::PlayRumble). */
 	void PlayControllerRumble(float Small, float Big, float Seconds, float DelaySeconds = 0.0f) const;
 	bool TryPickupBall(AChaosImpactBall* Ball);
@@ -140,6 +174,23 @@ public:
 	uint16 GetCarriedBallTypesPacked() const { return CarriedBallTypes; }
 	/** Swaps the two carried balls so the left-hand ball is thrown next. Needs two balls in hand. */
 	virtual void RequestBallSwap();
+	/** 合体ボール (prototype): the two balls in hand can be joined now (training, an online room's lobby; never a match). */
+	bool CanFuseBalls() const;
+	/** The two balls in hand are joined: the next throw throws both as one. */
+	bool AreBallsFused() const { return bBallsFused; }
+	/** 合体 with a ノヴァ riding along on the last throw: how big it was charged (its blast's scale; 0: none). */
+	float GetFusedNovaScale() const { return FusedNovaScale; }
+	/** Any machine: a fused snowball with a black hole in it, rolled along (重力雪玉): where it draws people in from. */
+	bool GetFusedRollPull(FVector& OutCenter, float& OutRadius) const;
+	/** The 合体 button: joins the two balls in hand (the one that flies goes in front), or parts them again. */
+	void RequestBallFusion();
+	/** Tests: these two in hand, nothing else (the server's / standalone). */
+	void GiveBallsForTests(EChaosImpactBallType Front, EChaosImpactBallType Back);
+	/** Tests: throws what is in hand now along Aim, as a released charge would (online, a guest's goes to the host as theirs do). */
+	bool ThrowForTests(const FVector& Aim, float ChargeAlpha);
+	/** Tests, online: the host puts these two in this guest's hands (nothing in a shipping build). */
+	UFUNCTION(Server, Reliable)
+	void ServerGiveBallsForTests(EChaosImpactBallType Front, EChaosImpactBallType Back);
 	/** 訓練場's filming: this player's aim and actions come from the script, not the keys and the mouse. */
 	void SetDojoScripted(bool bOn) { bDevAutoInput = bOn; }
 	/** 訓練場: how far the camera looks ahead of this player, toward the lesson's goals (zero: on the player). */
@@ -228,6 +279,12 @@ public:
 	double GetLastDamagedAt() const { return LastDamagedAt; }
 	/** Blown off the feet by a blast (applied on whichever machine moves this character). */
 	void ApplyBlastKnockback(const FVector& Velocity);
+	/**
+	 * Not moved about by anything just now (a boss in the middle of an attack): winds, hooks, pulls, swaps, blasts, ice and
+	 * capture all pass it by; hits still hurt. Whatever had hold of it lets go (ShakeOffMoveEffects).
+	 */
+	virtual bool IsMoveProof() const { return false; }
+	void ShakeOffMoveEffects();
 	/** A blast nearby shakes this player's camera (Strength 0-1, fading over Seconds). */
 	void AddCameraShake(float Strength, float Seconds);
 	/** Name drawn above this character: CPUs are "CPU1", "CPU2"..., players use their room or local name. */
@@ -297,6 +354,8 @@ public:
 	void RequestAIDash(const FVector& Direction);
 	/** Freezes only character actions; the world and physics keep ticking. */
 	void SetTrainingMenuFrozen(bool bFrozen);
+	/** A scene (登場ムービー, 会話) over the game: this player's HUD out of sight while it plays (0..1 shown). */
+	void SetSceneHudShown(float Shown);
 	/** Server-only royale transitions; do not teleport, pause, cancel actions or clear in-flight balls. */
 	void PrepareBattleSuddenDeath();
 	void EliminateFromBattleRoyale();
@@ -364,8 +423,27 @@ public:
 	void LoseHealthToStage(const float Amount) { Health = FMath::Clamp(Health - Amount, 0.0f, MaxHealth); OnPlayerHit(Health, Amount); ForceNetUpdate(); }
 	/** Server: back to full health (a stage starting the player over). */
 	void RefillHealth() { Health = MaxHealth; ForceNetUpdate(); }
+	/** Server: Amount back (never over the maximum); what was really won back. */
+	float RestoreHealth(const float Amount)
+	{
+		const float Before = Health;
+		Health = FMath::Clamp(Health + FMath::Max(Amount, 0.0f), 0.0f, MaxHealth);
+		ForceNetUpdate();
+		return Health - Before;
+	}
 	/** A stage that wants a wider view (the crane yard's long hops): the top-down camera's distance times this. */
 	void SetStageCameraScale(const float Scale) { StageCameraScale = FMath::Max(Scale, 0.1f); }
+	/**
+	 * A stage's own overhead view (the final boss's car rush, 2026-11-19): straight down over Center with HalfExtent all
+	 * round in view, as a nova's aim shows the stage; off: the usual camera.
+	 */
+	void SetStageOverheadView(const bool bOn, const FVector& Center = FVector::ZeroVector, const float HalfExtent = 2400.0f)
+	{
+		bStageOverhead = bOn;
+		StageOverheadCenter = Center;
+		StageOverheadHalf = HalfExtent;
+	}
+	bool IsStageOverheadView() const { return bStageOverhead; }
 	/** Flying to its own anchor on its chain (where this character is moved). */
 	bool IsAnchorZipping() const { return bAnchorZipping; }
 	/** Every machine: flying along its anchor's line now (the trail shows; it rams whoever it meets). */
@@ -374,6 +452,8 @@ public:
 	bool TryAnchorRam(AChaosImpactCharacter* Victim, bool bReported);
 	/** How far past the flyer's body a ram reaches (cm). */
 	static constexpr float AnchorRamReach = 40.0f;
+	/** This flyer's ram reach now (雪玉アンカー: wider). */
+	float GetAnchorRamReach() const;
 	/** Where the chain of this character's hook starts on this screen (the right palm). False when not drawn. */
 	bool GetHookHandLocation(FVector& OutLocation) const;
 	/** Client: this player's own screen saw a hook catch it; the server checks and applies the hit. */
@@ -498,7 +578,7 @@ protected:
 	void ServerStartCharge();
 	UFUNCTION(Server, Reliable)
 	void ServerReleaseThrow(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
-		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget, uint8 Sequence);
+		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget, uint8 Sequence, bool bFused);
 	/**
 	 * The same throw sent beside it on the quick way (it may be lost; the reliable one above is resent, a round trip
 	 * later on a lossy line). Whichever arrives first is the throw: this one only when it is the next in order and the
@@ -506,9 +586,10 @@ protected:
 	 */
 	UFUNCTION(Server, Unreliable)
 	void ServerReleaseThrowEarly(float ChargeAlpha, FVector_NetQuantizeNormal Aim, FVector_NetQuantize ClientLocation,
-		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget, uint8 Sequence, uint8 ExpectedCount, uint8 ExpectedType);
+		FVector_NetQuantize ClientNovaTarget, bool bHasClientNovaTarget, uint8 Sequence, uint8 ExpectedCount, uint8 ExpectedType,
+		bool bFused);
 	void HandleReleaseThrow(float ChargeAlpha, const FVector& Aim, const FVector& ClientLocation, const FVector& ClientNovaTarget,
-		bool bHasClientNovaTarget);
+		bool bHasClientNovaTarget, bool bFused);
 	/** The owner's machine: the number of its last throw. The host: the last one carried out (0: none yet). */
 	uint8 ThrowSequenceSent = 0;
 	uint8 ThrowSequenceDone = 0;
@@ -540,6 +621,8 @@ protected:
 	void ClientRespawned();
 	UFUNCTION(Client, Reliable)
 	void ClientShowKnockout(const FString& VictimName);
+	UFUNCTION(Client, Unreliable)
+	void ClientHitFeed(bool bDealt, const FString& Name);
 	UFUNCTION(Server, Reliable)
 	void ServerReportBallHit(AChaosImpactBall* Ball, FVector_NetQuantize HitLocation);
 	/** The same report on the quick way (it may be lost): a ball's hit is counted once, whichever arrives first. */
@@ -564,6 +647,11 @@ protected:
 	void ClientBallCountReset(int32 ServerBallCount, uint16 ServerBallTypes);
 	UFUNCTION(Server, Reliable)
 	void ServerSwapBalls();
+	/** The owner joined or parted its balls (for everyone else's screen; the throw itself says whether it was fused). */
+	UFUNCTION(Server, Reliable)
+	void ServerSetBallsFused(bool bFused);
+	UFUNCTION()
+	void OnRep_BallsFused();
 	UFUNCTION(Server, Reliable)
 	void ServerDropBall();
 	/** A throw charge this player cancelled on their own screen. */
@@ -710,6 +798,30 @@ protected:
 	/** EChaosImpactBallType per carried slot, packed by ChaosImpactBallTypes::Pack; slot 0 is thrown first. */
 	UPROPERTY(VisibleInstanceOnly, ReplicatedUsing=OnRep_CarriedBallCount, Category="Chaos Impact|Ball Inventory")
 	uint16 CarriedBallTypes = 0;
+
+	/**
+	 * 合体ボール: the two balls in hand are joined (slot 0 flies, slot 1 rides along). The owner's screen leads (its throw
+	 * says whether it was fused); everyone else is told for the look in the hands.
+	 */
+	UPROPERTY(ReplicatedUsing=OnRep_BallsFused)
+	bool bBallsFused = false;
+	/** The two in hand, as they are, could be joined (wherever this is). */
+	bool IsFusionPairHeld() const;
+	/** Joins or parts them on this machine (and tells the server, from the owner's). bThrown: parted by the throw. */
+	void SetBallsFused(bool bFused, bool bThrown);
+	/** This machine's part: the sounds, the HUD's parting, the hands' look. */
+	void OnBallsFusedChanged(bool bThrown);
+	/** Each frame while joined: the left ball drawn into the right, the flash as they meet, then the fused look. */
+	void UpdateFusionPresentation();
+	double FusionJoinedAt = -100.0;
+	bool bFusionFlashed = false;
+	float FusedNovaScale = 0.0f;
+	/** Server: a fused ノヴァ was being charged last frame (特異点ノヴァ's pull, 守護ノヴァ's walls). */
+	bool bFusedNovaCharging = false;
+	/** Server: a fused snowball rolled along carries what rides along (溶岩玉's fires, 霧の雪玉's smoke…). */
+	ChaosImpactFusion::FFusionCarry RollCarry;
+	double RollCarryFrom = 0.0;
+	ChaosImpactFusion::FFusionLook HeldFusionLook;
 
 	/** Set by the game mode when a CPU is spawned, so every machine can label it. */
 	UPROPERTY(Replicated)
@@ -899,6 +1011,9 @@ protected:
 	double NextNovaTargetSendAt = 0.0;
 	/** This player's camera drawn back, and moved toward where the nova will land, until a while after the throw. */
 	float NovaCameraExtra = 0.0f;
+	bool bStageOverhead = false;
+	FVector StageOverheadCenter = FVector::ZeroVector;
+	float StageOverheadHalf = 2400.0f;
 	FVector NovaCameraLead = FVector::ZeroVector;
 	double NovaCameraHoldUntil = 0.0;
 	FRotator SavedCameraBoomRotation = FRotator(-60.0f, 0.0f, 0.0f);
@@ -1197,6 +1312,8 @@ protected:
 	TWeakObjectPtr<AChaosImpactHook> ShownHook;
 	/** Its own anchor's flight: the anchor, from where, how long so far and in all; the last one flown (not again). */
 	TWeakObjectPtr<AChaosImpactHook> ZipHook;
+	/** 光の跳躍: this flight goes through a wall. */
+	bool bZipThrough = false;
 	TWeakObjectPtr<AChaosImpactHook> ZipDoneHook;
 	bool bAnchorZipping = false;
 	bool bZipToWall = false;
@@ -1525,9 +1642,42 @@ protected:
 	bool bMouseChargeActive = false;
 	bool bWasMouseDownLastTick = false;
 	/** Each bound control's state last frame, to act once per press. */
-	bool BoundActionHeld[16] = {};
+	bool BoundActionHeld[32] = {};
 	/** Reads the player's own controls (the settings screen's) and acts on them; every frame for a local player. */
 	void UpdateBoundControls();
+	/** スマホ版: the fingers this frame, acted on (false when this player does not play by touch). */
+	bool UpdateTouchControls(const APlayerController* PlayerController, double Now);
+	/** Who the right thumb's tap or undragged charge throws at: the nearest opponent (else ahead). */
+	FVector GetTouchAutoAim() const;
+	FChaosImpactTouchGestures TouchGestures;
+	FChaosImpactTouchFrame LastTouchFrame;
+	bool bTouchAimActive = false;
+	bool bTouchAimDragged = false;
+	FVector TouchAimWorld = FVector::ForwardVector;
+	/**
+	 * スマホ版: the way the 向き stick last turned this player, kept after it is let go (walking then sidesteps instead of
+	 * turning round) until the stick turns them again or a throw goes another way. Not set: faced the way they walk.
+	 */
+	bool bTouchFacingHeld = false;
+	FVector TouchHeldFacing = FVector::ForwardVector;
+	bool bTouchQuickRelease = false;
+	/**
+	 * 片手モード: the thumb off and standing still, the ball charges by itself (bOneHandCharging) at whoever is near and
+	 * goes when full (or when the thumb comes back: that tap then throws nothing more).
+	 */
+	void UpdateOneHandThrow(const struct FChaosImpactTouchFrame& Frame, double Now);
+	/** Whoever is nearest within Reach (bLead: where they will be when the ball gets there): the way to them. */
+	bool FindTouchTarget(FVector& OutWay, float Reach, bool bLead) const;
+	bool bOneHandCharging = false;
+	bool bOneHandSkipTap = false;
+	bool bOneHandThumbWasDown = false;
+	double OneHandStillSince = 0.0;
+	double OneHandFullAt = -1.0;
+	static constexpr float OneHandReach = 2600.0f;
+	static constexpr double OneHandChargeDelay = 0.3;
+	double TouchJumpUntil = -1.0;
+	bool bTouchForTests = false;
+	TArray<FVector2D> TouchForTests;
 	void UpdateClickMovement();
 	void UpdateHeldMouseMovement();
 	void RequestDirectionalDash(const FVector& Direction);
@@ -1548,6 +1698,9 @@ protected:
 	double ClickProgressAt = 0.0;
 	bool bTrainingMenuFrozen = false;
 	bool bMapWalker = false;
+	/** スマホ版の world map: a finger dragged on the left of the screen walks (a stick where it went down). */
+	bool bMapDragDown = false;
+	FVector2D MapDragOrigin = FVector2D::ZeroVector;
 	bool bExploration = false;
 	float ExplorationSpeed = 1.0f;
 	bool bTrainingMenuCameraActive = false;

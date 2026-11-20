@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -105,6 +105,12 @@ class AChaosImpactPodiumStage : public AActor
 
 public:
 	AChaosImpactPodiumStage();
+	/** Films every frame (or not: the picture holds still and costs nothing). */
+	void SetFilming(bool bFilm);
+	/** スマホ版: one picture now (filmed every other frame by the results view). */
+	void FilmOnce();
+	bool IsFilming() const { return bFilming; }
+	bool bFilming = true;
 	static constexpr int32 PictureWidth = 1920;
 	static constexpr int32 PictureHeight = 1080;
 
@@ -262,6 +268,13 @@ public:
 	int32 GetGraphFocus() const { return GraphFocus; }
 	/** Where a row of the numbers is (in the 1600 x 900 design space), and the arrow from a tab to the other. */
 	static FSlateRect GetStatsRowRect(int32 Index, int32 Count);
+	/**
+	 * スマホ版 upright (a 900 x 1600 plan): the numbers' table (as laid out sideways) scaled and moved to the top, the graph
+	 * under it; where each goes (scale, then offset), for a results table of Count rows.
+	 */
+	static void GetUprightSpaces(int32 Count, float& OutTableScale, FVector2f& OutTableOffset, float& OutGraphScale, FVector2f& OutGraphOffset);
+	/** A rect of the sideways table, upright. */
+	static FSlateRect ToUprightTable(const FSlateRect& Rect, int32 Count);
 	static FSlateRect GetTabArrowRect(int32 Tab);
 	/** Online: this machine leaves its results for the lobby. */
 	void Leave();
@@ -282,7 +295,8 @@ private:
 	void Start(const AChaosImpactGameState* Match, APlayerController* Owner);
 	int32 PaintPodiumPage(const FGeometry& Design, const FGeometry& Allotted, FSlateWindowElementList& Elements, int32 Layer) const;
 	int32 PaintStatsPage(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
-	int32 PaintNumbersTab(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Alpha, float Slide) const;
+	/** Table: where the title and the table are drawn; Graph: the graph (the same space sideways). */
+	int32 PaintNumbersTab(const FGeometry& Table, const FGeometry& Graph, FSlateWindowElementList& Elements, int32 Layer, float Alpha, float Slide) const;
 	int32 PaintAwardsTab(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Alpha, float Slide) const;
 	/**
 	 * ランダムマッチ: this player's rating for the game (集計中 / the count from before to after with the change / 計測中 /
@@ -311,6 +325,8 @@ private:
 	bool bLeft = false;
 	/** The final numbers have been taken again (they arrive with FINISH). */
 	bool bRecaptured = false;
+	/** スマホ版: the podium filmed every other frame. */
+	int32 PodiumFrame = 0;
 	/** A ランダムマッチ (1v1 or 8 players): the rating card is shown. */
 	bool bRated = false;
 	TWeakObjectPtr<APlayerController> RatedOwner;

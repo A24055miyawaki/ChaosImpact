@@ -7,7 +7,7 @@
 #include "ChaosImpactBallSpawner.h"
 #include "ChaosImpactTrainingArena.h"
 #include "ChaosImpactTrainingTarget.h"
-#include "JoyShockBlueprintLibrary.h"
+#include "ChaosImpactJoyShock.h"
 #include "ChaosImpactCPUController.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"

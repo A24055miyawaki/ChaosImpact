@@ -1,4 +1,5 @@
-#include "ChaosImpactMatchAnnouncerWidget.h"
+﻿#include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "ChaosImpactMusic.h"
 #include "ChaosImpactParty.h"
 #include "ChaosImpactPlayerController.h"
@@ -8,6 +9,7 @@
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactChargeWidget.h"
+#include "ChaosImpactTouchControls.h"
 #include "ChaosImpactGameViewportClient.h"
 #include "ChaosImpactCrashBall.h"
 #include "EngineUtils.h"
@@ -207,6 +209,27 @@ void UChaosImpactMatchAnnouncerWidget::UpdateSounds()
 	}
 }
 
+void UChaosImpactMatchAnnouncerWidget::PaintClockSlab(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, const int32 BaseLayer,
+	const FString& Text, const FLinearColor& TextColor, const float BladeFill, const ChaosImpactPaint::FHudFill& BladeStyle, const bool bHurry)
+{
+	using namespace ChaosImpactPaint;
+	// The clock: a broken-edged slab at the top with the time standing out on it and a blade under it of the time left.
+	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
+	const FPainter ClockBase{TopCenter, OutDrawElements, BaseLayer + 1};
+	const FPainter Slab = HudAbove(ClockBase);
+	HudShard(Slab, {At(-122.0f, 4.0f), At(124.0f, 4.0f), At(142.0f, 32.0f), At(110.0f, 78.0f),
+		At(-106.0f, 80.0f), At(-140.0f, 36.0f)}, bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f),
+		FLinearColor(0.12f, 0.01f, 0.02f, 0.96f)) : NightFill, 4.0f, FVector2D(7.0, 8.0));
+	const FPainter OnSlab = HudAbove(Slab);
+	HudStroke(OnSlab, {At(-119.0f, 8.0f), At(122.0f, 8.0f), At(137.0f, 32.0f)}, bHurry ? FireFill.Top : IceFill.Middle, 3.0f);
+	const TArray<FVector2D> Blade{At(-86.0f, 62.0f), At(80.0f, 62.0f), At(94.0f, 66.0f), At(80.0f, 70.0f),
+		At(-90.0f, 70.0f)};
+	HudPoly(OnSlab, HudInflate(Blade, 2.0f), SolidFill(Navy), 1);
+	HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + 184.0f * FMath::Clamp(BladeFill, 0.0f, 1.0f), false, true), BladeStyle, 2);
+	const FPainter Digits{MakeSkewed(TopCenter, -120.0f, 2.0f, 240.0f, 66.0f, -0.12f), OutDrawElements, BaseLayer + 9};
+	HudText3D(Digits, Text, 120.0f, -6.0f, 46.0f, TextColor, ETextAlign::Center);
+}
+
 void UChaosImpactMatchAnnouncerWidget::PaintCrownPanel(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements,
 	const int32 BaseLayer, const AChaosImpactGameState& Match, const double ServerNow, const float Time) const
 {
@@ -387,6 +410,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIAnnouncerPaint);
 	using namespace ChaosImpactPaint;
 
 	int32 BaseLayer = Super::NativePaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId,
@@ -446,7 +470,9 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 	}
 	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.42f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
 	const FGeometry Center = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.5f, S);
-	const FGeometry TopCenter = MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, S);
+	// (スマホ版: the clock and the scoreboards where the player put them, 設定 → ボタン・画面の配置.)
+	const FGeometry TopCenter = MakeAnchor(UChaosImpactChargeWidget::MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Match),
+		Size.X * 0.5f, 0.0f, S);
 	const double ServerNow = Match->GetServerWorldTimeSeconds();
 	const bool bTeams = Match->IsTeamBattle();
 
@@ -480,7 +506,26 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		const FGeometry WordSpace = MakeSkewed(Center, -800.0f, -96.0f, 1600.0f, 120.0f, 0.0f,
 			1.0f + 0.5f * FMath::Exp(-10.0f * FMath::Max(0.0f, Elapsed - 0.1f)));
 		const FPainter Word{WordSpace, OutDrawElements, BaseLayer + 2, WordIn * (1.0f - BandOut)};
-		Word.Text(TEXT("試合を開始します"), 800.0f, 0.0f, 84.0f, Paper, ETextAlign::Center, TEXT("Black"), 5.0f, Ink);
+		if (Match->Matchmade == EChaosImpactMatchmade::Random)
+		{
+			// ランダムマッチ: the rule drawn for this game, and what wins it, before the stage opens.
+			const FChaosImpactMatchRules& Rules = Match->Rules;
+			const FString RuleName = Rules.IsRubyRush() ? TEXT("ルビーラッシュ") : Rules.IsCrownKeep() ? TEXT("クラウンキープ")
+				: TEXT("個人戦");
+			const FString RuleHow = Rules.IsRubyRush() ? TEXT("ルビーを一番多く集めた人の勝ち")
+				: Rules.IsCrownKeep() ? FString::Printf(TEXT("王冠を合計%dカウント持てば勝ち"), ChaosImpactMatch::CrownGoalCounts)
+				: TEXT("ポイントを一番かせいだ人の勝ち");
+			const FPainter Above{Center, OutDrawElements, BaseLayer + 2, WordIn * (1.0f - BandOut)};
+			Above.Text(TEXT("今回のルール"), 0.0f, -190.0f, 34.0f, Gold, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+			Word.Text(RuleName, 800.0f, 0.0f, FMath::Min(84.0f, HudFit(RuleName, 84.0f, 1500.0f, TEXT("Black"))), Paper,
+				ETextAlign::Center, TEXT("Black"), 5.0f, Ink);
+			Above.Text(RuleHow, 0.0f, 150.0f, FMath::Min(30.0f, HudFit(RuleHow, 30.0f, 1400.0f, TEXT("Bold"))), Paper,
+				ETextAlign::Center, TEXT("Bold"), 3.0f, Ink);
+		}
+		else
+		{
+			Word.Text(TEXT("試合を開始します"), 800.0f, 0.0f, 84.0f, Paper, ETextAlign::Center, TEXT("Black"), 5.0f, Ink);
+		}
 		const int32 Seconds = FMath::CeilToInt(Remaining);
 		if (Seconds > 0)
 		{
@@ -604,8 +649,10 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			// A tournament's match opening, as a match opens: bars top and bottom, the round's name in the opening's own
 			// type, and how it is won under it.
 			FString RoundName;
+			int32 ArenaStage = Match->Rules.StageIndex;
 			for (const FChaosImpactTournamentArena& Arena : Match->TournamentArenas)
 			{
+				ArenaStage = &Arena.Duel == View.Duel ? Arena.Stage : ArenaStage;
 				if (&Arena.Duel == View.Duel && Match->Tournament.Matches.IsValidIndex(Arena.Match))
 				{
 					// One match at a time: which of the round's matches this is (準決勝 第1試合); all at once: the round only.
@@ -645,7 +692,7 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 				const float Across = PaneSize.X / ViewScale - 80.0f;
 				const FString Goal = TEXT("相手を3回当てて倒せ！");
 				const FString Detail = FString::Printf(TEXT("%s ・ 1ラウンド%d秒 ・ %s"), *ChaosImpactMatch::DescribeRule(Match->Rules),
-					FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::GetDuelStageName());
+					FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::GetDuelStageName(ArenaStage));
 				Words.Text(RoundName, 0.0f, -172.0f + Rise, HudFit(RoundName, 76.0f, Across), Gold, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 				Words.Text(Goal, 0.0f, -78.0f + Rise, HudFit(Goal, 52.0f, Across), Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 				Words.Box(-150.0f * In, 14.0f + Rise, 300.0f * In, 2.0f, WithAlpha(Paper, 0.6f));
@@ -734,20 +781,9 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 		const bool bMinuteCall = Elapsed + Remaining > 61.0f && MinuteLeftAge >= 0.0f && MinuteLeftAge < 1.8f;
 		// The clock: a broken-edged slab at the top with the time standing out on it and a blade under it of the time
 		// left. The last ten seconds it turns red-hot.
-		const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
 		const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
 		const float Total = FMath::Max(Elapsed + Remaining, 1.0f);
 		const bool bHurry = Remaining <= 10.0f && !Match->Crash.bOvertime;
-		const FPainter ClockBase{TopCenter, OutDrawElements, BaseLayer + 1};
-		const FPainter Slab = HudAbove(ClockBase);
-		HudShard(Slab, {At(-122.0f, 4.0f), At(124.0f, 4.0f), At(142.0f, 32.0f), At(110.0f, 78.0f),
-			At(-106.0f, 80.0f), At(-140.0f, 36.0f)}, bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f),
-			FLinearColor(0.12f, 0.01f, 0.02f, 0.96f)) : NightFill, 4.0f, FVector2D(7.0, 8.0));
-		const FPainter OnSlab = HudAbove(Slab);
-		HudStroke(OnSlab, {At(-119.0f, 8.0f), At(122.0f, 8.0f), At(137.0f, 32.0f)}, bHurry ? FireFill.Top : IceFill.Middle, 3.0f);
-		const TArray<FVector2D> Blade{At(-86.0f, 62.0f), At(80.0f, 62.0f), At(94.0f, 66.0f), At(80.0f, 70.0f),
-			At(-90.0f, 70.0f)};
-		HudPoly(OnSlab, HudInflate(Blade, 2.0f), SolidFill(Navy), 1);
 		// クラッシュボール overtime: the blade is the overtime team's grace, refilled by each of its hits on the giant ball.
 		const bool bOvertime = Match->Rules.bCrashBall && Match->Crash.bOvertime;
 		const auto TeamFill = [](const int32 Team)
@@ -759,13 +795,10 @@ int32 UChaosImpactMatchAnnouncerWidget::NativePaint(const FPaintArgs& Args, cons
 			? 1.0f - static_cast<float>(ServerNow - FMath::Max(Match->Crash.OvertimeHitAt, Match->Crash.OvertimeStartedAt))
 				/ ChaosImpactMatch::CrashOvertimeGraceSeconds
 			: Remaining / Total;
-		HudPoly(HudAbove(OnSlab, 1), HudClip(Blade, -90.0f + 184.0f * FMath::Clamp(BladeFill, 0.0f, 1.0f), false, true),
-			bOvertime ? TeamFill(Match->Crash.OvertimeTeam) : bHurry ? FireFill : IceFill, 2);
-		const FPainter Digits{MakeSkewed(TopCenter, -120.0f, 2.0f, 240.0f, 66.0f, -0.12f), OutDrawElements,
-			BaseLayer + 9};
-		HudText3D(Digits, bOvertime ? FString(TEXT("延長")) : FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 120.0f, -6.0f, 46.0f,
+		PaintClockSlab(TopCenter, OutDrawElements, BaseLayer, bOvertime ? FString(TEXT("延長")) : FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60),
 			bOvertime ? FMath::Lerp(ChaosImpactMatch::GetTeamColor(Match->Crash.OvertimeTeam), Paper, 0.35f + 0.25f * FMath::Sin(Time * 9.0f))
-				: bHurry ? FireFill.Top : bMinuteCall ? Gold : Paper, ETextAlign::Center);
+				: bHurry ? FireFill.Top : bMinuteCall ? Gold : Paper,
+			BladeFill, bOvertime ? TeamFill(Match->Crash.OvertimeTeam) : bHurry ? FireFill : IceFill, bHurry);
 		if (Match->Rules.bCrashBall)
 		{
 			PaintCrashScoreboard(TopCenter, OutDrawElements, BaseLayer, *Match, ServerNow, Time);
@@ -902,26 +935,26 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
 	const FChaosImpactDuelState& Duel = PaintingDuel ? *PaintingDuel : Match.Duel;
 	const bool bLive = Duel.Step == EChaosImpactDuelStep::Fight || Duel.Step == EChaosImpactDuelStep::SuddenDeath;
-	const bool bSudden = Duel.Step == EChaosImpactDuelStep::SuddenDeath;
 	const float Remaining = Match.GetDuelStepRemaining(Duel);
-	const bool bHurry = bLive && Remaining <= 10.0f;
-	const int32 Seconds = Duel.Step == EChaosImpactDuelStep::RoundIntro || Duel.Step == EChaosImpactDuelStep::BallDraw
+	FDuelBoard Board;
+	Board.bSudden = Duel.Step == EChaosImpactDuelStep::SuddenDeath;
+	Board.bHurry = bLive && Remaining <= 10.0f;
+	Board.Round = Duel.Round;
+	Board.Seconds = Duel.Step == EChaosImpactDuelStep::RoundIntro || Duel.Step == EChaosImpactDuelStep::BallDraw
 		|| Duel.Step == EChaosImpactDuelStep::Opening
 		? FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds)
 		: bLive ? FMath::CeilToInt(Remaining) : 0;
-
-	// The round clock: a broken-edged slab, red-hot in the last seconds and in sudden death.
-	const FPainter Slab{TopCenter, OutDrawElements, BaseLayer + 1};
-	HudShard(Slab, {At(-112.0f, 4.0f), At(114.0f, 4.0f), At(130.0f, 34.0f), At(102.0f, 92.0f), At(-98.0f, 94.0f), At(-128.0f, 38.0f)},
-		bSudden || bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f), FLinearColor(0.12f, 0.01f, 0.02f, 0.96f)) : NightFill, 4.0f,
-		FVector2D(7.0, 8.0));
-	const FPainter OnSlab = HudAbove(Slab);
-	OnSlab.Text(bSudden ? FString(TEXT("サドンデス")) : FString::Printf(TEXT("ROUND %d"), FMath::Max(1, Duel.Round)), 0.0f, 9.0f, 15.0f,
-		bSudden ? FireFill.Top : WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Black"), 1.5f, Navy);
-	const float Pulse = bSudden ? 0.5f + 0.5f * FMath::Sin(Time * 9.0f) : 0.0f;
-	HudText3D(HudAbove(OnSlab), FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 0.0f, 28.0f, 44.0f,
-		bSudden ? FMath::Lerp(FireFill.Top, Paper, Pulse * 0.5f) : bHurry ? FireFill.Top : Paper, ETextAlign::Center);
-
+	Board.bShowBalls = Duel.Step != EChaosImpactDuelStep::BallDraw && Duel.Step != EChaosImpactDuelStep::Opening;
+	for (const int32 Pick : Duel.BallPicks)
+	{
+		Board.BallPicks.Add(Pick);
+	}
+	for (const int8 Result : Duel.RoundResults)
+	{
+		Board.RoundResults.Add(Result);
+	}
+	Board.SideColors[0] = DuelSideColor(0);
+	Board.SideColors[1] = DuelSideColor(1);
 	// The players either side: name, the rounds won (pips by the clock) and the health left.
 	const int32 LeftSide = GetDuelLeftSide(Match);
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -932,10 +965,74 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	for (int32 PlateIndex = 0; PlateIndex < 2; ++PlateIndex)
 	{
 		const int32 Side = PlateIndex == 0 ? LeftSide : 1 - LeftSide;
-		const float Dir = PlateIndex == 0 ? -1.0f : 1.0f;
 		const APlayerState* Member = Duel.Sides[Side].Get();
-		const FLinearColor Color = DuelSideColor(Side);
-		const bool bTookRound = Duel.Step == EChaosImpactDuelStep::RoundOver && Duel.RoundWinner == Side;
+		FDuelBoardSide& Plate = Board.Plates[PlateIndex];
+		Plate.Name = GetAnnouncerName(Member);
+		Plate.Color = DuelSideColor(Side);
+		Plate.bTookRound = Duel.Step == EChaosImpactDuelStep::RoundOver && Duel.RoundWinner == Side;
+		Plate.bYou = Side == OwnSide && !bShared;
+		Plate.Wins = Duel.Wins[Side];
+		const AChaosImpactCharacter* Character = Member ? Cast<AChaosImpactCharacter>(Member->GetPawn()) : nullptr;
+		Plate.Cells = Character ? FMath::Clamp(FMath::RoundToInt(Character->GetMaxHealth()), 1, 6) : 3;
+		Plate.Left = Character && !Character->IsEliminated() ? FMath::Clamp(FMath::CeilToInt(Character->GetHealth() - KINDA_SMALL_NUMBER), 0, Plate.Cells) : 0;
+	}
+	PaintDuelBoard(TopCenter, OutDrawElements, BaseLayer, Time, Board);
+	// Online: each one's connection, small, under the plate's outer foot (four bars and the round trip; the host has none).
+	for (int32 PlateIndex = 0; PlateIndex < 2; ++PlateIndex)
+	{
+		const int32 Side = PlateIndex == 0 ? LeftSide : 1 - LeftSide;
+		const AChaosImpactPlayerState* Line = Cast<AChaosImpactPlayerState>(Duel.Sides[Side].Get());
+		if (!Line || !Match.bOnlineRoom || Line->IsABot())
+		{
+			continue;
+		}
+		constexpr float Outer = 480.0f;
+		const float PingMs = Line->GetPingInMilliseconds();
+		const int32 Bars = Line->bHostMachine ? 4 : PingMs <= 0.0f ? 0 : PingMs <= 80.0f ? 4 : PingMs <= 160.0f ? 3 : PingMs <= 300.0f ? 2 : 1;
+		const FLinearColor LineColor = Bars >= 4 ? FLinearColor(0.2f, 0.95f, 0.45f) : Bars == 3 ? FLinearColor(0.65f, 0.95f, 0.3f)
+			: Bars == 2 ? Gold : Fire;
+		const float BarsX = PlateIndex == 0 ? -Outer + 6.0f : Outer - 50.0f;
+		const FPainter Meter{TopCenter, OutDrawElements, BaseLayer + 4};
+		for (int32 Bar = 0; Bar < 4; ++Bar)
+		{
+			const float BarHeight = 4.0f + Bar * 3.0f;
+			Meter.Box(BarsX + Bar * 6.0f, 102.0f - BarHeight, 4.0f, BarHeight, Bar < Bars ? WithAlpha(LineColor, 0.9f) : WithAlpha(Paper, 0.18f));
+		}
+		const FString LineText = Line->bHostMachine ? FString(TEXT("HOST")) : PingMs > 0.0f ? FString::Printf(TEXT("%dms"), FMath::RoundToInt(PingMs))
+			: FString(TEXT("--ms"));
+		Meter.Text(LineText, PlateIndex == 0 ? BarsX + 28.0f : BarsX - 4.0f, 89.0f, 12.0f, WithAlpha(LineColor, 0.9f),
+			PlateIndex == 0 ? ETextAlign::Left : ETextAlign::Right, TEXT("Bold"), 1.5f, Navy);
+	}
+	(void)At;
+}
+
+void UChaosImpactMatchAnnouncerWidget::PaintDuelBoard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, const int32 BaseLayer,
+	const float Time, const FDuelBoard& Board)
+{
+	using namespace ChaosImpactPaint;
+	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
+	const bool bSudden = Board.bSudden;
+	const bool bHurry = Board.bHurry;
+	const int32 Seconds = Board.Seconds;
+
+	// The round clock: a broken-edged slab, red-hot in the last seconds and in sudden death.
+	const FPainter Slab{TopCenter, OutDrawElements, BaseLayer + 1};
+	HudShard(Slab, {At(-112.0f, 4.0f), At(114.0f, 4.0f), At(130.0f, 34.0f), At(102.0f, 92.0f), At(-98.0f, 94.0f), At(-128.0f, 38.0f)},
+		bSudden || bHurry ? MakeFill(FLinearColor(0.5f, 0.06f, 0.04f, 0.96f), FLinearColor(0.12f, 0.01f, 0.02f, 0.96f)) : NightFill, 4.0f,
+		FVector2D(7.0, 8.0));
+	const FPainter OnSlab = HudAbove(Slab);
+	OnSlab.Text(bSudden ? FString(TEXT("サドンデス")) : FString::Printf(TEXT("ROUND %d"), FMath::Max(1, Board.Round)), 0.0f, 9.0f, 15.0f,
+		bSudden ? FireFill.Top : WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Black"), 1.5f, Navy);
+	const float Pulse = bSudden ? 0.5f + 0.5f * FMath::Sin(Time * 9.0f) : 0.0f;
+	HudText3D(HudAbove(OnSlab), FString::Printf(TEXT("%d:%02d"), Seconds / 60, Seconds % 60), 0.0f, 28.0f, 44.0f,
+		bSudden ? FMath::Lerp(FireFill.Top, Paper, Pulse * 0.5f) : bHurry ? FireFill.Top : Paper, ETextAlign::Center);
+
+	for (int32 PlateIndex = 0; PlateIndex < 2; ++PlateIndex)
+	{
+		const FDuelBoardSide& Side = Board.Plates[PlateIndex];
+		const float Dir = PlateIndex == 0 ? -1.0f : 1.0f;
+		const FLinearColor Color = Side.Color;
+		const bool bTookRound = Side.bTookRound;
 		// The plate, leaning away from the clock.
 		const float Inner = 140.0f;
 		const float Outer = 480.0f;
@@ -949,42 +1046,20 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 		const float NameX = Dir * (Outer - 24.0f);
 		const ETextAlign NameAlign = PlateIndex == 0 ? ETextAlign::Left : ETextAlign::Right;
 		// (Up to the round pips by the clock.)
-		const FString PlateName = GetAnnouncerName(Member);
-		Face.Text(PlateName, NameX, 14.0f, HudFit(PlateName, 22.0f, (Outer - 24.0f) - (Inner + 26.0f + (ChaosImpactMatch::DuelRoundsToWin - 1) * 34.0f + 13.0f + 12.0f)), Paper, NameAlign, TEXT("Black"), 2.0f, Navy);
-		if (Side == OwnSide && !bShared)
+		Face.Text(Side.Name, NameX, 14.0f, HudFit(Side.Name, 22.0f, (Outer - 24.0f) - (Inner + 26.0f + (ChaosImpactMatch::DuelRoundsToWin - 1) * 34.0f + 13.0f + 12.0f)),
+			Paper, NameAlign, TEXT("Black"), 2.0f, Navy);
+		if (Side.bYou)
 		{
 			const float TagX = PlateIndex == 0 ? NameX : NameX - 54.0f;
 			Face.Box(TagX, 46.0f, 54.0f, 22.0f, Ice);
 			Face.Text(TEXT("YOU"), TagX + 27.0f, 47.0f, 15.0f, Ink, ETextAlign::Center, TEXT("Black"));
 		}
-		// Online: their connection, small, under the plate's outer foot (four bars and the round trip; the host has none).
-		if (const AChaosImpactPlayerState* Line = Cast<AChaosImpactPlayerState>(Member); Line && Match.bOnlineRoom && !Line->IsABot())
-		{
-			const float PingMs = Line->GetPingInMilliseconds();
-			const int32 Bars = Line->bHostMachine ? 4 : PingMs <= 0.0f ? 0 : PingMs <= 80.0f ? 4 : PingMs <= 160.0f ? 3 : PingMs <= 300.0f ? 2 : 1;
-			const FLinearColor LineColor = Bars >= 4 ? FLinearColor(0.2f, 0.95f, 0.45f) : Bars == 3 ? FLinearColor(0.65f, 0.95f, 0.3f)
-				: Bars == 2 ? Gold : Fire;
-			const float BarsX = PlateIndex == 0 ? -Outer + 6.0f : Outer - 50.0f;
-			const FPainter Meter{TopCenter, OutDrawElements, BaseLayer + 4};
-			for (int32 Bar = 0; Bar < 4; ++Bar)
-			{
-				const float BarHeight = 4.0f + Bar * 3.0f;
-				Meter.Box(BarsX + Bar * 6.0f, 102.0f - BarHeight, 4.0f, BarHeight, Bar < Bars ? WithAlpha(LineColor, 0.9f) : WithAlpha(Paper, 0.18f));
-			}
-			const FString LineText = Line->bHostMachine ? FString(TEXT("HOST")) : PingMs > 0.0f ? FString::Printf(TEXT("%dms"), FMath::RoundToInt(PingMs))
-				: FString(TEXT("--ms"));
-			Meter.Text(LineText, PlateIndex == 0 ? BarsX + 28.0f : BarsX - 4.0f, 89.0f, 12.0f, WithAlpha(LineColor, 0.9f),
-				PlateIndex == 0 ? ETextAlign::Left : ETextAlign::Right, TEXT("Bold"), 1.5f, Navy);
-		}
-		// Health: three cells (the last one throbs red).
-		const AChaosImpactCharacter* Character = Member ? Cast<AChaosImpactCharacter>(Member->GetPawn()) : nullptr;
-		const int32 Cells = Character ? FMath::Clamp(FMath::RoundToInt(Character->GetMaxHealth()), 1, 6) : 3;
-		const int32 Left = Character && !Character->IsEliminated() ? FMath::Clamp(FMath::CeilToInt(Character->GetHealth() - KINDA_SMALL_NUMBER), 0, Cells) : 0;
-		for (int32 Cell = 0; Cell < Cells; ++Cell)
+		// Health: the cells (the last one throbs red).
+		for (int32 Cell = 0; Cell < Side.Cells; ++Cell)
 		{
 			const float CellX = PlateIndex == 0 ? -Outer + 96.0f + Cell * 40.0f : Outer - 96.0f - (Cell + 1) * 40.0f + 6.0f;
-			const bool bFull = Cell < Left;
-			const bool bLast = bFull && Left == 1;
+			const bool bFull = Cell < Side.Left;
+			const bool bLast = bFull && Side.Left == 1;
 			const FLinearColor CellColor = bLast ? FMath::Lerp(FireFill.Top, Paper, 0.5f + 0.5f * FMath::Sin(Time * 12.0f)) : Paper;
 			HudShard(Face, {At(CellX + 6.0f, 50.0f), At(CellX + 36.0f, 50.0f), At(CellX + 30.0f, 66.0f), At(CellX, 66.0f)},
 				bFull ? MakeFill(CellColor, FMath::Lerp(CellColor, Color, 0.6f)) : SolidFill(WithAlpha(Navy, 0.85f)), 1.5f, FVector2D(2.0, 2.0));
@@ -993,7 +1068,7 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 		for (int32 Pip = 0; Pip < ChaosImpactMatch::DuelRoundsToWin; ++Pip)
 		{
 			const FVector2D PipAt(Dir * (Inner + 26.0f + Pip * 34.0f), 44.0f);
-			const bool bWon = Pip < Duel.Wins[Side];
+			const bool bWon = Pip < Side.Wins;
 			const FPainter Gem = HudAbove(Face);
 			Gem.Disc(PipAt + FVector2D(2.0, 3.0), 13.0f, WithAlpha(Extrude, 0.9f));
 			Gem.Disc(PipAt, 13.0f, Navy);
@@ -1006,7 +1081,7 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	}
 
 	// Every special ball switched off (ボールスイッチ): three empty slots, each struck through.
-	if (Duel.Step != EChaosImpactDuelStep::BallDraw && Duel.Step != EChaosImpactDuelStep::Opening && Duel.BallPicks.IsEmpty())
+	if (Board.bShowBalls && Board.BallPicks.IsEmpty())
 	{
 		const FPainter Balls{TopCenter, OutDrawElements, BaseLayer + 4};
 		for (int32 Pick = 0; Pick < ChaosImpactMatch::DuelBallPicks; ++Pick)
@@ -1017,14 +1092,14 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 			HudAbove(Balls, 2).Line(BallAt + FVector2D(-6.0, 6.0), BallAt + FVector2D(6.0, -6.0), WithAlpha(Paper, 0.85f), 2.5f);
 		}
 	}
-	// The special balls of this match, small, at the outer ends of the plates' feet (once the slot has shown them).
-	if (Duel.Step != EChaosImpactDuelStep::BallDraw && Duel.Step != EChaosImpactDuelStep::Opening && !Duel.BallPicks.IsEmpty())
+	// The special balls of this match, small, under the clock (once the slot has shown them).
+	if (Board.bShowBalls && !Board.BallPicks.IsEmpty())
 	{
 		const FPainter Balls{TopCenter, OutDrawElements, BaseLayer + 4};
-		for (int32 Pick = 0; Pick < Duel.BallPicks.Num(); ++Pick)
+		for (int32 Pick = 0; Pick < Board.BallPicks.Num(); ++Pick)
 		{
-			const FVector2D BallAt((Pick - (Duel.BallPicks.Num() - 1) * 0.5f) * 26.0f, 128.0f);
-			const FLinearColor BallColor = ChaosImpactBallTypes::GetColor(static_cast<EChaosImpactBallType>(Duel.BallPicks[Pick]));
+			const FVector2D BallAt((Pick - (Board.BallPicks.Num() - 1) * 0.5f) * 26.0f, 128.0f);
+			const FLinearColor BallColor = ChaosImpactBallTypes::GetColor(static_cast<EChaosImpactBallType>(Board.BallPicks[Pick]));
 			Balls.Disc(BallAt + FVector2D(1.5, 2.0), 10.0f, WithAlpha(Extrude, 0.9f));
 			Balls.Disc(BallAt, 10.0f, Navy);
 			HudAbove(Balls, 1).Disc(BallAt, 7.5f, BallColor);
@@ -1033,16 +1108,21 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelScoreboard(const FGeometry& TopC
 	}
 
 	// Under the clock: how each round went (the winner's colour, grey for a drawn one).
-	const int32 Rounds = Duel.RoundResults.Num();
+	const int32 Rounds = Board.RoundResults.Num();
 	for (int32 Round = 0; Round < ChaosImpactMatch::DuelMaxRounds; ++Round)
 	{
 		const float X = (Round - (ChaosImpactMatch::DuelMaxRounds - 1) * 0.5f) * 26.0f;
 		const FPainter Mark{TopCenter, OutDrawElements, BaseLayer + 4};
 		const bool bPlayed = Round < Rounds;
-		const int32 Winner = bPlayed ? Duel.RoundResults[Round] : INDEX_NONE;
-		Mark.Box(X - 9.0f, 104.0f, 18.0f, 6.0f, !bPlayed ? WithAlpha(Paper, Round == Duel.Round - 1 ? 0.5f : 0.15f)
-			: Winner < 0 ? WithAlpha(Paper, 0.6f) : DuelSideColor(Winner));
+		const int32 Winner = bPlayed ? Board.RoundResults[Round] : INDEX_NONE;
+		Mark.Box(X - 9.0f, 104.0f, 18.0f, 6.0f, !bPlayed ? WithAlpha(Paper, Round == Board.Round - 1 ? 0.5f : 0.15f)
+			: Winner < 0 ? WithAlpha(Paper, 0.6f) : Board.SideColors[FMath::Clamp(Winner, 0, 1)]);
 	}
+}
+
+FLinearColor UChaosImpactMatchAnnouncerWidget::GetDuelSideColor(const int32 Side)
+{
+	return DuelSideColor(Side);
 }
 
 void UChaosImpactMatchAnnouncerWidget::PaintDuelBallSlot(const FGeometry& Center, FSlateWindowElementList& OutDrawElements,
@@ -1059,7 +1139,7 @@ void UChaosImpactMatchAnnouncerWidget::PaintDuelBallSlot(const FGeometry& Center
 	}
 	// The reels hold every kind that can be drawn (switched on in ボールスイッチ), in the same order as the draw itself.
 	TArray<EChaosImpactBallType> Pool;
-	for (int32 Type = 1; Type < ChaosImpactBallTypes::Count; ++Type)
+	for (int32 Type = 1; Type < ChaosImpactBallTypes::SharedCount; ++Type)
 	{
 		const EChaosImpactBallType Kind = static_cast<EChaosImpactBallType>(Type);
 		if (Kind != EChaosImpactBallType::Nova && Kind != EChaosImpactBallType::Prison && ChaosImpactBallSwitch::IsOn(Match.Rules, Kind))

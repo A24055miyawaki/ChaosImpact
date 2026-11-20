@@ -375,13 +375,13 @@ namespace
 			C.Lessons.Add(BallLesson(EBall::Swap, TEXT("x_swap"), TEXT("当てた相手と場所が入れ替わる"),
 				TEXT("スワップを当てて、CPUと入れ替わろう"), EGoal::SwapPlace, 2,
 				{Slide(TEXT("スワップボールが当たると、相手と自分の場所が一瞬で入れ替わる"), EArt::Ball),
-					Slide(TEXT("ダメージはない。危ない所から逃げたり、相手を危ない所へ送ったりできる"), EArt::Ball)}, ECPU::Walk, 1000.0f));
+					Slide(TEXT("当てると1ダメージ。危ない所から逃げたり、相手を危ない所へ送ったりもできる"), EArt::Ball)}, ECPU::Walk, 1000.0f));
 			{
 				FChaosImpactDojoLesson L = BallLesson(EBall::Barrier, TEXT("x_barrier"), TEXT("ボールを止める光の壁"),
 					TEXT("バリアを立てて、CPUの球を止めよう"), EGoal::BarrierBlock, 2,
-					{Slide(TEXT("バリアボールが落ちた所に、光の壁が立つ。長くためるほど遠くに立つ"), EArt::Ball),
-						Slide(TEXT("壁はボールを1つ止めると砕ける。何も当たらなくても8秒で消える"), EArt::Ball),
-						Slide(TEXT("人は壁を通りぬけられる。フックとアンカーは壁で止まる"), EArt::Ball)}, ECPU::Thrower, 1000.0f);
+					{Slide(TEXT("バリアボールが落ちた所に、光の壁が立つ。長くためるほど遠くに立つ（すぐ近くならパッと置ける）"), EArt::Ball),
+						Slide(TEXT("自分と味方は通れて、自分たちの球も通りぬける。相手の球は止めて砕ける。8秒で消える"), EArt::Ball),
+						Slide(TEXT("相手が通ろうとすると、ダメージを受けてはじかれ、壁も砕ける（ダッシュならすりぬけられる）"), EArt::Ball)}, ECPU::Thrower, 1000.0f);
 				L.ThrowEvery = 2.4f;
 				C.Lessons.Add(L);
 			}
@@ -390,6 +390,20 @@ namespace
 				{Slide(TEXT("マインは落ちた所に置かれる。長くためるほど遠くに置ける"), EArt::Ball),
 					Slide(TEXT("相手が近づくと赤く光って、すぐ爆発する。光ったらダッシュで逃げられる"), EArt::Ball),
 					Slide(TEXT("自分と味方には反応しない。置けるのは1人2個まで"), EArt::Ball)}, ECPU::Walk, 900.0f));
+			{
+				FChaosImpactDojoLesson L = Lesson(TEXT("x_fusion"), TEXT("合体ボール"), TEXT("2個のボールを1つに合体"),
+					TEXT("2個を合体させて、CPUに当てよう"), EGoal::FusionHit, 2,
+					{Slide(TEXT("合体できる2個を持つと、合体ボタンが出る。押すと2つが1つの合体ボールになる"), EArt::Fusion, EPoint::Balls),
+						Slide(TEXT("投げると、片方の飛び方にもう片方の効果がのる。サンダー×ファイアなら跳ね返った所が燃える"), EArt::Fusion),
+						Slide(TEXT("もう一度押すと元に戻る。対戦では、ルールで合体ボールが「あり」の時だけ使える"), EArt::Fusion)},
+					{EAct::FuseBalls, EAct::Throw});
+				With(L, EBall::Thunder, 1);
+				L.SecondBall = EBall::Fire;
+				Against(L, ECPU::Walk, 1, 1000.0f);
+				L.Pointer = EPoint::Balls;
+				L.bFusion = true;
+				C.Lessons.Add(L);
+			}
 		}
 
 		// ---------------------------------------------------------------------------------------------------- 対戦ルール
@@ -430,7 +444,7 @@ namespace
 				C.Lessons.Add(L);
 			}
 			{
-				FChaosImpactDojoLesson L = Lesson(TEXT("r_duel"), TEXT("デュエル模擬戦"), TEXT("デュエルアリーナで1ラウンド勝負"),
+				FChaosImpactDojoLesson L = Lesson(TEXT("r_duel"), TEXT("デュエル模擬戦"), TEXT("カオスアリーナで1ラウンド勝負"),
 					TEXT("本番のデュエルで、CPUから1ラウンド取ろう"), EGoal::KnockOut, 1,
 					{Slide(TEXT("デュエルは1対1。先に決まった回数ラウンドを取った方が勝ち"), EArt::Duel),
 						Slide(TEXT("ラウンドのはじめに、全部の台にボールが出る。拾いに走ろう"), EArt::PickUp),

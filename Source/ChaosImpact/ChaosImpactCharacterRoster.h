@@ -88,6 +88,9 @@ namespace ChaosImpactRoster
 			TEXT("人間を警戒させないために模した仮の姿に過ぎない。")},
 		{TEXT("バードストライカー"), TEXT("/Game/ChaosImpact/Kawaii"), TEXT("Kawaii"), EChaosImpactModelKind::Authored, false,
 			TEXT("かつて名を馳せたが、ドッチ・ボール大統領に"), TEXT("クチバシを縮められ引退を決意。油淋鶏が好き。")},
+		// (Three arms a side; the select screen plays its own pose clip, A_President_Select.)
+		{TEXT("元ドッチ・ボール大統領"), TEXT("/Game/ChaosImpact/President"), TEXT("President"), EChaosImpactModelKind::Skinned, false,
+			TEXT("大統領を辞任したことで身綺麗になった男。"), TEXT("今現在は避球（カオスインパクト）を"), TEXT("広めるための旅をしている。")},
 	};
 	inline constexpr int32 SmileyIndex = 0;
 	inline constexpr int32 SimaeIndex = 1;
@@ -99,6 +102,7 @@ namespace ChaosImpactRoster
 	inline constexpr int32 CellIndex = 11;
 	inline constexpr int32 CatIndex = 12;
 	inline constexpr int32 BirdIndex = 13;
+	inline constexpr int32 PresidentIndex = 14;
 
 	/** Tiles on the select screen; the ones past the roster show as locked, so it reads as a roster that grows. */
 	inline constexpr int32 TileCount = ((UE_ARRAY_COUNT(Characters) + 3) / 4) * 4;

@@ -1,5 +1,6 @@
-#include "ChaosImpactPaintStudio.h"
+﻿#include "ChaosImpactPaintStudio.h"
 
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCustomColour.h"
 #include "ChaosImpactHints.h"
@@ -61,6 +62,153 @@ namespace
 	const FLinearColor StCardOn(0.06f, 0.2f, 0.5f, 1.0f);
 	constexpr float MinZoom = 0.6f;
 	constexpr float MaxZoom = 8.0f;
+
+	/**
+	 * スマホ版 (2026-11-18): the same tools, everything a thumb's size. Sideways: the tools down the left, the view in the
+	 * middle (the recent colours under it), the colours on the right (the palette turned on its side: the hues down, pale to
+	 * deep across). Upright: the view on top, the recent colours, the tools, the brush and the buttons in rows under it,
+	 * the colours at the foot; 完了 and やめる by the title. The view keeps the picture's shape (1100 x 895).
+	 */
+	struct FStPhone
+	{
+		bool bUpright = false;
+		FBox2D View;
+		FBox2D Tools[4];
+		/** A slider's track (its name above it). */
+		FBox2D Tracks[3];
+		FBox2D Mirror;
+		FBox2D Buttons[4];
+		FBox2D Finish[2];
+		FBox2D Now;
+		FBox2D Tabs[2];
+		/** The palette's first swatch and the step between them; the palette laid out on its side (sideways) or not. */
+		FVector2D SwatchAt = FVector2D::ZeroVector;
+		float Swatch = 50.0f, SwatchStep = 56.0f;
+		bool bPaletteOnSide = false;
+		FVector2D Wheel = FVector2D::ZeroVector;
+		float RingOuter = 120.0f, RingWidth = 26.0f, SquareHalf = 66.0f;
+		FBox2D ColourSliders[6];
+		FVector2D RecentAt = FVector2D::ZeroVector;
+		float Recent = 58.0f, RecentStep = 70.0f;
+		FBox2D LeaveCard;
+		FBox2D Leave[3];
+	};
+
+	bool IsStPhone()
+	{
+		return UChaosImpactMenuWidget::IsPhoneBuild();
+	}
+
+	FStPhone MakeStPhone(const bool bUpright)
+	{
+		FStPhone L;
+		L.bUpright = bUpright;
+		const float MidX = bUpright ? 450.0f : 800.0f;
+		const float MidY = bUpright ? 800.0f : 450.0f;
+		L.LeaveCard = FBox2D(FVector2D(MidX - 330.0f, MidY - 200.0f), FVector2D(MidX + 330.0f, MidY + 200.0f));
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			const float Top = MidY - 104.0f + Index * 100.0f;
+			L.Leave[Index] = FBox2D(FVector2D(MidX - 290.0f, Top), FVector2D(MidX + 290.0f, Top + 86.0f));
+		}
+		if (!bUpright)
+		{
+			L.View = FBox2D(FVector2D(330.0f, 92.0f), FVector2D(1190.0f, 792.0f));
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				const FVector2D At(24.0f + (Index % 2) * 146.0f, 92.0f + (Index / 2) * 98.0f);
+				L.Tools[Index] = FBox2D(At, At + FVector2D(140.0f, 88.0f));
+			}
+			for (int32 Index = 0; Index < 3; ++Index)
+			{
+				const float Top = 326.0f + Index * 70.0f;
+				L.Tracks[Index] = FBox2D(FVector2D(30.0f, Top), FVector2D(304.0f, Top + 22.0f));
+			}
+			L.Mirror = FBox2D(FVector2D(24.0f, 512.0f), FVector2D(310.0f, 580.0f));
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				const FVector2D At(24.0f + (Index % 2) * 146.0f, 592.0f + (Index / 2) * 74.0f);
+				L.Buttons[Index] = FBox2D(At, At + FVector2D(140.0f, 64.0f));
+			}
+			L.Finish[0] = FBox2D(FVector2D(24.0f, 750.0f), FVector2D(164.0f, 870.0f));
+			L.Finish[1] = FBox2D(FVector2D(170.0f, 750.0f), FVector2D(310.0f, 870.0f));
+			L.Now = FBox2D(FVector2D(1210.0f, 92.0f), FVector2D(1300.0f, 152.0f));
+			L.Tabs[0] = FBox2D(FVector2D(1210.0f, 166.0f), FVector2D(1390.0f, 222.0f));
+			L.Tabs[1] = FBox2D(FVector2D(1400.0f, 166.0f), FVector2D(1580.0f, 222.0f));
+			// The palette on its side: six across (pale to deep), thirteen down (the hues).
+			L.bPaletteOnSide = true;
+			L.SwatchStep = 49.0f;
+			L.Swatch = 44.0f;
+			L.SwatchAt = FVector2D(1395.0f - (6.0f * 49.0f - 5.0f) * 0.5f, 236.0f);
+			L.RingOuter = 120.0f;
+			L.RingWidth = 26.0f;
+			L.SquareHalf = 66.0f;
+			L.Wheel = FVector2D(1395.0f, 236.0f + 124.0f);
+			for (int32 Slider = 0; Slider < 6; ++Slider)
+			{
+				const float Top = 500.0f + Slider * 56.0f;
+				L.ColourSliders[Slider] = FBox2D(FVector2D(1210.0f, Top), FVector2D(1580.0f, Top + 48.0f));
+			}
+			L.Recent = 58.0f;
+			L.RecentStep = 70.0f;
+			L.RecentAt = FVector2D(340.0f, 808.0f);
+		}
+		else
+		{
+			L.View = FBox2D(FVector2D(20.0f, 104.0f), FVector2D(880.0f, 804.0f));
+			L.Finish[0] = FBox2D(FVector2D(540.0f, 16.0f), FVector2D(700.0f, 94.0f));
+			L.Finish[1] = FBox2D(FVector2D(712.0f, 16.0f), FVector2D(872.0f, 94.0f));
+			L.Recent = 60.0f;
+			L.RecentStep = 70.0f;
+			L.RecentAt = FVector2D(30.0f, 816.0f);
+			const float ToolW = (860.0f - 3.0f * 12.0f) / 4.0f;
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				const FVector2D At(20.0f + Index * (ToolW + 12.0f), 890.0f);
+				L.Tools[Index] = FBox2D(At, At + FVector2D(ToolW, 88.0f));
+			}
+			const float SliderW = (860.0f - 2.0f * 28.0f) / 3.0f;
+			for (int32 Index = 0; Index < 3; ++Index)
+			{
+				const float Left = 20.0f + Index * (SliderW + 28.0f);
+				L.Tracks[Index] = FBox2D(FVector2D(Left + 6.0f, 1030.0f), FVector2D(Left + SliderW - 6.0f, 1052.0f));
+			}
+			const float ButtonW = (860.0f - 4.0f * 10.0f) / 5.0f;
+			L.Mirror = FBox2D(FVector2D(20.0f, 1078.0f), FVector2D(20.0f + ButtonW, 1150.0f));
+			for (int32 Index = 0; Index < 4; ++Index)
+			{
+				const FVector2D At(20.0f + (Index + 1) * (ButtonW + 10.0f), 1078.0f);
+				L.Buttons[Index] = FBox2D(At, At + FVector2D(ButtonW, 72.0f));
+			}
+			L.Now = FBox2D(FVector2D(20.0f, 1166.0f), FVector2D(110.0f, 1218.0f));
+			L.Tabs[0] = FBox2D(FVector2D(540.0f, 1164.0f), FVector2D(700.0f, 1218.0f));
+			L.Tabs[1] = FBox2D(FVector2D(712.0f, 1164.0f), FVector2D(872.0f, 1218.0f));
+			L.bPaletteOnSide = false;
+			L.SwatchStep = 62.0f;
+			L.Swatch = 56.0f;
+			L.SwatchAt = FVector2D(450.0f - (13.0f * 62.0f - 6.0f) * 0.5f, 1228.0f);
+			L.RingOuter = 172.0f;
+			L.RingWidth = 32.0f;
+			L.SquareHalf = 96.0f;
+			L.Wheel = FVector2D(206.0f, 1228.0f + 182.0f);
+			for (int32 Slider = 0; Slider < 6; ++Slider)
+			{
+				const float Top = 1232.0f + Slider * 60.0f;
+				L.ColourSliders[Slider] = FBox2D(FVector2D(410.0f, Top), FVector2D(880.0f, Top + 52.0f));
+			}
+		}
+		return L;
+	}
+
+	const FStPhone& StPhone()
+	{
+		static const FStPhone Sideways = MakeStPhone(false);
+		static const FStPhone Upright = MakeStPhone(true);
+		return UChaosImpactMenuWidget::IsUprightCanvas() ? Upright : Sideways;
+	}
+
+	/** How long a first finger's stroke may be when a second lands and it is taken back (it was the start of two fingers). */
+	constexpr double StrayStrokeSeconds = 0.35;
 
 	bool StIsAny(const FKey& Key, std::initializer_list<FKey> Keys)
 	{
@@ -172,6 +320,8 @@ void UChaosImpactPaintStudio::Open(AChaosImpactPlayerController* InController, A
 	bOpen = true;
 	Result = EResult::None;
 	bChanged = false;
+	Fingers.Reset();
+	TouchMode = ETouchMode::None;
 	bCancelArmed = false;
 	bLeaveMenu = false;
 	bPenDown = false;
@@ -442,7 +592,8 @@ void UChaosImpactPaintStudio::PickRing(const FVector2D& Point)
 void UChaosImpactPaintStudio::PickColourSlider(const int32 Slider, const FVector2D& Point)
 {
 	const FBox2D R = ColourSliderRect(Slider);
-	const float Track0 = static_cast<float>(R.Min.X) + StTrackLeft, Track1 = static_cast<float>(R.Max.X) - StTrackRight;
+	const float Track0 = static_cast<float>(R.Min.X) + (IsStPhone() ? 40.0f : StTrackLeft);
+	const float Track1 = static_cast<float>(R.Max.X) - (IsStPhone() ? 74.0f : StTrackRight);
 	const float Amount = FMath::Clamp(static_cast<float>((Point.X - Track0) / (Track1 - Track0)), 0.0f, 1.0f);
 	if (Slider == 0) { EditHue = Amount * 359.9f; ApplyHSB(); return; }
 	if (Slider == 1) { EditSaturation = Amount; ApplyHSB(); return; }
@@ -458,6 +609,10 @@ void UChaosImpactPaintStudio::PickColourSlider(const int32 Slider, const FVector
 
 FBox2D UChaosImpactPaintStudio::GetViewRect()
 {
+	if (IsStPhone())
+	{
+		return StPhone().View;
+	}
 	return FBox2D(FVector2D(StViewLeft, StViewTop), FVector2D(StViewLeft + StViewWidth, StViewTop + StViewHeight));
 }
 
@@ -716,7 +871,7 @@ int32 UChaosImpactPaintStudio::HitTest(const FVector2D& Point) const
 	}
 	for (int32 Index = 0; Index < StSliders; ++Index)
 	{
-		if (StGrow(SliderTrack(Index), 8.0f).IsInside(Point)) { return 200 + Index; }
+		if (StGrow(SliderTrack(Index), IsStPhone() ? 22.0f : 8.0f).IsInside(Point)) { return 200 + Index; }
 	}
 	if (MirrorRect().IsInside(Point)) { return 300; }
 	for (int32 Index = 0; Index < 4; ++Index)
@@ -740,7 +895,10 @@ int32 UChaosImpactPaintStudio::HitTest(const FVector2D& Point) const
 	{
 		if (SquareRect().IsInside(Point)) { return 700; }
 		const float Distance = static_cast<float>((Point - WheelCentre()).Size());
-		if (Distance <= StRingOuter + 3.0f && Distance >= StRingOuter - StRingWidth - 4.0f) { return 701; }
+		// (By touch a little wider: a fingertip is not a pointer.)
+		const float Outer = IsStPhone() ? StPhone().RingOuter + 10.0f : StRingOuter + 3.0f;
+		const float Inner = IsStPhone() ? StPhone().RingOuter - StPhone().RingWidth - 12.0f : StRingOuter - StRingWidth - 4.0f;
+		if (Distance <= Outer && Distance >= Inner) { return 701; }
 		for (int32 Slider = 0; Slider < StColourSliders; ++Slider)
 		{
 			if (ColourSliderRect(Slider).IsInside(Point)) { return 710 + Slider; }
@@ -1271,35 +1429,64 @@ void UChaosImpactPaintStudio::Tick(const float DeltaSeconds)
 
 FBox2D UChaosImpactPaintStudio::ToolRect(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		return StPhone().Tools[FMath::Clamp(Index, 0, 3)];
+	}
 	const FVector2D At(StLeft + (Index % 2) * 138.0f, 144.0f + (Index / 2) * 90.0f);
 	return FBox2D(At, At + FVector2D(122.0f, 80.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::SliderTrack(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		return StPhone().Tracks[FMath::Clamp(Index, 0, 2)];
+	}
 	const float Top = 384.0f + Index * 58.0f;
 	return FBox2D(FVector2D(StLeft + 4.0f, Top), FVector2D(StLeft + StLeftWidth - 4.0f, Top + 14.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::MirrorRect()
 {
+	if (IsStPhone())
+	{
+		return StPhone().Mirror;
+	}
 	return FBox2D(FVector2D(StLeft, 548.0f), FVector2D(StLeft + StLeftWidth, 594.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::ButtonRect(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		return StPhone().Buttons[FMath::Clamp(Index, 0, 3)];
+	}
 	const FVector2D At(StLeft + (Index % 2) * 134.0f, 608.0f + (Index / 2) * 56.0f);
 	return FBox2D(At, At + FVector2D(126.0f, 48.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::FinishRect(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		return StPhone().Finish[FMath::Clamp(Index, 0, 1)];
+	}
 	return Index == 0 ? FBox2D(FVector2D(StLeft, 734.0f), FVector2D(StLeft + 156.0f, 812.0f))
 		: FBox2D(FVector2D(StLeft + 166.0f, 734.0f), FVector2D(StLeft + StLeftWidth, 812.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::SwatchRect(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		// (Sideways the palette lies on its side: its columns down, its rows across.)
+		const FStPhone& L = StPhone();
+		const int32 Column = Index % ChaosImpactCustomColour::PaletteColumns;
+		const int32 Row = Index / ChaosImpactCustomColour::PaletteColumns;
+		const FVector2D At = L.SwatchAt + (L.bPaletteOnSide ? FVector2D(Row, Column) : FVector2D(Column, Row)) * L.SwatchStep;
+		return FBox2D(At, At + FVector2D(L.Swatch));
+	}
 	const FVector2D At(StRight + (Index % ChaosImpactCustomColour::PaletteColumns) * StSwatchStep,
 		StPickerTop + (Index / ChaosImpactCustomColour::PaletteColumns) * StSwatchStep);
 	return FBox2D(At, At + FVector2D(StSwatch));
@@ -1307,43 +1494,593 @@ FBox2D UChaosImpactPaintStudio::SwatchRect(const int32 Index)
 
 FVector2D UChaosImpactPaintStudio::WheelCentre()
 {
+	if (IsStPhone())
+	{
+		return StPhone().Wheel;
+	}
 	return FVector2D(StRight + StRightWidth * 0.5f, StPickerTop + StRingOuter + 2.0f);
 }
 
 FBox2D UChaosImpactPaintStudio::SquareRect()
 {
 	const FVector2D Centre = WheelCentre();
-	return FBox2D(Centre - FVector2D(StSquareHalf), Centre + FVector2D(StSquareHalf));
+	const float Half = IsStPhone() ? StPhone().SquareHalf : StSquareHalf;
+	return FBox2D(Centre - FVector2D(Half), Centre + FVector2D(Half));
 }
 
 FVector2D UChaosImpactPaintStudio::RingPoint(const float Hue)
 {
 	const float Radians = FMath::DegreesToRadians(Hue);
-	return WheelCentre() + FVector2D(FMath::Cos(Radians), -FMath::Sin(Radians)) * (StRingOuter - StRingWidth * 0.5f);
+	const float Outer = IsStPhone() ? StPhone().RingOuter : StRingOuter;
+	const float Width = IsStPhone() ? StPhone().RingWidth : StRingWidth;
+	return WheelCentre() + FVector2D(FMath::Cos(Radians), -FMath::Sin(Radians)) * (Outer - Width * 0.5f);
 }
 
 FBox2D UChaosImpactPaintStudio::ColourSliderRect(const int32 Slider)
 {
+	if (IsStPhone())
+	{
+		return StPhone().ColourSliders[FMath::Clamp(Slider, 0, 5)];
+	}
 	const FVector2D At(StRight, StColourSlidersTop + Slider * (StColourSliderHeight + StColourSliderGap));
 	return FBox2D(At, At + FVector2D(StRightWidth, StColourSliderHeight));
 }
 
 FBox2D UChaosImpactPaintStudio::TabRect(const bool bFineTab)
 {
+	if (IsStPhone())
+	{
+		return StPhone().Tabs[bFineTab ? 1 : 0];
+	}
 	const FVector2D At(StRight + StRightWidth - (bFineTab ? 108.0f : 222.0f), 108.0f);
 	return FBox2D(At, At + FVector2D(108.0f, 30.0f));
 }
 
 FBox2D UChaosImpactPaintStudio::RecentRect(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		const FStPhone& L = StPhone();
+		const FVector2D At = L.RecentAt + FVector2D(Index * L.RecentStep, 0.0f);
+		return FBox2D(At, At + FVector2D(L.Recent));
+	}
 	const FVector2D At(StRight + Index * StRecentStep, 668.0f);
 	return FBox2D(At, At + FVector2D(StRecent));
 }
 
 FBox2D UChaosImpactPaintStudio::LeaveRect(const int32 Index)
 {
+	if (IsStPhone())
+	{
+		return StPhone().Leave[FMath::Clamp(Index, 0, 2)];
+	}
 	const FVector2D At(560.0f, 392.0f + Index * 72.0f);
 	return FBox2D(At, At + FVector2D(480.0f, 60.0f));
+}
+
+// ---- スマホ版: fingers ---------------------------------------------------------------------------------------------------
+// One finger on the model draws (or, with バケツ / スポイト, is used where it lifts); one finger off the model, in the view,
+// turns it; two fingers pinch to zoom and move together to slide it. Drawing and moving the view never happen at once: a
+// second finger landing just after the first (its stroke still short) takes that stroke back without a trace, and once two
+// fingers are down nothing draws until every finger has lifted.
+
+void UChaosImpactPaintStudio::TouchStart(const int32 Finger, const FVector2D& Point)
+{
+	if (!bOpen)
+	{
+		return;
+	}
+	Fingers.Add(Finger, Point);
+	bPadCursor = false;
+	if (Fingers.Num() == 1)
+	{
+		TouchFinger = Finger;
+		TouchFrom = Point;
+		TouchStartedAt = FPlatformTime::Seconds();
+		Cursor = Point;
+		LastMouse = Point;
+		const int32 Hit = HitTest(Point);
+		if (Hit == 1 && !bLeaveMenu)
+		{
+			FChaosImpactPaintSurface::FHit SurfaceHit;
+			FVector Direction;
+			const bool bOnModel = HitAt(Point, SurfaceHit, Direction);
+			if (bOnModel && (Tool == ETool::Pen || Tool == ETool::Eraser))
+			{
+				TouchMode = ETouchMode::Draw;
+				Press(Point, false);
+			}
+			else
+			{
+				// バケツ / スポイト: used where the finger lifts (a drag turns the view instead); off the model: turning.
+				TouchMode = bOnModel ? ETouchMode::Tap : ETouchMode::Turn;
+			}
+		}
+		else
+		{
+			TouchMode = ETouchMode::Controls;
+			Press(Point, false);
+		}
+		return;
+	}
+	if (Fingers.Num() == 2 && TouchMode != ETouchMode::Controls && TouchMode != ETouchMode::Spent)
+	{
+		// A second finger: the view is being moved. A stroke just begun was the first finger of the two: taken back.
+		if (bPenDown)
+		{
+			bPenDown = false;
+			if (FPlatformTime::Seconds() - TouchStartedAt < StrayStrokeSeconds)
+			{
+				Surface.CancelStroke();
+			}
+			else
+			{
+				Surface.EndStroke();
+			}
+		}
+		TArray<FVector2D> Two;
+		Fingers.GenerateValueArray(Two);
+		PinchDistance = FMath::Max(static_cast<float>((Two[0] - Two[1]).Size()), 1.0f);
+		PinchMiddle = (Two[0] + Two[1]) * 0.5;
+		PinchZoom = ViewZoom;
+		PinchPan = ViewPan;
+		TouchMode = ETouchMode::Pinch;
+	}
+}
+
+void UChaosImpactPaintStudio::TouchMove(const int32 Finger, const FVector2D& Point)
+{
+	if (!bOpen || !Fingers.Contains(Finger))
+	{
+		return;
+	}
+	Fingers[Finger] = Point;
+	if (TouchMode == ETouchMode::Pinch)
+	{
+		if (Fingers.Num() < 2)
+		{
+			return;
+		}
+		TArray<FVector2D> Two;
+		Fingers.GenerateValueArray(Two);
+		const float Distance = FMath::Max(static_cast<float>((Two[0] - Two[1]).Size()), 1.0f);
+		const FVector2D Middle = (Two[0] + Two[1]) * 0.5;
+		const float Zoom = PinchZoom * Distance / PinchDistance;
+		const float Reach = Surface.IsBuilt() ? static_cast<float>(Surface.GetBounds().GetExtent().Size()) : 120.0f;
+		const float PerPoint = Reach * 2.2f / static_cast<float>(GetViewRect().GetSize().Y) / FMath::Max(Zoom, MinZoom);
+		const FVector2D Moved = Middle - PinchMiddle;
+		SetView(ViewYaw, ViewPitch, Zoom, PinchPan + FVector2D(-Moved.X, Moved.Y) * PerPoint);
+		return;
+	}
+	if (Finger != TouchFinger)
+	{
+		return;
+	}
+	Cursor = Point;
+	switch (TouchMode)
+	{
+	case ETouchMode::Draw:
+		if (bPenDown)
+		{
+			PaintAlong(LastPaintPoint, Point, false);
+			LastPaintPoint = Point;
+		}
+		break;
+	case ETouchMode::Tap:
+		if ((Point - TouchFrom).Size() > 16.0)
+		{
+			// Dragged: not a tap, the view turning.
+			TouchMode = ETouchMode::Turn;
+			LastMouse = Point;
+		}
+		break;
+	case ETouchMode::Turn:
+	{
+		const FVector2D Delta = Point - LastMouse;
+		LastMouse = Point;
+		SetView(ViewYaw + static_cast<float>(Delta.X) * 0.4f, ViewPitch + static_cast<float>(Delta.Y) * 0.3f, ViewZoom, ViewPan);
+		break;
+	}
+	case ETouchMode::Controls:
+		if (Dragging != INDEX_NONE)
+		{
+			DragTo(Point);
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+void UChaosImpactPaintStudio::TouchEnd(const int32 Finger, const FVector2D& Point)
+{
+	const bool bWasDown = Fingers.Remove(Finger) > 0;
+	if (!bOpen || !bWasDown)
+	{
+		if (Fingers.IsEmpty())
+		{
+			TouchMode = ETouchMode::None;
+		}
+		return;
+	}
+	if (TouchMode == ETouchMode::Pinch)
+	{
+		// One of the two lifted: nothing more until they all have.
+		TouchMode = Fingers.IsEmpty() ? ETouchMode::None : ETouchMode::Spent;
+		return;
+	}
+	if (Finger == TouchFinger)
+	{
+		if (TouchMode == ETouchMode::Draw || TouchMode == ETouchMode::Controls)
+		{
+			Release();
+		}
+		else if (TouchMode == ETouchMode::Tap)
+		{
+			ClickView(Point);
+		}
+		TouchMode = Fingers.IsEmpty() ? ETouchMode::None : ETouchMode::Spent;
+	}
+	if (Fingers.IsEmpty())
+	{
+		TouchMode = ETouchMode::None;
+	}
+}
+
+// ---- スマホ版: the screen --------------------------------------------------------------------------------------------------
+
+int32 UChaosImpactPaintStudio::PaintPhone(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
+{
+	const FStPhone& L = StPhone();
+	const double Now = FPlatformTime::Seconds();
+	const float Pulse = 0.65f + 0.35f * FMath::Sin(static_cast<float>(Now - OpenedAt) * 6.0f);
+	const FPainter Back{Design, Elements, Layer};
+	const FPainter P{Design, Elements, Layer + 1};
+	const FPainter Over{Design, Elements, Layer + 2};
+	const FPainter Top{Design, Elements, Layer + 3};
+	// (A controller on the phone: its cursor and its hover show; by touch, only what is chosen.)
+	const bool bPad = bPadCursor;
+	const int32 Hover = bPad ? HitTest(Cursor) : INDEX_NONE;
+	Back.Box(-1400.0f, -400.0f, 4400.0f, 2600.0f, StBack);
+	HudText3D(P, TEXT("ペイント"), L.bUpright ? 30.0f : 30.0f, L.bUpright ? 22.0f : 14.0f, L.bUpright ? 48.0f : 44.0f, Paper, ETextAlign::Left,
+		TEXT("BlackItalic"), 3.0f);
+
+	// ---- The view.
+	const FBox2D View = GetViewRect();
+	StRound(Back, StGrow(View, 6.0f), 14.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
+	if (PictureBrush.GetResourceObject())
+	{
+		FSlateDrawElement::MakeBox(P.Elements, P.Layer,
+			P.Geometry.ToPaintGeometry(FVector2f(View.GetSize()), FSlateLayoutTransform(FVector2f(View.Min))),
+			&PictureBrush, ESlateDrawEffect::None, WithAlpha(FLinearColor::White, P.Alpha));
+	}
+	StFrame(Over, View, WithAlpha(Ice, 0.25f), 2.0f);
+	{
+		// Over the view's top: the zoom, the tool, and how fingers work it.
+		const FString Zoom = FString::Printf(TEXT("ズーム %d%%"), FMath::RoundToInt(ViewZoom * 100.0f));
+		StRound(Over, FBox2D(View.Min + FVector2D(10.0, 10.0), View.Min + FVector2D(160.0, 50.0)), 10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		StText(Top, Zoom, static_cast<float>(View.Min.X) + 85.0f, static_cast<float>(View.Min.Y) + 16.0f, 20.0f, 140.0f, Paper, ETextAlign::Center);
+		const FString ToolLine = FString::Printf(TEXT("%s%s"), StToolNames[static_cast<int32>(Tool)],
+			Brush.bMirror && (Tool == ETool::Pen || Tool == ETool::Eraser) ? TEXT("・左右対称") : TEXT(""));
+		const float ToolW = FMath::Min(HudMeasure(ToolLine, 22.0f, TEXT("Black")) + 30.0f, 300.0f);
+		StRound(Over, FBox2D(FVector2D(View.Max.X - 10.0 - ToolW, View.Min.Y + 10.0), FVector2D(View.Max.X - 10.0, View.Min.Y + 50.0)), 10.0f,
+			FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		StText(Top, ToolLine, static_cast<float>(View.Max.X) - 10.0f - ToolW * 0.5f, static_cast<float>(View.Min.Y) + 15.0f, 22.0f, ToolW - 20.0f, Gold,
+			ETextAlign::Center, TEXT("Black"));
+		if (!bPad)
+		{
+			const FString How = TEXT("モデルをなぞって描く　・　外をドラッグで回す　・　2本指で拡大・移動");
+			const float Size = HudFit(How, 20.0f, static_cast<float>(View.GetSize().X) - 40.0f, TEXT("Bold"));
+			const float Width = HudMeasure(How, Size, TEXT("Bold")) + 30.0f;
+			StRound(Over, FBox2D(FVector2D(View.GetCenter().X - Width * 0.5f, View.Max.Y - 50.0), FVector2D(View.GetCenter().X + Width * 0.5f, View.Max.Y - 12.0)),
+				10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.5f));
+			Top.Text(How, static_cast<float>(View.GetCenter().X), static_cast<float>(View.Max.Y) - 31.0f - Size * 0.74f, Size, WithAlpha(Paper, 0.8f),
+				ETextAlign::Center, TEXT("Bold"));
+		}
+	}
+	if (!Surface.IsBuilt())
+	{
+		StText(Over, TEXT("このキャラはペイントできません"), static_cast<float>(View.GetCenter().X), static_cast<float>(View.GetCenter().Y) - 18.0f,
+			30.0f, static_cast<float>(View.GetSize().X) - 40.0f, Paper, ETextAlign::Center, TEXT("Black"));
+	}
+	// The brush's reach round the finger while it draws (or the controller's cursor on the view).
+	if (!bLeaveMenu && GetViewRect().IsInside(Cursor) && (bPenDown || bPad) && bCursorOnModel && (Tool == ETool::Pen || Tool == ETool::Eraser))
+	{
+		const float R = FMath::Max(CursorRing, 2.0f);
+		Top.Ring(Cursor, R, WithAlpha(Ink, 0.8f), 4.0f, 64);
+		Top.Ring(Cursor, R, Tool == ETool::Eraser ? FLinearColor(1.0f, 0.6f, 0.7f, 1.0f) : Paper, 2.0f, 64);
+		if (bMirrorCursorShown)
+		{
+			Top.Ring(MirrorCursor, R, WithAlpha(Ice, 0.7f), 2.0f, 48);
+		}
+	}
+	if (Dragging == 200)
+	{
+		// The size being changed: shown at the model's middle.
+		const float R = FMath::Max(CursorRing > 0.0f ? CursorRing : 4.0f + 60.0f * GetSlider(0), 3.0f);
+		const FVector2D C = View.GetCenter();
+		Top.Ring(C, R, WithAlpha(Ink, 0.8f), 4.0f, 64);
+		Top.Ring(C, R, Paper, 2.0f, 64);
+	}
+
+	// ---- The tools.
+	for (int32 Index = 0; Index < ToolCount; ++Index)
+	{
+		const FBox2D R = ToolRect(Index);
+		const bool bOn = static_cast<int32>(Tool) == Index;
+		StRound(Back, R, 12.0f, bOn ? StCardOn : StCard);
+		StToolIcon(P, static_cast<ETool>(Index), FVector2D(R.GetCenter().X, R.Min.Y + 30.0f), bOn ? Paper : WithAlpha(Paper, 0.8f), StShown(Brush.Colour));
+		StText(P, StToolNames[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.Max.Y) - 34.0f, 22.0f,
+			static_cast<float>(R.GetSize().X) - 12.0f, Paper, ETextAlign::Center, TEXT("Black"));
+		if (bOn)
+		{
+			StFrame(Top, StGrow(R, 2.0f), Gold, 3.0f);
+		}
+		else if (Hover == 100 + Index)
+		{
+			StFrame(Top, StGrow(R, 1.0f), WithAlpha(Ice, 0.9f), 2.0f);
+		}
+	}
+
+	// ---- The brush's size, edge and strength.
+	for (int32 Index = 0; Index < StSliders; ++Index)
+	{
+		const FBox2D Track = SliderTrack(Index);
+		const float Amount = GetSlider(Index);
+		const bool bActive = Dragging == 200 + Index || Hover == 200 + Index;
+		const float Width = static_cast<float>(Track.GetSize().X);
+		StText(P, StSliderNames[Index], static_cast<float>(Track.Min.X) - 4.0f, static_cast<float>(Track.Min.Y) - 34.0f, 22.0f, Width * 0.6f, Paper,
+			ETextAlign::Left, TEXT("Black"));
+		const int32 Number = Index == 0 ? FMath::Max(1, FMath::RoundToInt(Amount * 100.0f))
+			: FMath::RoundToInt((Index == 1 ? Brush.Hardness : Brush.Opacity) * 100.0f);
+		StText(P, Index == 0 ? FString::FromInt(Number) : FString::Printf(TEXT("%d%%"), Number), static_cast<float>(Track.Max.X) + 4.0f,
+			static_cast<float>(Track.Min.Y) - 34.0f, 22.0f, Width * 0.4f, bActive ? Gold : Paper, ETextAlign::Right, TEXT("Bold"));
+		StRound(Back, Track, 10.0f, StCard);
+		StRound(P, FBox2D(Track.Min, FVector2D(Track.Min.X + Track.GetSize().X * Amount, Track.Max.Y)), 10.0f, bActive ? Gold : Ice);
+		const FVector2D Knob(Track.Min.X + Track.GetSize().X * Amount, Track.GetCenter().Y);
+		Over.Disc(Knob, bActive ? 17.0f : 15.0f, Paper);
+		Over.Ring(Knob, bActive ? 17.0f : 15.0f, Ink, 2.5f, 24);
+	}
+
+	// ---- 左右対称, もどす / やりなおす / 全部けす / 視点リセット.
+	{
+		const FBox2D R = MirrorRect();
+		StRound(Back, R, 12.0f, Brush.bMirror ? StCardOn : StCard);
+		const bool bNarrow = R.GetSize().X < 200.0;
+		if (bNarrow)
+		{
+			// (Upright: a button of its own size; ON / OFF under the name.)
+			StText(P, TEXT("左右対称"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 8.0f, 22.0f, static_cast<float>(R.GetSize().X) - 14.0f,
+				Paper, ETextAlign::Center, TEXT("Black"));
+			StText(P, Brush.bMirror ? TEXT("ON") : TEXT("OFF"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.Max.Y) - 30.0f, 18.0f, 80.0f,
+				Brush.bMirror ? Gold : Muted, ETextAlign::Center, TEXT("Black"));
+		}
+		else
+		{
+			StText(P, TEXT("左右対称"), static_cast<float>(R.Min.X) + 16.0f, static_cast<float>(R.GetCenter().Y) - 18.0f, 24.0f, static_cast<float>(R.GetSize().X) - 110.0f,
+				Paper, ETextAlign::Left, TEXT("Black"));
+			const FBox2D Pill(FVector2D(R.Max.X - 84.0f, R.Min.Y + 14.0f), FVector2D(R.Max.X - 14.0f, R.Max.Y - 14.0f));
+			StRound(P, Pill, 18.0f, Brush.bMirror ? Gold : FLinearColor(0.12f, 0.15f, 0.24f, 1.0f));
+			P.Disc(FVector2D(Brush.bMirror ? Pill.Max.X - 18.0f : Pill.Min.X + 18.0f, Pill.GetCenter().Y), 15.0f, Paper);
+		}
+	}
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		const FBox2D R = ButtonRect(Index);
+		const bool bUsable = Index == 0 ? Surface.CanUndo() : Index == 1 ? Surface.CanRedo() : Index == 2 ? Surface.IsBuilt() : true;
+		StRound(Back, R, 12.0f, Hover == 400 + Index && bUsable ? StCardOn : StCard);
+		const float Size = HudFit(StButtonNames[Index], 22.0f, static_cast<float>(R.GetSize().X) - 14.0f);
+		P.Text(StButtonNames[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - Size * 0.74f, Size,
+			bUsable ? Paper : WithAlpha(Muted, 0.7f), ETextAlign::Center, TEXT("Black"));
+	}
+
+	// ---- 完了 / やめる.
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		const FBox2D R = FinishRect(Index);
+		const FLinearColor Accent = Index == 0 ? Gold : (bCancelArmed ? Fire : Muted);
+		if (Index == 0 || bCancelArmed)
+		{
+			FLinearColor Deep = Accent * 0.3f;
+			Deep.A = 0.97f;
+			HudPoly(Back, {R.Min, FVector2D(R.Max.X, R.Min.Y), R.Max, FVector2D(R.Min.X, R.Max.Y)}, MakeFill(FMath::Lerp(Accent, Ink, 0.5f), Deep));
+		}
+		else
+		{
+			StRound(Back, R, 12.0f, StCard);
+		}
+		P.Box(static_cast<float>(R.Min.X) + 10.0f, static_cast<float>(R.Max.Y) - 7.0f, static_cast<float>(R.GetSize().X) - 20.0f, 3.0f, Accent);
+		const TCHAR* Label = Index == 0 ? TEXT("完了") : TEXT("やめる");
+		const float Size = HudFit(Label, 30.0f, static_cast<float>(R.GetSize().X) - 16.0f);
+		P.Text(Label, static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - Size * 0.74f, Size, Paper, ETextAlign::Center, TEXT("Black"));
+		if (Hover == 500 + Index)
+		{
+			StFrame(Top, StGrow(R, 2.0f), WithAlpha(Gold, Pulse), 3.0f);
+		}
+	}
+
+	// ---- The colours: the colour now, パレット / こまかく, then the palette or the wheel.
+	{
+		const FBox2D R = L.Now;
+		StRound(P, R, 12.0f, StShown(Brush.Colour));
+		StFrame(Over, R, WithAlpha(Paper, 0.5f), 2.0f);
+		const FString Code = FString::Printf(TEXT("#%02X%02X%02X"), Brush.Colour.R, Brush.Colour.G, Brush.Colour.B);
+		const float Room = static_cast<float>((L.bUpright ? L.Tabs[0].Min.X : 1580.0) - R.Max.X) - 24.0f;
+		StText(P, Code, static_cast<float>(R.Max.X) + 14.0f, static_cast<float>(R.GetCenter().Y) - 18.0f, 26.0f, Room, Paper, ETextAlign::Left, TEXT("Black"));
+	}
+	for (const bool bFineTab : {false, true})
+	{
+		const FBox2D R = TabRect(bFineTab);
+		const bool bChosen = bFine == bFineTab;
+		StRound(Back, R, 10.0f, bChosen ? Gold : StCard);
+		const TCHAR* Label = bFineTab ? TEXT("こまかく") : TEXT("パレット");
+		const float Size = HudFit(Label, 24.0f, static_cast<float>(R.GetSize().X) - 14.0f);
+		P.Text(Label, static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - Size * 0.74f, Size, bChosen ? Ink : Paper, ETextAlign::Center,
+			TEXT("Black"));
+	}
+	if (!bFine)
+	{
+		const int32 Swatches = ChaosImpactCustomColour::PaletteColumns * ChaosImpactCustomColour::PaletteRows;
+		for (int32 Index = 0; Index < Swatches; ++Index)
+		{
+			const FBox2D R = SwatchRect(Index);
+			const FColor Colour = ChaosImpactCustomColour::GetPaletteSwatch(Index % ChaosImpactCustomColour::PaletteColumns,
+				Index / ChaosImpactCustomColour::PaletteColumns);
+			StRound(P, R, 8.0f, StShown(Colour));
+			if (Colour == Brush.Colour)
+			{
+				StFrame(Over, StGrow(R, 2.0f), Paper, 3.0f);
+			}
+			if (Hover == 600 + Index)
+			{
+				StFrame(Top, StGrow(R, 3.0f), WithAlpha(Gold, Pulse), 2.0f);
+			}
+		}
+	}
+	else
+	{
+		const FVector2D Centre = WheelCentre();
+		TArray<FVector2f> RingPoints;
+		TArray<FLinearColor> RingColours;
+		constexpr int32 RingSteps = 180;
+		const float RingMid = L.RingOuter - L.RingWidth * 0.5f;
+		for (int32 Step = 0; Step <= RingSteps; ++Step)
+		{
+			const float Angle = 360.0f * Step / RingSteps;
+			const float Radians = FMath::DegreesToRadians(Angle);
+			RingPoints.Add(FVector2f(Centre + FVector2D(FMath::Cos(Radians), -FMath::Sin(Radians)) * RingMid));
+			RingColours.Add(WithAlpha(StShown(ChaosImpactCustomColour::FromHSV(Angle, 1.0f, 1.0f)), P.Alpha));
+		}
+		FSlateDrawElement::MakeLines(P.Elements, P.Layer, P.Geometry.ToPaintGeometry(), MoveTemp(RingPoints), MoveTemp(RingColours),
+			ESlateDrawEffect::None, FLinearColor::White, true, L.RingWidth);
+		const float HueRadians = FMath::DegreesToRadians(EditHue);
+		const FVector2D HueKnob = Centre + FVector2D(FMath::Cos(HueRadians), -FMath::Sin(HueRadians)) * RingMid;
+		Top.Ring(HueKnob, L.RingWidth * 0.5f + 3.0f, Ink, 5.0f, 24);
+		Top.Ring(HueKnob, L.RingWidth * 0.5f + 3.0f, Paper, 2.5f, 24);
+		const FBox2D Square = SquareRect();
+		StGradient(P, Square, {FLinearColor::White, StShown(ChaosImpactCustomColour::FromHSV(EditHue, 1.0f, 1.0f))});
+		StGradient(Over, Square, {FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f)}, false);
+		const FVector2D SquareKnob(Square.Min.X + Square.GetSize().X * EditSaturation, Square.Max.Y - Square.GetSize().Y * EditBrightness);
+		Top.Ring(SquareKnob, 11.0f, Ink, 5.0f, 24);
+		Top.Ring(SquareKnob, 11.0f, EditBrightness > 0.6f && EditSaturation < 0.4f ? Ink : Paper, 2.5f, 24);
+		const FColor Fine = Brush.Colour;
+		for (int32 Slider = 0; Slider < StColourSliders; ++Slider)
+		{
+			const FBox2D R = ColourSliderRect(Slider);
+			const bool bActive = Dragging == 710 + Slider;
+			StRound(Back, R, 10.0f, bActive ? StCardOn : StCard);
+			P.Text(StColourSliderNames[Slider], static_cast<float>(R.Min.X) + 12.0f, static_cast<float>(R.GetCenter().Y) - 22.0f * 0.74f, 22.0f,
+				Slider == 3 ? FLinearColor(1.0f, 0.4f, 0.4f) : Slider == 4 ? FLinearColor(0.4f, 1.0f, 0.5f) : Slider == 5 ? FLinearColor(0.5f, 0.65f, 1.0f) : Paper,
+				ETextAlign::Left, TEXT("Black"));
+			const FBox2D Track(FVector2D(R.Min.X + 40.0f, R.Min.Y + 12.0f), FVector2D(R.Max.X - 74.0f, R.Max.Y - 12.0f));
+			TArray<FLinearColor> Run;
+			float Amount = 0.0f;
+			FString Number;
+			if (Slider == 0)
+			{
+				for (int32 Stop = 0; Stop <= 6; ++Stop) { Run.Add(StShown(ChaosImpactCustomColour::FromHSV(60.0f * Stop, 1.0f, 1.0f))); }
+				Amount = EditHue / 360.0f;
+				Number = FString::Printf(TEXT("%d°"), FMath::RoundToInt(EditHue));
+			}
+			else if (Slider <= 2)
+			{
+				const bool bSat = Slider == 1;
+				Run = {StShown(ChaosImpactCustomColour::FromHSV(EditHue, bSat ? 0.0f : EditSaturation, bSat ? EditBrightness : 0.0f)),
+					StShown(ChaosImpactCustomColour::FromHSV(EditHue, bSat ? 1.0f : EditSaturation, bSat ? EditBrightness : 1.0f))};
+				Amount = bSat ? EditSaturation : EditBrightness;
+				Number = FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Amount * 100.0f));
+			}
+			else
+			{
+				FColor Low = Fine, High = Fine;
+				(Slider == 3 ? Low.R : Slider == 4 ? Low.G : Low.B) = 0;
+				(Slider == 3 ? High.R : Slider == 4 ? High.G : High.B) = 255;
+				Run = {StShown(Low), StShown(High)};
+				const uint8 Channel = Slider == 3 ? Fine.R : Slider == 4 ? Fine.G : Fine.B;
+				Amount = Channel / 255.0f;
+				Number = FString::FromInt(Channel);
+			}
+			StGradient(P, Track, Run);
+			Over.Box(static_cast<float>(Track.Min.X + Track.GetSize().X * Amount) - 4.0f, static_cast<float>(R.Min.Y) + 5.0f, 8.0f,
+				static_cast<float>(R.GetSize().Y) - 10.0f, Paper);
+			StText(P, Number, static_cast<float>(R.Max.X) - 10.0f, static_cast<float>(R.GetCenter().Y) - 20.0f * 0.74f, 20.0f, 60.0f, bActive ? Gold : Paper,
+				ETextAlign::Right, TEXT("Bold"));
+		}
+	}
+	// ---- The colours used last.
+	{
+		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+		const int32 Recent = Colours ? Colours->GetRecent().Num() : 0;
+		for (int32 Index = 0; Index < ChaosImpactCustomColour::MaxRecent; ++Index)
+		{
+			const FBox2D R = RecentRect(Index);
+			if (Index < Recent)
+			{
+				StRound(P, R, 8.0f, StShown(Colours->GetRecent()[Index]));
+				if (Colours->GetRecent()[Index] == Brush.Colour)
+				{
+					StFrame(Over, StGrow(R, 2.0f), Paper, 3.0f);
+				}
+			}
+			else
+			{
+				StRound(Back, R, 8.0f, FLinearColor(0.05f, 0.08f, 0.16f, 1.0f));
+			}
+			if (Hover == 800 + Index)
+			{
+				StFrame(Top, StGrow(R, 3.0f), WithAlpha(Gold, Pulse), 2.0f);
+			}
+		}
+	}
+
+	// The controller's cursor.
+	if (bPad && Hover != 1)
+	{
+		const FVector2D C = Cursor;
+		Top.Line(C, C + FVector2D(0.0, 26.0), Ink, 6.0f);
+		Top.Line(C, C + FVector2D(18.0, 18.0), Ink, 6.0f);
+		Top.Line(C, C + FVector2D(0.0, 24.0), Paper, 3.0f);
+		Top.Line(C, C + FVector2D(16.0, 16.0), Paper, 3.0f);
+	}
+
+	// Notices: on a plate over the view's foot.
+	if (Now - NoticeAt < 2.5)
+	{
+		const float Fade = FMath::Clamp(static_cast<float>(2.5 - (Now - NoticeAt)) / 0.4f, 0.0f, 1.0f);
+		const FPainter Note{Design, Elements, Layer + 4, Fade};
+		const FPainter NoteText{Design, Elements, Layer + 5, Fade};
+		const FBox2D Band(FVector2D(View.Min.X + 40.0, View.Max.Y - 120.0), FVector2D(View.Max.X - 40.0, View.Max.Y - 64.0));
+		StRound(Note, Band, 12.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
+		const float Size = HudFit(NoticeText, 26.0f, static_cast<float>(Band.GetSize().X) - 30.0f, TEXT("Bold"));
+		NoteText.Text(NoticeText, static_cast<float>(Band.GetCenter().X), static_cast<float>(Band.GetCenter().Y) - Size * 0.74f, Size, Gold, ETextAlign::Center, TEXT("Bold"));
+	}
+
+	// Leaving: keep, throw away, or go on drawing.
+	if (bLeaveMenu)
+	{
+		const FPainter Dim{Design, Elements, Layer + 6};
+		const FPainter Card{Design, Elements, Layer + 7};
+		const FPainter Text{Design, Elements, Layer + 8};
+		Dim.Box(-1400.0f, -400.0f, 4400.0f, 2600.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
+		const FBox2D R = L.LeaveCard;
+		StRound(Card, StGrow(R, 2.0f), 20.0f, WithAlpha(Ice, 0.45f));
+		StRound(Card, R, 18.0f, FLinearColor(0.025f, 0.05f, 0.13f, 1.0f));
+		StText(Text, TEXT("ペイントをおわる？"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 26.0f, 36.0f,
+			static_cast<float>(R.GetSize().X) - 40.0f, Paper, ETextAlign::Center, TEXT("Black"));
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			const FBox2D B = LeaveRect(Index);
+			const bool bOn = bPad && LeaveChoice == Index;
+			const FLinearColor Accent = Index == 0 ? Gold : Index == 1 ? Fire : Ice;
+			StRound(Card, B, 12.0f, bOn ? Accent : StCard);
+			Text.Box(static_cast<float>(B.Min.X), static_cast<float>(B.Min.Y) + 14.0f, 5.0f, static_cast<float>(B.GetSize().Y) - 28.0f, Accent);
+			const float Size = HudFit(StLeaveNames[Index], 28.0f, static_cast<float>(B.GetSize().X) - 30.0f);
+			Text.Text(StLeaveNames[Index], static_cast<float>(B.GetCenter().X), static_cast<float>(B.GetCenter().Y) - Size * 0.74f, Size, bOn ? Ink : Paper,
+				ETextAlign::Center, TEXT("Black"));
+		}
+		return Layer + 9;
+	}
+	return Layer + 6;
 }
 
 // ---- Drawing the screen -----------------------------------------------------------------------------------------------
@@ -1356,6 +2093,10 @@ int32 UChaosImpactPaintStudio::Paint(const FGeometry& Design, FSlateWindowElemen
 	}
 	const double Now = FPlatformTime::Seconds();
 	const float Pulse = 0.65f + 0.35f * FMath::Sin(static_cast<float>(Now - OpenedAt) * 6.0f);
+	if (IsStPhone())
+	{
+		return PaintPhone(Design, Elements, Layer);
+	}
 	const FPainter Back{Design, Elements, Layer};
 	const FPainter P{Design, Elements, Layer + 1};
 	const FPainter Over{Design, Elements, Layer + 2};

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ChaosImpactDojoLessons.h"
@@ -49,6 +49,8 @@ public:
 	/** The dojo in this world (one at most; none outside 訓練場). */
 	static AChaosImpactDojo* Find(const UWorld* World);
 	static bool IsDojoWorld(const UWorld* World);
+	/** The lesson now held lets 合体ボール be used (its own lesson). */
+	static bool AllowsFusion(const UWorld* World);
 	/** CLEAR! stays this long before the next lesson. */
 	static constexpr double ClearSeconds = 2.4;
 
@@ -225,6 +227,10 @@ private:
 	bool bWasTackling = false;
 	bool bWasInForm = false;
 	bool bWasMapOpen = false;
+	/** 合体ボール's lesson: the player's last fused throw, and the one already counted (a throw counts once). */
+	bool bWasFused = false;
+	double FusedThrowAt = -100.0;
+	double CountedFusedThrowAt = -200.0;
 	double EmptySince = -1.0;
 	/** When the task (re)started, for a time limit; a hit on the player waiting to start it over (no-damage lessons). */
 	double TaskStartAt = 0.0;
@@ -285,7 +291,13 @@ private:
 	FVector2D LastMouse = FVector2D::ZeroVector;
 	/** The HUD's size as last painted (the mouse, in viewport pixels, to its units). */
 	mutable FVector2D LastHudSize = FVector2D(1920.0, 1080.0);
+	/** スマホ版: the back button the slides or the task card drew (HUD units; invalid when none). */
+	mutable FBox2D TouchBack = FBox2D(ForceInit);
+	/** A finger set down this frame, where in the HUD's units. */
+	bool TappedAt(const APlayerController* PC, FVector2D& OutHud) const;
 	/** Where each of the three choices is drawn (HUD units). */
+	/** The HUD's scale on a screen W x H (スマホ版 upright: for an upright screen). */
+	static float HudScale(float W, float H);
 	static FBox2D ClearButton(int32 Index, float W, float H);
 	void PaintClearMenu(const ChaosImpactPaint::FPainter& P, const AChaosImpactPlayerController* Viewer, float W, float H, float Time) const;
 	/** A lesson thrown from the spot (targets, the drive course): the player cannot walk or dash in it. */
@@ -296,7 +308,8 @@ private:
 	enum class ERecScript : uint8
 	{
 		Rings, PickUp, TapTargets, AimTargets, ChargeAtCPU, KnockOutCPU, LeadThrows, Dashes, DashThrough, Sidestep, StandHit, Jumps,
-		TackleCPU, Swaps, Cancels, Drops, BallForm, Map, Wander, Snow, Nova, Drive, Anchor, BallAtCPU, PadFight, DriveCourse, Barrier, Mine
+		TackleCPU, Swaps, Cancels, Drops, BallForm, Map, Wander, Snow, Nova, Drive, Anchor, BallAtCPU, PadFight, DriveCourse, Barrier, Mine,
+		Fusion
 	};
 	struct FRecClip
 	{

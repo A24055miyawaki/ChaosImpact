@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
@@ -49,6 +49,8 @@ public:
 		/** 1v1: rounds won by this player and by the opponent (Score[0] < 0: not known). */
 		int32 Score[2] = {-1, -1};
 		FString Opponent;
+		/** The opponent played on a phone (else a PC). */
+		bool bOpponentPhone = false;
 		int32 OpponentCharacter = 0;
 		int32 OpponentColour = -1;
 		/** 8人: this player's points and knockouts, and everyone's places. */
@@ -84,6 +86,8 @@ public:
 		int32 Character = 0;
 		int32 Colour = -1;
 		bool bMe = false;
+		/** Plays on a phone (else a PC). */
+		bool bPhone = false;
 	};
 
 	/** This player in the ランキング. */
@@ -110,6 +114,8 @@ public:
 	bool HandleKeyDown(const FKeyEvent& Event);
 	bool HandleAnalog(const FAnalogInputEvent& Event);
 	void HandleMouseMove(const FVector2D& DesignPoint);
+	/** The button let go (スマホ版: a tap on a row chooses it; a drag scrolled instead). */
+	void HandleMouseUp(const FVector2D& DesignPoint);
 	void HandleMouseDown(const FVector2D& DesignPoint, const FKey& Button);
 	void HandleWheel(const FVector2D& DesignPoint, float Delta);
 
@@ -131,6 +137,13 @@ public:
 
 private:
 	void Request(bool bForDuel, int32 Page);
+	/** Rows shown at once (fewer upright). */
+	int32 ShownRows() const;
+	/** スマホ版: a finger down on the screen (where, and the scroll then); moved, it drags the list. */
+	bool bPressing = false;
+	bool bDragging = false;
+	FVector2D PressPoint = FVector2D::ZeroVector;
+	int32 PressScroll = 0;
 	void Back();
 	void Move(int32 Step);
 	void ClampScroll();
@@ -143,6 +156,8 @@ private:
 	void ShowPortraits();
 	void PaintHistory(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
 	void PaintRanking(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
+	/** A ranked player's record in short (games and win rate, or 1st places), the same on the podium and in the list. */
+	FString RankingStats(const FRow& Row) const;
 	void PaintPortrait(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, int32 Index, const FBox2D& Box,
 		float Alpha) const;
 

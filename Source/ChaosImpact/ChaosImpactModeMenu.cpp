@@ -73,7 +73,28 @@ namespace
 			HudPoly(Icon, {Pole + FVector2D(0.0, -Unit * 0.75f), Pole + FVector2D(Unit * 0.5f, -Unit * 0.62f + Wave),
 				Pole + FVector2D(0.0, -Unit * 0.46f)}, SolidFill(WithAlpha(Gold, Mark.A)), 1);
 		}
-		else if (Kind == TEXT("vs"))
+		else if (Kind == TEXT("watch"))
+		{
+			// A screen with a match on it: two players, the ball between them, a LIVE light blinking.
+			const float SW = Unit * 2.1f;
+			const float SH = Unit * 1.35f;
+			RoundedBox(Icon, At.X - SW * 0.5f, At.Y - SH * 0.5f, SW, SH, Unit * 0.14f, Mark);
+			RoundedBox(HudAbove(Icon, 1), At.X - SW * 0.5f + 5.0f, At.Y - SH * 0.5f + 5.0f, SW - 10.0f, SH - 10.0f, Unit * 0.1f,
+				FLinearColor(0.01f, 0.02f, 0.05f, 0.92f));
+			const FPainter Inside = HudAbove(Icon, 2);
+			Inside.Box(At.X - SW * 0.42f, At.Y + SH * 0.28f, SW * 0.84f, 3.0f, WithAlpha(Mark, Mark.A * 0.5f));
+			Figure(Inside, At + FVector2D(-SW * 0.3f, SH * 0.28f), Unit * 0.42f, WithAlpha(FMath::Lerp(Ice, Paper, 0.3f), Mark.A));
+			Figure(Inside, At + FVector2D(SW * 0.3f, SH * 0.28f), Unit * 0.42f, WithAlpha(FMath::Lerp(Fire, Paper, 0.25f), Mark.A));
+			const float Phase = FMath::Frac(Time * 0.8f * Live);
+			const float Side = Phase < 0.5f ? Phase * 2.0f : 2.0f - Phase * 2.0f;
+			Inside.Disc(At + FVector2D(FMath::Lerp(-SW * 0.2f, SW * 0.2f, Side), -FMath::Sin(Side * UE_PI) * SH * 0.25f), Unit * 0.09f,
+				WithAlpha(Paper, Mark.A));
+			const bool bLit = FMath::Frac(Time * 1.1f) < 0.6f;
+			Inside.Disc(At + FVector2D(-SW * 0.36f, -SH * 0.3f), Unit * 0.07f, WithAlpha(Fire, bLit ? Mark.A + 0.2f : Mark.A * 0.3f));
+			Icon.Box(At.X - Unit * 0.06f, At.Y + SH * 0.5f, Unit * 0.12f, Unit * 0.22f, Mark);
+			Icon.Box(At.X - Unit * 0.42f, At.Y + SH * 0.5f + Unit * 0.2f, Unit * 0.84f, Unit * 0.08f, Mark);
+		}
+		else if (Kind == TEXT("vs") || Kind == TEXT("cpuvs"))
 		{
 			// Two players facing, a ball going back and forth between them.
 			Figure(Icon, At + FVector2D(-Unit * 0.85f, Unit * 0.62f), Unit * 0.7f, WithAlpha(FMath::Lerp(Ice, Paper, 0.3f), Mark.A));
@@ -207,8 +228,27 @@ namespace
 	}
 }
 
+namespace
+{
+	bool GPhoneMenu = false;
+}
+
+void ChaosImpactModeMenu::SetPhone(const bool bPhone)
+{
+	GPhoneMenu = bPhone;
+}
+
 FString ChaosImpactModeMenu::Tagline(const FString& Kind)
 {
+	if (GPhoneMenu)
+	{
+		// スマホ版: one player against CPUs.
+		if (Kind == TEXT("vs")) return TEXT("CPUと対戦");
+		if (Kind == TEXT("local")) return TEXT("CPUと対戦・観戦");
+		if (Kind == TEXT("tourney")) return TEXT("CPUとの勝ちぬき戦");
+		if (Kind == TEXT("cpuvs")) return TEXT("キャラ・ステージ・ルールを決めて対戦");
+		if (Kind == TEXT("watch")) return TEXT("CPUどうしの対戦を見る");
+	}
 	return Kind == TEXT("solo") ? TEXT("ひとりで挑むストーリー")
 		: Kind == TEXT("vs") ? TEXT("みんなで対戦")
 		: Kind == TEXT("dojo") ? TEXT("ルールと操作をレッスンで")
@@ -222,6 +262,16 @@ FString ChaosImpactModeMenu::Tagline(const FString& Kind)
 
 FString ChaosImpactModeMenu::Detail(const FString& Kind)
 {
+	if (GPhoneMenu)
+	{
+		if (Kind == TEXT("vs")) return TEXT("CPU対戦・通信・トーナメントから選んで対戦する");
+		if (Kind == TEXT("settings")) return TEXT("タッチ操作やボタンの配置、画面、音量などを変える");
+		if (Kind == TEXT("local")) return TEXT("CPUを相手に対戦する。CPUどうしの観戦もできる");
+		if (Kind == TEXT("tourney")) return TEXT("CPUたちとのトーナメントを1人で勝ちぬく");
+		if (Kind == TEXT("cpuvs")) return TEXT("CPUの数や強さ、ルールを決めて対戦する");
+		if (Kind == TEXT("watch")) return TEXT("CPUどうしの試合を、好きな選手を追いかけて観戦する");
+		if (Kind == TEXT("localback")) return TEXT("VSモードにもどる");
+	}
 	return Kind == TEXT("solo") ? TEXT("デットボール合衆国のステージを、ひとつずつ攻略していく1人用モード")
 		: Kind == TEXT("vs") ? TEXT("ローカル・通信・トーナメントから選んで対戦する")
 		: Kind == TEXT("dojo") ? TEXT("基本から応用、ボール、対戦ルール、チャレンジまで。動画つきのレッスンで覚える")
@@ -229,6 +279,8 @@ FString ChaosImpactModeMenu::Detail(const FString& Kind)
 		: Kind == TEXT("colour") ? TEXT("キャラクターのカスタムカラーをつくって保存する")
 		: Kind == TEXT("settings") ? TEXT("操作タイプやキー、画面、音量などを変える")
 		: Kind == TEXT("back") ? TEXT("タイトル画面にもどる")
+		: Kind == TEXT("quit") ? TEXT("ゲームを終了する")
+		: Kind == TEXT("quitarmed") ? TEXT("もう一度決定すると、ゲームを終了します")
 		: Kind == TEXT("local") ? TEXT("1台で最大4人まで。CPUを入れて対戦もできる")
 		: Kind == TEXT("online") ? TEXT("ランダムマッチ・合言葉マッチ・トーナメント・戦績")
 		: Kind == TEXT("tourney") ? TEXT("この1台でトーナメントをひらく。1対1の勝ちぬき戦")
@@ -242,7 +294,8 @@ void ChaosImpactModeMenu::PaintTile(const FGeometry& Design, FSlateWindowElement
 	const float H = static_cast<float>(Tile.Rect.Bottom - Tile.Rect.Top);
 	const float B = EaseOut(Blend);
 	const FLinearColor Accent = Tile.Accent;
-	const bool bBack = Tile.Kind == TEXT("back") || Tile.Kind == TEXT("vsback");
+	const bool bBack = Tile.Kind == TEXT("back") || Tile.Kind == TEXT("vsback") || Tile.Kind == TEXT("localback") || Tile.Kind == TEXT("quit")
+		|| Tile.Kind == TEXT("quitarmed");
 
 	// A way back: a slim leaning bar with an arrow, filling white once chosen.
 	if (bBack)
@@ -257,8 +310,18 @@ void ChaosImpactModeMenu::PaintTile(const FGeometry& Design, FSlateWindowElement
 		const FLinearColor Ink2 = FMath::Lerp(Paper, Ink, B);
 		const FVector2D Arrow(34.0f, H * 0.5f);
 		const FPainter Top = HudAbove(P, 3);
-		Top.Line(Arrow + FVector2D(12.0, -12.0), Arrow, Ink2, 5.0f);
-		Top.Line(Arrow, Arrow + FVector2D(12.0, 12.0), Ink2, 5.0f);
+		if (Tile.Kind.StartsWith(TEXT("quit")))
+		{
+			// ゲーム終了: a cross (red once pressed and asking again).
+			const FLinearColor Cross = Tile.Kind == TEXT("quitarmed") ? FLinearColor(0.95f, 0.25f, 0.2f, 1.0f) : Ink2;
+			Top.Line(Arrow + FVector2D(-10.0, -10.0), Arrow + FVector2D(10.0, 10.0), Cross, 5.0f);
+			Top.Line(Arrow + FVector2D(10.0, -10.0), Arrow + FVector2D(-10.0, 10.0), Cross, 5.0f);
+		}
+		else
+		{
+			Top.Line(Arrow + FVector2D(12.0, -12.0), Arrow, Ink2, 5.0f);
+			Top.Line(Arrow, Arrow + FVector2D(12.0, 12.0), Ink2, 5.0f);
+		}
 		const float Size = HudFit(Tile.Name, 24.0f, W - 80.0f);
 		Top.Text(Tile.Name, 60.0f, (H - Size * 1.38f) * 0.5f, Size, Ink2, ETextAlign::Left, TEXT("Black"));
 		return;
@@ -354,7 +417,29 @@ void ChaosImpactModeMenu::PaintInfoBar(const FGeometry& Design, FSlateWindowElem
 	const FPainter Up = HudAbove(P, 1);
 	Up.Box(0.0f, 0.0f, 10.0f, H, Tile.Accent);
 	Up.Box(10.0f, 0.0f, W - 10.0f, 3.0f, WithAlpha(Tile.Accent, 0.5f));
-	// The keys on the right.
+	// The keys on the right (none when played by touch: the tiles are tapped).
+	const bool bKeys = !ConfirmKey.IsEmpty() || !BackKey.IsEmpty();
+	if (!bKeys)
+	{
+		// The chosen tile's name, and what it is: one line on a wide bar, under each other on a tall one.
+		const FPainter Words = HudAbove(P, 2);
+		if (H >= 90.0f)
+		{
+			const float NameSize = HudFit(Tile.Name, 30.0f, W - 64.0f);
+			Words.Text(Tile.Name, 34.0f, 14.0f, NameSize, Paper, ETextAlign::Left, TEXT("Black"));
+			const FString Line = Detail(Tile.Kind);
+			const float LineSize = HudFit(Line, 20.0f, W - 64.0f, TEXT("Bold"));
+			Words.Text(Line, 34.0f, H - 18.0f - LineSize * 1.38f, LineSize, WithAlpha(Paper, 0.75f), ETextAlign::Left, TEXT("Bold"));
+			return;
+		}
+		const float NameSize = HudFit(Tile.Name, 22.0f, W * 0.35f);
+		Words.Text(Tile.Name, 32.0f, (H - NameSize * 1.38f) * 0.5f, NameSize, Paper, ETextAlign::Left, TEXT("Black"));
+		const float NameW = HudMeasure(Tile.Name, NameSize);
+		const FString Line = Detail(Tile.Kind);
+		const float LineSize = HudFit(Line, 16.0f, W - NameW - 90.0f, TEXT("Bold"));
+		Words.Text(Line, 32.0f + NameW + 22.0f, (H - LineSize * 1.38f) * 0.5f, LineSize, WithAlpha(Paper, 0.72f), ETextAlign::Left, TEXT("Bold"));
+		return;
+	}
 	const float KeySize = 15.0f;
 	const FString Confirm = TEXT("決定");
 	const FString Back = TEXT("戻る");

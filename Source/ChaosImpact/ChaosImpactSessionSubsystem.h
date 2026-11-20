@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ChaosImpactMatchTypes.h"
@@ -218,6 +218,8 @@ public:
 	int32 RoomCarryNextJoinOrder = 1;
 	bool bRoomCarryValid = false;
 	void ClearRoomCarry() { RoomCarry.Reset(); RoomCarryNextJoinOrder = 1; bRoomCarryValid = false; }
+	/** Host: rematches the matched 1v1 room has played (carried from one match level to the next; a new room starts at 0). */
+	int32 RoomRematches = 0;
 	/**
 	 * Guest: the host is taking the room to its next level; the old connection's end then is no reason to leave. The
 	 * new connection is watched: one the host has not taken in after a while is made again (it can stall, now and then).
@@ -248,6 +250,8 @@ public:
 	float GetQueueStartsIn() const { return QueueStartsIn; }
 	int32 GetQueueExpected() const { return QueueExpected; }
 	const TArray<FString>& GetQueueNames() const { return QueueNames; }
+	/** As the names: what each plays on and how (empty from an older relay). */
+	const TArray<FChaosImpactPlayerKind>& GetQueueKinds() const { return QueueKinds; }
 	/** ランクマッチ: who was matched against this player, and their rank. */
 	const FString& GetQueueOpponentName() const { return QueueOpponentName; }
 	const FChaosImpactRankInfo& GetQueueOpponentRank() const { return QueueOpponentRank; }
@@ -339,6 +343,9 @@ public:
 	const FChaosImpactRankReport& GetRankReport() const { return RankReport; }
 	/** Names this player to the relay's ranks: made once per PC and kept secret (-CIPlayerToken= for tests on one PC). */
 	FString GetPlayerToken() const;
+	/** What this machine is ("phone" or "pc") and how its first player plays ("touch", "key" or "pad"): shown to others. */
+	static FString GetLocalPlatformKey();
+	FString GetLocalDeviceKey() const;
 
 private:
 	FLineCheck LineCheck;
@@ -374,6 +381,7 @@ private:
 	FString QueueMatchId;
 	int32 QueueExpected = 0;
 	TArray<FString> QueueNames;
+	TArray<FChaosImpactPlayerKind> QueueKinds;
 	FString QueueOpponentName;
 	FChaosImpactRankInfo QueueOpponentRank;
 	/** Bumped on every join and cancel: replies to older queue requests are ignored. */

@@ -5,6 +5,7 @@
 #include "ChaosImpactCharacterRoster.h"
 #include "Animation/AnimSequenceBase.h"
 #include "AnimationRuntime.h"
+#include "Components/PoseableMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -69,6 +70,33 @@ void UChaosImpactPuppetComponent::SetAuthoredState(const FName State, const bool
 
 void UChaosImpactPuppetComponent::PlaySelectionAppeal()
 {
+	if (!AuthoredMesh && SkinnedAppealClip && Skin && bReady)
+	{
+		// A skinned character's own pose: a copy of the model plays it (in the same materials, so its colours and paint
+		// show), standing in for the one that follows the game's animation until it is over.
+		if (!SkinnedAppealMesh)
+		{
+			SkinnedAppealMesh = NewObject<USkeletalMeshComponent>(GetOwner());
+			SkinnedAppealMesh->SetupAttachment(this);
+			SkinnedAppealMesh->SetSkeletalMeshAsset(Cast<USkeletalMesh>(Skin->GetSkinnedAsset()));
+			SkinnedAppealMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			SkinnedAppealMesh->SetGenerateOverlapEvents(false);
+			SkinnedAppealMesh->SetCastShadow(Skin->CastShadow);
+			SkinnedAppealMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+			SkinnedAppealMesh->PrimaryComponentTick.bTickEvenWhenPaused = true;
+			SkinnedAppealMesh->RegisterComponent();
+		}
+		SkinnedAppealMesh->SetRelativeTransform(Skin->GetRelativeTransform());
+		for (int32 Slot = 0; Slot < Skin->GetNumMaterials(); ++Slot)
+		{
+			SkinnedAppealMesh->SetMaterial(Slot, Skin->GetMaterial(Slot));
+		}
+		SkinnedAppealMesh->SetVisibility(true);
+		SkinnedAppealMesh->PlayAnimation(SkinnedAppealClip, false);
+		Skin->SetVisibility(false);
+		SkinnedAppealRemaining = SkinnedAppealClip->GetPlayLength();
+		return;
+	}
 	if (!AuthoredMesh) { return; }
 	AuthoredAppealRemaining = AuthoredClips[1]->GetPlayLength();
 	AuthoredThrowRemaining = 0.0f;
@@ -160,4 +188,18 @@ void UChaosImpactPuppetComponent::UpdateAuthoredPose(const float DeltaSeconds)
 	}
 	AuthoredAppealRemaining = FMath::Max(0.0f, AuthoredAppealRemaining - DeltaSeconds);
 	AuthoredThrowRemaining = FMath::Max(0.0f, AuthoredThrowRemaining - DeltaSeconds);
+}
+
+void UChaosImpactPuppetComponent::EndSkinnedAppeal()
+{
+	SkinnedAppealRemaining = 0.0f;
+	if (SkinnedAppealMesh)
+	{
+		SkinnedAppealMesh->Stop();
+		SkinnedAppealMesh->SetVisibility(false);
+	}
+	if (Skin)
+	{
+		Skin->SetVisibility(true);
+	}
 }

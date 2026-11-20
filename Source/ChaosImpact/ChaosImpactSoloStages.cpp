@@ -67,7 +67,8 @@ namespace
 		const TCHAR* Capital = TEXT("合衆国 首都");
 		Add(28, 2, TEXT("ボール没収工場"), Capital, TEXT("世界中から奪われたボールを取り返せ！"), EKind::Story, {21, 27});
 		Add(29, 2, TEXT("首都の大通り"), Capital, TEXT("合衆国軍の総攻撃。"), EKind::Normal, {28});
-		Add(30, 2, TEXT("ホワイトボールハウス"), Capital, TEXT("大統領ドッチ・ボールとの決戦。"), EKind::Story, {29});
+		Add(30, 2, TEXT("ホワイトボールハウス"), Capital, TEXT("大統領ドッチ・ボールとの決戦。"), EKind::Story, {29},
+			TEXT("/Game/ChaosImpact/solo/Lvl_Solo_30_WhiteBallHouse"));
 		return S;
 	}
 }
@@ -90,11 +91,12 @@ ChaosImpactSolo::FDifficulty ChaosImpactSolo::GetDifficulty(const int32 Number)
 	using ELevel = EChaosImpactCPULevel;
 	// Minions, at once, weak, strong, the room's boss.
 	static const FDifficulty Tiers[] = {
-		{3, 2, 3, 0, ELevel::Normal},   // 1: learning to play
-		{4, 2, 2, 0, ELevel::Normal},
-		{4, 3, 1, 0, ELevel::Strong},
-		{5, 3, 0, 0, ELevel::Strong},
-		{5, 3, 0, 1, ELevel::Strong},
+		// (2026-11-19: the first stages made gentler; the user found them too hard.)
+		{3, 1, 3, 0, ELevel::Weak},     // 1: learning to play, one at a time
+		{3, 2, 2, 0, ELevel::Normal},   // 2, 8
+		{4, 2, 2, 0, ELevel::Normal},   // 3, 9
+		{4, 2, 1, 0, ELevel::Normal},
+		{5, 3, 1, 0, ELevel::Strong},
 		{5, 3, 0, 1, ELevel::Strong},
 		{5, 3, 0, 2, ELevel::Strong},
 		{6, 3, 0, 2, ELevel::Strongest}, // 14: the cloud path

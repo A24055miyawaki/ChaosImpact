@@ -85,8 +85,20 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Chaos Impact|Shima-enaga")
 	TObjectPtr<USceneComponent> Body;
 
+	// ---- A boss scene's cues (シマエナガ戦の登場ムービー, 2026-11-19)
+	/** Held to the scene: nobody near sends it off; only the scene's cues do. */
+	void SetSceneHeld(bool bHeld) { bSceneHeld = bHeld; }
+	/** It has seen something: a startled hop, its head turned up at the sky. */
+	void SceneAlert();
+	/** Away from From, fast and high (and it stays away a good while). */
+	void SceneFlee(const FVector& From);
+
 private:
 	void BuildBird();
+	bool bSceneHeld = false;
+	/** < 0: not alarmed; else how long since it looked up. */
+	float AlertTime = -1.0f;
+	float FleeSpeed = 1.0f;
 	TArray<TObjectPtr<UStaticMeshComponent>> Parts;
 	TObjectPtr<UStaticMeshComponent> Wing;
 	FVector Home = FVector::ZeroVector;

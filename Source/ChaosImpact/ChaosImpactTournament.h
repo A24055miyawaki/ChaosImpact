@@ -88,6 +88,8 @@ struct FChaosImpactTournamentSettings
 	/** 順位決定戦: those who lose play on, among themselves, for every place (3rd, 5th, 7th...). Off: they share the place they
 	 * lost at (two 3rds, four 5ths...). */
 	UPROPERTY() bool bPlacementMatches = false;
+	/** The 1v1 stage every match is played on (ChaosImpactMatch::GetDuelStageName), or -1: each match on one at random. */
+	UPROPERTY() int32 Stage = -1;
 };
 
 USTRUCT()

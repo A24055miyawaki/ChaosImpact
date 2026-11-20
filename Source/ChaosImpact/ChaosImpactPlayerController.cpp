@@ -1,7 +1,9 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactBossScene.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "ChaosImpactBodyPaint.h"
 #include "ChaosImpactHints.h"
 #include "ChaosImpactPaintCache.h"
@@ -18,8 +20,7 @@
 #include "ChaosImpactPaint.h"
 #include "MoviePlayer.h"
 #include "Containers/Ticker.h"
-#include "JoyShockBlueprintLibrary.h"
-#include "JoyShockTypes.h"
+#include "ChaosImpactJoyShock.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "ChaosImpactGameMode.h"
 #include "ChaosImpactBallSpawner.h"
@@ -273,8 +274,23 @@ void AChaosImpactPlayerController::BeginPlay()
 	bEnableMouseOverEvents = bShowMouseCursor;
 	DefaultMouseCursor = EMouseCursor::Crosshairs;
 
-	// only spawn touch controls on local player controllers
-	if (ShouldUseTouchControls() && IsLocalPlayerController() && bPrimaryLocalPlayer)
+	// (The template's on-screen sticks are never spawned: スマホ版 plays by its own touch controls, with no buttons on the
+	// field - AChaosImpactCharacter::UpdateTouchControls.)
+	constexpr bool bTemplateTouchWidget = false;
+#if (PLATFORM_ANDROID || PLATFORM_IOS) && !UE_BUILD_SHIPPING
+	// スマホ版の試作: the frame rate shown in the corner (to measure on the device).
+	if (IsLocalPlayerController() && bPrimaryLocalPlayer)
+	{
+		static bool bStatShown = false;
+		if (!bStatShown)
+		{
+			bStatShown = true;
+			// (Only the frame rate: the full timing panel costs a millisecond of its own.)
+			ConsoleCommand(TEXT("stat fps"), true);
+		}
+	}
+#endif
+	if (bTemplateTouchWidget && ShouldUseTouchControls() && IsLocalPlayerController() && bPrimaryLocalPlayer)
 	{
 		// spawn the mobile controls widget
 		MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
@@ -857,6 +873,12 @@ void AChaosImpactPlayerController::SyncCursorToLastDevice()
 
 bool AChaosImpactPlayerController::IsUsingGamepad() const
 {
+	// スマホ版: always the touch screen (a phone's sensors and keys must never pass for a controller; controllers on
+	// phones come later, Docs/モバイル対応企画.md).
+	if (IsPhoneSolo())
+	{
+		return false;
+	}
 	if (bOnlineAnyInput)
 	{
 		return bLastInputGamepad;
@@ -867,7 +889,8 @@ bool AChaosImpactPlayerController::IsUsingGamepad() const
 void AChaosImpactPlayerController::HandleBoundKeyPressed(const FKey Key)
 {
 	using namespace ChaosImpactSettings;
-	if (IsActionKey(this, EChaosImpactAction::Pause, Key))
+	// (スマホ版: the phone's back button pauses, as Esc does.)
+	if (IsActionKey(this, EChaosImpactAction::Pause, Key) || Key == EKeys::Android_Back)
 	{
 		TogglePauseMenu();
 		return;
@@ -894,8 +917,11 @@ void AChaosImpactPlayerController::HandleBoundKeyPressed(const FKey Key)
 	{
 		ToggleReadyForMatch();
 	}
-	else if (IsActionKey(this, EChaosImpactAction::LobbyTeam, Key) && CanChangeLobbyTeam() && IsGameplayActive())
+	else if (IsActionKey(this, EChaosImpactAction::LobbyTeam, Key) && CanChangeLobbyTeam() && IsGameplayActive()
+		&& !(IsActionKey(this, EChaosImpactAction::FuseBalls, Key) && Cast<AChaosImpactCharacter>(GetPawn())
+			&& (Cast<AChaosImpactCharacter>(GetPawn())->CanFuseBalls() || Cast<AChaosImpactCharacter>(GetPawn())->AreBallsFused())))
 	{
+		// (The same button joins two balls when they can be joined: then it does that instead.)
 		ServerChangeTeam(1);
 	}
 	// (Watching / playing switches on a held key: UpdateSpectateHold.)
@@ -1246,7 +1272,38 @@ void AChaosImpactPlayerController::HandleThrowReleased()
 bool AChaosImpactPlayerController::ShouldUseTouchControls() const
 {
 	// are we on a mobile platform? Should we force touch?
-	return SVirtualJoystick::ShouldDisplayTouchInterface() || bForceTouchControls;
+	// (-CITouch: a PC plays as a phone does, with the mouse as one finger, to try the touch controls.)
+	static const bool bTouchOnPC = FParse::Param(FCommandLine::Get(), TEXT("CITouch"));
+	// (Asked hundreds of times a frame, and the engine's answer reads the settings each time: once a frame is enough.)
+	static uint64 AskedOnFrame = MAX_uint64;
+	static bool bTouchInterface = false;
+	if (AskedOnFrame != GFrameCounter)
+	{
+		AskedOnFrame = GFrameCounter;
+		bTouchInterface = SVirtualJoystick::ShouldDisplayTouchInterface();
+	}
+	return bTouchInterface || bForceTouchControls || bTouchOnPC;
+}
+
+bool AChaosImpactPlayerController::IsPhoneSolo() const
+{
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	return true;
+#else
+	return ShouldUseTouchControls();
+#endif
+}
+
+void AChaosImpactPlayerController::BeginPhoneSolo(const EChaosImpactScreen ReturnTo)
+{
+	RequestedLocalPlayerCount = 1;
+	RequestedKeyboardPlayerIndex = 0;
+	bRequestedPrimaryUsesGamepad = false;
+	JoinedInputDeviceIds.Reset();
+	JoinedLegacyControllerIds.Reset();
+	PendingMatchRules.bSpectate = false;
+	ControllerAssignmentReturnScreen = ReturnTo;
+	ShowMenuScreen(EChaosImpactScreen::CharacterSelect);
 }
 
 void AChaosImpactPlayerController::OnPossess(APawn* InPawn)
@@ -1268,6 +1325,10 @@ void AChaosImpactPlayerController::StartTitleDemo()
 	{
 		return;
 	}
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	// スマホ版: none (60 fps at the title).
+	return;
+#endif
 	FActorSpawnParameters Parameters;
 	Parameters.Owner = this;
 	TitleDemo = GetWorld()->SpawnActor<AChaosImpactTitleDemo>(AChaosImpactTitleDemo::StaticClass(), FTransform::Identity, Parameters);
@@ -1362,6 +1423,51 @@ void AChaosImpactPlayerController::ShowMenuScreen(const EChaosImpactScreen NewSc
 	if (!MenuWidget || bTravelPending)
 	{
 		return;
+	}
+	if (IsPhoneSolo() && PlayFlow != EChaosImpactPlayFlow::RPGAdventure && NewScreen != CurrentScreen)
+	{
+		// スマホ版: one player, so the player count and the controller entry are never shown: going on, straight to the
+		// characters; coming back from them, to the screen before.
+		const bool bBack = CurrentScreen == EChaosImpactScreen::CharacterSelect || CurrentScreen == EChaosImpactScreen::MultiReady
+			|| CurrentScreen == EChaosImpactScreen::ControllerAssignment;
+		const EChaosImpactScreen ScreenBefore = PlayFlow == EChaosImpactPlayFlow::VersusOnline ? EChaosImpactScreen::VSSelect
+			: PlayFlow == EChaosImpactPlayFlow::VersusLocal ? EChaosImpactScreen::TrainingSetup : EChaosImpactScreen::ModeSelect;
+		if (NewScreen == EChaosImpactScreen::ControllerAssignment)
+		{
+			if (bBack)
+			{
+				ShowMenuScreen(ScreenBefore);
+			}
+			else
+			{
+				BeginPhoneSolo(ControllerAssignmentReturnScreen);
+			}
+			return;
+		}
+		if (NewScreen == EChaosImpactScreen::OnlinePlayers)
+		{
+			if (CurrentScreen == EChaosImpactScreen::OnlineConnecting)
+			{
+				BeginPhoneSolo(EChaosImpactScreen::OnlinePlayers);
+			}
+			else
+			{
+				ShowMenuScreen(EChaosImpactScreen::VSSelect);
+			}
+			return;
+		}
+		if (NewScreen == EChaosImpactScreen::TrainingSetup && PlayFlow == EChaosImpactPlayFlow::Training)
+		{
+			if (bBack)
+			{
+				ShowMenuScreen(EChaosImpactScreen::ModeSelect);
+			}
+			else
+			{
+				BeginPhoneSolo(EChaosImpactScreen::TrainingSetup);
+			}
+			return;
+		}
 	}
 	if (IsPrimaryLocalPlayerController() && NewScreen != CurrentScreen)
 	{
@@ -1505,6 +1611,12 @@ void AChaosImpactPlayerController::TogglePauseMenu()
 	// Solo mode's title takes its own back button; in the demo any button goes back to the title.
 	if (bSoloTitle || bDemoPlay)
 	{
+		return;
+	}
+	// A boss scene playing (登場ムービー, 会話): the pause button skips it instead.
+	if (AChaosImpactBossScene* Scene = AChaosImpactBossScene::GetActive(GetWorld()); Scene && Scene->IsTakingInput())
+	{
+		Scene->RequestSkip();
 		return;
 	}
 	if (MenuWidget && FPlatformTime::Seconds() - MenuWidget->GetScreenStartedAt() < 0.2)
@@ -2082,12 +2194,12 @@ void AChaosImpactPlayerController::ApplyTrainingSettings()
 void AChaosImpactPlayerController::CycleTrainingSummonBallType()
 {
 	TrainingSummonBallType = ChaosImpactBallTypes::FromIndex(
-		(static_cast<int32>(TrainingSummonBallType) + 1) % ChaosImpactBallTypes::Count);
+		(static_cast<int32>(TrainingSummonBallType) + 1) % ChaosImpactBallTypes::SharedCount);
 }
 
 void AChaosImpactPlayerController::SetTrainingSummonBallType(const EChaosImpactBallType Type)
 {
-	if (bTrainingMode && !bTravelPending && static_cast<int32>(Type) < ChaosImpactBallTypes::Count)
+	if (bTrainingMode && !bTravelPending && static_cast<int32>(Type) < ChaosImpactBallTypes::SharedCount)
 	{ TrainingSummonBallType = Type; }
 }
 
@@ -2411,6 +2523,63 @@ void AChaosImpactPlayerController::ToggleRumbleEnabled()
 	else
 	{
 		StopRumble();
+	}
+}
+
+void AChaosImpactPlayerController::PlayMenuRumble(const UObject* Context, const EChaosImpactSfx Sound)
+{
+	if (!ChaosImpactSettings::IsMenuRumbleOn() || !Context)
+	{
+		return;
+	}
+	const APlayerController* Owner = Cast<APlayerController>(Context);
+	if (!Owner)
+	{
+		if (const UUserWidget* Widget = Cast<UUserWidget>(Context))
+		{
+			Owner = Widget->GetOwningPlayer();
+		}
+	}
+	if (!Owner)
+	{
+		const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(Context, EGetWorldErrorMode::ReturnNull) : nullptr;
+		Owner = World ? World->GetFirstPlayerController() : nullptr;
+	}
+	AChaosImpactPlayerController* Player = const_cast<AChaosImpactPlayerController*>(Cast<AChaosImpactPlayerController>(Owner));
+	if (!Player)
+	{
+		return;
+	}
+	// Light and short, a little firmer for deciding and refusing.
+	switch (Sound)
+	{
+	case EChaosImpactSfx::UiMove:
+	case EChaosImpactSfx::UiType:
+	case EChaosImpactSfx::UiErase:
+		Player->PlayRumble(0.1f, 0.0f, 0.035f);
+		break;
+	case EChaosImpactSfx::UiTab:
+	case EChaosImpactSfx::UiValue:
+	case EChaosImpactSfx::UiSelect:
+		Player->PlayRumble(0.14f, 0.0f, 0.045f);
+		break;
+	case EChaosImpactSfx::UiConfirm:
+	case EChaosImpactSfx::UiOpen:
+	case EChaosImpactSfx::UiStart:
+	case EChaosImpactSfx::UiReady:
+		Player->PlayRumble(0.22f, 0.12f, 0.07f);
+		break;
+	case EChaosImpactSfx::UiBack:
+		Player->PlayRumble(0.16f, 0.06f, 0.05f);
+		break;
+	case EChaosImpactSfx::UiDeny:
+		Player->PlayRumble(0.3f, 0.2f, 0.12f);
+		break;
+	case EChaosImpactSfx::UiReveal:
+		Player->PlayRumble(0.2f, 0.16f, 0.1f);
+		break;
+	default:
+		break;
 	}
 }
 
@@ -3479,7 +3648,8 @@ void AChaosImpactPlayerController::UpdateMatchmadeProgress()
 			// The 対戦履歴's detail: the arena, this player's character and the rounds won each.
 			const AChaosImpactPlayerState* Own = GetPlayerState<AChaosImpactPlayerState>();
 			TSharedPtr<FJsonObject> Detail = MakeShared<FJsonObject>();
-			Detail->SetNumberField(TEXT("stage"), -1);
+			// (A 1v1 stage counts from ChaosImpactMatch::DuelStageHistoryBase: the relay keeps any number up to 63.)
+			Detail->SetNumberField(TEXT("stage"), ChaosImpactMatch::DuelStageHistoryBase + ChaosImpactMatch::SanitizeDuelStage(Match->Rules.StageIndex));
 			Detail->SetNumberField(TEXT("chara"), Own ? Own->CharacterIndex : 0);
 			Detail->SetNumberField(TEXT("color"), Own ? Own->ColourChoice : -1);
 			Detail->SetArrayField(TEXT("score"), {MakeShared<FJsonValueNumber>(Match->Duel.Wins[Side]), MakeShared<FJsonValueNumber>(Match->Duel.Wins[1 - Side])});
@@ -4049,10 +4219,29 @@ void AChaosImpactPlayerController::OpenMatchRules(const EChaosImpactScreen Retur
 	ShowMenuScreen(EChaosImpactScreen::MatchRules);
 }
 
+bool AChaosImpactPlayerController::CanChooseFusionRule() const
+{
+	const AChaosImpactGameState* Room = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (IsDojo() || IsSoloMode() || (Room && (Room->IsMatchmade() || Room->bPublicTournament || Room->bLocalTournament)))
+	{
+		return false;
+	}
+	return GetNetMode() == NM_Standalone || (Room && Room->bOnlineRoom);
+}
+
 void AChaosImpactPlayerController::AdjustMatchRule(const int32 Row, const int32 Direction)
 {
 	const int32 Humans = GetMatchHumanCount();
 	FChaosImpactMatchRules& Rules = PendingMatchRules;
+	// Row 4: 合体ボール あり / なし (in every rule, the tournament's too).
+	if (Row == 4)
+	{
+		if (CanChooseFusionRule())
+		{
+			Rules.bFusionBalls = !Rules.bFusionBalls;
+		}
+		return;
+	}
 	const auto Wrap = [](const int32 Value, const int32 Count) { return (Value % Count + Count) % Count; };
 	// トーナメント (a 合言葉 room's host only): its own rows: how it runs, its CPUs, their strength.
 	if (Rules.bTournament && Row != 1)
@@ -4231,19 +4420,46 @@ void AChaosImpactPlayerController::SetMatchModeChoice(const int32 Choice)
 void AChaosImpactPlayerController::OpenStageSelect()
 {
 	PendingMatchRules = ChaosImpactMatch::Sanitize(PendingMatchRules, GetMatchHumanCount());
-	// The duel has its own arena: straight to the match.
-	if (PendingMatchRules.bDuel)
-	{
-		ConfirmMatchRules();
-		return;
-	}
+	// (A duel or a tournament picks among the 1v1 stages, with ランダム last.)
 	ShowMenuScreen(EChaosImpactScreen::StageSelect);
 }
 
 void AChaosImpactPlayerController::ChooseStage(const int32 StageIndex)
 {
-	PendingMatchRules.StageIndex = ChaosImpactMatch::SanitizeStage(StageIndex);
+	if (PendingMatchRules.bTournament)
+	{
+		// ランダム: each match on a stage drawn for it.
+		PendingMatchRules.Tournament.Stage = StageIndex >= ChaosImpactMatch::DuelStageCount ? -1 : ChaosImpactMatch::SanitizeDuelStage(StageIndex);
+	}
+	else if (PendingMatchRules.bDuel)
+	{
+		PendingMatchRules.StageIndex = StageIndex >= ChaosImpactMatch::DuelStageCount
+			? FMath::RandRange(0, ChaosImpactMatch::DuelStageCount - 1) : ChaosImpactMatch::SanitizeDuelStage(StageIndex);
+		bDuelStageRandom = StageIndex >= ChaosImpactMatch::DuelStageCount;
+	}
+	else
+	{
+		PendingMatchRules.StageIndex = ChaosImpactMatch::SanitizeStage(StageIndex);
+	}
 	ConfirmMatchRules();
+}
+
+int32 AChaosImpactPlayerController::GetStageCardCount() const
+{
+	return PendingMatchRules.bDuel || PendingMatchRules.bTournament ? ChaosImpactMatch::DuelStageCount + 1 : ChaosImpactMatch::StageCount;
+}
+
+int32 AChaosImpactPlayerController::GetStageCardChosen() const
+{
+	if (PendingMatchRules.bTournament)
+	{
+		return PendingMatchRules.Tournament.Stage < 0 ? ChaosImpactMatch::DuelStageCount : ChaosImpactMatch::SanitizeDuelStage(PendingMatchRules.Tournament.Stage);
+	}
+	if (PendingMatchRules.bDuel)
+	{
+		return bDuelStageRandom ? ChaosImpactMatch::DuelStageCount : ChaosImpactMatch::SanitizeDuelStage(PendingMatchRules.StageIndex);
+	}
+	return ChaosImpactMatch::SanitizeStage(PendingMatchRules.StageIndex);
 }
 
 void AChaosImpactPlayerController::CancelStageSelect()
@@ -5037,6 +5253,7 @@ void AChaosImpactPlayerController::PreClientTravel(const FString& PendingURL, co
 
 void AChaosImpactPlayerController::PlayerTick(const float DeltaTime)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIPlayerTick);
 	Super::PlayerTick(DeltaTime);
 	SyncCursorToLastDevice();
 	// ペイント someone here is shown with but this machine does not have: fetched from the host, one set at a time.
@@ -5337,12 +5554,16 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 
 	// A wide sweep around the stage that ends facing the same way as the player's own camera.
 	const float DuelViewYaw = Match->IsDuel() || bTournamentOpening ? PlayerCharacter->GetTopDownCameraRotation().Yaw : 0.f;
-	const auto FlyoverPose = [&StageCenter, DuelViewYaw](const float Alpha, FVector& OutLocation, FRotator& OutRotation)
+	// (A 1v1 stage is smaller, inside its own sky: the sweep stays within it, never outside looking at the sky's back.)
+	const bool bDuelSweep = Match->IsDuel() || bTournamentOpening;
+	const float SweepFrom = bDuelSweep ? 3100.0f : 5600.0f;
+	const float RiseFrom = bDuelSweep ? 2300.0f : 3400.0f;
+	const auto FlyoverPose = [&StageCenter, DuelViewYaw, SweepFrom, RiseFrom](const float Alpha, FVector& OutLocation, FRotator& OutRotation)
 	{
 		const float Ease = FMath::InterpEaseInOut(0.0f, 1.0f, FMath::Clamp(Alpha, 0.0f, 1.0f), 2.0f);
 		const FVector Direction = FRotator(0.0f, FMath::Lerp(-200.0f, 0.0f, Ease) + DuelViewYaw, 0.0f).Vector();
-		OutLocation = StageCenter - Direction * FMath::Lerp(5600.0f, 2600.0f, Ease)
-			+ FVector(0.0f, 0.0f, FMath::Lerp(3400.0f, 1500.0f, Ease));
+		OutLocation = StageCenter - Direction * FMath::Lerp(SweepFrom, 2600.0f, Ease)
+			+ FVector(0.0f, 0.0f, FMath::Lerp(RiseFrom, 1500.0f, Ease));
 		const FVector LookAt = StageCenter + Direction * FMath::Lerp(0.0f, 900.0f, Ease);
 		OutRotation = (LookAt - OutLocation).Rotation();
 	};
@@ -5365,6 +5586,14 @@ void AChaosImpactPlayerController::UpdateMatchIntroCamera()
 			FMath::Clamp((Elapsed - ChaosImpactMatch::FlyoverSeconds) / ChaosImpactMatch::DiveSeconds, 0.0f, 1.0f), 3.0f);
 		Location = FMath::Lerp(From, To, Alpha);
 		Rotation = FQuat::Slerp(FromRotation.Quaternion(), ToRotation.Quaternion(), Alpha).Rotator();
+	}
+	if (const UCameraComponent* Follow = PlayerCharacter->GetFollowCamera())
+	{
+		// (スマホ版を縦に: the same view as the player's camera, which keeps its width there.)
+		UCameraComponent* IntroLens = IntroCamera->GetCameraComponent();
+		IntroLens->bOverrideAspectRatioAxisConstraint = Follow->bOverrideAspectRatioAxisConstraint;
+		IntroLens->AspectRatioAxisConstraint = Follow->AspectRatioAxisConstraint;
+		IntroLens->SetFieldOfView(Follow->FieldOfView);
 	}
 	IntroCamera->SetActorLocationAndRotation(Location, Rotation);
 	if (GetViewTarget() != IntroCamera)
@@ -5687,6 +5916,10 @@ bool AChaosImpactPlayerController::OpenBattleRoyaleIsland()
 
 bool AChaosImpactPlayerController::OpenExplorationMap(const FString& ExtraOptions)
 {
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	// スマホ版 has no RPG or open world.
+	return false;
+#endif
 	const TCHAR* Map = TEXT("/Game/ChaosImpact/OpenWorld/Lvl_OpenWorld");
 	// Removable RPG prototype: a package-only hook, with the original exploration map as fallback.
 	const bool bRPGPrototype = FPackageName::DoesPackageExist(TEXT("/Game/ChaosImpact/RPGPrototype/Lvl_RPGVSStage1"));

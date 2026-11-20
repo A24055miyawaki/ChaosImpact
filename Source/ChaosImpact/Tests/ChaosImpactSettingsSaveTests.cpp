@@ -86,6 +86,8 @@ namespace
 				PC->OpenSettings();
 				Settings->SetTab(FSaveScreen::ETab::Other);
 				Settings->SelectRow(Settings->FindRow(FSaveScreen::RowVolume));
+				// (The cursor back in the tab column, the volume row still picked: Escape there is もどる.)
+				Settings->BackToTabs();
 			};
 			using namespace ChaosImpactSettings;
 			switch (Stage)

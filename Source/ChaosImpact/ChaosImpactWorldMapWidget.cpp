@@ -1,12 +1,39 @@
 #include "ChaosImpactWorldMapWidget.h"
 
 #include "ChaosImpactHints.h"
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSoloStages.h"
 #include "ChaosImpactWorldMap.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "GameFramework/Pawn.h"
+
+float UChaosImpactWorldMapWidget::HudScale(const FVector2D& Size)
+{
+	// (Upright: against a 900-wide screen.)
+	return Size.Y > Size.X ? FMath::Clamp(FMath::Min(Size.X / 900.0f, Size.Y / 1600.0f), 0.45f, 1.5f)
+		: FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.45f, 1.5f);
+}
+
+float UChaosImpactWorldMapWidget::PhoneCardAnchorY(const FVector2D& Size)
+{
+	// Its foot's height (the card stands 260 above it): under the map's name and its button, upright lower still.
+	return (Size.Y > Size.X ? 640.0f : 456.0f) * HudScale(Size);
+}
+
+FBox2D UChaosImpactWorldMapWidget::PhoneCardRect(const FVector2D& Size)
+{
+	const float S = HudScale(Size);
+	const float Foot = PhoneCardAnchorY(Size);
+	return FBox2D(FVector2D(Size.X - 660.0f * S, Foot - 336.0f * S), FVector2D(Size.X - 30.0f * S, Foot - 76.0f * S));
+}
+
+FBox2D UChaosImpactWorldMapWidget::PhoneOverviewRect(const FVector2D& Size)
+{
+	const float S = HudScale(Size);
+	return FBox2D(FVector2D(36.0f * S, 176.0f * S), FVector2D(316.0f * S, 248.0f * S));
+}
 
 void UChaosImpactWorldMapWidget::SetMap(AChaosImpactWorldMap* InMap)
 {
@@ -30,7 +57,9 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 	// Hints in the names of what is being played with right now (the map reads the face buttons by where they are).
 	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(PC);
 	const bool bPad = ChaosImpactHints::IsPad(Device);
-	const float S = FMath::Clamp(FMath::Min(Size.X / 1600.0f, Size.Y / 900.0f), 0.45f, 1.5f);
+	const float S = HudScale(FVector2D(Size));
+	// スマホ版 (played by touch): the card at the top right, a tap on it plays; the whole map by a button; no keys named.
+	const bool bPhone = UChaosImpactMenuWidget::IsPhoneBuild() && !bPad;
 	const float Time = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0));
 	const bool bDark = World->MapIndex == 2;
 	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
@@ -76,7 +105,7 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 		const bool bAvailable = Info->Number == ChaosImpactSolo::GateToMap1 || Progress->IsAvailable(Info->Number);
 		const bool bReady = bGate || !ChaosImpactSolo::GetLevelPackage(Info->Number).IsEmpty();
 		const bool bBoss = Info->Kind == EChaosImpactSoloStageKind::Boss || Info->Kind == EChaosImpactSoloStageKind::Story;
-		const FGeometry Corner = MakeAnchor(AllottedGeometry, Size.X + (1.0f - CardIn) * 700.0f * S, Size.Y, S);
+		const FGeometry Corner = MakeAnchor(AllottedGeometry, Size.X + (1.0f - CardIn) * 700.0f * S, bPhone ? PhoneCardAnchorY(FVector2D(Size)) : Size.Y, S);
 		const FPainter Low{Corner, OutDrawElements, BaseLayer + 2, CardIn};
 		constexpr float L = -660.0f;
 		constexpr float R = -36.0f;
@@ -142,11 +171,8 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 		}
 		else if (!bReady)
 		{
-#if !UE_BUILD_SHIPPING
-			Note = TEXT("準備中（開発用：C でクリア扱い）");
-#else
-			Note = TEXT("準備中");
-#endif
+			Note = TEXT("準備中（選ぶとクリア扱い）");
+			Prompt = bCleared ? FString() : FString(TEXT("クリア扱いにする"));
 		}
 		else
 		{
@@ -164,7 +190,7 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 		if (!Prompt.IsEmpty())
 		{
 			// A key cap, then the action.
-			const FString Key = ChaosImpactHints::Text(Device, TEXT("{A|決定}"));
+			const FString Key = bPhone ? FString(TEXT("タップ")) : ChaosImpactHints::Text(Device, TEXT("{A|決定}"));
 			const float KeyWidth = HudMeasure(Key, 16.0f) + 26.0f;
 			const float Y = B - 50.0f;
 			const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 5.0f);
@@ -224,9 +250,24 @@ int32 UChaosImpactWorldMapWidget::NativePaint(const FPaintArgs& Args, const FGeo
 			}
 		}
 		const FGeometry TopCenter = MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, S);
-		HudText3D(FPainter{TopCenter, OutDrawElements, BaseLayer + 50, In}, TEXT("全体マップ"), 0.0f, 40.0f, 40.0f, Paper, ETextAlign::Center);
+		// (Upright: under the map's name and its button, not over them.)
+		HudText3D(FPainter{TopCenter, OutDrawElements, BaseLayer + 50, In}, TEXT("全体マップ"), 0.0f, Size.Y > Size.X ? 340.0f : 40.0f, 40.0f, Paper, ETextAlign::Center);
 	}
-	if (!World->IsRevealing())
+	if (!World->IsRevealing() && bPhone)
+	{
+		// The whole map's button (back, from it), and what a finger does.
+		const FBox2D R = PhoneOverviewRect(FVector2D(Size));
+		const FPainter B{AllottedGeometry, OutDrawElements, BaseLayer + 50};
+		const float BX = static_cast<float>(R.Min.X), BY = static_cast<float>(R.Min.Y);
+		const float BW = static_cast<float>(R.GetSize().X), BH = static_cast<float>(R.GetSize().Y);
+		HudShard(B, {At(BX, BY + 4.0f * S), At(BX + BW, BY), At(BX + BW - 6.0f * S, BY + BH), At(BX + 4.0f * S, BY + BH)}, Plate, 3.0f, FVector2D(4.0, 5.0));
+		const FString Label = World->IsOverview() ? TEXT("もどる") : TEXT("全体マップ");
+		HudText3D(HudAbove(B, 2), Label, BX + BW * 0.5f, BY + BH * 0.5f - 15.0f * S, HudFit(Label, 28.0f * S, BW - 20.0f * S), Paper, ETextAlign::Center);
+		const FString Help = World->IsOverview() ? TEXT("「もどる」をタップ：もとの場所へ") : TEXT("左側をドラッグ：道を歩く　カードをタップ：出撃");
+		FPainter{AllottedGeometry, OutDrawElements, BaseLayer + 50}.Text(Help, BX + 4.0f * S, BY + BH + 12.0f * S, HudFit(Help, 18.0f * S, Size.X * 0.6f, TEXT("Black")),
+			FLinearColor(0.92f, 0.94f, 1.0f, 0.95f), ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
+	}
+	else if (!World->IsRevealing())
 	{
 		const FGeometry Corner = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
 		// (The pause button said as a button: メニューボタン, オプションボタン, ＋ボタン.)

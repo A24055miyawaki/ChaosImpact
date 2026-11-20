@@ -1,6 +1,7 @@
 #include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
+#include "ChaosImpactPlayerController.h"
 #include "Components/AudioComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -157,6 +158,45 @@ namespace
 		{TEXT("Duel_Sudden"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
 		{TEXT("Duel_RoundOver"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
 		{TEXT("Duel_Win"), 1, 1.0f, 0.0f, ESfxReach::Screen, 1.0f},
+		{TEXT("Fusion_Join"), 1, 1.0f, 0.0f, ESfxReach::Near, 0.2f},
+		{TEXT("Fusion_Split"), 1, 1.0f, 0.02f, ESfxReach::Near, 0.1f},
+		{TEXT("Scene_Rumble"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Scene_Fall"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.3f},
+		{TEXT("Scene_Land"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.3f},
+		{TEXT("Scene_Roar"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Scene_Title"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Scene_Whoosh"), 1, 1.0f, 0.03f, ESfxReach::Screen, 0.1f},
+		{TEXT("Scene_Flee"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Talk_Blip"), 2, 0.7f, 0.04f, ESfxReach::Screen, 0.0f},
+		{TEXT("Talk_Next"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.05f},
+		{TEXT("Scene_Glint"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Heal_Spot"), 1, 1.0f, 0.03f, ESfxReach::Mid, 0.1f},
+		{TEXT("Heal_Gain"), 1, 1.0f, 0.02f, ESfxReach::Mid, 0.1f},
+		{TEXT("Heal_Fade"), 1, 0.9f, 0.03f, ESfxReach::Near, 0.1f},
+		{TEXT("Pres_Throw"), 2, 1.0f, 0.05f, ESfxReach::Far, 0.04f},
+		{TEXT("Pres_Hatch"), 1, 1.0f, 0.02f, ESfxReach::Far, 0.2f},
+		{TEXT("Pres_BeamCharge"), 1, 1.0f, 0.02f, ESfxReach::Far, 0.3f},
+		{TEXT("Pres_BeamFire"), 1, 1.0f, 0.02f, ESfxReach::Far, 0.3f},
+		{TEXT("Pres_BeamEnd"), 1, 0.9f, 0.02f, ESfxReach::Far, 0.3f},
+		{TEXT("Pres_CarTransform"), 1, 1.0f, 0.02f, ESfxReach::Far, 0.3f},
+		{TEXT("Pres_CarRev"), 1, 1.0f, 0.03f, ESfxReach::Screen, 0.3f},
+		{TEXT("Pres_CarRush"), 1, 1.0f, 0.03f, ESfxReach::Screen, 0.3f},
+		{TEXT("Pres_CarHorn"), 1, 0.9f, 0.02f, ESfxReach::Screen, 0.3f},
+		{TEXT("Pres_NovaCharge"), 1, 1.0f, 0.02f, ESfxReach::Far, 0.3f},
+		{TEXT("Pres_NovaLaunch"), 2, 0.9f, 0.04f, ESfxReach::Far, 0.1f},
+		{TEXT("Pres_NovaFall"), 1, 0.9f, 0.04f, ESfxReach::Far, 0.1f},
+		{TEXT("Pres_NovaBlast"), 2, 1.0f, 0.04f, ESfxReach::Far, 0.1f},
+		{TEXT("Pres_Stun"), 1, 1.0f, 0.02f, ESfxReach::Far, 0.5f},
+		{TEXT("Pres_PowerUp"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Hall_Door"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Hall_Step"), 2, 0.8f, 0.04f, ESfxReach::Screen, 0.15f},
+		{TEXT("Hall_LightOff"), 1, 1.0f, 0.03f, ESfxReach::Screen, 0.15f},
+		{TEXT("Hall_Stomp"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.3f},
+		{TEXT("Hall_BallLight"), 1, 0.9f, 0.0f, ESfxReach::Screen, 0.1f},
+		{TEXT("Hall_Rush"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Hero_SpecialCharge"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Hero_SpecialBlast"), 1, 1.0f, 0.0f, ESfxReach::Screen, 0.5f},
+		{TEXT("Hall_StarFly"), 1, 0.9f, 0.03f, ESfxReach::Screen, 0.1f},
 	};
 	static_assert(UE_ARRAY_COUNT(Specs) == static_cast<int32>(EChaosImpactSfx::Count), "One entry per sound, in order");
 
@@ -259,6 +299,11 @@ void ChaosImpactSfx::Play2D(const UObject* WorldContext, const EChaosImpactSfx S
 	if (Asset)
 	{
 		UGameplayStatics::PlaySound2D(World, Asset, Volume * SpecOf(Sound).Volume, PitchFor(Sound, Pitch), 0.0f, nullptr, nullptr, true);
+	}
+	// メニュー中の振動: the menus' sounds tick the controller lightly too.
+	if (Sound <= EChaosImpactSfx::UiReveal)
+	{
+		AChaosImpactPlayerController::PlayMenuRumble(WorldContext, Sound);
 	}
 }
 

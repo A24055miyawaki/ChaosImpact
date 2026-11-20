@@ -135,6 +135,11 @@ void ChaosImpactDrive::UpdateLook(AActor* Owner, FChaosImpactDriveLook& Look, co
 	}
 	const FVector Center = Root->GetComponentLocation();
 	const bool bSteered = ControlLeft >= 0.0f;
+	const float Size = FMath::Max(0.1f, Look.Scale);
+	if (UStaticMeshComponent* Core = Look.Core.Get())
+	{
+		Core->SetRelativeScale3D(FVector(0.26f * Size));
+	}
 
 	// Snapped round (sent back the way it came): a burst of sparks where it turned.
 	const FVector Heading = Velocity.GetSafeNormal2D();
@@ -163,7 +168,7 @@ void ChaosImpactDrive::UpdateLook(AActor* Owner, FChaosImpactDriveLook& Look, co
 	const float Pulse = 0.5f + 0.5f * FMath::Sin(Time * 9.0f);
 	if (UStaticMeshComponent* Halo = Look.Halo.Get())
 	{
-		Halo->SetRelativeScale3D(FVector((0.7f + 0.06f * Pulse + (bSteered ? 0.08f : 0.0f))));
+		Halo->SetRelativeScale3D(FVector((0.7f + 0.06f * Pulse + (bSteered ? 0.08f : 0.0f)) * Size));
 	}
 	if (UMaterialInstanceDynamic* HaloMaterial = Look.HaloMaterial.Get())
 	{
@@ -180,12 +185,12 @@ void ChaosImpactDrive::UpdateLook(AActor* Owner, FChaosImpactDriveLook& Look, co
 		ChaosImpactIceMeshes::FMeshBuffers Mesh;
 		const FQuat First = FQuat(FVector::UpVector, Time * 3.1f) * FQuat(FVector::ForwardVector, FMath::DegreesToRadians(58.0f));
 		const FQuat Second = FQuat(FVector::UpVector, -Time * 2.4f + 1.3f) * FQuat(FVector::RightVector, FMath::DegreesToRadians(62.0f));
-		AppendTiltedRing(Mesh, FVector::ZeroVector, First, 38.0f, 3.0f, 0.0f, 1.0f, 40);
-		AppendTiltedRing(Mesh, FVector::ZeroVector, Second, 44.0f, 2.5f, 0.0f, 1.0f, 40);
+		AppendTiltedRing(Mesh, FVector::ZeroVector, First, 38.0f * Size, 3.0f * Size, 0.0f, 1.0f, 40);
+		AppendTiltedRing(Mesh, FVector::ZeroVector, Second, 44.0f * Size, 2.5f * Size, 0.0f, 1.0f, 40);
 		if (bSteered)
 		{
 			// Starting from the top of the screen's view and going round as time runs out.
-			AppendTiltedRing(Mesh, FVector(0.0f, 0.0f, -20.0f), FQuat::Identity, 58.0f, 5.0f,
+			AppendTiltedRing(Mesh, FVector(0.0f, 0.0f, -20.0f * Size), FQuat::Identity, 58.0f * Size, 5.0f,
 				0.0f, FMath::Clamp(ControlLeft, 0.0f, 1.0f), 64);
 		}
 		ChaosImpactLightning::SetMesh(Rings, Mesh);
@@ -212,7 +217,7 @@ void ChaosImpactDrive::UpdateLook(AActor* Owner, FChaosImpactDriveLook& Look, co
 			const FVector Start = Look.TrailPoints[Index].Position - Center;
 			const FVector End = Look.TrailPoints[Index + 1].Position - Center;
 			const float Fade = FMath::Clamp(1.0f - (Time - Look.TrailPoints[Index].Time) / TrailSeconds, 0.0f, 1.0f);
-			const float Width = TrailWidth * Fade * Fade;
+			const float Width = TrailWidth * Size * Fade * Fade;
 			const FVector Side = FVector::CrossProduct(End - Start, FVector::UpVector).GetSafeNormal() * Width * 0.5f;
 			if (Side.IsNearlyZero())
 			{

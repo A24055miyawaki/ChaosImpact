@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 
@@ -41,6 +41,14 @@ struct FChaosImpactTutorial
 	/** The button hints down the left side: the main controls in this player's keys, the ones usable right now lit. */
 	static void PaintHints(const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer, const AChaosImpactPlayerController* Controller,
 		float Scale, TArray<FBox2D>* OutBoxes = nullptr);
+	/** One hint: its key (or what to touch) and what it does; Lit: usable now; bSpare: the first to go when there is no room. */
+	struct FHintRow { FString Key; FString Label; float Lit = 1.0f; bool bSpare = false; };
+	/**
+	 * The hints drawn: Right over the ball holder, Left over the health (HeightFactor: how far down the screen they stand,
+	 * 1 the bottom; bCornerButtons: the mouse styles' corner buttons under the right column). Also the 配置 editor's.
+	 */
+	static void PaintHintRows(const FGeometry& Geometry, FSlateWindowElementList& Elements, int32 Layer, float Scale, float HeightFactor,
+		bool bCornerButtons, TArray<FHintRow> Left, TArray<FHintRow> Right, TArray<FBox2D>* OutBoxes = nullptr);
 
 private:
 	void Restart(double Now);

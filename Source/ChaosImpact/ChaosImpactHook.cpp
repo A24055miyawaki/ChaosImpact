@@ -1,4 +1,5 @@
 #include "ChaosImpactHook.h"
+#include "ChaosImpactFusionEffects.h"
 #include "ChaosImpactParty.h"
 
 #include "ChaosImpact.h"
@@ -7,7 +8,11 @@
 #include "ChaosImpactBuddyBall.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactDuelBallBalance.h"
+#include "ChaosImpactFusion.h"
+#include "ChaosImpactHazardZone.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactGameMode.h"
+#include "ChaosImpactStageBase.h"
 #include "ChaosImpactIceMeshes.h"
 #include "ChaosImpactNovaParts.h"
 #include "ChaosImpactLightning.h"
@@ -101,10 +106,127 @@ void AChaosImpactHook::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AChaosImpactHook, AnchorPoint);
 	DOREPLIFETIME(AChaosImpactHook, ZipTarget);
 	DOREPLIFETIME(AChaosImpactHook, ZipServerTime);
+	DOREPLIFETIME(AChaosImpactHook, FusedType);
+	DOREPLIFETIME(AChaosImpactHook, FusionReach);
+	DOREPLIFETIME(AChaosImpactHook, bPhaseThrough);
+	DOREPLIFETIME(AChaosImpactHook, BounceAt);
+	DOREPLIFETIME(AChaosImpactHook, BounceHeading);
+}
+
+float AChaosImpactHook::GetOutSpeed() const
+{
+	return FusedType == EChaosImpactBallType::Thunder ? OutSpeed * ThunderOutScale : OutSpeed;
+}
+
+float AChaosImpactHook::GetAnchorFlightSpeed() const
+{
+	return FusedType == EChaosImpactBallType::Thunder ? AnchorSpeed * ThunderAnchorScale : AnchorSpeed;
+}
+
+float AChaosImpactHook::GetZipSpeed() const
+{
+	return FusedType == EChaosImpactBallType::Thunder ? ZipSpeed * ThunderZipScale : ZipSpeed;
+}
+
+FVector AChaosImpactHook::PathPoint(const float Along) const
+{
+	if (BounceAt > 0.0f && Along > BounceAt)
+	{
+		return FVector(Origin) + FVector(Heading) * BounceAt + FVector(BounceHeading) * (Along - BounceAt);
+	}
+	return FVector(Origin) + FVector(Heading) * Along;
+}
+
+void AChaosImpactHook::PlanBounce()
+{
+	UWorld* World = GetWorld();
+	if (!World || bAnchor || FusedType != EChaosImpactBallType::Thunder)
+	{
+		return;
+	}
+	// 雷フック: the first wall on its line turns it once (as a thunder ball rebounds), the rest of its length on from there.
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(ChaosImpactHookBounce), false, this);
+	if (SourcePawn)
+	{
+		Query.AddIgnoredActor(SourcePawn);
+	}
+	const FVector From = Origin;
+	const FVector Line = FVector(Heading);
+	FHitResult Wall;
+	if (!World->SweepSingleByObjectType(Wall, From, From + Line * Length, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+		FCollisionShape::MakeSphere(HeadRadius), Query) || Wall.bStartPenetrating)
+	{
+		return;
+	}
+	const float Out = static_cast<float>(Wall.Distance) - 2.0f;
+	const FVector Normal = FVector(Wall.ImpactNormal.X, Wall.ImpactNormal.Y, 0.0f).GetSafeNormal();
+	if (Out < 60.0f || Out > Length - 150.0f || Normal.IsNearlyZero())
+	{
+		return;
+	}
+	const FVector Rebound = (Line - 2.0f * FVector::DotProduct(Line, Normal) * Normal).GetSafeNormal2D();
+	if (Rebound.IsNearlyZero())
+	{
+		return;
+	}
+	BounceAt = Out;
+	BounceHeading = Rebound;
+}
+
+bool AChaosImpactHook::GetFusedPull(FVector& OutCenter, float& OutRadius) const
+{
+	if (FusedType != EChaosImpactBallType::Black)
+	{
+		return false;
+	}
+	OutRadius = FusedPullRadius;
+	if (bAnchor)
+	{
+		// The thrower flying to where it stuck draws in whoever they pass (never themselves).
+		if (SourcePawn && ShouldZipNow())
+		{
+			OutCenter = SourcePawn->GetActorLocation();
+			return true;
+		}
+		return false;
+	}
+	if (Phase == EChaosImpactHookPhase::Out || Phase == EChaosImpactHookPhase::Back)
+	{
+		OutCenter = Head;
+		return true;
+	}
+	return false;
+}
+
+void AChaosImpactHook::ApplyFusion(const FVector& At, AActor* Victim)
+{
+	if (!HasAuthority() || FusedType == EChaosImpactBallType::Normal || bFusionApplied)
+	{
+		return;
+	}
+	bFusionApplied = true;
+	const EChaosImpactBallType Flier = bAnchor ? EChaosImpactBallType::Anchor : EChaosImpactBallType::Hook;
+	if (FusedType == EChaosImpactBallType::Beam)
+	{
+		// 貫通フック・光の跳躍: the light is in how it went (through walls); no second shot from where it ended.
+		ChaosImpactFusion::PlayFusedBurst(this, At, Flier, FusedType);
+		return;
+	}
+	if (AChaosImpactCharacter* CaughtOne = Cast<AChaosImpactCharacter>(Victim); CaughtOne && ChaosImpactFusion::IsStrikeRider(FusedType))
+	{
+		// Caught: the rider on the one caught (set burning, frozen as they are reeled in, blinded, blown away, the others
+		// near drawn in with them, a mine stuck on them…), not a burst at the hook.
+		ChaosImpactFusion::OnStrike(GetWorld(), Flier, FusedType, CaughtOne, FVector(Heading), SourcePawn, DuelThrowDamage, &FusionCarry);
+		ChaosImpactFusion::PlayFusedBurst(this, At, Flier, FusedType);
+		return;
+	}
+	ChaosImpactFusion::ApplySecondary(GetWorld(), FusedType, At, FVector(Heading), SourcePawn, Victim, DuelThrowDamage,
+		AChaosImpactBall::StaticClass(), Flier);
+	ChaosImpactFusion::PlayFusedBurst(this, At, bAnchor ? EChaosImpactBallType::Anchor : EChaosImpactBallType::Hook, FusedType);
 }
 
 AChaosImpactHook* AChaosImpactHook::Release(UWorld* World, const FVector& From, const FVector& Direction, APawn* Source,
-	const bool bAnchor)
+	const bool bAnchor, const EChaosImpactBallType Fused, const float Reach)
 {
 	if (!World)
 	{
@@ -131,9 +253,15 @@ AChaosImpactHook* AChaosImpactHook::Release(UWorld* World, const FVector& From, 
 	Hook->SourcePawn = Source;
 	Hook->DuelThrowDamage = FChaosImpactDuelThrowDamage::Create(World);
 	Hook->bAnchor = bAnchor;
+	Hook->FusedType = Fused;
+	Hook->FusionReach = Fused == EChaosImpactBallType::Snow ? FMath::Max(1.0f, Reach) : 1.0f;
 	if (bAnchor)
 	{
 		Hook->PlaceAnchor();
+	}
+	else
+	{
+		Hook->PlanBounce();
 	}
 	Hook->FinishSpawning(Where);
 	UE_LOG(LogChaosImpact, Log, TEXT("%s thrown by %s from %s heading %s"), bAnchor ? TEXT("Anchor") : TEXT("Hook"), *GetNameSafe(Source),
@@ -182,6 +310,95 @@ void AChaosImpactHook::PlaceAnchor()
 		bWall = World->SweepSingleByObjectType(Wall, From, Tip, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
 			FCollisionShape::MakeSphere(HeadRadius), Query);
 	}
+	if (FusedType == EChaosImpactBallType::Hook)
+	{
+		// グラップル (アンカー×フック): it bites into the first opponent on its line (before any wall), and its thrower is
+		// whisked at them (the ram is the hit).
+		const float Reach = bWall ? static_cast<float>(FVector::Dist(From, Wall.Location)) : Length;
+		const AChaosImpactCharacter* Best = nullptr;
+		float BestAlong = Reach;
+		for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+		{
+			if (!ChaosImpactFusion::IsFusionTarget(World, *It, SourcePawn))
+			{
+				continue;
+			}
+			const FVector To = It->GetActorLocation() - From;
+			const float Along = static_cast<float>(FVector::DotProduct(To, Line));
+			const float Off = static_cast<float>((To - Line * Along).Size2D());
+			if (Along > 100.0f && Along < BestAlong && Off < 110.0f && FMath::Abs(To.Z) < 300.0f)
+			{
+				Best = *It;
+				BestAlong = Along;
+			}
+		}
+		if (Best && FloorUnder(From + Line * FMath::Max(BestAlong - Radius - 30.0f, 0.0f), Floor))
+		{
+			AnchorPoint = Best->GetActorLocation();
+			ZipTarget = Floor;
+			bAnchorHolds = true;
+			ZipServerTime = StartServerTime + FVector::Dist(From, FVector(AnchorPoint)) / GetAnchorFlightSpeed();
+			UE_LOG(LogChaosImpact, Log, TEXT("Grapple: bit into %s"), *Best->GetName());
+			return;
+		}
+	}
+	if (bWall && FusedType == EChaosImpactBallType::Beam && !Wall.bStartPenetrating)
+	{
+		// 光の跳躍 (ビーム×アンカー): a thin wall is gone through. Back from as far on as the thickest it goes through to
+		// the wall's far face; on past it the rest of its reach (at most 600: up to the next wall or the floor there).
+		const float Into = static_cast<float>(Wall.Distance);
+		const float HalfHeight = Thrower && Thrower->GetCapsuleComponent() ? Thrower->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 90.0f;
+		const FVector Probe = From + Line * (Into + PhaseWallMax + HeadRadius);
+		FHitResult Far;
+		// (That wall's own far face: only it is looked at, so something standing just behind it is not taken for it.)
+		UPrimitiveComponent* WallPart = Wall.GetComponent();
+		const bool bFarFace = WallPart && WallPart->LineTraceComponent(Far, Probe, Wall.ImpactPoint,
+			FCollisionQueryParams(SCENE_QUERY_STAT(ChaosImpactAnchorFar), true)) && !Far.bStartPenetrating
+			&& FVector::Dist2D(Far.ImpactPoint, Probe) > 1.0f;
+		Far.Location = Far.ImpactPoint + Line * HeadRadius;
+		if (!bFarFace)
+		{
+			UE_LOG(LogChaosImpact, Verbose, TEXT("Light leap: wall at %.0f too thick (no far face, start inside %d)"), Into, Far.bStartPenetrating ? 1 : 0);
+		}
+		if (bFarFace)
+		{
+			const FVector Beyond = Far.Location + Line * (Radius + 30.0f);
+			const float Left = FMath::Clamp(Length - static_cast<float>(FVector::Dist2D(From, Beyond)), 0.0f, 600.0f);
+			FVector Land = Beyond + Line * Left;
+			FHitResult Next;
+			if (Left > 1.0f && World->SweepSingleByObjectType(Next, Beyond, Land, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+				FCollisionShape::MakeSphere(Radius), Query))
+			{
+				Land = Next.bStartPenetrating ? Beyond : Next.Location - Line * 10.0f;
+			}
+			// Only where there is floor to stand on and room for the thrower, well inside the stage (never through its
+			// outer wall, into a pit or out of the stage; none known, never).
+			const AChaosImpactGameMode* Mode = World->GetAuthGameMode<AChaosImpactGameMode>();
+			const AChaosImpactStageBase* Stage = Mode ? Mode->GetVersusStage() : nullptr;
+			for (TActorIterator<AChaosImpactStageBase> It(World); It && !Stage; ++It)
+			{
+				// (A training stage: the stage set out on its level.)
+				Stage = *It;
+			}
+			const FVector Outward = Stage ? (Land - Stage->GetActorLocation()).GetSafeNormal2D() : FVector::ZeroVector;
+			const bool bWellInside = Stage && !Stage->IsOutside(Land + Outward * (300.0f + Radius + 60.0f));
+			const bool bFloor = FloorUnder(Land, Floor) && FMath::Abs(Floor.Z - From.Z) < 400.0f;
+			const bool bRoom = bFloor && !World->OverlapAnyTestByObjectType(Floor + FVector(0.0f, 0.0f, HalfHeight + 8.0f), FQuat::Identity,
+				FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeCapsule(Radius, HalfHeight), Query);
+			UE_LOG(LogChaosImpact, Verbose, TEXT("Light leap: wall at %.0f, far face %.0f on, land %.0f on: stage %d inside %d floor %d room %d"),
+				Into, FVector::Dist2D(From, Far.Location), FVector::Dist2D(From, Land), Stage ? 1 : 0, bWellInside ? 1 : 0, bFloor ? 1 : 0,
+				bRoom ? 1 : 0);
+			if (bWellInside && bRoom)
+			{
+				AnchorPoint = Floor;
+				ZipTarget = Floor;
+				bAnchorHolds = true;
+				bPhaseThrough = true;
+				ZipServerTime = StartServerTime + FVector::Dist(From, FVector(AnchorPoint)) / GetAnchorFlightSpeed();
+				return;
+			}
+		}
+	}
 	if (bWall)
 	{
 		// Into the wall, where it met it; the thrower lands on the floor just in front of it.
@@ -204,7 +421,7 @@ void AChaosImpactHook::PlaceAnchor()
 		ZipTarget = Tip;
 		bAnchorHolds = false;
 	}
-	ZipServerTime = StartServerTime + FVector::Dist(From, FVector(AnchorPoint)) / AnchorSpeed;
+	ZipServerTime = StartServerTime + FVector::Dist(From, FVector(AnchorPoint)) / GetAnchorFlightSpeed();
 }
 
 bool AChaosImpactHook::ShouldZipNow() const
@@ -238,15 +455,16 @@ FVector AChaosImpactHook::GetHand() const
 
 FVector AChaosImpactHook::OutPosition(const float TimeOut) const
 {
-	const float Reach = TimeOut * OutSpeed;
-	const FVector Tip = FVector(Origin) + FVector(Heading) * Length;
+	const float Speed = GetOutSpeed();
+	const float Reach = TimeOut * Speed;
+	const FVector Tip = PathPoint(Length);
 	if (Reach <= Length)
 	{
-		return FVector(Origin) + FVector(Heading) * Reach;
+		return PathPoint(Reach);
 	}
 	// Its full length reached: back to the hand from the tip.
 	const FVector Hand = GetHand();
-	const float Back = (TimeOut - Length / OutSpeed) * BackSpeed;
+	const float Back = (TimeOut - Length / Speed) * BackSpeed;
 	const float Span = static_cast<float>(FVector::Dist(Tip, Hand));
 	return Span > 1.0f ? FMath::Lerp(Tip, Hand, FMath::Clamp(Back / Span, 0.0f, 1.0f)) : Hand;
 }
@@ -289,13 +507,58 @@ void AChaosImpactHook::Tick(const float DeltaSeconds)
 	const FVector Hand = GetHand();
 	LastHead = bHeadStarted ? Head : FVector(Origin);
 	bHeadStarted = true;
+	if (bAnchor && HasAuthority() && FusedType == EChaosImpactBallType::Anchor && !bSecondLegFired && bAnchorHolds && SourcePawn
+		&& Now >= ZipServerTime && FVector::Dist2D(SourcePawn->GetActorLocation(), FVector(ZipTarget)) < 200.0f)
+	{
+		// 二段アンカー: there, a second anchor goes out on the same way at once (and its thrower flies on).
+		bSecondLegFired = true;
+		Release(GetWorld(), SourcePawn->GetActorLocation(), FVector(Heading), SourcePawn, true, EChaosImpactBallType::Normal, 1.0f);
+	}
+	if (FusedType != EChaosImpactBallType::Normal)
+	{
+		// 合体: an anchor brings the second kind where it sticks (smoke and a mine stay where its thrower set off).
+		if (bAnchor && HasAuthority() && !bFusionApplied && (Now >= ZipServerTime || Phase == EChaosImpactHookPhase::Back))
+		{
+			const bool bLeftBehind = FusedType == EChaosImpactBallType::Smoke || FusedType == EChaosImpactBallType::Mine;
+			ApplyFusion(bLeftBehind ? FVector(Origin) : FVector(AnchorPoint), nullptr);
+		}
+		// What rides along is carried on the way: under the hook's head going out, or with the anchor's thrower as they fly
+		// (fires, frozen floor, smoke, a crackle that strikes someone near, a whirl pushing aside).
+		if (HasAuthority())
+		{
+			const bool bZipping = bAnchor && SourcePawn && ShouldZipNow();
+			const bool bOut = !bAnchor && Phase == EChaosImpactHookPhase::Out;
+			if (bZipping || bOut)
+			{
+				ChaosImpactFusion::TickCarry(GetWorld(), bAnchor ? EChaosImpactBallType::Anchor : EChaosImpactBallType::Hook, FusedType,
+					bZipping ? SourcePawn->GetActorLocation() : Head, SourcePawn, DuelThrowDamage, FusionCarry);
+			}
+		}
+		// A black hole riding along: its pull drawn where it is (streaks of light drawn in).
+		FVector PullAt;
+		float PullRadius = 0.0f;
+		const float PullClock = static_cast<float>(GetWorld()->GetTimeSeconds());
+		if (GetNetMode() != NM_DedicatedServer && PullClock >= SuctionPuffAt && GetFusedPull(PullAt, PullRadius))
+		{
+			SuctionPuffAt = PullClock + 0.06f;
+			ChaosImpactFusion::PlaySuctionPuff(this, PullAt, PullRadius, bAnchor ? EChaosImpactBallType::Anchor : EChaosImpactBallType::Hook);
+		}
+		// The head trails the two colours on its way out and back.
+		const float Clock = static_cast<float>(GetWorld()->GetTimeSeconds());
+		if (GetNetMode() != NM_DedicatedServer && Clock >= FusionPuffAt && DeltaSeconds > 0.0f)
+		{
+			FusionPuffAt = Clock + 0.04f;
+			ChaosImpactFusion::PlayTrailPuff(this, Head, (Head - LastHead) / DeltaSeconds,
+				bAnchor ? EChaosImpactBallType::Anchor : EChaosImpactBallType::Hook, FusedType, 0.8f);
+		}
+	}
 	switch (Phase)
 	{
 	case EChaosImpactHookPhase::Out:
 		if (bAnchor)
 		{
 			// Straight to where it sticks (worked out at the throw), or out to its reach and back when nothing holds it.
-			const float Out = static_cast<float>(Now - StartServerTime) * AnchorSpeed;
+			const float Out = static_cast<float>(Now - StartServerTime) * GetAnchorFlightSpeed();
 			const FVector Way = FVector(AnchorPoint) - FVector(Origin);
 			const float Span = static_cast<float>(Way.Size());
 			if (Out < Span || bAnchorHolds)
@@ -304,7 +567,7 @@ void AChaosImpactHook::Tick(const float DeltaSeconds)
 			}
 			else
 			{
-				const float Back = (Out - Span) / AnchorSpeed * BackSpeed;
+				const float Back = (Out - Span) / GetAnchorFlightSpeed() * BackSpeed;
 				const float Home = static_cast<float>(FVector::Dist(FVector(AnchorPoint), Hand));
 				Head = Home > 1.0f ? FMath::Lerp(FVector(AnchorPoint), Hand, FMath::Clamp(Back / Home, 0.0f, 1.0f)) : Hand;
 			}
@@ -327,6 +590,19 @@ void AChaosImpactHook::Tick(const float DeltaSeconds)
 		else
 		{
 			Head = OutPosition(static_cast<float>(Now - StartServerTime));
+			if (BounceAt > 0.0f && !bBounceShown && static_cast<float>(Now - StartServerTime) * GetOutSpeed() >= BounceAt)
+			{
+				// 雷フック: a crack of lightning where it rebounds off the wall.
+				bBounceShown = true;
+				if (GetNetMode() != NM_DedicatedServer)
+				{
+					const FVector Bend = PathPoint(BounceAt);
+					SparkAt = FPlatformTime::Seconds();
+					SparkLocation = Bend;
+					ChaosImpactSfx::PlayAt(this, EChaosImpactSfx::ThunderBounce, Bend);
+					ChaosImpactFusion::PlayFusedBurst(this, Bend, EChaosImpactBallType::Hook, EChaosImpactBallType::Thunder);
+				}
+			}
 		}
 		break;
 	case EChaosImpactHookPhase::Pull:
@@ -391,12 +667,17 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const 
 	}
 	FVector End = To;
 	bool bWall = false;
-	if (!bReturning && World->SweepSingleByObjectType(Wall, From, To, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
-		FCollisionShape::MakeSphere(HeadRadius), Query))
+	if (!bReturning && !PassesWalls() && World->SweepSingleByObjectType(Wall, From, To, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+		FCollisionShape::MakeSphere(HeadRadius), Query)
+		&& !(BounceAt > 0.0f && FVector::Dist(Wall.Location, PathPoint(BounceAt)) < 45.0f))
 	{
+		// (A 雷フック's rebound is not a wall that stops it; 貫通フック goes through them all.)
 		End = Wall.Location;
 		bWall = true;
 	}
+	// 雪玉フック: it catches as wide as the snow was big.
+	const float Catch = GetCatchRadius();
+	const float BallReach = BallCatchRadius + (FusionReach - 1.0f) * SnowCatchPerReach;
 	// ルビーラッシュ: every ruby lying along the stretch it flew out is gathered to its thrower.
 	if (HasAuthority() && !bAnchor)
 	{
@@ -423,7 +704,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const 
 		const float HalfHeight = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 90.0f;
 		const FVector Body = Character->GetActorLocation();
 		const FVector Near = HookClosestOnSegment(Body, From, End);
-		if (FVector::Dist2D(Near, Body) > Radius + CatchRadius || FMath::Abs(Near.Z - Body.Z) > HalfHeight + CatchRadius)
+		if (FVector::Dist2D(Near, Body) > Radius + Catch || FMath::Abs(Near.Z - Body.Z) > HalfHeight + Catch)
 		{
 			continue;
 		}
@@ -451,7 +732,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const 
 		{
 			const FVector Lying = Crown->GetShownLocation();
 			const FVector Near = HookClosestOnSegment(FVector(Lying.X, Lying.Y, From.Z), From, FVector(End.X, End.Y, From.Z));
-			if (FVector::Dist2D(Near, Lying) <= BallCatchRadius + 40.0f && FMath::Abs(Lying.Z - From.Z) <= BallCatchHeight + 120.0f)
+			if (FVector::Dist2D(Near, Lying) <= BallReach + 40.0f && FMath::Abs(Lying.Z - From.Z) <= BallCatchHeight + 120.0f)
 			{
 				Head = Lying;
 				bLatchedHere = true;
@@ -472,7 +753,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const 
 			// Seen from above: the hook flies at hand height, a ball lies on the floor or sits on its pad below that.
 			const FVector Lying = Ball->GetActorLocation();
 			const FVector Near = HookClosestOnSegment(FVector(Lying.X, Lying.Y, From.Z), From, FVector(End.X, End.Y, From.Z));
-			if (FVector::Dist2D(Near, Lying) <= BallCatchRadius && FMath::Abs(Lying.Z - From.Z) <= BallCatchHeight)
+			if (FVector::Dist2D(Near, Lying) <= BallReach && FMath::Abs(Lying.Z - From.Z) <= BallCatchHeight)
 			{
 				Head = Ball->GetActorLocation();
 				CatchBall(Ball);
@@ -488,7 +769,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const 
 			}
 			const FVector Floating = It->GetActorLocation();
 			const FVector Near = HookClosestOnSegment(FVector(Floating.X, Floating.Y, From.Z), From, FVector(End.X, End.Y, From.Z));
-			if (FVector::Dist2D(Near, Floating) <= BallCatchRadius + 25.0f
+			if (FVector::Dist2D(Near, Floating) <= BallReach + 25.0f
 				&& FMath::Abs(Floating.Z - From.Z) <= BallCatchHeight + ChaosImpactNovaParts::PartHoverHeight)
 			{
 				Head = Floating;
@@ -501,7 +782,7 @@ void AChaosImpactHook::CatchAlong(const FVector& From, const FVector& To, const 
 		{
 			if (!It->IsDefeated() && FVector::Dist(HookClosestOnSegment(It->GetActorLocation(), From, End), It->GetActorLocation()) <= 90.0f)
 			{
-				UGameplayStatics::ApplyDamage(*It, 1.0f, SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
+				UGameplayStatics::ApplyDamage(*It, GetNovaRiderDamage(), SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
 				// (Once: not again as it comes back past it.)
 				bLatchedHere = true;
 				MulticastLatch(It->GetActorLocation(), true);
@@ -542,8 +823,9 @@ void AChaosImpactHook::CatchCharacter(AChaosImpactCharacter* Victim)
 	PhaseServerTime = ServerNow();
 	PhaseFrom = Head;
 	// One hit (the duel's limit on a throw's damage applies), then reeled in.
-	UGameplayStatics::ApplyDamage(Victim, 1.0f, SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
+	UGameplayStatics::ApplyDamage(Victim, GetNovaRiderDamage(), SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
 	MulticastLatch(Head, true);
+	ApplyFusion(Head, Victim);
 	if (Victim->IsEliminated())
 	{
 		GoBack();
@@ -568,14 +850,19 @@ bool AChaosImpactHook::TryApplyReportedHit(AChaosImpactCharacter* Victim)
 	const double Now = ServerNow();
 	const bool bInTime = Phase == EChaosImpactHookPhase::Out
 		|| (Phase == EChaosImpactHookPhase::Back && !Caught && !bLatchedHere);
-	const FVector Tip = FVector(Origin) + FVector(Heading) * Length;
+	const FVector Tip = PathPoint(Length);
+	const FVector Bend = BounceAt > 0.0f ? PathPoint(BounceAt) : Tip;
 	const FVector Body = Victim->GetActorLocation();
-	float Off = static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Body, Origin, Tip), Body));
+	float Off = static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Body, Origin, Bend), Body));
+	if (BounceAt > 0.0f)
+	{
+		Off = FMath::Min(Off, static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Body, Bend, Tip), Body)));
+	}
 	if (Phase == EChaosImpactHookPhase::Back)
 	{
 		Off = FMath::Min(Off, static_cast<float>(FVector::Dist2D(HookClosestOnSegment(Body, FVector(PhaseFrom), GetHand()), Body)));
 	}
-	const bool bAccepted = bInTime && Off <= CatchRadius + 60.0f + ReportTolerance;
+	const bool bAccepted = bInTime && Off <= GetCatchRadius() + 60.0f + ReportTolerance;
 	UE_LOG(LogChaosImpact, Log, TEXT("Reported hook hit %s: victim=%s off=%.0f phase=%d"), bAccepted ? TEXT("accepted") : TEXT("rejected"),
 		*GetNameSafe(Victim->GetPlayerState()), Off, static_cast<int32>(Phase));
 	if (!bAccepted)
@@ -587,8 +874,9 @@ bool AChaosImpactHook::TryApplyReportedHit(AChaosImpactCharacter* Victim)
 	Caught = Victim;
 	PhaseServerTime = Now;
 	PhaseFrom = Victim->GetActorLocation();
-	UGameplayStatics::ApplyDamage(Victim, 1.0f, SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
+	UGameplayStatics::ApplyDamage(Victim, GetNovaRiderDamage(), SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
 	MulticastLatch(Victim->GetActorLocation(), true);
+	ApplyFusion(Victim->GetActorLocation(), Victim);
 	if (Victim->IsEliminated())
 	{
 		GoBack();
@@ -642,6 +930,11 @@ void AChaosImpactHook::GoBack()
 	if (!HasAuthority() || Phase == EChaosImpactHookPhase::Back)
 	{
 		return;
+	}
+	if (!bAnchor)
+	{
+		// A hook turning back empty brings what rides along where it got to.
+		ApplyFusion(Head, nullptr);
 	}
 	Phase = EChaosImpactHookPhase::Back;
 	PhaseFrom = Head;
@@ -713,7 +1006,7 @@ void AChaosImpactHook::ServerTick(const float DeltaSeconds)
 	switch (Phase)
 	{
 	case EChaosImpactHookPhase::Out:
-		if (!bBlockedHere && static_cast<float>(Now - StartServerTime) * OutSpeed >= Length)
+		if (!bBlockedHere && static_cast<float>(Now - StartServerTime) * GetOutSpeed() >= Length)
 		{
 			GoBack();
 		}
@@ -814,6 +1107,7 @@ void AChaosImpactHook::EndPlay(const EEndPlayReason::Type EndPlayReason)
 			Ball->ReleaseFromWind(Ball->GetActorLocation() - FVector(0.0f, 0.0f, 60.0f), FVector::ZeroVector);
 		}
 	}
+	ChaosImpactFusion::DestroyLook(HeadLook);
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -895,10 +1189,29 @@ void AChaosImpactHook::UpdatePresentation(const float DeltaSeconds)
 		BuildPresentation();
 	}
 	const FVector Hand = GetHand();
-	FVector Along = (Head - Hand).GetSafeNormal();
+	// 雷フック past its rebound: the chain runs from the hand to where it rebounded, and on from there to the head.
+	const float Gone = static_cast<float>(ServerNow() - StartServerTime) * GetOutSpeed();
+	const bool bBent = !bAnchor && BounceAt > 0.0f && Phase == EChaosImpactHookPhase::Out && !bBlockedHere && Gone > BounceAt && Gone <= Length;
+	const FVector Bend = bBent ? PathPoint(BounceAt) : Hand;
+	FVector Along = (Head - Bend).GetSafeNormal();
 	if (Along.IsNearlyZero())
 	{
 		Along = FVector(Heading);
+	}
+	// The other kind's marks on the head (a 雪玉フック's snow as wide as it catches).
+	if (FusedType != EChaosImpactBallType::Normal && !HeadLook.IsBuilt() && HeadRoot)
+	{
+		ChaosImpactFusion::FFusionLookOptions Options;
+		Options.Scale = FusedType == EChaosImpactBallType::Snow ? 0.75f * FusionReach : 0.7f;
+		Options.bBody = false;
+		Options.bAtom = false;
+		Options.bSecondarySign = true;
+		ChaosImpactFusion::BuildLook(this, HeadRoot, bAnchor ? EChaosImpactBallType::Anchor : EChaosImpactBallType::Hook, FusedType, HeadLook, Options);
+	}
+	if (HeadLook.IsBuilt())
+	{
+		ChaosImpactFusion::UpdateLook(HeadLook, static_cast<float>(GetWorld()->GetTimeSeconds()), DeltaSeconds, !IsHidden(), 0.0f,
+			Phase == EChaosImpactHookPhase::Out);
 	}
 	// The head faces the way it goes out (and away from the hand coming back), prongs open in flight, shut on a catch.
 	const bool bHolding = Phase == EChaosImpactHookPhase::Pull || bLatchedHere;
@@ -932,18 +1245,32 @@ void AChaosImpactHook::UpdatePresentation(const float DeltaSeconds)
 	// The chain: links every LinkSpacing from the hand to the head, each turned a quarter from the last and overlapping
 	// the next (so it reads as one chain, not beads).
 	Links->ClearInstances();
-	const float Span = static_cast<float>(FVector::Dist(Hand, Head));
-	const int32 Count = FMath::Clamp(FMath::FloorToInt(Span / LinkSpacing), 0, 260);
-	const FRotator LinkFacing = Along.Rotation();
-	for (int32 Link = 1; Link <= Count; ++Link)
-	{
-		const FVector At = Hand + Along * (Link * LinkSpacing);
-		const FRotator Turn = LinkFacing + FRotator(0.0f, 0.0f, Link % 2 == 0 ? 0.0f : 90.0f);
-		Links->AddInstance(FTransform(Turn, At, FVector(0.13f, 0.06f, 0.028f)), true);
-	}
-	// (The cable's mesh is built round the hand and placed there each frame, so nothing it hangs from can move it.)
 	ChaosImpactIceMeshes::FMeshBuffers Line;
-	AppendCable(Line, FVector::ZeroVector, Head - Hand, 3.0f);
+	int32 Placed = 0;
+	const auto Chain = [this, &Line, &Placed, Hand](const FVector& A, const FVector& B)
+	{
+		const FVector Way = (B - A).GetSafeNormal();
+		const float Span = static_cast<float>(FVector::Dist(A, B));
+		const int32 Count = FMath::Clamp(FMath::FloorToInt(Span / LinkSpacing), 0, 260);
+		const FRotator LinkFacing = Way.Rotation();
+		for (int32 Link = 1; Link <= Count; ++Link, ++Placed)
+		{
+			const FVector At = A + Way * (Link * LinkSpacing);
+			const FRotator Turn = LinkFacing + FRotator(0.0f, 0.0f, Placed % 2 == 0 ? 0.0f : 90.0f);
+			Links->AddInstance(FTransform(Turn, At, FVector(0.13f, 0.06f, 0.028f)), true);
+		}
+		// (The cable's mesh is built round the hand and placed there each frame, so nothing it hangs from can move it.)
+		AppendCable(Line, A - Hand, B - Hand, 3.0f);
+	};
+	if (bBent)
+	{
+		Chain(Hand, Bend);
+		Chain(Bend, Head);
+	}
+	else
+	{
+		Chain(Hand, Head);
+	}
 	Cable->SetWorldLocationAndRotation(Hand, FRotator::ZeroRotator);
 	Cable->SetWorldScale3D(FVector::OneVector);
 	ChaosImpactLightning::SetMesh(Cable, Line);
@@ -970,4 +1297,9 @@ void AChaosImpactHook::UpdatePresentation(const float DeltaSeconds)
 		}
 	}
 	ChaosImpactLightning::SetMesh(Spark, Burst);
+}
+
+float AChaosImpactHook::GetNovaRiderDamage() const
+{
+	return FusedType == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaDamage(1.0f) : 1.0f;
 }

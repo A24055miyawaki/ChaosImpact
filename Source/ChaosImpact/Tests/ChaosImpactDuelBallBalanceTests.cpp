@@ -86,7 +86,7 @@ namespace
 				Match->Phase = EChaosImpactOnlinePhase::Match; Match->Duel.Step = EChaosImpactDuelStep::Fight;
 				Player->SetTrainingMenuFrozen(true);
 				// Every special kind is limited, even a future increase to its direct-hit damage.
-				for (int32 Kind = 1; Kind < ChaosImpactBallTypes::Count; ++Kind)
+				for (int32 Kind = 1; Kind < ChaosImpactBallTypes::SharedCount; ++Kind)
 				{
 					ResetEnemy();
 					auto* Shot = Ball(static_cast<EChaosImpactBallType>(Kind));

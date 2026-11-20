@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
@@ -30,6 +30,7 @@ public:
 	/** Puts the cursor on an entry (tests, and the pad's way round checked from each one). */
 	void SelectEntry(const int32 Index) { SelectedIndex = FMath::Clamp(Index, 0, FMath::Max(0, Entries.Num() - 1)); }
 	bool IsEntryDisabled(const int32 Index) const { return Entries.IsValidIndex(Index) && Entries[Index].bDisabled; }
+	FString GetEntryTitle(const int32 Index) const { return Entries.IsValidIndex(Index) ? Entries[Index].Title : FString(); }
 	bool HasLogo() const { return LogoTexture != nullptr; }
 	EChaosImpactScreen GetScreen() const { return Screen; }
 	/**
@@ -40,10 +41,27 @@ public:
 	bool TryJoinControllerFromAnyUser(const FKeyEvent& InKeyEvent);
 	/** Every device's key and stick events, before Slate focus decides who gets them. True when consumed. */
 	bool HandleAnyUserKeyDown(const FKeyEvent& InKeyEvent);
+	/** スマホ版: this screen shows the touch back button (top left). */
+	bool HasTouchBackButton() const;
+	/** スマホ版 ペイント: fingers go to the studio itself (each finger its own), not made into a mouse. */
+	bool IsPaintStudioTouch() const;
+	/** スマホ版: laid out for touch; the screens laid out upright too; the canvas (landscape or upright) chosen each frame. */
+	bool IsPhoneLayout() const;
+	/** The design canvas now: 1600 x 900, or 900 x 1600 (スマホ版 upright, for the screens laid out that way). */
+	static bool IsUprightCanvas();
+	/** スマホ版 (a phone, or -CITouch): played by touch, no keys named. */
+	static bool IsPhoneBuild();
+	static bool HasPortraitLayout(EChaosImpactScreen Which);
+	/** The online menus (the online menu, 合言葉マッチ's screens, 戦績, 回線チェック, トーナメント): laid out for a phone too. */
+	static bool IsOnlineMenuScreen(EChaosImpactScreen Which);
+	/** スマホ版: the online menus' entries in their phone places (both ways). */
+	void PlaceOnlineEntriesForPhone();
+	void UpdateMenuCanvas(const FGeometry& Geometry);
 	bool HandleAnyUserKeyUp(const FKeyEvent& InKeyEvent);
 	bool HandleAnyUserAnalog(const FAnalogInputEvent& InAnalogEvent);
 	UChaosImpactCharacterSelect* GetCharacterSelect() const { return CharacterSelect; }
 	UChaosImpactColourEdit* GetColourEdit() const { return ColourEdit; }
+	class UChaosImpactTourneyEntry* GetTourneyEntry() const { return TourneyEntry; }
 	UChaosImpactGallery* GetGallery() const { return Gallery; }
 	UChaosImpactRecordBoards* GetRecordBoards() const { return RecordBoards; }
 	bool IsBoardScreen() const { return Screen == EChaosImpactScreen::OnlineHistory || Screen == EChaosImpactScreen::OnlineRanking; }
@@ -98,6 +116,9 @@ private:
 	int32 LastStageCard = 0;
 	/** Mode select: the bottom button last left by going up, so going down comes back to it. */
 	int32 LastModeBottom = INDEX_NONE;
+	/** PC版 モード選択's ゲーム終了 (index 7): pressed once (it asks to be pressed again within a few seconds). */
+	double QuitArmedAt = -100.0;
+	bool IsQuitArmed() const;
 	/** What the cursor was on last frame (a move to another entry clicks). */
 	EChaosImpactScreen SoundScreen = EChaosImpactScreen::Title;
 	int32 SoundSelectedIndex = INDEX_NONE;
@@ -152,6 +173,8 @@ private:
 	double BallSwitchDeniedAt = -100.0;
 	/** Ball tiles in a row on the ボールスイッチ. */
 	static constexpr int32 BallSwitchColumns = 9;
+	/** The list of kinds, upright: where each kind's heading stands (set as its tiles are laid out). */
+	float ModePickerHeadY[4] = {};
 	/** The training overlay's ball list: this many a row. */
 	static constexpr int32 TrainingBallColumns = 4;
 	void OpenBallSwitch(bool bOpen);
@@ -239,6 +262,34 @@ private:
 	/** ローカルトーナメント's registration screen. */
 	UPROPERTY(Transient)
 	TObjectPtr<class UChaosImpactTourneyEntry> TourneyEntry;
+	/** スマホ版 設定 → ボタン・画面の配置: over the whole screen, from any menu. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UChaosImpactTouchLayoutEditor> TouchLayoutEditor;
+public:
+	/** Opens ボタン・画面の配置 for a nickname, on a kind of play (GetTouchModeKey). */
+	void OpenTouchLayoutEditor(int32 Profile, const FString& StartMode);
+	bool IsTouchLayoutEditorOpen() const;
+	/** (The 配置 editor's fingers: the first one alone, taken as itself, not as a mouse.) */
+	virtual FReply NativeOnTouchStarted(const FGeometry& InGeometry, const FPointerEvent& InGestureEvent) override;
+	virtual FReply NativeOnTouchMoved(const FGeometry& InGeometry, const FPointerEvent& InGestureEvent) override;
+	virtual FReply NativeOnTouchEnded(const FGeometry& InGeometry, const FPointerEvent& InGestureEvent) override;
+	int32 EditorTouch = INDEX_NONE;
+	/**
+	 * スマホ版: the finger the menus follow (the first one down); others are left out until it lifts. A second finger's
+	 * press and moves landed on the lists as well, which then jumped between the two or took no scroll at all.
+	 * (Forgotten when nothing has come from it for a few seconds: a lift that never arrived does not lock the menus.)
+	 */
+	int32 MenuPointer = INDEX_NONE;
+	double MenuPointerAt = 0.0;
+	/** True when a finger's mouse event is from another finger than MenuPointer (and is to be left out). */
+	bool IsOtherFinger(const FPointerEvent& Event, bool bDown, bool bUp);
+	/** A mouse press (or a finger taken for one) that began in the 配置 editor: its release is the editor's too. */
+	bool bEditorMousePress = false;
+	class UChaosImpactTouchLayoutEditor* GetTouchLayoutEditor() const { return TouchLayoutEditor; }
+	/** Tests: the rules page's list of kinds and its ボールスイッチ opened / closed as a tap does. */
+	void SetModePickerForTests(const bool bOpen) { OpenModePicker(bOpen); }
+	void SetBallSwitchForTests(const bool bOpen) { OpenBallSwitch(bOpen); }
+private:
 	/** Its controller-taking screen: the places, each person's model on it. */
 	void PaintTourneySeat(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer, float Time) const;
 	void UpdateSeatPreviews(float DeltaSeconds);
@@ -259,6 +310,12 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTexture2D>> StageShots;
 	TArray<FSlateBrush> StageShotBrushes;
+	/** The 1v1 stages' pictures (Content/UI/StageSelect/Duel<N>.png). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture2D>> DuelShots;
+	TArray<FSlateBrush> DuelShotBrushes;
+	/** The stage select shows the 1v1 stages (a duel's or a tournament's rules). */
+	bool IsDuelStageSelect() const;
 
 	/** The 1v1 found's card: both players' characters, filmed far from the training (this player first). */
 	UPROPERTY(Transient)

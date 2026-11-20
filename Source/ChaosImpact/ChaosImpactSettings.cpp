@@ -1,4 +1,4 @@
-#include "ChaosImpactSettings.h"
+﻿#include "ChaosImpactSettings.h"
 #include "ChaosImpactHints.h"
 #include "ChaosImpactMusic.h"
 #include "ChaosImpact.h"
@@ -14,17 +14,21 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/GameUserSettings.h"
 #include "GameFramework/PlayerController.h"
-#include "JoyShockBlueprintLibrary.h"
-#include "JoyShockTypes.h"
+#include "ChaosImpactJoyShock.h"
 #include "Engine/GameViewportClient.h"
+#include "UnrealClient.h"
 #include "GenericPlatform/GenericApplication.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Widgets/SWindow.h"
 #include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/FileHelper.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#if PLATFORM_ANDROID
+#include "HAL/PlatformFramePacer.h"
+#endif
 
 namespace
 {
@@ -41,8 +45,12 @@ namespace
 		int32 Music = 80;
 		int32 Shake = 2;
 		int32 Brightness = 5;
+		int32 Orientation = 0;
 		bool bSwitchConfirmRight = true;
 		bool bButtonHints = true;
+		/** メニュー中の振動: a light tick of the controller as the menus' cursor moves and decides. */
+		bool bMenuRumble = true;
+		bool bShowFps = false;
 		bool bOthersPaint = true;
 		int32 HudSize = 1;
 		bool bTrainingTutorial = true;
@@ -68,7 +76,7 @@ namespace
 	{
 		static const TCHAR* const Tags[] = {TEXT("MoveUp"), TEXT("MoveDown"), TEXT("MoveLeft"), TEXT("MoveRight"),
 			TEXT("Throw"), TEXT("CancelThrow"), TEXT("Dash"), TEXT("Jump"), TEXT("SwapBall"), TEXT("DropBall"),
-			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle"), TEXT("LobbyTeam"), TEXT("OverviewMap"), TEXT("RuleCard")};
+			TEXT("Pause"), TEXT("TrainingMenu"), TEXT("LobbyReady"), TEXT("LobbySpectate"), TEXT("Tackle"), TEXT("LobbyTeam"), TEXT("OverviewMap"), TEXT("RuleCard"), TEXT("FuseBalls")};
 		static_assert(UE_ARRAY_COUNT(Tags) == FChaosImpactProfile::ActionCount, "One tag per action");
 		return Tags[FMath::Clamp(static_cast<int32>(Action), 0, FChaosImpactProfile::ActionCount - 1)];
 	}
@@ -109,6 +117,16 @@ namespace
 		GConfig->SetBool(*Section, TEXT("AimAssist"), Profile.bAimAssist, GGameUserSettingsIni);
 		GConfig->SetInt(*Section, TEXT("CameraDistance"), Profile.CameraDistance, GGameUserSettingsIni);
 		GConfig->SetBool(*Section, TEXT("MouseDoubleClickDash"), Profile.bMouseDoubleClickDash, GGameUserSettingsIni);
+		GConfig->SetBool(*Section, TEXT("WheelSwap"), Profile.bWheelSwap, GGameUserSettingsIni);
+		GConfig->SetBool(*Section, TEXT("TouchLeftHanded"), Profile.bTouchLeftHanded, GGameUserSettingsIni);
+		GConfig->SetInt(*Section, TEXT("TouchFlick"), Profile.TouchFlick, GGameUserSettingsIni);
+		GConfig->SetBool(*Section, TEXT("TouchAutoAim"), Profile.bTouchAutoAim, GGameUserSettingsIni);
+
+		GConfig->SetInt(*Section, TEXT("TouchStyle"), Profile.TouchStyle, GGameUserSettingsIni);
+		for (const TPair<FString, FChaosImpactTouchCustom>& Layout : Profile.TouchLayouts)
+		{
+			GConfig->SetString(*Section, *(TEXT("TouchLayout_") + Layout.Key), *Layout.Value.ToText(), GGameUserSettingsIni);
+		}
 		for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
 		{
 			GConfig->SetInt(*Section, *FString::Printf(TEXT("%s_ControlScheme"), DeviceTag(static_cast<EDevice>(Device))),
@@ -144,8 +162,11 @@ namespace
 		GConfig->SetInt(SettingsSection, TEXT("MusicVolume"), S.Music, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("CameraShake"), S.Shake, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
+		GConfig->SetInt(SettingsSection, TEXT("ScreenOrientation"), S.Orientation, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("ButtonHints"), S.bButtonHints, GGameUserSettingsIni);
+		GConfig->SetBool(SettingsSection, TEXT("MenuRumble"), S.bMenuRumble, GGameUserSettingsIni);
+		GConfig->SetBool(SettingsSection, TEXT("ShowFps"), S.bShowFps, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("OthersPaint"), S.bOthersPaint, GGameUserSettingsIni);
 		GConfig->SetInt(SettingsSection, TEXT("HudSize"), S.HudSize, GGameUserSettingsIni);
 		GConfig->SetBool(SettingsSection, TEXT("TrainingTutorial"), S.bTrainingTutorial, GGameUserSettingsIni);
@@ -187,8 +208,11 @@ namespace
 			GConfig->GetInt(SettingsSection, TEXT("MusicVolume"), S.Music, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("CameraShake"), S.Shake, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("Brightness"), S.Brightness, GGameUserSettingsIni);
+			GConfig->GetInt(SettingsSection, TEXT("ScreenOrientation"), S.Orientation, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("SwitchConfirmRight"), S.bSwitchConfirmRight, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("ButtonHints"), S.bButtonHints, GGameUserSettingsIni);
+			GConfig->GetBool(SettingsSection, TEXT("MenuRumble"), S.bMenuRumble, GGameUserSettingsIni);
+			GConfig->GetBool(SettingsSection, TEXT("ShowFps"), S.bShowFps, GGameUserSettingsIni);
 			GConfig->GetBool(SettingsSection, TEXT("OthersPaint"), S.bOthersPaint, GGameUserSettingsIni);
 			GConfig->GetInt(SettingsSection, TEXT("HudSize"), S.HudSize, GGameUserSettingsIni);
 			S.HudSize = FMath::Clamp(S.HudSize, 0, 2);
@@ -204,6 +228,7 @@ namespace
 		S.Music = FMath::Clamp(S.Music, 0, 100);
 		S.Shake = FMath::Clamp(S.Shake, 0, 3);
 		S.Brightness = FMath::Clamp(S.Brightness, 1, 10);
+		S.Orientation = FMath::Clamp(S.Orientation, 0, 2);
 		S.LastFullscreenMode = 1;
 		Count = FMath::Clamp(Count, 0, ChaosImpactSettings::MaxProfiles);
 		for (int32 Index = 0; Index < Count; ++Index)
@@ -220,6 +245,26 @@ namespace
 			GConfig->GetInt(*Section, TEXT("CameraDistance"), Profile.CameraDistance, GGameUserSettingsIni);
 			Profile.CameraDistance = FMath::Clamp(Profile.CameraDistance, 0, 2);
 			GConfig->GetBool(*Section, TEXT("MouseDoubleClickDash"), Profile.bMouseDoubleClickDash, GGameUserSettingsIni);
+			GConfig->GetBool(*Section, TEXT("WheelSwap"), Profile.bWheelSwap, GGameUserSettingsIni);
+			GConfig->GetBool(*Section, TEXT("TouchLeftHanded"), Profile.bTouchLeftHanded, GGameUserSettingsIni);
+			GConfig->GetInt(*Section, TEXT("TouchFlick"), Profile.TouchFlick, GGameUserSettingsIni);
+			Profile.TouchFlick = FMath::Clamp(Profile.TouchFlick, 0, 2);
+			GConfig->GetBool(*Section, TEXT("TouchAutoAim"), Profile.bTouchAutoAim, GGameUserSettingsIni);
+
+			GConfig->GetInt(*Section, TEXT("TouchStyle"), Profile.TouchStyle, GGameUserSettingsIni);
+			Profile.TouchStyle = FMath::Clamp(Profile.TouchStyle, 0, 2);
+			for (const TCHAR* Mode : {TEXT("training"), TEXT("vs"), TEXT("duel"), TEXT("solo"), TEXT("online"), TEXT("dojo"), TEXT("tourney")})
+			{
+				// (Sideways, and upright: _tate.)
+				for (const FString& Key : {FString(Mode), FString(Mode) + TEXT("_tate")})
+				{
+					FString Text;
+					if (GConfig->GetString(*Section, *(FString(TEXT("TouchLayout_")) + Key), Text, GGameUserSettingsIni) && !Text.IsEmpty())
+					{
+						Profile.TouchLayouts.FindOrAdd(Key).FromText(Text);
+					}
+				}
+			}
 			for (int32 Device = 0; Device < FChaosImpactProfile::DeviceCount; ++Device)
 			{
 				int32 Scheme = 0;
@@ -321,6 +366,45 @@ namespace
 	UGameUserSettings* UserSettings()
 	{
 		return GEngine ? GEngine->GetGameUserSettings() : nullptr;
+	}
+
+	/**
+	 * スマホ版: the screen's own pace set to the limit (the engine on its own keeps a phone at 60 a second, whatever the
+	 * limit: a 90 / 120 Hz screen never got more). 0 (画面に合わせる): the screen's fastest.
+	 */
+	void ApplyPhoneFramePace(const int32 Limit)
+	{
+#if PLATFORM_ANDROID
+		if (!FPlatformRHIFramePacer::IsEnabled())
+		{
+			return;
+		}
+		TArray<int32> Rates = FAndroidMisc::GetSupportedNativeDisplayRefreshRates();
+		Rates.Sort();
+		int32 Pace = Limit;
+		if (Pace <= 0)
+		{
+			Pace = Rates.Num() > 0 ? FMath::Max(Rates.Last(), 30) : 60;
+		}
+		if (!FPlatformRHIFramePacer::SupportsFramePace(Pace))
+		{
+			// (A pace the screen cannot keep, 90 on a 60 / 120 screen: the next faster it can, the limit still holding it.)
+			int32 Faster = 60;
+			for (const int32 Rate : Rates)
+			{
+				if (Rate >= Pace && FPlatformRHIFramePacer::SupportsFramePace(Rate))
+				{
+					Faster = Rate;
+					break;
+				}
+			}
+			Pace = Faster;
+		}
+		FPlatformRHIFramePacer::SetFramePace(Pace);
+		UE_LOG(LogChaosImpact, Log, TEXT("Frame pace %d (limit %d)"), FPlatformRHIFramePacer::GetFramePace(), Limit);
+#else
+		(void)Limit;
+#endif
 	}
 
 	void SaveUserSettings(UGameUserSettings* Settings, const bool bResolution)
@@ -597,6 +681,116 @@ FString ChaosImpactSettings::GetControlSchemeName(const EChaosImpactControlSchem
 		: Scheme == EChaosImpactControlScheme::MouseHold ? TEXT("マウスのみ（長押し）") : TEXT("通常操作");
 }
 
+void ChaosImpactSettings::SetTouchLeftHanded(const int32 Profile, const bool bOn)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].bTouchLeftHanded = bOn;
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ChaosImpactSettings::SetTouchFlick(const int32 Profile, const int32 Level)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].TouchFlick = FMath::Clamp(Level, 0, 2);
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ChaosImpactSettings::SetTouchAutoAim(const int32 Profile, const bool bOn)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].bTouchAutoAim = bOn;
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+void ChaosImpactSettings::SetTouchStyle(const int32 Profile, const int32 Style)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].TouchStyle = FMath::Clamp(Style, 0, 2);
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+FString ChaosImpactSettings::GetTouchModeKey(const APlayerController* Player)
+{
+	const AChaosImpactPlayerController* Controller = Cast<AChaosImpactPlayerController>(Player);
+	const UWorld* World = Player ? Player->GetWorld() : nullptr;
+	const AChaosImpactGameState* Match = World ? World->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (Controller && Controller->IsDojo()) { return TEXT("dojo"); }
+	if (Controller && Controller->IsSoloMode()) { return TEXT("solo"); }
+	if (Match && (Match->IsTournament() || Match->bPublicTournament || Match->bLocalTournament)) { return TEXT("tourney"); }
+	if (Match && Match->bOnlineRoom) { return TEXT("online"); }
+	if (Match && Match->bVersusMatch) { return Match->Rules.bDuel ? TEXT("duel") : TEXT("vs"); }
+	return TEXT("training");
+}
+
+FString ChaosImpactSettings::GetTouchModeName(const FString& Key)
+{
+	return Key == TEXT("dojo") ? TEXT("訓練場") : Key == TEXT("solo") ? TEXT("ソロモード") : Key == TEXT("tourney") ? TEXT("トーナメント")
+		: Key == TEXT("online") ? TEXT("オンライン") : Key == TEXT("duel") ? TEXT("1対1") : Key == TEXT("vs") ? TEXT("VS")
+		: TEXT("トレーニング");
+}
+
+bool ChaosImpactSettings::IsScreenUpright()
+{
+	if (!GEngine || !GEngine->GameViewport || !GEngine->GameViewport->Viewport)
+	{
+		return false;
+	}
+	const FIntPoint Size = GEngine->GameViewport->Viewport->GetSizeXY();
+	return Size.X > 0 && Size.Y > Size.X;
+}
+
+namespace
+{
+	/** A kind of play's touch placing, for the way the screen is held now (upright: its own). */
+	FString HeldTouchKey(const FString& Key)
+	{
+		return ChaosImpactSettings::IsScreenUpright() ? Key + TEXT("_tate") : Key;
+	}
+}
+
+FChaosImpactTouchCustom ChaosImpactSettings::GetTouchLayout(const int32 Profile, const FString& Key)
+{
+	const FSettingsStore& S = Store();
+	const FChaosImpactTouchCustom* Found = S.Profiles.IsValidIndex(Profile) ? S.Profiles[Profile].TouchLayouts.Find(HeldTouchKey(Key)) : nullptr;
+	return Found ? *Found : FChaosImpactTouchCustom();
+}
+
+void ChaosImpactSettings::SetTouchLayout(const int32 Profile, const FString& Key, const FChaosImpactTouchCustom& Layout)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].TouchLayouts.Add(HeldTouchKey(Key), Layout);
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
+FString ChaosImpactSettings::GetTouchStyleName(const int32 Style)
+{
+	return Style == 2 ? TEXT("片手モード") : Style == 1 ? TEXT("ジェスチャー方式") : TEXT("ボタン方式");
+}
+
+FString ChaosImpactSettings::GetTouchFlickName(const int32 Level)
+{
+	return Level <= 0 ? TEXT("かため") : Level >= 2 ? TEXT("やわらかめ") : TEXT("ふつう");
+}
+
+void ChaosImpactSettings::SetWheelSwap(const int32 Profile, const bool bOn)
+{
+	FSettingsStore& S = Store();
+	if (!S.Profiles.IsValidIndex(Profile)) { return; }
+	S.Profiles[Profile].bWheelSwap = bOn;
+	SaveProfile(Profile);
+	GConfig->Flush(false, GGameUserSettingsIni);
+}
+
 void ChaosImpactSettings::SetMouseDoubleClickDash(const int32 Profile, const bool bOn)
 {
 	FSettingsStore& S = Store();
@@ -652,6 +846,7 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 		case EChaosImpactAction::LobbyTeam: return GetKey(Profile, Device, Action, Slot);
 		case EChaosImpactAction::OverviewMap: return GetKey(Profile, Device, Action, Slot);
 		case EChaosImpactAction::RuleCard: return GetKey(Profile, Device, Action, Slot);
+		case EChaosImpactAction::FuseBalls: return GetKey(Profile, Device, Action, Slot);
 		default: return FKey();
 		}
 	}
@@ -665,6 +860,7 @@ FKey ChaosImpactSettings::GetSchemeKey(const int32 Profile,const EChaosImpactDev
 	case EChaosImpactAction::LobbyReady: case EChaosImpactAction::LobbySpectate: case EChaosImpactAction::LobbyTeam:
 	case EChaosImpactAction::OverviewMap:
 	case EChaosImpactAction::RuleCard:
+	case EChaosImpactAction::FuseBalls:
 		return GetKey(Profile, Device, Action, Slot);
 	default: return FKey();
 	}
@@ -763,6 +959,7 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 		case EAction::LobbyTeam: return Slot == 0 ? EKeys::C : FKey();
 		case EAction::OverviewMap: return Slot == 0 ? EKeys::M : FKey();
 		case EAction::RuleCard: return Slot == 0 ? EKeys::I : FKey();
+		case EAction::FuseBalls: return Slot == 0 ? EKeys::X : FKey();
 		default: return FKey();
 		}
 	}
@@ -788,6 +985,8 @@ FKey ChaosImpactSettings::GetDefaultKey(const EChaosImpactDevice Device, const E
 	case EAction::LobbyTeam: return Slot == 0 ? EKeys::Gamepad_DPad_Right : FKey();
 	case EAction::OverviewMap: return Slot == 0 ? EKeys::Gamepad_RightThumbstick : FKey();
 	case EAction::RuleCard: return Slot == 0 ? EKeys::Gamepad_LeftThumbstick : FKey();
+	// Shared with the room's team change (LobbyTeam): with two balls that can join, it joins them (see the controller).
+	case EAction::FuseBalls: return Slot == 0 ? EKeys::Gamepad_DPad_Right : FKey();
 	default: return FKey();
 	}
 }
@@ -845,6 +1044,7 @@ FString ChaosImpactSettings::GetActionName(const EChaosImpactAction Action)
 	case EAction::LobbyTeam: return TEXT("チームを変える（部屋）");
 	case EAction::OverviewMap: return TEXT("全体マップ");
 	case EAction::RuleCard: return TEXT("ルール確認（部屋）");
+	case EAction::FuseBalls: return TEXT("ボール合体（試作）");
 	default: return FString();
 	}
 }
@@ -1048,6 +1248,16 @@ EChaosImpactDevice ChaosImpactSettings::GetPlayerDevice(const APlayerController*
 	}
 }
 
+namespace
+{
+	/** スマホ版: a tap reaches the game as a click too; played by touch, the mouse's buttons do nothing in the game. */
+	bool IsTouchClick(const APlayerController* Player, const FKey& Key)
+	{
+		const AChaosImpactPlayerController* Touch = Cast<AChaosImpactPlayerController>(Player);
+		return Key.IsMouseButton() && Touch && Touch->ShouldUseTouchControls() && !Touch->IsUsingGamepad();
+	}
+}
+
 bool ChaosImpactSettings::IsActionDown(const APlayerController* Player, const EChaosImpactAction Action)
 {
 	if (!Player)
@@ -1059,7 +1269,7 @@ bool ChaosImpactSettings::IsActionDown(const APlayerController* Player, const EC
 	for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
 	{
 		const FKey Key = GetActiveKey(Profile, Device, Action, Slot);
-		if (!Key.IsValid())
+		if (!Key.IsValid() || IsTouchClick(Player, Key))
 		{
 			continue;
 		}
@@ -1088,7 +1298,7 @@ bool ChaosImpactSettings::WasActionJustPressed(const APlayerController* Player, 
 	for (int32 Slot = 0; Slot < FChaosImpactProfile::SlotCount; ++Slot)
 	{
 		const FKey Key = GetActiveKey(Profile, Device, Action, Slot);
-		if (Key.IsValid() && Player->WasInputKeyJustPressed(Key))
+		if (Key.IsValid() && !IsTouchClick(Player, Key) && Player->WasInputKeyJustPressed(Key))
 		{
 			return true;
 		}
@@ -1206,6 +1416,11 @@ FString ChaosImpactSettings::DescribeAction(const APlayerController* Player, con
 
 FKey ChaosImpactSettings::ToMenuKey(const FKey& Key, const int32 InputDeviceId)
 {
+	// (スマホ版: the phone's back button goes back, as Esc does.)
+	if (Key == EKeys::Android_Back)
+	{
+		return EKeys::Escape;
+	}
 	if (!IsSwitchConfirmRight()
 		|| (Key != EKeys::Gamepad_FaceButton_Bottom && Key != EKeys::Gamepad_FaceButton_Right)
 		|| DetectPadDeviceForInput(InputDeviceId) != EDevice::Switch)
@@ -1285,6 +1500,28 @@ void ChaosImpactSettings::SetButtonHintsOn(const bool bOn)
 	SaveOptions();
 }
 
+bool ChaosImpactSettings::IsMenuRumbleOn()
+{
+	return Store().bMenuRumble;
+}
+
+void ChaosImpactSettings::SetMenuRumbleOn(const bool bOn)
+{
+	Store().bMenuRumble = bOn;
+	SaveOptions();
+}
+
+bool ChaosImpactSettings::IsFpsShown()
+{
+	return Store().bShowFps;
+}
+
+void ChaosImpactSettings::SetFpsShown(const bool bOn)
+{
+	Store().bShowFps = bOn;
+	SaveOptions();
+}
+
 bool ChaosImpactSettings::IsOthersPaintShown()
 {
 	return Store().bOthersPaint;
@@ -1339,6 +1576,41 @@ int32 ChaosImpactSettings::GetTrainingTutorialRevision()
 	return Store().TutorialRevision;
 }
 
+int32 ChaosImpactSettings::GetScreenOrientation()
+{
+	return Store().Orientation;
+}
+
+namespace
+{
+	void ApplyScreenOrientation(const int32 Orientation)
+	{
+#if PLATFORM_ANDROID || PLATFORM_IOS
+		// (The sensor kept in each: upside down too.)
+		FPlatformMisc::SetAllowedDeviceOrientation(Orientation == 1 ? EDeviceScreenOrientation::PortraitSensor
+			: Orientation == 2 ? EDeviceScreenOrientation::LandscapeSensor : EDeviceScreenOrientation::FullSensor);
+#else
+		(void)Orientation;
+#endif
+	}
+}
+
+void ChaosImpactSettings::SetScreenOrientation(const int32 Orientation)
+{
+	const int32 Was = Store().Orientation;
+	Store().Orientation = FMath::Clamp(Orientation, 0, 2);
+	SaveOptions();
+	if (Was != Store().Orientation)
+	{
+		ApplyScreenOrientation(Store().Orientation);
+	}
+}
+
+FString ChaosImpactSettings::GetScreenOrientationName(const int32 Orientation)
+{
+	return Orientation == 1 ? TEXT("縦画面") : Orientation == 2 ? TEXT("横画面") : TEXT("自動回転");
+}
+
 int32 ChaosImpactSettings::GetBrightness()
 {
 	return Store().Brightness;
@@ -1355,6 +1627,55 @@ void ChaosImpactSettings::SetBrightness(const int32 Level)
 	}
 }
 
+#if PLATFORM_ANDROID
+namespace
+{
+	/**
+	 * スマホ版 (2026-11-18): the game thread on the phone's fastest core, the render thread on the next (a Helio G99
+	 * moved the game thread between its two fast cores and its six slow ones, and missed frames on the slow ones). The
+	 * cores are found by their top speed, so each phone gets its own fast ones; one with all cores alike is left alone.
+	 */
+	void PinMainThreadsToFastCores()
+	{
+		TArray<TPair<int64, int32>> Cores;
+		for (int32 Core = 0; Core < 16; ++Core)
+		{
+			// (Read as a plain file: the system's files give no size for the engine's reader.)
+			char Path[96];
+			FCStringAnsi::Snprintf(Path, sizeof(Path), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", Core);
+			FILE* File = fopen(Path, "r");
+			if (!File)
+			{
+				continue;
+			}
+			long long Speed = 0;
+			const int Read = fscanf(File, "%lld", &Speed);
+			fclose(File);
+			if (Read == 1 && Speed > 0)
+			{
+				Cores.Add({static_cast<int64>(Speed), Core});
+			}
+		}
+		if (Cores.Num() < 4)
+		{
+			return;
+		}
+		// Fastest first; among equals the higher number (the big cores sit at the top on these phones).
+		Cores.Sort([](const TPair<int64, int32>& A, const TPair<int64, int32>& B) { return A.Key != B.Key ? A.Key > B.Key : A.Value > B.Value; });
+		if (Cores[0].Key <= Cores.Last().Key)
+		{
+			return;
+		}
+		const FString Affinity = FString::Printf(TEXT("GT 0x%llx RT 0x%llx"), 1ull << Cores[0].Value, 1ull << Cores[1].Value);
+		if (IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(TEXT("android.DefaultThreadAffinity")))
+		{
+			Var->Set(*Affinity, ECVF_SetByGameSetting);
+			UE_LOG(LogChaosImpact, Log, TEXT("Main threads on the fast cores: %s"), *Affinity);
+		}
+	}
+}
+#endif
+
 void ChaosImpactSettings::ApplyStartupSettings()
 {
 	static bool bApplied = false;
@@ -1368,6 +1689,48 @@ void ChaosImpactSettings::ApplyStartupSettings()
 		Audio->SetTransientPrimaryVolume(Store().Volume / 100.0f);
 	}
 	GEngine->DisplayGamma = 2.2f + (Store().Brightness - 5) * 0.12f;
+#if PLATFORM_ANDROID
+	PinMainThreadsToFastCores();
+#endif
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	if (Store().Orientation != 0)
+	{
+		ApplyScreenOrientation(Store().Orientation);
+	}
+	// スマホ版: the first time, a light start (画質 低, drawn at 75 %, no anti-aliasing): 60 fps on a mid-range tablet. The
+	// player's own choice in the settings after that.
+	bool bMobileDefaults = false;
+	GConfig->GetBool(TEXT("ChaosImpact.Mobile"), TEXT("DefaultsApplied"), bMobileDefaults, GGameUserSettingsIni);
+	if (!bMobileDefaults)
+	{
+		if (UGameUserSettings* Settings = UserSettings())
+		{
+			Settings->SetOverallScalabilityLevel(0);
+			Settings->SetAntiAliasingQuality(0);
+			Settings->SetResolutionScaleValueEx(75.0f);
+			Settings->ApplySettings(false);
+			SaveUserSettings(Settings, false);
+		}
+		GConfig->SetBool(TEXT("ChaosImpact.Mobile"), TEXT("DefaultsApplied"), true, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	// (2026-11-18) 画面に合わせる now really follows a 90 / 120 Hz screen: a phone starts at 60 all the same (cooler, and
+	// steady), once, so the player picks more for themselves.
+	bool bPaceDefault = false;
+	GConfig->GetBool(TEXT("ChaosImpact.Mobile"), TEXT("FramePaceDefault"), bPaceDefault, GGameUserSettingsIni);
+	if (!bPaceDefault)
+	{
+		if (GetFrameRateLimit() <= 0)
+		{
+			SetFrameRateLimit(60);
+		}
+		GConfig->SetBool(TEXT("ChaosImpact.Mobile"), TEXT("FramePaceDefault"), true, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	ApplyPhoneFramePace(GetFrameRateLimit());
+	ApplyRenderScale();
+	return;
+#endif
 	if (UserSettings() && GetWindowMode() != 2 && CanApplyWindowChanges())
 	{
 		// Also migrate a saved exclusive mode when its resolution already matches the monitor.
@@ -1635,6 +1998,7 @@ void ChaosImpactSettings::SetFrameRateLimit(const int32 Limit)
 		Settings->SetFrameRateLimit(static_cast<float>(FMath::Max(Limit, 0)));
 		SaveUserSettings(Settings, false);
 	}
+	ApplyPhoneFramePace(FMath::Max(Limit, 0));
 }
 
 void ChaosImpactSettings::UpdateOnlineFrameCap(const UWorld* World)
@@ -1662,6 +2026,7 @@ void ChaosImpactSettings::UpdateOnlineFrameCap(const UWorld* World)
 		if (!FMath::IsNearlyEqual(GEngine->GetMaxFPS(), Wanted))
 		{
 			GEngine->SetMaxFPS(Wanted);
+			ApplyPhoneFramePace(FMath::RoundToInt(Wanted));
 		}
 		if (!bCapped)
 		{
@@ -1671,6 +2036,7 @@ void ChaosImpactSettings::UpdateOnlineFrameCap(const UWorld* World)
 	else if (bCapped)
 	{
 		GEngine->SetMaxFPS(static_cast<float>(FMath::Max(Chosen, 0)));
+		ApplyPhoneFramePace(Chosen);
 		UE_LOG(LogChaosImpact, Log, TEXT("Left the online room: frame rate limit back to %d"), Chosen);
 	}
 	bCapped = bWant;
@@ -1815,7 +2181,9 @@ namespace
 	bool SameProfile(const FChaosImpactProfile& A, const FChaosImpactProfile& B)
 	{
 		if (A.Name != B.Name || A.Pad != B.Pad || A.bSwapSticks != B.bSwapSticks || A.bAimAssist != B.bAimAssist
-			|| A.bMouseDoubleClickDash != B.bMouseDoubleClickDash || A.CameraDistance != B.CameraDistance)
+			|| A.bMouseDoubleClickDash != B.bMouseDoubleClickDash || A.CameraDistance != B.CameraDistance || A.bWheelSwap != B.bWheelSwap
+			|| A.bTouchLeftHanded != B.bTouchLeftHanded || A.TouchFlick != B.TouchFlick || A.bTouchAutoAim != B.bTouchAutoAim
+			|| A.TouchStyle != B.TouchStyle || !A.TouchLayouts.OrderIndependentCompareEqual(B.TouchLayouts))
 		{
 			return false;
 		}
@@ -1846,7 +2214,7 @@ namespace
 		const FSettingsStore& X = A.Store;
 		const FSettingsStore& Y = B.Store;
 		if (X.Profiles.Num() != Y.Profiles.Num() || X.Volume != Y.Volume || X.Music != Y.Music || X.Shake != Y.Shake
-			|| X.Brightness != Y.Brightness || X.bSwitchConfirmRight != Y.bSwitchConfirmRight || X.bButtonHints != Y.bButtonHints
+			|| X.Brightness != Y.Brightness || X.Orientation != Y.Orientation || X.bSwitchConfirmRight != Y.bSwitchConfirmRight || X.bButtonHints != Y.bButtonHints || X.bMenuRumble != Y.bMenuRumble || X.bShowFps != Y.bShowFps
 			|| X.bOthersPaint != Y.bOthersPaint || X.HudSize != Y.HudSize || X.bTrainingTutorial != Y.bTrainingTutorial
 			|| X.FullscreenResolution != Y.FullscreenResolution)
 		{
@@ -1968,6 +2336,7 @@ void ChaosImpactSettings::RevertSettingsEdit()
 	SetMasterVolume(Then.Store.Volume);
 	SetMusicVolume(Then.Store.Music);
 	SetBrightness(Then.Store.Brightness);
+	ApplyScreenOrientation(Then.Store.Orientation);
 	ApplyRenderScale();
 	UE_LOG(LogChaosImpact, Log, TEXT("Settings not saved: put back as they were"));
 }

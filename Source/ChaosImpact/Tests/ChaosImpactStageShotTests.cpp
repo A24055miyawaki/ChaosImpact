@@ -64,6 +64,13 @@ namespace
 			{
 			case 0:
 			{
+				if (FParse::Param(FCommandLine::Get(), TEXT("CIStageShotPlayerView")))
+				{
+					// (-CIStageShotPlayerView: as the player sees it in play, characters and HUD and all.)
+					++Stage;
+					NextAt = Now + 6.0;
+					return false;
+				}
 				for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
 				{
 					It->SetActorHiddenInGame(true);
@@ -91,9 +98,12 @@ namespace
 			case 1:
 			{
 				// A screenshot is taken at the end of the frame, so the view had to change a step earlier.
-				const FString Name = FString::Printf(TEXT("Stage%d.png"), Match->Rules.StageIndex + 1);
+				// (A 1v1 stage, on the duel's level with ?CIDuel=1?CIStage=N: Duel<N+1>.png.)
+				const bool bView = FParse::Param(FCommandLine::Get(), TEXT("CIStageShotPlayerView"));
+				const FString Name = FString::Printf(TEXT("%s%d%s.png"), Match->Rules.bDuel ? TEXT("Duel") : TEXT("Stage"), Match->Rules.StageIndex + 1,
+					bView ? TEXT("_View") : TEXT(""));
 				FScreenshotRequest::RequestScreenshot(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("StageShots"), Name),
-					false, false);
+					bView, false);
 				++Stage;
 				NextAt = Now + 1.0;
 				return false;

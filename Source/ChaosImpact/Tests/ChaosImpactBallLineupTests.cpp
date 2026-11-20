@@ -19,7 +19,7 @@ namespace
 	/**
 	 * Every kind of ball lying side by side on the floor, seen from the game's height and up close, to check that no two
 	 * look alike at a glance (their colours and their marks). Also each kind held in turn, for its HUD slot.
-	 * Run in training (?CITraining=1?CITargets=0). Saved/BallLineup/*.png.
+	 * Run in training (?CITraining=1?CITargets=0). Saved/BallLineup/ (PNG files).
 	 */
 	class FBallLineupCommand : public IAutomationLatentCommand
 	{

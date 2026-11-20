@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ChaosImpactNameEntry.h"
@@ -136,11 +136,16 @@ private:
 
 	// Layout (1600 x 900 design space).
 	static FBox2D CardRect(int32 Index);
+	/** スマホ版: 戻る on the list. */
+	static FBox2D PhoneBackRect();
+	/** スマホ版: a press on the list waits for the finger to lift (a swipe turns the page). */
+	bool bSwipePending = false;
+	FVector2D SwipeFrom = FVector2D::ZeroVector;
 	static FBox2D TabRect(int32 Index);
 	static FBox2D FilterRect();
 	static FBox2D PostButtonRect();
 	static FBox2D PageArrowRect(int32 Direction);
-	static FBox2D DetailButtonRect(int32 Index);
+	FBox2D DetailButtonRect(int32 Index) const;
 	static FBox2D PostRowRect(int32 Row);
 	static FBox2D PostFieldRect();
 	static FBox2D PostActionRect(int32 Index);

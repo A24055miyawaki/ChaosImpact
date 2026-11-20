@@ -147,7 +147,7 @@ bool UChaosImpactBallFormComponent::IsReleaseProtected() const
 bool UChaosImpactBallFormComponent::Capture(AChaosImpactCharacter* Captor)
 {
 	auto* P = Character();
-	if (!P || !Captor || !P->HasAuthority() || Captor == P || Captor->IsEliminated()
+	if (!P || !Captor || !P->HasAuthority() || Captor == P || Captor->IsEliminated() || P->IsMoveProof()
 		|| !ChaosImpactBallTypes::IsPrisonMode(GetWorld()) || P->IsEliminated() || P->IsDashing()
 		|| IsInBallForm() || IsCaptureImmune() || IsReleaseProtected()
 		|| AChaosImpactGameState::AreTeammates(GetWorld(), P, Captor)) { return false; }

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
@@ -53,6 +53,8 @@ public:
 	/** A right click: the mouse player steps back (as B / Esc), or the nickname list closes. */
 	bool HandleRightClick();
 	void HandleMouseMove(const FVector2D& DesignPoint);
+	/** The button let go (スマホ版: a tap on a card is decided here, so that a drag can scroll instead). */
+	void HandleMouseUp(const FVector2D& DesignPoint);
 	/** Letters typed on a keyboard for a nickname being written. */
 	bool HandleCharacter(TCHAR Character);
 
@@ -94,11 +96,20 @@ public:
 	bool IsStarting() const { return bStarting; }
 	static int32 GetTileCount() { return GridColumns * GridRows; }
 	static bool IsTileUnlocked(int32 Tile);
-	/** Where an icon is, in design space. */
-	static FBox2D GetTileRect(int32 Tile);
+	/** Where an icon is, in design space (スマホ版: a card, where the list is scrolled to now). */
+	FBox2D GetTileRect(int32 Tile) const;
+	/** The icons shown: every tile, or (スマホ版) only the fighters there are. */
+	int32 GetShownTileCount() const;
+	/** スマホ版, one player: the roster as big cards, three across, scrolled with a finger. */
+	bool IsPhoneGrid() const;
+	/** スマホ版: how far the cards are scrolled (design units), and scrolling so a card shows. */
+	float GetGridScroll() const { return GridScroll; }
+	void ScrollToTile(int32 Tile);
 	/** The colour row's chip for Choice (0 いつもの色, 1.. the presets) and its 決定 button, in design space (invalid when not shown). */
 	FBox2D GetChipRect(int32 Player, int32 Choice) const;
 	FBox2D GetRowButtonRect(int32 Player) const;
+	/** スマホ版: its own もどる, at the guide bar's left. */
+	FBox2D PhoneBackRect() const;
 
 private:
 	struct FSlot
@@ -146,6 +157,18 @@ private:
 	void RefreshPreview(int32 Player);
 	void SetStep(int32 Player, EStep Step);
 	FVector2D TileOrigin(int32 Tile) const;
+	FVector2D TileSize() const;
+	bool IsTileInView(int32 Tile) const;
+	/** A press on an icon (the mouse's at once; a finger's when it lifts without dragging). */
+	bool ClickTile(int32 Player, const FVector2D& DesignPoint);
+	float GridScroll = 0.0f;
+	float GridVelocity = 0.0f;
+	bool bGridPress = false;
+	bool bGridDrag = false;
+	FVector2D GridPressPoint = FVector2D::ZeroVector;
+	float GridPressScroll = 0.0f;
+	float GridLastY = 0.0f;
+	double GridLastMoveAt = 0.0;
 	/** The colour row in a player's window (design space), and the chips it has room for (the first shown, how many). */
 	FBox2D RowRect(int32 Player) const;
 	void GetChipWindow(int32 Player, int32& OutFirst, int32& OutCount, float& OutChipWidth) const;

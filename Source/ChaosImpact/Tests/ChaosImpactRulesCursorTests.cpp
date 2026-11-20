@@ -59,6 +59,12 @@ namespace
 				{
 					At = Press(EKeys::Gamepad_DPad_Down);
 				}
+				// (合体ボール, where it is offered, is a fifth row under them: entry 7.)
+				if (At == 7)
+				{
+					Test->TestTrue(TEXT("The fifth row is 合体ボール"), Menu->GetEntryTitle(7) == TEXT("合体ボール"));
+					At = Press(EKeys::Gamepad_DPad_Down);
+				}
 				Test->TestEqual(TEXT("Down from the rows reaches 決定"), At, 4);
 				Test->TestEqual(TEXT("Left of 決定 is ボールスイッチ"), Press(EKeys::Gamepad_DPad_Left), 6);
 				Test->TestEqual(TEXT("Left of ボールスイッチ is 戻る"), Press(EKeys::Gamepad_DPad_Left), 5);
@@ -66,7 +72,7 @@ namespace
 				Test->TestEqual(TEXT("Right of 決定 goes round to 戻る"), Press(EKeys::Gamepad_DPad_Right), 5);
 				Test->TestEqual(TEXT("Right of 戻る is ボールスイッチ"), Press(EKeys::Gamepad_DPad_Right), 6);
 				const int32 Up = Press(EKeys::Gamepad_DPad_Up);
-				Test->TestTrue(FString::Printf(TEXT("Up from the bottom row is a rule row (%d)"), Up), Up >= 0 && Up <= 3);
+				Test->TestTrue(FString::Printf(TEXT("Up from the bottom row is a rule row (%d)"), Up), (Up >= 0 && Up <= 3) || Up == 7);
 				Test->TestEqual(TEXT("Down again comes back to ボールスイッチ"), Press(EKeys::Gamepad_DPad_Down), 6);
 				// The same with the keyboard's arrows.
 				Test->TestEqual(TEXT("Arrow right: 決定"), Press(EKeys::Right), 4);

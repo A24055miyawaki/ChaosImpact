@@ -53,7 +53,7 @@ bool FChaosImpactBallSwitchDrawTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The anchor still comes up"), bSawAnchor);
 
 	// The normal ball is on the switch too (listed first); the last kind on can never be switched off.
-	TestEqual(TEXT("Every kind listed, normal first"), GetSwitchable().Num(), ChaosImpactBallTypes::Count);
+	TestEqual(TEXT("Every kind listed, normal first"), GetSwitchable().Num(), ChaosImpactBallTypes::SharedCount);
 	TestTrue(TEXT("Normal listed first"), GetSwitchable()[0] == EChaosImpactBallType::Normal);
 	FChaosImpactMatchRules Off;
 	for (const EChaosImpactBallType Kind : GetSwitchable())

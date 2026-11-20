@@ -1,4 +1,5 @@
-#include "ChaosImpactCharacterSelect.h"
+﻿#include "ChaosImpactCharacterSelect.h"
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactSfx.h"
 
 #include "ChaosImpact.h"
@@ -42,17 +43,55 @@ namespace
 	/** Seconds between "start" and the next screen, so the GO! can land. */
 	constexpr double StartDelay = 0.55;
 
-	// Layout in the 1600 x 900 design space: icons on the left, player windows on the right, guide bar below.
-	constexpr float IconSize = 142.0f;
-	constexpr float IconGap = 10.0f;
-	constexpr float GridLeft = 96.0f;
-	constexpr float GridTop = 180.0f;
-	constexpr float SelectPanelTop = 136.0f;
-	constexpr float SelectPanelBottom = 792.0f;
-	constexpr float WindowsLeft = 770.0f;
-	constexpr float WindowsWidth = 774.0f;
+	// Layout in the menus' design space: 1600 x 900, icons on the left, player windows on the right, guide bar below;
+	// or (スマホ版, upright) 900 x 1600: the icons on top, the window under them, the bar at the bottom.
+	struct FCsLayout
+	{
+		float IconSize, IconGap, GridLeft, GridTop, PanelLeft, PanelWidth, SelectPanelTop, SelectPanelBottom, WindowsLeft, WindowsTop,
+			WindowsBottom, WindowsWidth, BarLeft, BarWidth, BarTop, BarHeight;
+	};
+	const FCsLayout& CsL()
+	{
+		static const FCsLayout Wide{142.0f, 10.0f, 96.0f, 180.0f, 56.0f, 688.0f, 136.0f, 792.0f, 770.0f, 136.0f, 792.0f, 774.0f, 56.0f, 1488.0f, 806.0f, 64.0f};
+		// (スマホ版 sideways: the panels a little shorter, the bar taller for a thumb.)
+		static const FCsLayout PhoneWide{142.0f, 10.0f, 96.0f, 180.0f, 56.0f, 688.0f, 136.0f, 770.0f, 770.0f, 136.0f, 770.0f, 774.0f, 56.0f, 1488.0f, 786.0f, 92.0f};
+		static const FCsLayout Upright{180.0f, 10.0f, 75.0f, 196.0f, 40.0f, 820.0f, 150.0f, 966.0f, 40.0f, 984.0f, 1440.0f, 820.0f, 40.0f, 820.0f, 1458.0f, 92.0f};
+		return UChaosImpactMenuWidget::IsUprightCanvas() ? Upright : UChaosImpactMenuWidget::IsPhoneBuild() ? PhoneWide : Wide;
+	}
+
+	/**
+	 * スマホ版 (one player): the roster as big upright cards, three across, scrolled with a finger. Where they show (the
+	 * panel's inside, under its head), each card's size, and how far the list scrolls.
+	 */
+	struct FPhoneGrid
+	{
+		FBox2D View;
+		float CardW = 0.0f, CardH = 0.0f, Gap = 14.0f, Margin = 16.0f;
+		int32 Columns = 3;
+	};
+	FPhoneGrid PhoneGrid()
+	{
+		FPhoneGrid G;
+		const bool bUpright = UChaosImpactMenuWidget::IsUprightCanvas();
+		G.View = FBox2D(FVector2D(CsL().PanelLeft + 12.0f, CsL().SelectPanelTop + 48.0f),
+			FVector2D(CsL().PanelLeft + CsL().PanelWidth - 12.0f, CsL().SelectPanelBottom - 12.0f));
+		const float Inner = static_cast<float>(G.View.GetSize().X) - G.Margin * 2.0f - 14.0f;
+		G.CardW = (Inner - G.Gap * (G.Columns - 1)) / G.Columns;
+		G.CardH = G.CardW * (bUpright ? 1.2f : 1.25f);
+		return G;
+	}
+	int32 PhoneCardCount()
+	{
+		return ChaosImpactRoster::Num();
+	}
+	float PhoneGridMaxScroll()
+	{
+		const FPhoneGrid G = PhoneGrid();
+		const int32 Lines = (PhoneCardCount() + G.Columns - 1) / G.Columns;
+		const float Content = Lines * G.CardH + (Lines - 1) * G.Gap + G.Margin * 2.0f;
+		return FMath::Max(0.0f, Content - static_cast<float>(G.View.GetSize().Y));
+	}
 	constexpr float WindowGap = 20.0f;
-	constexpr float BarTop = 806.0f;
 
 	bool IsAny(const FKey& Key, std::initializer_list<FKey> Keys)
 	{
@@ -135,15 +174,80 @@ bool UChaosImpactCharacterSelect::IsTileUnlocked(const int32 Tile)
 	return Tile >= 0 && Tile < ChaosImpactRoster::Num();
 }
 
-FVector2D UChaosImpactCharacterSelect::TileOrigin(const int32 Tile) const
+bool UChaosImpactCharacterSelect::IsPhoneGrid() const
 {
-	return FVector2D(GridLeft + (Tile % GridColumns) * (IconSize + IconGap), GridTop + (Tile / GridColumns) * (IconSize + IconGap));
+	return UChaosImpactMenuWidget::IsPhoneBuild() && Slots.Num() == 1;
 }
 
-FBox2D UChaosImpactCharacterSelect::GetTileRect(const int32 Tile)
+FVector2D UChaosImpactCharacterSelect::TileOrigin(const int32 Tile) const
 {
-	const FVector2D Origin(GridLeft + (Tile % GridColumns) * (IconSize + IconGap), GridTop + (Tile / GridColumns) * (IconSize + IconGap));
-	return FBox2D(Origin, Origin + FVector2D(IconSize, IconSize));
+	if (IsPhoneGrid())
+	{
+		const FPhoneGrid G = PhoneGrid();
+		return FVector2D(G.View.Min.X + G.Margin + (Tile % G.Columns) * (G.CardW + G.Gap),
+			G.View.Min.Y + G.Margin + (Tile / G.Columns) * (G.CardH + G.Gap) - GridScroll);
+	}
+	return FVector2D(CsL().GridLeft + (Tile % GridColumns) * (CsL().IconSize + CsL().IconGap), CsL().GridTop + (Tile / GridColumns) * (CsL().IconSize + CsL().IconGap));
+}
+
+FVector2D UChaosImpactCharacterSelect::TileSize() const
+{
+	if (IsPhoneGrid())
+	{
+		const FPhoneGrid G = PhoneGrid();
+		return FVector2D(G.CardW, G.CardH);
+	}
+	return FVector2D(CsL().IconSize, CsL().IconSize);
+}
+
+FBox2D UChaosImpactCharacterSelect::GetTileRect(const int32 Tile) const
+{
+	const FVector2D Origin = TileOrigin(Tile);
+	return FBox2D(Origin, Origin + TileSize());
+}
+
+int32 UChaosImpactCharacterSelect::GetShownTileCount() const
+{
+	// (スマホ版: only the fighters there are; no locked card.)
+	return IsPhoneGrid() ? PhoneCardCount() : GetTileCount();
+}
+
+bool UChaosImpactCharacterSelect::IsTileInView(const int32 Tile) const
+{
+	if (!IsPhoneGrid())
+	{
+		return true;
+	}
+	const FBox2D View = PhoneGrid().View;
+	const FBox2D Rect = GetTileRect(Tile);
+	return Rect.Max.Y > View.Min.Y && Rect.Min.Y < View.Max.Y;
+}
+
+void UChaosImpactCharacterSelect::ScrollToTile(const int32 Tile)
+{
+	if (!IsPhoneGrid())
+	{
+		return;
+	}
+	const FPhoneGrid G = PhoneGrid();
+	const float Top = G.Margin + (Tile / G.Columns) * (G.CardH + G.Gap);
+	const float ViewH = static_cast<float>(G.View.GetSize().Y);
+	if (Top - G.Margin < GridScroll)
+	{
+		GridScroll = Top - G.Margin;
+	}
+	else if (Top + G.CardH + G.Margin > GridScroll + ViewH)
+	{
+		GridScroll = Top + G.CardH + G.Margin - ViewH;
+	}
+	GridScroll = FMath::Clamp(GridScroll, 0.0f, PhoneGridMaxScroll());
+	GridVelocity = 0.0f;
+}
+
+FBox2D UChaosImpactCharacterSelect::PhoneBackRect() const
+{
+	// スマホ版: もどる at the guide bar's left end.
+	return FBox2D(FVector2D(CsL().BarLeft + 12.0f, CsL().BarTop + 10.0f), FVector2D(CsL().BarLeft + 212.0f, CsL().BarTop + CsL().BarHeight - 10.0f));
 }
 
 FBox2D UChaosImpactCharacterSelect::RowRect(const int32 Player) const
@@ -220,21 +324,23 @@ int32 UChaosImpactCharacterSelect::GetMousePlayer() const
 
 FBox2D UChaosImpactCharacterSelect::WindowRect(const int32 Player) const
 {
-	const float Height = SelectPanelBottom - SelectPanelTop;
+	const float WinTop = CsL().WindowsTop;
+	const float WinBottom = CsL().WindowsBottom;
+	const float Height = WinBottom - WinTop;
 	if (Slots.Num() <= 1)
 	{
-		return FBox2D(FVector2D(WindowsLeft, SelectPanelTop), FVector2D(WindowsLeft + WindowsWidth, SelectPanelBottom));
+		return FBox2D(FVector2D(CsL().WindowsLeft, WinTop), FVector2D(CsL().WindowsLeft + CsL().WindowsWidth, WinBottom));
 	}
 	if (Slots.Num() == 2)
 	{
 		const float Each = (Height - WindowGap) * 0.5f;
-		const float Top = SelectPanelTop + Player * (Each + WindowGap);
-		return FBox2D(FVector2D(WindowsLeft, Top), FVector2D(WindowsLeft + WindowsWidth, Top + Each));
+		const float Top = WinTop + Player * (Each + WindowGap);
+		return FBox2D(FVector2D(CsL().WindowsLeft, Top), FVector2D(CsL().WindowsLeft + CsL().WindowsWidth, Top + Each));
 	}
-	const float EachWidth = (WindowsWidth - WindowGap) * 0.5f;
+	const float EachWidth = (CsL().WindowsWidth - WindowGap) * 0.5f;
 	const float EachHeight = (Height - WindowGap) * 0.5f;
-	const float Left = WindowsLeft + (Player % 2) * (EachWidth + WindowGap);
-	const float Top = SelectPanelTop + (Player / 2) * (EachHeight + WindowGap);
+	const float Left = CsL().WindowsLeft + (Player % 2) * (EachWidth + WindowGap);
+	const float Top = WinTop + (Player / 2) * (EachHeight + WindowGap);
 	return FBox2D(FVector2D(Left, Top), FVector2D(Left + EachWidth, Top + EachHeight));
 }
 
@@ -292,6 +398,15 @@ void UChaosImpactCharacterSelect::Open(AChaosImpactPlayerController* InControlle
 	NamePickerOwner = INDEX_NONE;
 	NameEntry.Close();
 	bOpen = true;
+	// スマホ版: the cards scrolled so the last pick shows.
+	GridScroll = 0.0f;
+	GridVelocity = 0.0f;
+	bGridPress = false;
+	bGridDrag = false;
+	if (Slots.IsValidIndex(0))
+	{
+		ScrollToTile(Slots[0].Cursor);
+	}
 	UE_LOG(LogChaosImpact, Log, TEXT("Character select opened for %d player(s)"), PlayerCount);
 }
 
@@ -450,9 +565,12 @@ void UChaosImpactCharacterSelect::MoveCursor(const int32 Player, const int32 Col
 	{
 		return;
 	}
-	const int32 Column = FMath::Clamp(Slot.Cursor % GridColumns + FMath::Sign(Columns), 0, GridColumns - 1);
-	const int32 Row = FMath::Clamp(Slot.Cursor / GridColumns + FMath::Sign(Rows), 0, GridRows - 1);
-	const int32 Tile = Row * GridColumns + Column;
+	const int32 Across = IsPhoneGrid() ? PhoneGrid().Columns : GridColumns;
+	const int32 Down = IsPhoneGrid() ? (PhoneCardCount() + Across - 1) / Across : GridRows;
+	const int32 Column = FMath::Clamp(Slot.Cursor % Across + FMath::Sign(Columns), 0, Across - 1);
+	const int32 Row = FMath::Clamp(Slot.Cursor / Across + FMath::Sign(Rows), 0, Down - 1);
+	const int32 Tile = FMath::Min(Row * Across + Column, GetShownTileCount() - 1);
+	ScrollToTile(Tile);
 	if (Tile == Slot.Cursor)
 	{
 		return;
@@ -644,6 +762,27 @@ void UChaosImpactCharacterSelect::PressBack(const int32 Player)
 
 void UChaosImpactCharacterSelect::Tick(const float DeltaSeconds)
 {
+	if (bOpen && IsPhoneGrid() && !bGridPress && !FMath::IsNearlyZero(GridVelocity, 1.0f))
+	{
+		// スマホ版: let go moving, the list glides on and slows (stopping at its ends).
+		const float Max = PhoneGridMaxScroll();
+		GridScroll += GridVelocity * DeltaSeconds;
+		GridVelocity *= FMath::Exp(-4.5f * DeltaSeconds);
+		if (GridScroll <= 0.0f || GridScroll >= Max)
+		{
+			GridScroll = FMath::Clamp(GridScroll, 0.0f, Max);
+			GridVelocity = 0.0f;
+		}
+	}
+	else if (bOpen && !bGridPress && FMath::Abs(GridVelocity) <= 1.0f)
+	{
+		GridVelocity = 0.0f;
+	}
+	if (bOpen && IsPhoneGrid())
+	{
+		// (Turned the other way, the list is a different length: kept inside it.)
+		GridScroll = FMath::Clamp(GridScroll, 0.0f, PhoneGridMaxScroll());
+	}
 	if (bOpen)
 	{
 		const float Step = FMath::Min(DeltaSeconds, 0.1f);
@@ -912,7 +1051,12 @@ bool UChaosImpactCharacterSelect::HandleClick(const FVector2D& DesignPoint)
 		OpenNamePicker(Player);
 		return true;
 	}
-	if (AreAllReady() && DesignPoint.Y >= BarTop)
+	if (UChaosImpactMenuWidget::IsPhoneBuild() && !bStarting && PhoneBackRect().IsInside(DesignPoint))
+	{
+		PressBack(Player);
+		return true;
+	}
+	if (AreAllReady() && DesignPoint.Y >= CsL().BarTop)
 	{
 		PressConfirm(Player);
 		return true;
@@ -937,9 +1081,30 @@ bool UChaosImpactCharacterSelect::HandleClick(const FVector2D& DesignPoint)
 		PressConfirm(Player);
 		return true;
 	}
-	for (int32 Tile = 0; Tile < GetTileCount(); ++Tile)
+	if (IsPhoneGrid() && PhoneGrid().View.IsInside(DesignPoint))
 	{
-		if (!GetTileRect(Tile).IsInside(DesignPoint))
+		bGridPress = true;
+		bGridDrag = false;
+		GridPressPoint = DesignPoint;
+		GridPressScroll = GridScroll;
+		GridLastMoveAt = FPlatformTime::Seconds();
+		GridLastY = static_cast<float>(DesignPoint.Y);
+		GridVelocity = 0.0f;
+		return true;
+	}
+	return ClickTile(Player, DesignPoint);
+}
+
+bool UChaosImpactCharacterSelect::ClickTile(const int32 Player, const FVector2D& DesignPoint)
+{
+	if (!Slots.IsValidIndex(Player) || bStarting)
+	{
+		return false;
+	}
+	FSlot& Slot = Slots[Player];
+	for (int32 Tile = 0; Tile < GetShownTileCount(); ++Tile)
+	{
+		if (!GetTileRect(Tile).IsInside(DesignPoint) || !IsTileInView(Tile))
 		{
 			continue;
 		}
@@ -1018,7 +1183,9 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		Title.Text(TEXT("ファイターセレクト  //  CHOOSE YOUR FIGHTER"), HeadX + 46.0f, 75.0f, 15.0f,
 			FMath::Lerp(Ice, Paper, 0.55f), ETextAlign::Left, TEXT("Bold"), 1.0f, Ink);
 
-		// Active player count status pill on the right side of the header
+		// Active player count status pill on the right side of the header (not upright: no room, and one player).
+		if (!UChaosImpactMenuWidget::IsUprightCanvas())
+		{
 		const FGeometry StatusSkew = MakeSkewed(Design, 1250.0f + (1.0f - In) * 50.0f, 36.0f, 294.0f, 54.0f, -0.2f);
 		const FPainter Status{StatusSkew, Elements, Layer + 1, In};
 		RoundBox(Status, 0.0f, 0.0f, 294.0f, 54.0f, 16.0f, FLinearColor(0.015f, 0.025f, 0.055f, 0.9f));
@@ -1029,25 +1196,52 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		StatusText.Text(FString::Printf(TEXT("%dP BATTLE  •  %d/%d READY"), Slots.Num(), ReadyCount, Slots.Num()),
 			1397.0f + (1.0f - In) * 50.0f, 49.0f, 18.0f, ReadyCount == Slots.Num() ? Gold : Paper,
 			ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+		}
 	}
 
 	// ---- Icon grid ----------------------------------------------------------------------------
 	{
 		const float In = EaseOut((T - 0.05f) / 0.3f);
 		const FPainter Panel{Design, Elements, Layer + 1, In};
-		const float PanelW = 688.0f;
-		const float PanelH = SelectPanelBottom - SelectPanelTop;
-		RoundBox(Panel, 56.0f, SelectPanelTop, PanelW, PanelH, 30.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
-		RoundBox(Panel, 64.0f, SelectPanelTop + 8.0f, PanelW - 16.0f, 36.0f, 18.0f, FLinearColor(0.04f, 0.09f, 0.22f, 0.45f));
-		RoundFrame(Panel, 56.0f, SelectPanelTop, PanelW, PanelH, 30.0f, FLinearColor(0.14f, 0.32f, 0.68f, 0.55f), 3.0f);
+		const float PanelW = CsL().PanelWidth;
+		const float PanelX = CsL().PanelLeft;
+		const float PanelH = CsL().SelectPanelBottom - CsL().SelectPanelTop;
+		RoundBox(Panel, PanelX, CsL().SelectPanelTop, PanelW, PanelH, 30.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
+		RoundBox(Panel, PanelX + 8.0f, CsL().SelectPanelTop + 8.0f, PanelW - 16.0f, 36.0f, 18.0f, FLinearColor(0.04f, 0.09f, 0.22f, 0.45f));
+		RoundFrame(Panel, PanelX, CsL().SelectPanelTop, PanelW, PanelH, 30.0f, FLinearColor(0.14f, 0.32f, 0.68f, 0.55f), 3.0f);
 		// Corner tech accents on the roster container
-		Panel.Box(86.0f, SelectPanelTop + 2.0f, 140.0f, 4.0f, WithAlpha(Ice, 0.85f));
-		Panel.Box(56.0f + PanelW - 226.0f, SelectPanelBottom - 6.0f, 140.0f, 4.0f, WithAlpha(Fire, 0.85f));
-		Panel.Text(FString::Printf(TEXT("ROSTER // %d FIGHTERS"), ChaosImpactRoster::Num()), 86.0f, SelectPanelTop + 12.0f, 14.0f,
+		Panel.Box(PanelX + 30.0f, CsL().SelectPanelTop + 2.0f, 140.0f, 4.0f, WithAlpha(Ice, 0.85f));
+		Panel.Box(PanelX + PanelW - 226.0f, CsL().SelectPanelBottom - 6.0f, 140.0f, 4.0f, WithAlpha(Fire, 0.85f));
+		Panel.Text(FString::Printf(TEXT("ROSTER // %d FIGHTERS"), ChaosImpactRoster::Num()), PanelX + 30.0f, CsL().SelectPanelTop + 12.0f, 14.0f,
 			WithAlpha(Ice, 0.8f), ETextAlign::Left, TEXT("BlackItalic"));
 	}
-	for (int32 Tile = 0; Tile < GetTileCount(); ++Tile)
+	const bool bPhoneGrid = IsPhoneGrid();
+	const float TW = static_cast<float>(TileSize().X);
+	const float TH = static_cast<float>(TileSize().Y);
+	// (スマホ版: a card's name plate taller, its words bigger.)
+	const float PlateH = bPhoneGrid ? 42.0f : 28.0f;
+	if (bPhoneGrid)
 	{
+		// The cards only inside their view (they scroll under its edges); a bar at its right says where the list is.
+		const FPhoneGrid G = PhoneGrid();
+		Elements.PushClip(FSlateClippingZone(Design.ToPaintGeometry(FVector2f(G.View.GetSize()), FSlateLayoutTransform(FVector2f(G.View.Min)))));
+		const float Max = PhoneGridMaxScroll();
+		if (Max > 0.0f)
+		{
+			const float ViewH = static_cast<float>(G.View.GetSize().Y);
+			const float Thumb = ViewH * ViewH / (ViewH + Max);
+			const float BarX = static_cast<float>(G.View.Max.X) - 10.0f;
+			const FPainter ScrollBar{Design, Elements, Layer + 1, 1.0f};
+			RoundBox(ScrollBar, BarX, static_cast<float>(G.View.Min.Y) + 6.0f, 6.0f, ViewH - 12.0f, 3.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.08f));
+			RoundBox(ScrollBar, BarX, static_cast<float>(G.View.Min.Y) + 6.0f + (ViewH - 12.0f - Thumb) * GridScroll / Max, 6.0f, Thumb, 3.0f, WithAlpha(Ice, 0.8f));
+		}
+	}
+	for (int32 Tile = 0; Tile < GetShownTileCount(); ++Tile)
+	{
+		if (!IsTileInView(Tile))
+		{
+			continue;
+		}
 		const float In = EaseOut((T - 0.1f - Tile * 0.025f) / 0.28f);
 		const FVector2D Origin = TileOrigin(Tile);
 		const bool bUnlocked = IsTileUnlocked(Tile);
@@ -1070,7 +1264,7 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			ActiveAccent = SlotAccent(Here[0]);
 		}
 		const float Pop = Here.IsEmpty() ? 1.0f : 1.055f;
-		const FGeometry IconSpace = MakeSkewed(Design, Origin.X, Origin.Y + (1.0f - In) * 40.0f, IconSize, IconSize, 0.0f, Pop * In);
+		const FGeometry IconSpace = MakeSkewed(Design, Origin.X, Origin.Y + (1.0f - In) * 40.0f, TW, TH, 0.0f, (bPhoneGrid ? 1.0f : Pop) * In);
 		const int32 IconLayer = Layer + 2 + (Here.IsEmpty() ? 0 : 3);
 		const FPainter I{IconSpace, Elements, IconLayer, In};
 		const FPainter IFace{IconSpace, Elements, IconLayer + 1, In};
@@ -1084,14 +1278,14 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			const FLinearColor BotCard = Here.IsEmpty()
 				? FLinearColor(0.02f, 0.065f, 0.2f, 1.0f)
 				: FMath::Lerp(FLinearColor(0.03f, 0.1f, 0.28f, 1.0f), ActiveAccent, 0.15f);
-			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 22.0f, TopCard);
-			RoundBox(I, 0.0f, IconSize * 0.45f, IconSize, IconSize * 0.55f, 22.0f, BotCard);
+			RoundBox(I, 0.0f, 0.0f, TW, TH, 22.0f, TopCard);
+			RoundBox(I, 0.0f, TH * 0.45f, TW, TH * 0.55f, 22.0f, BotCard);
 			// Subtle inner highlight studio rim
-			RoundBox(I, 6.0f, 6.0f, IconSize - 12.0f, IconSize * 0.38f, 16.0f, FLinearColor(0.25f, 0.55f, 1.0f, Here.IsEmpty() ? 0.12f : 0.24f));
-			RoundFrame(I, 1.5f, 1.5f, IconSize - 3.0f, IconSize - 3.0f, 21.0f,
+			RoundBox(I, 6.0f, 6.0f, TW - 12.0f, TH * 0.38f, 16.0f, FLinearColor(0.25f, 0.55f, 1.0f, Here.IsEmpty() ? 0.12f : 0.24f));
+			RoundFrame(I, 1.5f, 1.5f, TW - 3.0f, TH - 3.0f, 21.0f,
 				Here.IsEmpty() ? FLinearColor(0.2f, 0.45f, 0.88f, 0.42f) : WithAlpha(Paper, 0.75f), 2.0f);
 			// Fighter number tag in top-left corner
-			I.Text(FString::Printf(TEXT("%02d"), Tile + 1), 13.0f, 8.0f, 13.0f,
+			I.Text(FString::Printf(TEXT("%02d"), Tile + 1), 13.0f, 8.0f, bPhoneGrid ? 18.0f : 13.0f,
 				WithAlpha(Paper, Here.IsEmpty() ? 0.38f : 0.75f), ETextAlign::Left, TEXT("BlackItalic"));
 
 			if (PortraitBrushes.IsValidIndex(Tile) && PortraitBrushes[Tile].GetResourceObject())
@@ -1100,32 +1294,46 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 				// Nicola's face is below its waist: the normal upper-body crop would show only its raised feet.
 				const bool bWholeBody = ModelKind == EChaosImpactModelKind::Authored || ModelKind == EChaosImpactModelKind::Handstand;
 				const bool bMugCarp = Tile == ChaosImpactRoster::CapIndex;
-				Face.SetUVRegion(bWholeBody
+				FBox2f Region = bWholeBody
 					? FBox2f(FVector2f(0.03f, 0.2f), FVector2f(0.97f, 0.8f))
 					: bMugCarp
 						? FBox2f(FVector2f(0.14f, 0.06f), FVector2f(0.86f, 0.62f))
-						: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f)));
-				PaintPicture(IFace, Face, 10.0f, 4.0f, IconSize - 20.0f, IconSize - 38.0f);
+						: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f));
+				const float FaceW = TW - 20.0f;
+				const float FaceH = TH - PlateH - 10.0f;
+				if (bPhoneGrid)
+				{
+					// A tall card: as much more of the picture downwards as keeps its shape (inside the picture).
+					const float Tall = (Region.Max.X - Region.Min.X) * (static_cast<float>(AChaosImpactCharacterPreview::PictureWidth)
+						/ AChaosImpactCharacterPreview::PictureHeight) * FaceH / FMath::Max(FaceW, 1.0f);
+					Region.Max.Y = FMath::Min(1.0f, Region.Min.Y + Tall);
+					Region.Min.Y = FMath::Max(0.0f, Region.Max.Y - Tall);
+				}
+				Face.SetUVRegion(Region);
+				PaintPicture(IFace, Face, 10.0f, 4.0f, FaceW, FaceH);
 			}
 			if (*ChaosImpactRoster::Get(Tile).Name)
 			{
-				const float PlateY = IconSize - 34.0f;
-				RoundBox(ILabel, 6.0f, PlateY, IconSize - 12.0f, 28.0f, 10.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.92f));
-				ILabel.Box(14.0f, PlateY + 1.0f, IconSize - 28.0f, 2.5f, Here.IsEmpty() ? WithAlpha(Ice, 0.65f) : ActiveAccent);
+				const float PlateY = TH - PlateH - 6.0f;
+				RoundBox(ILabel, 6.0f, PlateY, TW - 12.0f, PlateH, 10.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.92f));
+				ILabel.Box(14.0f, PlateY + 1.0f, TW - 28.0f, 2.5f, Here.IsEmpty() ? WithAlpha(Ice, 0.65f) : ActiveAccent);
 				const int32 NameLen = FCString::Strlen(ChaosImpactRoster::Get(Tile).Name);
-				const float FontSize = NameLen >= 9 ? 11.5f : (ModelKind == EChaosImpactModelKind::Handstand || NameLen >= 6 ? 13.5f : 16.0f);
-				ILabel.Text(ChaosImpactRoster::Get(Tile).Name, IconSize * 0.5f, PlateY + (NameLen >= 9 ? 5.0f : NameLen >= 6 ? 3.5f : 1.5f),
+				// (A long name is made to fit its plate: never over the next tile. スマホ版: one big size, fitted, in the middle.)
+				const float Wanted = bPhoneGrid ? 24.0f : NameLen >= 9 ? 11.5f : (ModelKind == EChaosImpactModelKind::Handstand || NameLen >= 6 ? 13.5f : 16.0f);
+				const float FontSize = FMath::Min(Wanted, HudFit(ChaosImpactRoster::Get(Tile).Name, Wanted, TW - 26.0f, TEXT("Black")));
+				ILabel.Text(ChaosImpactRoster::Get(Tile).Name, TW * 0.5f, bPhoneGrid ? PlateY + PlateH * 0.5f - FontSize * 0.72f
+					: PlateY + (NameLen >= 9 ? 5.0f : NameLen >= 6 ? 3.5f : 1.5f) + (Wanted - FontSize) * 0.6f,
 					FontSize, Here.IsEmpty() ? Paper : FMath::Lerp(Paper, ActiveAccent, 0.2f),
 					ETextAlign::Center, TEXT("Black"), 1.5f, Ink);
 			}
 		}
 		else
 		{
-			RoundBox(I, 0.0f, 0.0f, IconSize, IconSize, 20.0f, FLinearColor(0.025f, 0.032f, 0.058f, 0.95f));
-			RoundFrame(I, 2.0f, 2.0f, IconSize - 4.0f, IconSize - 4.0f, 18.0f, FLinearColor(0.12f, 0.16f, 0.26f, 0.5f), 2.0f);
-			I.Ring(FVector2D(IconSize * 0.5f, IconSize * 0.44f), 32.0f, WithAlpha(Muted, 0.18f), 2.0f);
-			I.Text(TEXT("?"), IconSize * 0.5f, 24.0f, 56.0f, WithAlpha(Muted, 0.35f + 0.1f * Shimmer), ETextAlign::Center, TEXT("BlackItalic"));
-			I.Text(TEXT("LOCKED"), IconSize * 0.5f, IconSize - 28.0f, 12.0f, WithAlpha(Muted, 0.3f), ETextAlign::Center, TEXT("BlackItalic"));
+			RoundBox(I, 0.0f, 0.0f, TW, TH, 20.0f, FLinearColor(0.025f, 0.032f, 0.058f, 0.95f));
+			RoundFrame(I, 2.0f, 2.0f, TW - 4.0f, TH - 4.0f, 18.0f, FLinearColor(0.12f, 0.16f, 0.26f, 0.5f), 2.0f);
+			I.Ring(FVector2D(TW * 0.5f, TH * 0.44f), 32.0f, WithAlpha(Muted, 0.18f), 2.0f);
+			I.Text(TEXT("?"), TW * 0.5f, 24.0f, 56.0f, WithAlpha(Muted, 0.35f + 0.1f * Shimmer), ETextAlign::Center, TEXT("BlackItalic"));
+			I.Text(TEXT("LOCKED"), TW * 0.5f, TH - 28.0f, 12.0f, WithAlpha(Muted, 0.3f), ETextAlign::Center, TEXT("BlackItalic"));
 		}
 
 		// Cursors: a thick rounded frame per player, the later ones outside the earlier, and a name tag.
@@ -1141,11 +1349,12 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			const float Grow = Moved < 0.15f ? 8.0f * (1.0f - Moved / 0.15f) : 0.0f;
 			const float Out = 5.0f + Order * 9.0f + Grow;
 			const FLinearColor PCol = SlotAccent(Player);
-			RoundFrame(F, -Out - 2.0f, -Out - 2.0f, IconSize + (Out + 2.0f) * 2.0f, IconSize + (Out + 2.0f) * 2.0f,
+			RoundFrame(F, -Out - 2.0f, -Out - 2.0f, TW + (Out + 2.0f) * 2.0f, TH + (Out + 2.0f) * 2.0f,
 				28.0f + Out, WithAlpha(PCol, 0.32f), 9.0f);
-			RoundFrame(F, -Out, -Out, IconSize + Out * 2.0f, IconSize + Out * 2.0f, 26.0f + Out, PCol, 5.5f);
+			RoundFrame(F, -Out, -Out, TW + Out * 2.0f, TH + Out * 2.0f, 26.0f + Out, PCol, 5.5f);
 		}
-		for (int32 Order = 0; Order < Here.Num(); ++Order)
+		// (スマホ版, one player: the frame says it; no 1P tag over the card.)
+		for (int32 Order = 0; Order < Here.Num() && !bPhoneGrid; ++Order)
 		{
 			const int32 Player = Here[Order];
 			const FSlot& Slot = Slots[Player];
@@ -1158,6 +1367,10 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 			TagText.Text(FString::Printf(TEXT("%dP"), Player + 1), TagX + 27.0f, TagY - 1.0f + Bob, 20.0f,
 				bChosen ? SlotAccent(Player) : Ink, ETextAlign::Center, TEXT("BlackItalic"));
 		}
+	}
+	if (bPhoneGrid)
+	{
+		Elements.PopClip();
 	}
 
 	// ---- Player windows -----------------------------------------------------------------------
@@ -1186,29 +1399,51 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 	{
 		const float Since = static_cast<float>(Now - AllReadyAt);
 		const float In = EaseOut(Since / 0.25f);
-		const FGeometry Bar = MakeSkewed(Design, 56.0f, BarTop + (1.0f - In) * 60.0f, 1488.0f, 78.0f, -0.14f, 0.92f + 0.08f * In);
+		// スマホ版: もどる stays at the left (a tap there takes the choice back); the start bar beside it.
+		const bool bReadyBack = UChaosImpactMenuWidget::IsPhoneBuild() && !ChaosImpactHints::IsPad(GuideDevice) && !bStarting;
+		const float BackRoom = bReadyBack ? static_cast<float>(PhoneBackRect().Max.X - CsL().BarLeft) + 18.0f : 0.0f;
+		if (bReadyBack)
+		{
+			const FPainter BKeys{Design, Elements, Layer + 17, In};
+			const FPainter KeyText{Design, Elements, Layer + 18, In};
+			const FBox2D BackBox = PhoneBackRect();
+			const float BX = static_cast<float>(BackBox.Min.X);
+			const float BY = static_cast<float>(BackBox.Min.Y);
+			const float BW = static_cast<float>(BackBox.GetSize().X);
+			const float BH = static_cast<float>(BackBox.GetSize().Y);
+			RoundBox(BKeys, BX, BY, BW, BH, 14.0f, FLinearColor(0.1f, 0.24f, 0.55f, 0.95f));
+			KeyText.Line(FVector2D(BX + 40.0f, BY + BH * 0.5f - 13.0f), FVector2D(BX + 27.0f, BY + BH * 0.5f), Paper, 5.0f);
+			KeyText.Line(FVector2D(BX + 27.0f, BY + BH * 0.5f), FVector2D(BX + 40.0f, BY + BH * 0.5f + 13.0f), Paper, 5.0f);
+			KeyText.Text(TEXT("もどる"), BX + 54.0f, BY + BH * 0.5f - 20.0f, HudFit(TEXT("もどる"), 28.0f, BW - 64.0f), Paper, ETextAlign::Left, TEXT("Black"));
+		}
+		const float BarW = CsL().BarWidth - BackRoom;
+		const FGeometry Bar = MakeSkewed(Design, CsL().BarLeft + BackRoom, CsL().BarTop + (CsL().BarHeight - 64.0f) * 0.5f + (1.0f - In) * 60.0f, BarW, 78.0f, -0.14f, 0.92f + 0.08f * In);
 		const FPainter B{Bar, Elements, Layer + 16, In};
-		RoundBox(B, -4.0f, -4.0f, 1496.0f, 86.0f, 32.0f, WithAlpha(Fire, 0.55f));
-		RoundBox(B, 0.0f, 0.0f, 1488.0f, 78.0f, 28.0f, Gold);
-		RoundBox(B, 10.0f, 6.0f, 1468.0f, 30.0f, 18.0f, WithAlpha(Paper, 0.28f));
+		RoundBox(B, -4.0f, -4.0f, BarW + 8.0f, 86.0f, 32.0f, WithAlpha(Fire, 0.55f));
+		RoundBox(B, 0.0f, 0.0f, BarW, 78.0f, 28.0f, Gold);
+		RoundBox(B, 10.0f, 6.0f, BarW - 20.0f, 30.0f, 18.0f, WithAlpha(Paper, 0.28f));
 		const float Pulse = 0.7f + 0.3f * FMath::Sin(static_cast<float>(Now) * 6.0f);
 		for (int32 Stripe = 0; Stripe < 6; ++Stripe)
 		{
-			B.Box(340.0f + Stripe * 32.0f, 14.0f, 14.0f, 50.0f, WithAlpha(Ink, 0.12f + 0.08f * Pulse));
+			B.Box(BarW * 0.23f + Stripe * 32.0f, 14.0f, 14.0f, 50.0f, WithAlpha(Ink, 0.12f + 0.08f * Pulse));
 		}
 		if (bStarting)
 		{
 			const float Go = static_cast<float>(Now - (StartAt - StartDelay));
-			RoundBox(B, 0.0f, 0.0f, 1488.0f, 78.0f, 28.0f, WithAlpha(Paper, 0.75f * FMath::Clamp(1.0f - Go / 0.25f, 0.0f, 1.0f)));
-			B.Text(TEXT("GO!"), 744.0f, -6.0f, 62.0f * (1.0f + 0.3f * FMath::Exp(-10.0f * Go)), Ink, ETextAlign::Center,
+			RoundBox(B, 0.0f, 0.0f, BarW, 78.0f, 28.0f, WithAlpha(Paper, 0.75f * FMath::Clamp(1.0f - Go / 0.25f, 0.0f, 1.0f)));
+			B.Text(TEXT("GO!"), BarW * 0.5f, -6.0f, 62.0f * (1.0f + 0.3f * FMath::Exp(-10.0f * Go)), Ink, ETextAlign::Center,
 				TEXT("BlackItalic"));
 		}
 		else
 		{
-			B.Text(TEXT("READY TO BATTLE!"), 44.0f, -1.0f, 52.0f, Ink, ETextAlign::Left, TEXT("BlackItalic"));
-			RoundBox(B, 1040.0f, 14.0f, 424.0f, 50.0f, 18.0f, WithAlpha(Ink, 0.88f));
-			B.Text(ChaosImpactHints::Text(GuideDevice, TEXT("{pad:{Confirm}ボタン}{kb:Enter }でスタート!")),
-				1252.0f, 18.0f, 30.0f, FMath::Lerp(Gold, Paper, Pulse * 0.5f), ETextAlign::Center, TEXT("Black"));
+			// (By touch: the bar itself is tapped. Upright: the call and the start under each other's room.)
+			const bool bTouchStart = UChaosImpactMenuWidget::IsPhoneBuild() && !ChaosImpactHints::IsPad(GuideDevice);
+			const FString Start = bTouchStart ? FString(TEXT("タップでスタート!")) : ChaosImpactHints::Text(GuideDevice, TEXT("{pad:{Confirm}ボタン}{kb:Enter }でスタート!"));
+			const float StartW = FMath::Min(424.0f, BarW * 0.46f);
+			const float CallW = BarW - StartW - 70.0f;
+			B.Text(TEXT("READY TO BATTLE!"), 44.0f, -1.0f, HudFit(TEXT("READY TO BATTLE!"), 52.0f, CallW, TEXT("BlackItalic")), Ink, ETextAlign::Left, TEXT("BlackItalic"));
+			RoundBox(B, BarW - StartW - 24.0f, 14.0f, StartW, 50.0f, 18.0f, WithAlpha(Ink, 0.88f));
+			B.Text(Start, BarW - 24.0f - StartW * 0.5f, 18.0f, HudFit(Start, 30.0f, StartW - 20.0f), FMath::Lerp(Gold, Paper, Pulse * 0.5f), ETextAlign::Center, TEXT("Black"));
 		}
 	}
 	else
@@ -1216,8 +1451,43 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		const FPainter B{Design, Elements, Layer + 16, BarIn};
 		const FPainter BKeys{Design, Elements, Layer + 17, BarIn};
 		const FPainter KeyText{Design, Elements, Layer + 18, BarIn};
-		RoundBox(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
-		RoundFrame(B, 56.0f, BarTop, 1488.0f, 64.0f, 26.0f, FLinearColor(0.14f, 0.3f, 0.62f, 0.45f), 2.0f);
+		const float BarX = CsL().BarLeft;
+		const float BarW = CsL().BarWidth;
+		RoundBox(B, BarX, CsL().BarTop, BarW, CsL().BarHeight, 26.0f, FLinearColor(0.012f, 0.02f, 0.048f, 0.92f));
+		RoundFrame(B, BarX, CsL().BarTop, BarW, CsL().BarHeight, 26.0f, FLinearColor(0.14f, 0.3f, 0.62f, 0.45f), 2.0f);
+		if (UChaosImpactMenuWidget::IsPhoneBuild() && !ChaosImpactHints::IsPad(GuideDevice))
+		{
+			// スマホ版: もどる at the bar's left (a leaning chip with its arrow), then what to tap.
+			const FBox2D BackBox = PhoneBackRect();
+			const float BX = static_cast<float>(BackBox.Min.X);
+			const float BY = static_cast<float>(BackBox.Min.Y);
+			const float BW = static_cast<float>(BackBox.GetSize().X);
+			const float BH = static_cast<float>(BackBox.GetSize().Y);
+			RoundBox(BKeys, BX, BY, BW, BH, 14.0f, FLinearColor(0.1f, 0.24f, 0.55f, 0.95f));
+			KeyText.Line(FVector2D(BX + 40.0f, BY + BH * 0.5f - 13.0f), FVector2D(BX + 27.0f, BY + BH * 0.5f), Paper, 5.0f);
+			KeyText.Line(FVector2D(BX + 27.0f, BY + BH * 0.5f), FVector2D(BX + 40.0f, BY + BH * 0.5f + 13.0f), Paper, 5.0f);
+			KeyText.Text(TEXT("もどる"), BX + 54.0f, BY + BH * 0.5f - 20.0f, HudFit(TEXT("もどる"), 28.0f, BW - 64.0f), Paper, ETextAlign::Left, TEXT("Black"));
+			const bool bColour = Slots.IsValidIndex(0) && Slots[0].Step == EStep::Colour;
+			const FString Tip = bColour ? FString(TEXT("色をタップ → けってい")) : FString(TEXT("キャラをタップしてえらぶ　・　名前をタップでニックネーム"));
+			const float TipX = BX + BW + 24.0f;
+			// (Upright the bar is narrow: the tip on two lines, at a size both fit.)
+			const float TipRoom = BarX + BarW - TipX - 20.0f;
+			const float MidY = CsL().BarTop + CsL().BarHeight * 0.5f;
+			if (UChaosImpactMenuWidget::IsUprightCanvas() && !bColour)
+			{
+				const FString First = TEXT("キャラをタップしてえらぶ");
+				const FString Second = TEXT("名前をタップでニックネーム");
+				const float Size = FMath::Min(HudFit(First, 24.0f, TipRoom), HudFit(Second, 24.0f, TipRoom));
+				BKeys.Text(First, TipX, MidY - Size * 1.45f, Size, Paper, ETextAlign::Left, TEXT("Black"));
+				BKeys.Text(Second, TipX, MidY + Size * 0.05f, Size, WithAlpha(Paper, 0.8f), ETextAlign::Left, TEXT("Black"));
+			}
+			else
+			{
+				const float Size = HudFit(Tip, 26.0f, TipRoom);
+				BKeys.Text(Tip, TipX, MidY - Size * 0.72f, Size, Paper, ETextAlign::Left, TEXT("Black"));
+			}
+			return Layer + 20;
+		}
 		struct FGuide { FString Key; FString Label; };
 		TArray<FGuide> Guides = {{TEXT("{DPad|矢印 / WASD}"), TEXT("いどう")}, {TEXT("{Confirm}"), TEXT("けってい")},
 			{TEXT("{Back}"), TEXT("もどる")}, {TEXT("{Y|N}"), TEXT("ニックネーム")}};
@@ -1241,15 +1511,15 @@ int32 UChaosImpactCharacterSelect::Paint(const FGeometry& Design, FSlateWindowEl
 		{
 			Total += Gap + HudMeasure(Guide.Key, 19.0f, TEXT("Black")) + 22.0f + 10.0f + HudMeasure(Guide.Label, 21.0f, TEXT("Black"));
 		}
-		const float Fit = FMath::Min(1.0f, (1488.0f - 60.0f) / FMath::Max(Total, 1.0f));
-		float X = 86.0f;
+		const float Fit = FMath::Min(1.0f, (BarW - 60.0f) / FMath::Max(Total, 1.0f));
+		float X = BarX + 30.0f;
 		for (const FGuide& Guide : Guides)
 		{
 			const float KeyWidth = HudMeasure(Guide.Key, 19.0f * Fit, TEXT("Black")) + 22.0f * Fit;
-			RoundBox(BKeys, X, BarTop + 13.0f, KeyWidth, 38.0f, 11.0f, FLinearColor(0.1f, 0.24f, 0.55f, 0.95f));
-			RoundBox(BKeys, X + 2.0f, BarTop + 15.0f, KeyWidth - 4.0f, 34.0f, 9.0f, Paper);
-			KeyText.Text(Guide.Key, X + KeyWidth * 0.5f, BarTop + 32.0f - 19.0f * Fit * 0.66f, 19.0f * Fit, Ink, ETextAlign::Center, TEXT("Black"));
-			BKeys.Text(Guide.Label, X + KeyWidth + 10.0f * Fit, BarTop + 32.0f - 21.0f * Fit * 0.66f, 21.0f * Fit, Paper, ETextAlign::Left, TEXT("Black"));
+			RoundBox(BKeys, X, CsL().BarTop + 13.0f, KeyWidth, 38.0f, 11.0f, FLinearColor(0.1f, 0.24f, 0.55f, 0.95f));
+			RoundBox(BKeys, X + 2.0f, CsL().BarTop + 15.0f, KeyWidth - 4.0f, 34.0f, 9.0f, Paper);
+			KeyText.Text(Guide.Key, X + KeyWidth * 0.5f, CsL().BarTop + 32.0f - 19.0f * Fit * 0.66f, 19.0f * Fit, Ink, ETextAlign::Center, TEXT("Black"));
+			BKeys.Text(Guide.Label, X + KeyWidth + 10.0f * Fit, CsL().BarTop + 32.0f - 21.0f * Fit * 0.66f, 21.0f * Fit, Paper, ETextAlign::Left, TEXT("Black"));
 			X += KeyWidth + 10.0f * Fit + HudMeasure(Guide.Label, 21.0f * Fit, TEXT("Black")) + Gap * Fit;
 		}
 	}
@@ -1295,12 +1565,22 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		TagText.Text(ChaosImpactSettings::GetProfile(Slot.Profile).Name, 104.0f, 16.0f, 20.0f, bGuest ? Muted : Paper,
 			ETextAlign::Left, TEXT("Black"));
 		// Which button opens the list: N on a keyboard, the top face button (Y / △ / X) on this player's controller.
-		const FString Hint = ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player), TEXT("{Y|N}"));
+		// (By touch: the tag itself is tapped; a pencil mark says so.)
+		const bool bTouchTag = UChaosImpactMenuWidget::IsPhoneBuild()
+			&& !ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(LocalPlayerController(Controller.Get(), Player)));
 		RoundBox(TagText, 92.0f + TagW - 34.0f, 18.0f, 26.0f, 26.0f, 8.0f, WithAlpha(Paper, 0.9f));
 		const FPainter HintText{Space, Elements, Layer + 4, In};
-		HintText.Text(Hint, 92.0f + TagW - 21.0f, 19.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
+		if (bTouchTag)
+		{
+			HintText.Text(TEXT("▼"), 92.0f + TagW - 21.0f, 21.0f, 14.0f, Ink, ETextAlign::Center, TEXT("Black"));
+		}
+		else
+		{
+			const FString Hint = ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player), TEXT("{Y|N}"));
+			HintText.Text(Hint, 92.0f + TagW - 21.0f, 19.0f, 16.0f, Ink, ETextAlign::Center, TEXT("Black"));
+		}
 	}
-	if (bWide || W > 400.0f)
+	if ((bWide || W > 400.0f) && !UChaosImpactMenuWidget::IsPhoneBuild())
 	{
 		RoundBox(C, W - 148.0f, 15.0f, 132.0f, 32.0f, 10.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
 		// (What this player is using now: alone, whatever was pressed last; several, their own.)
@@ -1369,9 +1649,12 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 		}
 	}
 	const bool bRoomy = bWide || bBigWindow;
-	const float BioTop = NameY + (bRoomy ? 48.0f : 30.0f);
-	float BioStep = bRoomy ? 21.0f : 16.0f;
-	float BioSize = bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f;
+	// (スマホ版: the name and the bio bigger, to read on a phone; everything still fitted to its room.)
+	const float BigName = UChaosImpactMenuWidget::IsPhoneBuild() ? 1.25f : 1.0f;
+	const float Big = UChaosImpactMenuWidget::IsPhoneBuild() ? 1.4f : 1.0f;
+	const float BioTop = NameY + (bRoomy ? 48.0f * BigName : 30.0f);
+	float BioStep = (bRoomy ? 21.0f : 16.0f) * Big;
+	float BioSize = (bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f) * Big;
 	const bool bPill = Slot.Step != EStep::Character && PresetCount(Slot.Character) > 0;
 	if (bPill && !bRoomy)
 	{
@@ -1395,28 +1678,39 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	{
 		const float BannerX = bWide ? NameX - 10.0f : 28.0f;
 		const float BannerW = bWide ? W - BannerX - 18.0f : W - 56.0f;
-		const float BannerH = !LongBio.IsEmpty() ? 48.0f + LongBio.Num() * BioStep + 6.0f : bHasDesc1 ? (bHasDesc2 ? 98.0f : 76.0f) : 50.0f;
+		const float BannerH = !LongBio.IsEmpty() ? 48.0f * BigName + LongBio.Num() * BioStep + 6.0f
+			: bHasDesc1 ? 48.0f * BigName + (bHasDesc2 ? 2.0f : 1.0f) * 21.0f * Big + 8.0f : 50.0f * BigName;
 		RoundBox(Back, BannerX, NameY - 4.0f, BannerW, BannerH, 14.0f, FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
-		C.Box(BannerX + 10.0f, NameY + 42.0f, BannerW - 20.0f, 2.5f, WithAlpha(Accent, 0.75f));
+		C.Box(BannerX + 10.0f, NameY + 42.0f * BigName, BannerW - 20.0f, 2.5f, WithAlpha(Accent, 0.75f));
 		C.Text(bOnLockedTile ? FString(TEXT("NO.??")) : FString::Printf(TEXT("FIGHTER NO.%02d"), Slot.Character + 1),
-			bWide ? NameX : W * 0.5f, NameY - 19.0f, 12.5f, WithAlpha(Accent, 0.9f), NameAlign, TEXT("BlackItalic"));
+			bWide ? NameX : W * 0.5f, NameY - 19.0f * BigName, 12.5f * BigName, WithAlpha(Accent, 0.9f), NameAlign, TEXT("BlackItalic"));
 	}
 	else
 	{
 		RoundBox(Back, 10.0f, NameY - 2.0f, W - 20.0f, !LongBio.IsEmpty() ? 30.0f + LongBio.Num() * BioStep + 6.0f : bHasDesc1 ? 72.0f : 32.0f, 10.0f,
 			FLinearColor(0.006f, 0.01f, 0.025f, 0.82f));
 	}
-	C.Text(bOnLockedTile ? FString(TEXT("？？？")) : FString(Info.Name), NameX, NameY, bWide || bBigWindow ? 32.0f : 20.0f,
-		bOnLockedTile ? Muted : Paper, NameAlign, TEXT("Black"), 2.0f, Ink);
+	// (A long name, as 元ドッチ・ボール大統領, shrinks to stay inside its banner.)
+	const FString ShownName = bOnLockedTile ? FString(TEXT("？？？")) : FString(Info.Name);
+	const float NameRoom = bWide ? W - NameX - 34.0f : bBigWindow ? W - 76.0f : W - 40.0f;
+	const float NameSize = ChaosImpactPaint::HudFit(ShownName, (bWide || bBigWindow ? 32.0f : 20.0f) * BigName, NameRoom, TEXT("Black"));
+	C.Text(ShownName, NameX, NameY, NameSize, bOnLockedTile ? Muted : Paper, NameAlign, TEXT("Black"), 2.0f, Ink);
 	for (int32 Line = 0; Line < LongBio.Num(); ++Line)
 	{
 		C.Text(LongBio[Line], NameX, BioTop + Line * BioStep, BioSize, FMath::Lerp(Paper, Muted, 0.2f), NameAlign, TEXT("Bold"), 1.0f, Ink);
 	}
 	if (bHasDesc1 && LongBio.IsEmpty())
 	{
-		const float DescFontSize = bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f;
-		const float DescY1 = NameY + (bWide || bBigWindow ? 48.0f : 30.0f);
-		const float DescY2 = DescY1 + (bWide || bBigWindow ? 21.0f : 16.0f);
+		// (Both lines at one size that fits the banner.)
+		const float DescRoom = bWide ? W - NameX - 28.0f : bBigWindow ? W - 76.0f : W - 40.0f;
+		float DescFontSize = (bWide ? 14.5f : bBigWindow ? 15.5f : 11.5f) * Big;
+		DescFontSize = FMath::Min(DescFontSize, ChaosImpactPaint::HudFit(Info.DescriptionLine1, DescFontSize, DescRoom, TEXT("Bold")));
+		if (bHasDesc2)
+		{
+			DescFontSize = FMath::Min(DescFontSize, ChaosImpactPaint::HudFit(Info.DescriptionLine2, DescFontSize, DescRoom, TEXT("Bold")));
+		}
+		const float DescY1 = NameY + (bWide || bBigWindow ? 48.0f * BigName : 30.0f);
+		const float DescY2 = DescY1 + (bWide || bBigWindow ? 21.0f : 16.0f) * Big;
 		const FLinearColor DescCol = FMath::Lerp(Paper, Muted, 0.2f);
 		C.Text(Info.DescriptionLine1, NameX, DescY1, DescFontSize, DescCol, NameAlign, TEXT("Bold"), 1.0f, Ink);
 		if (bHasDesc2)
@@ -1428,15 +1722,21 @@ void UChaosImpactCharacterSelect::PaintWindow(const int32 Player, const FGeometr
 	{
 		// Before a pick the bottom band says how to pick.
 		const float HintY = H - (bBigWindow ? 46.0f : 34.0f);
-		if (!bOnLockedTile)
+		const bool bTouchPick = UChaosImpactMenuWidget::IsPhoneBuild()
+			&& !ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(LocalPlayerController(Controller.Get(), Player)));
+		if (bTouchPick)
+		{
+			// (By touch: a card is picked as it is tapped; nothing to press here.)
+		}
+		else if (!bOnLockedTile)
 		{
 			RoundBox(Back, W * 0.5f - 110.0f, HintY - 4.0f, 220.0f, 32.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 		}
-		C.Text(bOnLockedTile ? FString() : ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player),
+		C.Text(bOnLockedTile || bTouchPick ? FString() : ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player),
 			TEXT("{Confirm} でけってい")), W * 0.5f, HintY, 17.0f,
 			WithAlpha(Paper, 0.75f + 0.25f * FMath::Sin(static_cast<float>(Now) * 4.0f)), ETextAlign::Center, TEXT("Bold"));
 	}
-	else if (bWide && Slot.Step == EStep::Character && !bOnLockedTile)
+	else if (bWide && Slot.Step == EStep::Character && !bOnLockedTile && !UChaosImpactMenuWidget::IsPhoneBuild())
 	{
 		RoundBox(Back, NameX - 6.0f, H - 50.0f, 210.0f, 34.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 		C.Text(ChaosImpactHints::Text(LocalPlayerController(Controller.Get(), Player), TEXT("{Confirm} でけってい")),
@@ -1709,6 +2009,26 @@ bool UChaosImpactCharacterSelect::HandleCharacter(const TCHAR Character)
 		&& NameEntry.HandleCharacter(Character);
 }
 
+void UChaosImpactCharacterSelect::HandleMouseUp(const FVector2D& DesignPoint)
+{
+	if (!bOpen || !bGridPress)
+	{
+		return;
+	}
+	bGridPress = false;
+	if (bGridDrag)
+	{
+		// Let go moving: it glides (see Tick); held still at the end, it stops there.
+		if (FPlatformTime::Seconds() - GridLastMoveAt > 0.08)
+		{
+			GridVelocity = 0.0f;
+		}
+		bGridDrag = false;
+		return;
+	}
+	ClickTile(GetMousePlayer(), GridPressPoint);
+}
+
 void UChaosImpactCharacterSelect::HandleMouseMove(const FVector2D& DesignPoint)
 {
 	if (!bOpen)
@@ -1716,6 +2036,31 @@ void UChaosImpactCharacterSelect::HandleMouseMove(const FVector2D& DesignPoint)
 		return;
 	}
 	MousePoint = DesignPoint;
+	if (bGridPress)
+	{
+		// スマホ版: a finger moved up or down the cards scrolls them (and is no longer a tap).
+		const float Moved = static_cast<float>(DesignPoint.Y - GridPressPoint.Y);
+		if (!bGridDrag && (FMath::Abs(Moved) > 18.0f || FMath::Abs(DesignPoint.X - GridPressPoint.X) > 30.0))
+		{
+			bGridDrag = true;
+		}
+		if (bGridDrag)
+		{
+			const double Now = FPlatformTime::Seconds();
+			const float Before = GridScroll;
+			GridScroll = FMath::Clamp(GridPressScroll - Moved, 0.0f, PhoneGridMaxScroll());
+			const float Step = static_cast<float>(FMath::Max(Now - GridLastMoveAt, 0.004));
+			// (The speed it is let go at: smoothed over the last moves.)
+			GridVelocity = FMath::Lerp(GridVelocity, (GridScroll - Before) / Step, 0.5f);
+			GridLastMoveAt = Now;
+		}
+		return;
+	}
+	if (IsPhoneGrid())
+	{
+		// (By touch nothing hovers: a card is shown when it is tapped.)
+		return;
+	}
 	if (NameEntry.IsOpen())
 	{
 		NameEntry.HandleMouseMove(DesignPoint);
@@ -1734,7 +2079,7 @@ void UChaosImpactCharacterSelect::HandleMouseMove(const FVector2D& DesignPoint)
 	}
 	// Pointing at an icon shows that character in the mouse player's window.
 	const int32 Player = GetMousePlayer();
-	for (int32 Tile = 0; Tile < GetTileCount() && Slots.IsValidIndex(Player) && Slots[Player].Step == EStep::Character; ++Tile)
+	for (int32 Tile = 0; Tile < GetShownTileCount() && Slots.IsValidIndex(Player) && Slots[Player].Step == EStep::Character; ++Tile)
 	{
 		if (GetTileRect(Tile).IsInside(DesignPoint))
 		{

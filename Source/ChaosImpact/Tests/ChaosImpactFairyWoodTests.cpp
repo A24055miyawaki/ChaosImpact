@@ -144,7 +144,7 @@ namespace
             case 2:
                 Select->PressBack(0);
                 Test->TestTrue(TEXT("Cancel returns directly to character icons"),Select->GetStep(0)==UChaosImpactCharacterSelect::EStep::Character);
-                Test->TestTrue(TEXT("Mouse can pick the new character too"),Select->HandleClick(UChaosImpactCharacterSelect::GetTileRect(FirstCharacter).GetCenter()));
+                Test->TestTrue(TEXT("Mouse can pick the new character too"),Select->HandleClick(Select->GetTileRect(FirstCharacter).GetCenter()));
                 Test->TestTrue(TEXT("Mouse also skips the non-existent colour variants"),Select->IsReady(0));
                 Select->PressBack(1); GoTo(1,FirstCharacter); Pad(EKeys::Gamepad_FaceButton_Bottom);
                 Test->TestTrue(TEXT("Two players may choose the same fixed-colour character"),Select->GetCharacter(0)==FirstCharacter && Select->GetCharacter(1)==FirstCharacter && Select->AreAllReady());
@@ -357,4 +357,10 @@ bool FReverseMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(F
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FReverseGameplayTest,"ChaosImpact.Characters.Reverse.Gameplay",
     EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 bool FReverseGameplayTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodGameplayCommand(this,9,1,TEXT("ReverseQA"))); return true; }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPresidentMenuTest,"ChaosImpact.Characters.President.Menu",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FPresidentMenuTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodMenuCommand(this,ChaosImpactRoster::PresidentIndex,2,TEXT("PresidentQA"))); return true; }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPresidentGameplayTest,"ChaosImpact.Characters.President.Gameplay",
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FPresidentGameplayTest::RunTest(const FString&) { ADD_LATENT_AUTOMATION_COMMAND(FFairyWoodGameplayCommand(this,ChaosImpactRoster::PresidentIndex,1,TEXT("PresidentQA"))); return true; }
 #endif

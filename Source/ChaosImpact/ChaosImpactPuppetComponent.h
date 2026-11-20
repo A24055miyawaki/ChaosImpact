@@ -55,6 +55,8 @@ public:
 	USceneComponent* GetFixedCarryComponent() const;
 	USkeletalMeshComponent* GetAuthoredMesh() const { return AuthoredMesh; }
 	void PlaySelectionAppeal();
+	/** A pose of its own when chosen on the select screen: an authored model's appeal, or a skinned one's clip (A_<Prefix>_Select). */
+	bool HasSelectionAppeal() const { return AuthoredMesh != nullptr || SkinnedAppealClip != nullptr; }
 	void PlayAuthoredThrow(bool bNova, float ReleaseDelaySeconds);
 	FName GetAuthoredState() const { return AuthoredState; }
 	bool GetAuthoredMouthLocation(FVector& OutLocation) const;
@@ -191,6 +193,14 @@ private:
 	/** The whole model, for a skinned character. */
 	UPROPERTY(Transient)
 	TObjectPtr<UPoseableMeshComponent> Skin;
+
+	/** A skinned character's own select-screen clip, played on a copy of the model shown in its place while it lasts. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UAnimSequenceBase> SkinnedAppealClip;
+	UPROPERTY(Transient)
+	TObjectPtr<USkeletalMeshComponent> SkinnedAppealMesh;
+	float SkinnedAppealRemaining = 0.0f;
+	void EndSkinnedAppeal();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> Material;

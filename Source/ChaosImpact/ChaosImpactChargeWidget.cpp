@@ -1,11 +1,15 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactChargeWidget.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "ChaosImpactParty.h"
 #include "ChaosImpactBallSwitch.h"
 #include "ChaosImpactRuleCard.h"
 #include "ChaosImpactSuddenDeathZone.h"
 #include "ChaosImpactTutorial.h"
+#include "ChaosImpactMatchAnnouncerWidget.h"
+#include "ChaosImpactTouchControls.h"
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactNovaParts.h"
 #include "ChaosImpactDojo.h"
 #include "ChaosImpactTournamentWidget.h"
@@ -35,6 +39,7 @@
 #include "ChaosImpactSessionSubsystem.h"
 #include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactSimaeBoss.h"
+#include "ChaosImpactPresidentBoss.h"
 #include "ChaosImpactSpectatorPawn.h"
 #include "ChaosImpactWarpPad.h"
 #include "Engine/GameViewportClient.h"
@@ -149,6 +154,10 @@ namespace
 	const float BallSlotSize = 86.0f;
 	const float BallPickupSeconds = 0.32f;
 	const float BallSwapSeconds = 0.3f;
+	/** 合体: drawn together (the 3D hands and the sound meet at the same moment), then settling into one. */
+	const float FusionPullSeconds = 0.42f;
+	const float FusionSettleSeconds = 0.55f;
+	const float FusionSplitSeconds = 0.55f;
 
 	/** Characters farther than this from the viewer get no off-screen arrow. */
 	const float PlayerMarkerRange = 4200.0f;
@@ -448,7 +457,9 @@ void UChaosImpactChargeWidget::NativeOnInitialized()
 
 void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const float InDeltaTime)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIHudTick);
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	FusionClock += FMath::Min(InDeltaTime, 1.0f / 30.0f);
 	// The whole-stage map: filmed all the while it is open, thirty times a second (what moves on the stage moves on it;
 	// the people and the balls are drawn over it every frame). Its middle glides after an area that moves.
 	if (const auto* MapOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); MapOwner && MapOwner->IsOverviewMapOpen())
@@ -466,7 +477,9 @@ void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const flo
 			// (A new area, or the map just opened: straight there; else a quick glide after it.)
 			MapGlideCenter = !bMapWasOpen || !bMapTaken || !MapGlideCenter.Equals(Center, Half * 0.5f) ? Center
 				: FMath::VInterpTo(MapGlideCenter, Center, FMath::Min(InDeltaTime, 0.1f), 12.0f);
-			if (!bMapWasOpen || Now - MapShotAt >= 1.0 / 30.0)
+			// (スマホ版: twenty times a second, each a lighter picture: what moves on the stage still moves on it.)
+			const bool bPhone = MapOwner->IsPhoneSolo();
+			if (!bMapWasOpen || Now - MapShotAt >= (bPhone ? 1.0 / 20.0 : 1.0 / 30.0))
 			{
 				MapShotAt = Now;
 				TakeMapPicture(MapGlideCenter, Half, Yaw);
@@ -486,7 +499,8 @@ void UChaosImpactChargeWidget::NativeTick(const FGeometry& MyGeometry, const flo
 	const ULocalPlayer* SingleDuelPlayer = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
 	// Slate keeps a player's HUD layer even when their scene view has zero size. Keep its tick alive so it
 	// restores on return to the lobby, but hide the observer's personal HUD during the shared duel view.
-	SetRenderOpacity(SingleDuelPlayer && GetOwningLocalPlayer() != SingleDuelPlayer ? 0.f : 1.f);
+	// (A boss scene playing over the game: the HUD out of sight.)
+	SetRenderOpacity((SingleDuelPlayer && GetOwningLocalPlayer() != SingleDuelPlayer ? 0.f : 1.f) * SceneShown);
 	RefreshPersonalAimGuide();
 	RefreshSplitScreenDividers();
 	if (!bSpectatorView)
@@ -698,6 +712,30 @@ void UChaosImpactChargeWidget::PlayBallSwap()
 	RefreshBallPickupAnimation();
 }
 
+void UChaosImpactChargeWidget::PlayBallFuse(const EChaosImpactBallType Front, const EChaosImpactBallType Back,
+	const EChaosImpactBallType Primary, const EChaosImpactBallType Secondary, const FString& Name)
+{
+	bFusionShown = true;
+	FusionStartedAt = FusionClock;
+	FusionSplitAt = -100.0;
+	FusionFront = Front;
+	FusionBack = Back;
+	FusionPrimary = Primary;
+	FusionSecondary = Secondary;
+	FusionName = Name;
+}
+
+void UChaosImpactChargeWidget::PlayBallSplit(const bool bThrown)
+{
+	if (!bFusionShown)
+	{
+		return;
+	}
+	bFusionShown = false;
+	FusionSplitAt = FusionClock;
+	bFusionSplitThrown = bThrown;
+}
+
 void UChaosImpactChargeWidget::RefreshPersonalAimGuide()
 {
 	APlayerController* PlayerController = GetOwningPlayer();
@@ -867,6 +905,12 @@ void UChaosImpactChargeWidget::SetHealth(const float CurrentHealth, const float 
 		// The HP arc that just emptied bursts outward in PaintVitals.
 		LostHealthSegment = FMath::CeilToInt(Clamped - KINDA_SMALL_NUMBER);
 	}
+	else if (bHealthKnown && Clamped > Health + KINDA_SMALL_NUMBER)
+	{
+		// Healed: the chevron won back flashes in.
+		HealAt = FPlatformTime::Seconds();
+		GainedHealthSegment = FMath::CeilToInt(Clamped - KINDA_SMALL_NUMBER) - 1;
+	}
 	Health = Clamped;
 	MaxHealthValue = FMath::Max(MaxHealth, 1.0f);
 	bHealthKnown = true;
@@ -986,6 +1030,10 @@ void UChaosImpactChargeWidget::SetBallInventory(const int32 CurrentBalls, const 
 			return {FLinearColor(1.0f, 0.82f, 0.84f), FLinearColor(0.2f, 0.0f, 0.03f, 0.97f),
 				FLinearColor(1.0f, 0.1f, 0.24f), FLinearColor(0.48f, 0.02f, 0.08f, 0.95f),
 				FLinearColor(1.0f, 0.86f, 0.88f), FLinearColor(1.0f, 0.78f, 0.8f)};
+		case EChaosImpactBallType::Heal:
+			return {FLinearColor(1.0f, 0.9f, 0.95f), FLinearColor(0.24f, 0.02f, 0.1f, 0.97f),
+				FLinearColor(1.0f, 0.5f, 0.72f), FLinearColor(0.55f, 0.1f, 0.3f, 0.95f),
+				FLinearColor(1.0f, 0.92f, 0.96f), FLinearColor(1.0f, 0.86f, 0.92f)};
 		case EChaosImpactBallType::Simae:
 			return {FLinearColor(0.98f, 0.99f, 1.0f), FLinearColor(0.12f, 0.14f, 0.18f, 0.97f),
 				FLinearColor(0.92f, 0.96f, 1.0f), FLinearColor(0.03f, 0.035f, 0.045f, 1.0f),
@@ -1073,6 +1121,25 @@ void UChaosImpactChargeWidget::UpdateRespawn(const float RemainingSeconds, const
 void UChaosImpactChargeWidget::HideRespawn()
 {
 	bRespawnVisible = false;
+}
+
+void UChaosImpactChargeWidget::ShowHitFeed(const bool bDealt, const FString& Name)
+{
+	const double Now = FPlatformTime::Seconds();
+	HitFeed.RemoveAll([Now](const FHitFeedEntry& Entry) { return Now - Entry.At >= HitFeedSeconds; });
+	FHitFeedEntry Entry{Now, bDealt, Name, 1};
+	if (const int32 Same = HitFeed.IndexOfByPredicate([&](const FHitFeedEntry& Old) { return Old.bDealt == bDealt && Old.Name == Name; });
+		Same != INDEX_NONE)
+	{
+		// (Each burn of a fire zone, say: one card counting up.)
+		Entry.Count = HitFeed[Same].Count + 1;
+		HitFeed.RemoveAt(Same);
+	}
+	HitFeed.Insert(Entry, 0);
+	if (HitFeed.Num() > 3)
+	{
+		HitFeed.SetNum(3);
+	}
 }
 
 void UChaosImpactChargeWidget::ShowKnockout(const FString& VictimName)
@@ -1269,11 +1336,437 @@ void UChaosImpactChargeWidget::PaintCrashMarkers(const FGeometry& AllottedGeomet
 	}
 }
 
+namespace
+{
+	/**
+	 * The 配置 editor's picture (PaintLayoutPreview): while it paints, the HUD is placed by the layout being changed,
+	 * not by the player's character.
+	 */
+	struct FTouchPreview
+	{
+		bool bOn = false;
+		FChaosImpactTouchCustom Custom;
+		bool bButtons = true;
+		bool bLeftHanded = false;
+		FVector2D Size = FVector2D(1.0, 1.0);
+	};
+	FTouchPreview GTouchPreview;
+}
+
+void UChaosImpactChargeWidget::PaintRespawnCard(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, const int32 BaseLayer,
+	const double Clock) const
+{
+	using namespace ChaosImpactPaint;
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	// Knocked out: a card at the bottom middle, between the health and the balls (clear of both, and of the hints at the
+	// sides): a ring that empties as the wait runs out with the count in it, then who did it.
+	if (bRespawnVisible)
+	{
+		const float S = GetHudScale(Size.X, Size.Y);
+		const float Age = static_cast<float>(Clock - RespawnShownAt);
+		const float In = EaseOut(Age / 0.3f);
+		constexpr float W = 430.0f;
+		constexpr float H = 92.0f;
+		const FGeometry Bottom = MakeAnchor(MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Respawn), Size.X * 0.5f, Size.Y, S);
+		const float Top = -262.0f + (1.0f - In) * 40.0f;
+		const FGeometry Card = MakeSkewed(Bottom, -W * 0.5f, Top, W, H, -0.12f);
+		Occupy(Bottom, -W * 0.5f - 16.0f, -270.0f, W + 32.0f, H + 16.0f);
+		const FPainter Plate{Card, OutDrawElements, BaseLayer + 2, In};
+		// The plate: deep night with a lit top edge, a flame of red down its left, a thin ice line under it.
+		HudShard(Plate, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)}, NightFill, 2.5f, FVector2D(6.0, 7.0));
+		const FPainter Above = HudAbove(Plate, 2);
+		Above.Box(0.0f, 0.0f, W, 2.0f, WithAlpha(Paper, 0.35f));
+		HudPoly(Above, {FVector2D(0.0, 0.0), FVector2D(10.0, 0.0), FVector2D(10.0, H), FVector2D(0.0, H)}, FireFill);
+		Above.Box(14.0f, H - 3.0f, W - 14.0f, 3.0f, WithAlpha(Ice, 0.9f));
+
+		// The ring: the time left goes round it (red to ice as it runs out), the count large in it, popping as it changes.
+		const float Remaining = FMath::Clamp(RespawnRemaining / FMath::Max(RespawnTotal, 0.01f), 0.0f, 1.0f);
+		const FVector2D Ring(62.0, H * 0.5f);
+		const float Radius = 32.0f;
+		const FPainter Dial = HudAbove(Plate, 3);
+		Dial.Disc(Ring, Radius + 6.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		Dial.Arc(Ring, Radius, -90.0f, 270.0f, WithAlpha(Paper, 0.12f), 6.0f);
+		HudAbove(Dial, 1).Arc(Ring, Radius, -90.0f, -90.0f + 360.0f * Remaining, FMath::Lerp(Ice, Fire, Remaining), 6.0f);
+		const float NumberAge = static_cast<float>(Clock - CountdownChangedAt);
+		const float Pop = 1.0f + 0.45f * FMath::Exp(-12.0f * NumberAge);
+		const FGeometry NumberSpace = MakeSkewed(Card, static_cast<float>(Ring.X) - 40.0f, static_cast<float>(Ring.Y) - 32.0f, 80.0f, 64.0f, 0.0f, Pop);
+		HudText3D(FPainter{NumberSpace, OutDrawElements, BaseLayer + 7, In}, FString::FromInt(FMath::Max(1, CountdownNumber)), 40.0f, -2.0f, 48.0f,
+			Paper, ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
+
+		// The words: what is happening, and who did it (or that the stage was left).
+		const FPainter Words = HudAbove(Plate, 4);
+		constexpr float TextLeft = 112.0f;
+		const float TextRoom = W - TextLeft - 20.0f;
+		HudText3D(Words, TEXT("復活まで"), TextLeft, 10.0f, 26.0f, Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
+		const FString Cause = DefeatedByName.IsEmpty() ? FString(TEXT("ステージの外に出た！"))
+			: FString::Printf(TEXT("%s にやられた！"), *DefeatedByName);
+		Words.Text(Cause, TextLeft + 2.0f, 50.0f, HudFit(Cause, 19.0f, TextRoom, TEXT("Black")), WithAlpha(Fire, 0.95f),
+			ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
+	}
+}
+
+void UChaosImpactChargeWidget::PaintKnockoutFeed(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, const int32 BaseLayer,
+	const double Clock, const FLinearColor& Accent) const
+{
+	using namespace ChaosImpactPaint;
+	const FVector2f Size = AllottedGeometry.GetLocalSize();
+	// KO banner: two slashes cut across the top-right corner, then the KO stamp lands on them. (A duel calls its
+	// knockouts in the middle of the screen instead, under its scoreboard.)
+	const float KnockoutAge = static_cast<float>(Clock - KnockoutAt);
+	const AChaosImpactGameState* KnockoutMatch = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
+	if (KnockoutAge < 2.2f && !(KnockoutMatch && (KnockoutMatch->IsDuel() || KnockoutMatch->FindDuelFor(GetOwningPlayerState()))))
+	{
+		const float S = GetHudScale(Size.X, Size.Y);
+		const float Leave = FMath::Clamp((KnockoutAge - 1.8f) / 0.4f, 0.0f, 1.0f);
+		const FGeometry TopRight = MakeAnchor(MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Feed), Size.X,
+			-ChaosImpactEase::InOut(Leave) * 60.0f * S, S);
+		const float Cut = EaseOut(KnockoutAge / 0.14f);
+
+		const FGeometry Slashes = MakeSkewed(TopRight, -720.0f, 96.0f, 720.0f, 110.0f, -0.55f);
+		const FPainter SlashPainter{Slashes, OutDrawElements, BaseLayer + 4, 1.0f - Leave};
+		SlashPainter.Box(720.0f * (1.0f - Cut), 22.0f, 720.0f * Cut, 58.0f, WithAlpha(Fire, 0.92f));
+		SlashPainter.Box(720.0f * (1.0f - Cut) + 90.0f, 86.0f, 630.0f * Cut, 10.0f, Ice);
+
+		const float StampAge = FMath::Max(0.0f, KnockoutAge - 0.08f);
+		const float Stamp = 1.0f + 1.3f * FMath::Exp(-16.0f * StampAge);
+		const float Shake = StampAge > 0.05f && StampAge < 0.3f
+			? FMath::Sin(StampAge * 95.0f) * (0.3f - StampAge) * 36.0f : 0.0f;
+		const FGeometry StampSpace = MakeSkewed(TopRight, -520.0f + Shake, 40.0f, 330.0f, 170.0f, -0.22f, Stamp);
+		const FPainter StampPainter{StampSpace, OutDrawElements, BaseLayer + 5,
+			(1.0f - Leave) * FMath::Clamp(StampAge / 0.06f, 0.0f, 1.0f)};
+		StampPainter.Text(TEXT("KO!"), 165.0f, 0.0f, 128.0f, Gold, ETextAlign::Center, TEXT("Black"), 7.0f, Ink);
+
+		// Speed lines radiating from the stamp for the first moments.
+		if (StampAge < 0.35f)
+		{
+			const float T = StampAge / 0.35f;
+			const FPainter Lines{TopRight, OutDrawElements, BaseLayer + 4, (1.0f - T) * (1.0f - Leave)};
+			const FVector2D Center(-355.0f, 125.0f);
+			for (int32 LineIndex = 0; LineIndex < 10; ++LineIndex)
+			{
+				const float Angle = FMath::DegreesToRadians(LineIndex * 36.0f + 12.0f);
+				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
+				const float Inner = 150.0f + 160.0f * EaseOut(T);
+				Lines.Line(Center + Direction * Inner, Center + Direction * (Inner + 70.0f),
+					LineIndex % 2 == 0 ? Paper : Gold, 5.0f);
+			}
+		}
+
+		const float ChipIn = EaseOut((KnockoutAge - 0.18f) / 0.2f);
+		const FGeometry Chip = MakeSkewed(TopRight, -470.0f + (1.0f - ChipIn) * 80.0f, 214.0f, 300.0f, 44.0f, -0.3f);
+		const FPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 5, ChipIn * (1.0f - Leave)};
+		ChipPainter.Box(0.0f, 0.0f, 300.0f, 44.0f, WithAlpha(Ink, 0.9f));
+		ChipPainter.Box(0.0f, 0.0f, 10.0f, 44.0f, Accent);
+		ChipPainter.Text(KnockoutVictim, 26.0f, 5.0f, HudFit(KnockoutVictim, 24.0f, KnockoutStreak >= 2 ? 160.0f : 262.0f), Paper);
+		if (KnockoutStreak >= 2)
+		{
+			ChipPainter.Text(KnockoutStreak == 2 ? FString(TEXT("DOUBLE")) : KnockoutStreak == 3
+				? FString(TEXT("TRIPLE")) : FString::Printf(TEXT("×%d"), KnockoutStreak),
+				290.0f, 5.0f, 24.0f, Gold, ETextAlign::Right, TEXT("BlackItalic"));
+		}
+	}
+	// HIT cards: smaller than the KO banner, at the top right (under it while it shows). Plain plates sliding in and
+	// fading, newest on top: gold HIT! and who was hit, or red 被弾 and who did it.
+	if (!HitFeed.IsEmpty())
+	{
+		const float S = GetHudScale(Size.X, Size.Y);
+		const FGeometry TopRight = MakeAnchor(MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Feed), Size.X, 0.0f, S);
+		const bool bKnockoutShown = KnockoutAge < 2.2f && !(KnockoutMatch && (KnockoutMatch->IsDuel() || KnockoutMatch->FindDuelFor(GetOwningPlayerState())));
+		constexpr float W = 330.0f;
+		constexpr float H = 50.0f;
+		const float Top = bKnockoutShown ? 270.0f : 26.0f;
+		int32 Row = 0;
+		for (const FHitFeedEntry& Entry : HitFeed)
+		{
+			const float Age = static_cast<float>(Clock - Entry.At);
+			if (Age >= HitFeedSeconds)
+			{
+				continue;
+			}
+			const float In = EaseOut(Age / 0.16f);
+			const float Out = FMath::Clamp((Age - (HitFeedSeconds - 0.4f)) / 0.4f, 0.0f, 1.0f);
+			const float X = -W - 26.0f + (1.0f - In) * 70.0f;
+			const float Y = Top + Row * (H + 10.0f);
+			Occupy(TopRight, -W - 34.0f, Y - 6.0f, W + 34.0f, H + 12.0f);
+			const FGeometry Card = MakeSkewed(TopRight, X, Y, W, H, -0.25f);
+			const FPainter Plate{Card, OutDrawElements, BaseLayer + 5, In * (1.0f - Out)};
+			const FLinearColor Mark = Entry.bDealt ? Gold : Fire;
+			Plate.Box(0.0f, 0.0f, W, H, WithAlpha(Ink, 0.88f));
+			Plate.Box(0.0f, 0.0f, 8.0f, H, Mark);
+			Plate.Box(8.0f, H - 3.0f, W - 8.0f, 3.0f, WithAlpha(Mark, 0.55f));
+			const FPainter Words = HudAbove(Plate, 1);
+			if (Entry.bDealt)
+			{
+				Words.Text(TEXT("HIT!"), 20.0f, 4.0f, 34.0f, Gold, ETextAlign::Left, TEXT("BlackItalic"), 2.5f, Ink);
+			}
+			else
+			{
+				Words.Text(TEXT("被弾"), 22.0f, 9.0f, 26.0f, Fire, ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
+			}
+			const FString Times = Entry.Count >= 2 ? FString::Printf(TEXT("×%d"), Entry.Count) : FString();
+			const float TimesRoom = Times.IsEmpty() ? 0.0f : 52.0f;
+			constexpr float NameLeft = 112.0f;
+			const FString Who = Entry.bDealt ? Entry.Name : FString::Printf(TEXT("%s から"), *Entry.Name);
+			Words.Text(Who, NameLeft, 11.0f, HudFit(Who, 22.0f, W - NameLeft - 16.0f - TimesRoom, TEXT("Black")), Paper,
+				ETextAlign::Left, TEXT("Black"), 1.5f, Ink);
+			if (!Times.IsEmpty())
+			{
+				Words.Text(Times, W - 14.0f, 10.0f, 22.0f, Mark, ETextAlign::Right, TEXT("BlackItalic"), 1.5f, Ink);
+			}
+			++Row;
+		}
+	}
+}
+
+void UChaosImpactChargeWidget::PaintStandingRow(const FGeometry& TopLeft, FSlateWindowElementList& OutDrawElements, const int32 BaseLayer,
+	const float RowTop, const int32 Row, const int32 Rank, const FLinearColor& Accent, const FString& Label, const int32 Points, const bool bOwn,
+	const float ExtraPointsWidth)
+{
+	using namespace ChaosImpactPaint;
+	constexpr float RowLeft = 18.0f;
+	constexpr float RowWidth = 270.0f;
+	constexpr float RowHeight = 28.0f;
+	const float Y = RowTop + Row * 36.0f;
+	const auto At = [](const float X, const float YY) { return FVector2D(X, YY); };
+	const FPainter Strip{TopLeft, OutDrawElements, BaseLayer};
+	// A strip with a torn right end; this player's own glows ice blue.
+	HudShard(Strip, {At(RowLeft + 10.0f, Y), At(RowLeft + RowWidth, Y), At(RowLeft + RowWidth - 8.0f, Y + RowHeight * 0.5f),
+		At(RowLeft + RowWidth - 2.0f, Y + RowHeight), At(RowLeft, Y + RowHeight)}, bOwn ? MakeFill(FLinearColor(0.16f, 0.3f, 0.6f, 0.96f),
+		FLinearColor(0.04f, 0.08f, 0.22f, 0.96f)) : NightFill, 2.5f, FVector2D(4.0, 5.0));
+	const FPainter Front = HudAbove(Strip);
+	HudStroke(Front, {At(RowLeft + 44.0f, Y + RowHeight - 3.0f), At(RowLeft + RowWidth - 6.0f, Y + RowHeight - 3.0f)}, WithAlpha(Accent, 0.9f), 2.0f);
+	// The place in a medal shard of its own.
+	const FHudFill Medal = Rank == 1 ? FireFill : Rank == 2 ? SilverFill : Rank == 3 ? BronzeFill : MakeFill(FLinearColor(0.3f, 0.36f, 0.5f),
+		FLinearColor(0.12f, 0.15f, 0.24f));
+	HudShard(Front, {At(RowLeft - 2.0f, Y - 4.0f), At(RowLeft + 36.0f, Y - 4.0f), At(RowLeft + 30.0f, Y + RowHeight + 4.0f),
+		At(RowLeft - 8.0f, Y + RowHeight + 4.0f)}, Medal, 2.5f, FVector2D(3.0, 4.0));
+	const FPainter Words = HudAbove(Front);
+	HudText3D(Words, Rank > 0 ? FString::FromInt(Rank) : FString(TEXT("-")), RowLeft + 14.0f, Y - 2.0f, 20.0f, Paper, ETextAlign::Center);
+	const float NumberW = HudMeasure(FString::FromInt(Points), 22.0f, TEXT("BlackItalic"));
+	const float PointsW = NumberW + ExtraPointsWidth;
+	Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, HudFit(Label, 15.0f, RowWidth - 16.0f - PointsW - 10.0f - 46.0f), bOwn ? Paper : WithAlpha(Paper, 0.85f),
+		ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
+	HudText3D(Words, FString::FromInt(Points), RowLeft + RowWidth - 16.0f, Y - 3.0f, 22.0f, bOwn ? IceFill.Top : Paper, ETextAlign::Right);
+}
+
+void UChaosImpactChargeWidget::PaintCornerButton(const ChaosImpactPaint::FPainter& Button, const FBox2D& R, const FString& Label, const float S,
+	const bool bHover)
+{
+	using namespace ChaosImpactPaint;
+	HudShard(Button, {FVector2D(R.Min.X + 10.0f * S, R.Min.Y), FVector2D(R.Max.X, R.Min.Y), FVector2D(R.Max.X - 10.0f * S, R.Max.Y),
+		FVector2D(R.Min.X, R.Max.Y)}, bHover ? FireFill : NightFill, 2.5f * S, FVector2D(3.0f * S, 4.0f * S));
+	if (!bHover)
+	{
+		HudStroke(HudAbove(Button), {FVector2D(R.Min.X + 12.0f * S, R.Min.Y + 3.0f * S), FVector2D(R.Max.X - 3.0f * S, R.Min.Y + 3.0f * S)},
+			IceFill.Middle, 2.0f * S);
+	}
+	HudAbove(Button).Text(Label, static_cast<float>(R.Min.X + R.Max.X) * 0.5f, static_cast<float>(R.Min.Y) + 10.0f * S,
+		HudFit(Label, 18.0f * S, static_cast<float>(R.GetSize().X) - 16.0f * S), bHover ? Navy : Paper, ETextAlign::Center, TEXT("Black"));
+}
+
+bool UChaosImpactChargeWidget::IsPieceInMode(const int32 Control, const FString& Mode)
+{
+	const bool bMatch = Mode == TEXT("vs") || Mode == TEXT("online");
+	const bool bDuel = Mode == TEXT("duel") || Mode == TEXT("tourney");
+	switch (Control)
+	{
+	// The corner buttons: ポーズ and 全体マップ always; 練習設定 in training; ボール化 in the team matches and training; ルール,
+	// 準備OK and 観戦 in an online room. (Menu: all of them at once, not picked on its own any more.)
+	case FChaosImpactTouchCustom::Menu: return false;
+	case FChaosImpactTouchCustom::CornerPractice: return Mode == TEXT("training");
+	case FChaosImpactTouchCustom::CornerForm: return bMatch || Mode == TEXT("training");
+	case FChaosImpactTouchCustom::CornerRules:
+	case FChaosImpactTouchCustom::CornerReady:
+	case FChaosImpactTouchCustom::CornerWatch: return Mode == TEXT("online");
+	// The clock (or the duel's scoreboard): matches only; the standings: free-for-all matches; the respawn card: not in a
+	// duel (its rounds end at a knockout).
+	case FChaosImpactTouchCustom::Match: return bMatch || bDuel;
+	case FChaosImpactTouchCustom::Standings: return bMatch;
+	case FChaosImpactTouchCustom::Respawn: return !bDuel;
+	default: return true;
+	}
+}
+
+void UChaosImpactChargeWidget::PaintLayoutPreview(const FGeometry& Geometry, FSlateWindowElementList& Elements, const int32 Layer,
+	const FChaosImpactTouchCustom& Custom, const bool bButtons, const bool bLeftHanded, const FString& Mode)
+{
+	const bool bDuelMode = Mode == TEXT("duel") || Mode == TEXT("tourney");
+	using namespace ChaosImpactPaint;
+	const FVector2D Size = Geometry.GetLocalSize();
+	if (Size.X < 1.0 || Size.Y < 1.0)
+	{
+		return;
+	}
+	// The pieces themselves, as in play, with a match's worth of made-up state: full health, two balls, a KO and two
+	// HIT cards just in, the respawn card, the clock and the standings, the corner buttons and the hints.
+	const double Now = FPlatformTime::Seconds();
+	bHealthKnown = true;
+	bVitalsHidden = false;
+	Health = 3.0f;
+	MaxHealthValue = 3.0f;
+	StaminaValue = 5.0f;
+	MaxStaminaValue = 5.0f;
+	DisplayedStamina = 5.0f;
+	HitAt = -100.0;
+	CarriedBalls = 2;
+	CarriedBallTypes = ChaosImpactBallTypes::SetPackedSlot(ChaosImpactBallTypes::SetPackedSlot(0, 0, EChaosImpactBallType::Normal), 1,
+		EChaosImpactBallType::Fire);
+	NovaParts = 0;
+	// (A duel calls its knockouts in the middle, under its scoreboard: only the HIT cards at the corner then.)
+	KnockoutAt = bDuelMode ? -100.0 : Now - 0.9;
+	KnockoutVictim = TEXT("CPU");
+	KnockoutStreak = 1;
+	HitFeed.Reset();
+	HitFeed.Add({Now - 0.6, true, TEXT("CPU"), 1});
+	HitFeed.Add({Now - 0.6, false, TEXT("CPU"), 1});
+	bRespawnVisible = IsPieceInMode(FChaosImpactTouchCustom::Respawn, Mode);
+	RespawnShownAt = Now - 1.0;
+	RespawnRemaining = 2.0f;
+	RespawnTotal = 3.0f;
+	CountdownNumber = 2;
+	CountdownChangedAt = Now - 1.0;
+	DefeatedByName = TEXT("CPU");
+	HudPaintGeometry = Geometry;
+	HudBoxes.Reset();
+	GTouchPreview.bOn = true;
+	GTouchPreview.Custom = Custom;
+	GTouchPreview.bButtons = bButtons;
+	GTouchPreview.bLeftHanded = bLeftHanded;
+	GTouchPreview.Size = Size;
+	const float S = FChaosImpactTouchGestures::HudScale(Size, ChaosImpactSettings::GetHudSizeFactor());
+	const APlayerController* Owner = GetOwningPlayer();
+	// Each piece's area as it comes out (the areas it takes, gathered as it paints).
+	PreviewBoxes.Reset();
+	int32 From = 0;
+	const auto Gather = [&](const int32 Control)
+	{
+		FBox2D Area(ForceInit);
+		for (int32 Index = From; Index < HudBoxes.Num(); ++Index)
+		{
+			Area += HudBoxes[Index];
+		}
+		if (Area.bIsValid)
+		{
+			PreviewBoxes.Add(Control, Area);
+		}
+		From = HudBoxes.Num();
+	};
+	// The hints under the rest.
+	{
+		TArray<FChaosImpactTutorial::FHintRow> Left = {{TEXT("左をなぞる"), TEXT("移動")}, {TEXT("ボール枠をタップ"), TEXT("入れ替え")}};
+		TArray<FChaosImpactTutorial::FHintRow> Right = {{TEXT("投げるをタップ"), TEXT("すぐ投げる")}, {TEXT("投げるを長押し"), TEXT("ためて投げる")},
+			{TEXT("向きスティック"), TEXT("向きを変える")}};
+		const FGeometry HintSpace = MoveForTouch(Owner, Geometry, FChaosImpactTouchCustom::Hints);
+		TArray<FBox2D> Rows;
+		FChaosImpactTutorial::PaintHintRows(HintSpace, Elements, Layer, S, FChaosImpactTouchGestures::HudCornerY(1.0f, true, bButtons, bLeftHanded),
+			false, MoveTemp(Left), MoveTemp(Right), &Rows);
+		FBox2D Area(ForceInit);
+		for (const FBox2D& Row : Rows)
+		{
+			for (const FVector2D& Corner : {Row.Min, Row.Max})
+			{
+				Area += FVector2D(Geometry.AbsoluteToLocal(HintSpace.LocalToAbsolute(FVector2f(Corner))));
+			}
+		}
+		if (Area.bIsValid)
+		{
+			PreviewBoxes.Add(FChaosImpactTouchCustom::Hints, Area);
+		}
+	}
+	From = HudBoxes.Num();
+	PaintVitals(Geometry, Elements, Layer + 20);
+	Gather(FChaosImpactTouchCustom::Vitals);
+	PaintBallInventory(Geometry, Elements, Layer + 20);
+	Gather(FChaosImpactTouchCustom::Balls);
+	// The clock and the standings at the top.
+	const FGeometry ClockSpace = MoveForTouch(Owner, Geometry, FChaosImpactTouchCustom::Match);
+	const FGeometry ClockAnchor = MakeAnchor(ClockSpace, static_cast<float>(Size.X) * 0.5f, 0.0f, S);
+	if (bDuelMode)
+	{
+		// The duel's scoreboard: the round clock, both players' plates, the rounds.
+		UChaosImpactMatchAnnouncerWidget::FDuelBoard Board;
+		Board.Round = 2;
+		Board.Seconds = 47;
+		Board.bShowBalls = true;
+		Board.BallPicks = {static_cast<int32>(EChaosImpactBallType::Fire), static_cast<int32>(EChaosImpactBallType::Ice),
+			static_cast<int32>(EChaosImpactBallType::Hook)};
+		Board.RoundResults = {0};
+		Board.SideColors[0] = UChaosImpactMatchAnnouncerWidget::GetDuelSideColor(0);
+		Board.SideColors[1] = UChaosImpactMatchAnnouncerWidget::GetDuelSideColor(1);
+		Board.Plates[0] = {TEXT("あなた"), Board.SideColors[0], 3, 3, 1, true, false};
+		Board.Plates[1] = {TEXT("CPU"), Board.SideColors[1], 3, 2, 0, false, false};
+		UChaosImpactMatchAnnouncerWidget::PaintDuelBoard(ClockAnchor, Elements, Layer + 40, static_cast<float>(FMath::Fmod(Now, 3600.0)), Board);
+		Occupy(ClockAnchor, -484.0f, 0.0f, 968.0f, 142.0f);
+		Gather(FChaosImpactTouchCustom::Match);
+	}
+	else if (IsPieceInMode(FChaosImpactTouchCustom::Match, Mode))
+	{
+		UChaosImpactMatchAnnouncerWidget::PaintClockSlab(ClockAnchor, Elements, Layer + 40, TEXT("1:30"), Paper, 0.75f, IceFill, false);
+		Occupy(ClockAnchor, -146.0f, 0.0f, 292.0f, 88.0f);
+		Gather(FChaosImpactTouchCustom::Match);
+	}
+	if (IsPieceInMode(FChaosImpactTouchCustom::Standings, Mode))
+	{
+		const FGeometry RanksSpace = MoveForTouch(Owner, Geometry, FChaosImpactTouchCustom::Standings);
+		const FGeometry TopLeft = MakeAnchor(RanksSpace, 0.0f, 0.0f, S);
+		PaintStandingRow(TopLeft, Elements, Layer + 40, 16.0f, 0, 1, Ice, TEXT("あなた"), 3, true);
+		PaintStandingRow(TopLeft, Elements, Layer + 40, 16.0f, 1, 2, Fire, TEXT("CPU 1"), 2, false);
+		PaintStandingRow(TopLeft, Elements, Layer + 40, 16.0f, 2, 3, Gold, TEXT("CPU 2"), 1, false);
+		Occupy(TopLeft, 0.0f, 8.0f, 300.0f, 3.0f * 36.0f + 4.0f);
+		Gather(FChaosImpactTouchCustom::Standings);
+	}
+	PaintKnockoutFeed(Geometry, Elements, Layer + 40, Now, Ice);
+	if (!bDuelMode)
+	{
+		// (The KO banner's own area: the slashes and the stamp from the top-right corner.)
+		Occupy(MakeAnchor(MoveForTouch(Owner, Geometry, FChaosImpactTouchCustom::Feed), static_cast<float>(Size.X), 0.0f, S), -720.0f, 40.0f, 720.0f, 220.0f);
+	}
+	Gather(FChaosImpactTouchCustom::Feed);
+	if (bRespawnVisible)
+	{
+		PaintRespawnCard(Geometry, Elements, Layer + 40, Now);
+		Gather(FChaosImpactTouchCustom::Respawn);
+	}
+	// The corner buttons (ポーズ, 全体マップ, ボール化), where they stand by touch.
+	{
+		const FGeometry MenuSpace = MoveForTouch(Owner, Geometry, FChaosImpactTouchCustom::Menu);
+		const FPainter Button{MenuSpace, Elements, Layer + 60};
+		const float W = static_cast<float>(Size.X);
+		// (The ones this kind of play has, each where it is being put: 練習設定 in training, ボール化 in the team matches, ルール,
+		// 準備OK and 観戦 in an online room.)
+		(void)W;
+		const double TouchScale = FMath::Max(0.25, FMath::Min(Size.X, Size.Y) / 720.0);
+		static const TCHAR* const Words[] = {TEXT(""), TEXT("ポーズ"), TEXT("練習設定"), TEXT(""), TEXT("準備OK"), TEXT("観戦"), TEXT("ボール化"),
+			TEXT("全体マップ"), TEXT("ルール")};
+		for (int32 Hit = 1; Hit <= 8; ++Hit)
+		{
+			const int32 Control = FChaosImpactTouchCustom::CornerOf(Hit);
+			if (Control == INDEX_NONE || !IsPieceInMode(Control, Mode))
+			{
+				continue;
+			}
+			float Grown = 1.0f;
+			const FBox2D Box = PlaceCornerButton(Custom, Hit, TouchCornerBaseFor(Size, S, Hit, Mode), TouchScale, Grown);
+			PaintCornerButton(Button, Box, Words[Hit], S * Grown, false);
+			Occupy(MenuSpace, static_cast<float>(Box.Min.X), static_cast<float>(Box.Min.Y), static_cast<float>(Box.GetSize().X),
+				static_cast<float>(Box.GetSize().Y));
+			Gather(Control);
+		}
+	}
+	GTouchPreview.bOn = false;
+}
+
 int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 	const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIHudPaint);
 	using namespace ChaosImpactPaint;
+	if (SceneShown <= 0.01f)
+	{
+		// A boss scene over the game: no HUD at all.
+		return LayerId;
+	}
 	if (const ULocalPlayer* Single = UChaosImpactGameViewportClient::GetSingleDuelPlayer(GetWorld());
 		Single && GetOwningLocalPlayer() != Single)
 	{
@@ -1334,7 +1827,8 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 			if (ChaosImpactSettings::IsButtonHintsOn() && !Tutorial.IsShowing() && Own->IsGameplayActive() && !AChaosImpactDojo::IsRecordingRun()
 				&& !(Own->GetTournamentWidget() && Own->GetTournamentWidget()->CoversPlay()))
 			{
-				FChaosImpactTutorial::PaintHints(AllottedGeometry, OutDrawElements, HudLayer + 14, Own, HintScale, &HudBoxes);
+				FChaosImpactTutorial::PaintHints(MoveForTouch(Own, AllottedGeometry, FChaosImpactTouchCustom::Hints), OutDrawElements, HudLayer + 14,
+					Own, HintScale, &HudBoxes);
 			}
 		}
 		PaintLastHealthWarning(AllottedGeometry, OutDrawElements, HudLayer + 1);
@@ -1342,12 +1836,18 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 	if (!CwIsTournamentOpening(this))
 	{
 		PaintGameplayPointer(AllottedGeometry, OutDrawElements, HudLayer + 18);
+		PaintTouchControls(AllottedGeometry, OutDrawElements, HudLayer + 17);
 	}
 	if (!bSpectatorView && GetWorld())
 	{
 		// A boss fight: the boss's own bar across the top.
-		AChaosImpactSimaeBoss::PaintHud(GetWorld(), AllottedGeometry, OutDrawElements, HudLayer + 2, GetHudScale(Size.X, Size.Y));
-		if (TActorIterator<AChaosImpactSimaeBoss> Boss(GetWorld()); Boss && !Boss->IsDormant())
+		AChaosImpactSimaeBoss::PaintHud(GetWorld(), MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Match), OutDrawElements,
+			HudLayer + 2, GetHudScale(Size.X, Size.Y));
+		AChaosImpactPresidentBoss::PaintHud(GetWorld(), MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Match), OutDrawElements,
+			HudLayer + 2, GetHudScale(Size.X, Size.Y));
+		TActorIterator<AChaosImpactSimaeBoss> Boss(GetWorld());
+		TActorIterator<AChaosImpactPresidentBoss> President(GetWorld());
+		if ((Boss && !Boss->IsDormant()) || (President && !President->IsDormant()))
 		{
 			Occupy(MakeAnchor(AllottedGeometry, Size.X * 0.5f, 0.0f, GetHudScale(Size.X, Size.Y)), -400.0f, 0.0f, 800.0f, 96.0f);
 		}
@@ -1546,106 +2046,9 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		Edge.Box(0.0f, Size.Y - Band * 0.6f, Size.X, Band * 0.6f, Red);
 	}
 
-	// Knocked out: a card at the bottom middle, between the health and the balls (clear of both, and of the hints at the
-	// sides): a ring that empties as the wait runs out with the count in it, then who did it.
-	if (bRespawnVisible)
-	{
-		const float S = GetHudScale(Size.X, Size.Y);
-		const float Age = static_cast<float>(Clock - RespawnShownAt);
-		const float In = EaseOut(Age / 0.3f);
-		constexpr float W = 430.0f;
-		constexpr float H = 92.0f;
-		const FGeometry Bottom = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y, S);
-		const float Top = -262.0f + (1.0f - In) * 40.0f;
-		const FGeometry Card = MakeSkewed(Bottom, -W * 0.5f, Top, W, H, -0.12f);
-		Occupy(Bottom, -W * 0.5f - 16.0f, -270.0f, W + 32.0f, H + 16.0f);
-		const FPainter Plate{Card, OutDrawElements, BaseLayer + 2, In};
-		// The plate: deep night with a lit top edge, a flame of red down its left, a thin ice line under it.
-		HudShard(Plate, {FVector2D(0.0, 0.0), FVector2D(W, 0.0), FVector2D(W, H), FVector2D(0.0, H)}, NightFill, 2.5f, FVector2D(6.0, 7.0));
-		const FPainter Above = HudAbove(Plate, 2);
-		Above.Box(0.0f, 0.0f, W, 2.0f, WithAlpha(Paper, 0.35f));
-		HudPoly(Above, {FVector2D(0.0, 0.0), FVector2D(10.0, 0.0), FVector2D(10.0, H), FVector2D(0.0, H)}, FireFill);
-		Above.Box(14.0f, H - 3.0f, W - 14.0f, 3.0f, WithAlpha(Ice, 0.9f));
+	PaintRespawnCard(AllottedGeometry, OutDrawElements, BaseLayer, Clock);
 
-		// The ring: the time left goes round it (red to ice as it runs out), the count large in it, popping as it changes.
-		const float Remaining = FMath::Clamp(RespawnRemaining / FMath::Max(RespawnTotal, 0.01f), 0.0f, 1.0f);
-		const FVector2D Ring(62.0, H * 0.5f);
-		const float Radius = 32.0f;
-		const FPainter Dial = HudAbove(Plate, 3);
-		Dial.Disc(Ring, Radius + 6.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
-		Dial.Arc(Ring, Radius, -90.0f, 270.0f, WithAlpha(Paper, 0.12f), 6.0f);
-		HudAbove(Dial, 1).Arc(Ring, Radius, -90.0f, -90.0f + 360.0f * Remaining, FMath::Lerp(Ice, Fire, Remaining), 6.0f);
-		const float NumberAge = static_cast<float>(Clock - CountdownChangedAt);
-		const float Pop = 1.0f + 0.45f * FMath::Exp(-12.0f * NumberAge);
-		const FGeometry NumberSpace = MakeSkewed(Card, static_cast<float>(Ring.X) - 40.0f, static_cast<float>(Ring.Y) - 32.0f, 80.0f, 64.0f, 0.0f, Pop);
-		HudText3D(FPainter{NumberSpace, OutDrawElements, BaseLayer + 7, In}, FString::FromInt(FMath::Max(1, CountdownNumber)), 40.0f, -2.0f, 48.0f,
-			Paper, ETextAlign::Center, TEXT("BlackItalic"), 3.0f);
-
-		// The words: what is happening, and who did it (or that the stage was left).
-		const FPainter Words = HudAbove(Plate, 4);
-		constexpr float TextLeft = 112.0f;
-		const float TextRoom = W - TextLeft - 20.0f;
-		HudText3D(Words, TEXT("復活まで"), TextLeft, 10.0f, 26.0f, Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
-		const FString Cause = DefeatedByName.IsEmpty() ? FString(TEXT("ステージの外に出た！"))
-			: FString::Printf(TEXT("%s にやられた！"), *DefeatedByName);
-		Words.Text(Cause, TextLeft + 2.0f, 50.0f, HudFit(Cause, 19.0f, TextRoom, TEXT("Black")), WithAlpha(Fire, 0.95f),
-			ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
-	}
-
-	// KO banner: two slashes cut across the top-right corner, then the KO stamp lands on them. (A duel calls its
-	// knockouts in the middle of the screen instead, under its scoreboard.)
-	const float KnockoutAge = static_cast<float>(Clock - KnockoutAt);
-	const AChaosImpactGameState* KnockoutMatch = GetWorld() ? GetWorld()->GetGameState<AChaosImpactGameState>() : nullptr;
-	if (KnockoutAge < 2.2f && !(KnockoutMatch && (KnockoutMatch->IsDuel() || KnockoutMatch->FindDuelFor(GetOwningPlayerState()))))
-	{
-		const float S = GetHudScale(Size.X, Size.Y);
-		const float Leave = FMath::Clamp((KnockoutAge - 1.8f) / 0.4f, 0.0f, 1.0f);
-		const FGeometry TopRight = MakeAnchor(AllottedGeometry, Size.X, -ChaosImpactEase::InOut(Leave) * 60.0f * S, S);
-		const float Cut = EaseOut(KnockoutAge / 0.14f);
-
-		const FGeometry Slashes = MakeSkewed(TopRight, -720.0f, 96.0f, 720.0f, 110.0f, -0.55f);
-		const FPainter SlashPainter{Slashes, OutDrawElements, BaseLayer + 4, 1.0f - Leave};
-		SlashPainter.Box(720.0f * (1.0f - Cut), 22.0f, 720.0f * Cut, 58.0f, WithAlpha(Fire, 0.92f));
-		SlashPainter.Box(720.0f * (1.0f - Cut) + 90.0f, 86.0f, 630.0f * Cut, 10.0f, Ice);
-
-		const float StampAge = FMath::Max(0.0f, KnockoutAge - 0.08f);
-		const float Stamp = 1.0f + 1.3f * FMath::Exp(-16.0f * StampAge);
-		const float Shake = StampAge > 0.05f && StampAge < 0.3f
-			? FMath::Sin(StampAge * 95.0f) * (0.3f - StampAge) * 36.0f : 0.0f;
-		const FGeometry StampSpace = MakeSkewed(TopRight, -520.0f + Shake, 40.0f, 330.0f, 170.0f, -0.22f, Stamp);
-		const FPainter StampPainter{StampSpace, OutDrawElements, BaseLayer + 5,
-			(1.0f - Leave) * FMath::Clamp(StampAge / 0.06f, 0.0f, 1.0f)};
-		StampPainter.Text(TEXT("KO!"), 165.0f, 0.0f, 128.0f, Gold, ETextAlign::Center, TEXT("Black"), 7.0f, Ink);
-
-		// Speed lines radiating from the stamp for the first moments.
-		if (StampAge < 0.35f)
-		{
-			const float T = StampAge / 0.35f;
-			const FPainter Lines{TopRight, OutDrawElements, BaseLayer + 4, (1.0f - T) * (1.0f - Leave)};
-			const FVector2D Center(-355.0f, 125.0f);
-			for (int32 LineIndex = 0; LineIndex < 10; ++LineIndex)
-			{
-				const float Angle = FMath::DegreesToRadians(LineIndex * 36.0f + 12.0f);
-				const FVector2D Direction(FMath::Cos(Angle), FMath::Sin(Angle));
-				const float Inner = 150.0f + 160.0f * EaseOut(T);
-				Lines.Line(Center + Direction * Inner, Center + Direction * (Inner + 70.0f),
-					LineIndex % 2 == 0 ? Paper : Gold, 5.0f);
-			}
-		}
-
-		const float ChipIn = EaseOut((KnockoutAge - 0.18f) / 0.2f);
-		const FGeometry Chip = MakeSkewed(TopRight, -470.0f + (1.0f - ChipIn) * 80.0f, 214.0f, 300.0f, 44.0f, -0.3f);
-		const FPainter ChipPainter{Chip, OutDrawElements, BaseLayer + 5, ChipIn * (1.0f - Leave)};
-		ChipPainter.Box(0.0f, 0.0f, 300.0f, 44.0f, WithAlpha(Ink, 0.9f));
-		ChipPainter.Box(0.0f, 0.0f, 10.0f, 44.0f, Accent);
-		ChipPainter.Text(KnockoutVictim, 26.0f, 5.0f, HudFit(KnockoutVictim, 24.0f, KnockoutStreak >= 2 ? 160.0f : 262.0f), Paper);
-		if (KnockoutStreak >= 2)
-		{
-			ChipPainter.Text(KnockoutStreak == 2 ? FString(TEXT("DOUBLE")) : KnockoutStreak == 3
-				? FString(TEXT("TRIPLE")) : FString::Printf(TEXT("×%d"), KnockoutStreak),
-				290.0f, 5.0f, 24.0f, Gold, ETextAlign::Right, TEXT("BlackItalic"));
-		}
-	}
+	PaintKnockoutFeed(AllottedGeometry, OutDrawElements, BaseLayer, Clock, Accent);
 	PaintVersusMatch(AllottedGeometry, OutDrawElements, BaseLayer + 6);
 	if (const auto* P = GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr;
 		P && P->IsInBallForm())
@@ -1654,7 +2057,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		const bool bCaptured=P->GetBallForm()->IsCaptured();
 		const float Left=bCaptured ? P->GetBallForm()->GetFormBall()->GetCaptureSecondsLeft() : 0.f;
 		const float Arrival=bCaptured ? EaseOut((ChaosImpactBallTypes::PrisonSeconds-Left)/.22f) : 1.f;
-		const FGeometry HintSpace = MakeAnchor(AllottedGeometry, Size.X*.5f,
+		const FGeometry HintSpace = MakeAnchor(MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Respawn), Size.X*.5f,
 			Size.Y-(bCaptured ? 252 : 160)*Scale+(1-Arrival)*24*Scale, Scale);
 		const FPainter Hint{HintSpace,OutDrawElements,BaseLayer+7,Arrival};
 		Occupy(HintSpace,-215,-16,430,110);
@@ -1703,6 +2106,7 @@ int32 UChaosImpactChargeWidget::NativePaint(const FPaintArgs& Args, const FGeome
 		}
 	}
 	// The online room overlay is rendered once by the full-window announcer, outside split-view clipping.
+	PaintSoloObjective(AllottedGeometry, OutDrawElements, HudLayer + 20);
 	PaintSoloClear(AllottedGeometry, OutDrawElements, HudLayer + 28);
 	if (const auto* MapOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); MapOwner && MapOwner->IsOverviewMapOpen())
 	{
@@ -1767,11 +2171,12 @@ void UChaosImpactChargeWidget::PaintRuleDetails(const FGeometry& AllottedGeometr
 		: Rules.bDuel ? FString::Printf(TEXT("1ラウンド%d秒・%d本先取"), FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::DuelRoundsToWin)
 		: FString::Printf(TEXT("%d分"), Rules.Minutes);
 	const TPair<FString, FString> Items[] = {
-		{TEXT("ステージ"), bDuelRules ? FString(ChaosImpactMatch::GetDuelStageName()) : ChaosImpactMatch::GetStageLabel(Rules.StageIndex)},
+		{TEXT("ステージ"), ChaosImpactMatch::DescribeStage(Rules)},
 		{Rules.bTournament ? TEXT("進め方") : TEXT("試合時間"), Length},
 		{TEXT("CPU"), CPUs > 0 ? FString::Printf(TEXT("%d人（%s）"), CPUs, CPULevel < 0 ? TEXT("おまかせ") : ChaosImpactMatch::GetCPULevelName(CPULevel))
 			: FString(TEXT("なし"))},
-		{TEXT("チーム"), Rules.IsTeamBattle() ? FString::Printf(TEXT("%dチーム"), Rules.TeamCount) : FString(TEXT("個人戦"))}};
+		{TEXT("チーム"), (Rules.IsTeamBattle() ? FString::Printf(TEXT("%dチーム"), Rules.TeamCount) : FString(TEXT("個人戦")))
+			+ (Rules.bFusionBalls ? TEXT("・合体ボールあり") : TEXT(""))}};
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Items); ++Index)
 	{
 		const float X = Index % 2 == 0 ? 44.0f : CW * 0.5f + 10.0f;
@@ -1857,12 +2262,16 @@ void UChaosImpactChargeWidget::TakeMapPicture(const FVector& Center, const float
 	{
 		return;
 	}
+	// (スマホ版: half the picture, and a lighter filming.)
+	const AChaosImpactPlayerController* MapOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const bool bPhone = MapOwner && MapOwner->IsPhoneSolo();
+	const int32 MapPixels = bPhone ? 512 : 1024;
 	if (!MapTarget)
 	{
 		MapTarget = NewObject<UTextureRenderTarget2D>(this);
 		MapTarget->RenderTargetFormat = RTF_RGBA8;
 		MapTarget->ClearColor = FLinearColor(0.02f, 0.03f, 0.06f, 1.0f);
-		MapTarget->InitAutoFormat(1024, 1024);
+		MapTarget->InitAutoFormat(MapPixels, MapPixels);
 		MapTarget->UpdateResourceImmediate(true);
 	}
 	if (!IsValid(MapCamera))
@@ -1882,6 +2291,20 @@ void UChaosImpactChargeWidget::TakeMapPicture(const FVector& Center, const float
 		Setup->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
 		Setup->bCaptureEveryFrame = false;
 		Setup->bCaptureOnMovement = false;
+		if (bPhone)
+		{
+			// Nothing the map does not need: no shadows, particles, fog, sky or after-effects; the far models' simpler forms.
+			Setup->ShowFlags.SetDynamicShadows(false);
+			Setup->ShowFlags.SetParticles(false);
+			Setup->ShowFlags.SetFog(false);
+			Setup->ShowFlags.SetAtmosphere(false);
+			Setup->ShowFlags.SetPostProcessing(false);
+			Setup->ShowFlags.SetBloom(false);
+			Setup->ShowFlags.SetAntiAliasing(false);
+			Setup->ShowFlags.SetDecals(false);
+			Setup->ShowFlags.SetTranslucency(false);
+			Setup->LODDistanceFactor = 4.0f;
+		}
 		MapHiddenAt = -100.0;
 	}
 	USceneCaptureComponent2D* Capture = MapCamera->GetCaptureComponent2D();
@@ -1904,7 +2327,7 @@ void UChaosImpactChargeWidget::TakeMapPicture(const FVector& Center, const float
 	}
 	Capture->CaptureScene();
 	MapBrush.SetResourceObject(MapTarget);
-	MapBrush.ImageSize = FVector2D(1024.0, 1024.0);
+	MapBrush.ImageSize = FVector2D(MapPixels, MapPixels);
 	MapBrush.DrawAs = ESlateBrushDrawType::Image;
 	MapCenter = Center;
 	MapHalf = Half;
@@ -1938,8 +2361,11 @@ void UChaosImpactChargeWidget::PaintOverviewMap(const FGeometry& AllottedGeometr
 		}
 	}
 	const float Top = TopY + 50.0f * S;
-	const float Side = FMath::Max(120.0f, FMath::Min(Size.X * 0.9f, Size.Y - Top - 40.0f * S));
-	const FVector2D Origin((Size.X - Side) * 0.5f, Top + (1.0f - In) * 18.0f * S);
+	const bool bUpright = Size.Y > Size.X;
+	// (Upright: as wide as the screen allows, in the middle of the room between the top and the thumbs' controls.)
+	const float Room = bUpright ? Size.Y * 0.62f - Top : Size.Y - Top - 40.0f * S;
+	const float Side = FMath::Max(120.0f, FMath::Min(Size.X * (bUpright ? 0.94f : 0.9f), Room));
+	const FVector2D Origin((Size.X - Side) * 0.5f, Top + (bUpright ? FMath::Max(0.0f, (Room - Side) * 0.5f) : 0.0f) + (1.0f - In) * 18.0f * S);
 	// (The picture's own alpha is not kept by the capture: drawn as solid colour, faded by the tint.)
 	FSlateDrawElement::MakeBox(OutDrawElements, Layer + 1, AllottedGeometry.ToPaintGeometry(FVector2f(Side, Side),
 		FSlateLayoutTransform(FVector2f(Origin))), &MapBrush, ESlateDrawEffect::IgnoreTextureAlpha, FLinearColor(1.0f, 1.0f, 1.0f, 0.86f * In));
@@ -1949,7 +2375,7 @@ void UChaosImpactChargeWidget::PaintOverviewMap(const FGeometry& AllottedGeometr
 	// Its title over its top left, and how to close it under it.
 	const UWorld* MapWorld = World;
 	const AChaosImpactGameState* Match = MapWorld->GetGameState<AChaosImpactGameState>();
-	const FString Title = Match && (Match->IsDuel() || Match->IsTournament()) ? FString(ChaosImpactMatch::GetDuelStageName())
+	const FString Title = Match && (Match->IsDuel() || Match->IsTournament()) ? FString(ChaosImpactMatch::GetDuelStageName(Match->GetDuelStageFor(GetOwningPlayer())))
 		: Match && Match->bVersusMatch ? ChaosImpactMatch::GetStageLabel(Match->Rules.StageIndex) : FString(TEXT("マップ"));
 	HudText3D(Frame, TEXT("MAP"), static_cast<float>(Origin.X), static_cast<float>(Origin.Y) - 44.0f * S, 30.0f * S, Ice, ETextAlign::Left,
 		TEXT("BlackItalic"), 2.0f * S);
@@ -1957,7 +2383,10 @@ void UChaosImpactChargeWidget::PaintOverviewMap(const FGeometry& AllottedGeometr
 		HudFit(Title, 20.0f * S, Side - 100.0f * S, TEXT("Black")), Paper, ETextAlign::Left, TEXT("Black"), 2.0f * S, Ink);
 	FString CloseKey = ChaosImpactSettings::DescribeAction(GetOwningPlayer(), EChaosImpactAction::OverviewMap);
 	CloseKey.Split(TEXT(" / "), &CloseKey, nullptr);
-	const FString Close = FString::Printf(TEXT("%s で閉じる"), *CloseKey);
+	// (By touch: its own corner button; no keys named.)
+	const APawn* MapPawn = GetOwningPlayerPawn();
+	const bool bTouchMap = MapPawn && Cast<AChaosImpactCharacter>(MapPawn) && Cast<AChaosImpactCharacter>(MapPawn)->IsTouchControlled();
+	const FString Close = bTouchMap ? FString(TEXT("「マップを閉じる」で閉じる")) : FString::Printf(TEXT("%s で閉じる"), *CloseKey);
 	Frame.Text(Close, static_cast<float>(Origin.X + Side), static_cast<float>(Origin.Y + Side) + 8.0f * S, 16.0f * S,
 		WithAlpha(Paper, 0.85f), ETextAlign::Right, TEXT("Bold"), 1.5f * S, Ink);
 
@@ -2138,9 +2567,10 @@ void UChaosImpactChargeWidget::PaintSoloClear(const FGeometry& AllottedGeometry,
 		const float Open = FMath::Clamp(Alpha * 1.3f, 0.0f, 1.0f) * Scale;
 		const float Outer = TextSize * 1.05f * Open;
 		const float HalfWidth = (HudMeasure(Word, TextSize, TEXT("BlackItalic")) * 0.5f + TextSize * 0.6f) * Open;
-		HudBurst(FPainter{Center, OutDrawElements, BaseLayer + 2, Alpha * FMath::Clamp(1.4f - WordAge, 0.35f, 1.0f)},
-			FVector2D(0.0, -TextSize * 0.1f), TextSize * 0.62f * Open, Outer, 18, Blast, -6.0f,
-			FVector2D(HalfWidth / FMath::Max(Outer, 1.0f), 0.85), 6.0f, FVector2D(9.0, 10.0), TextSize);
+		// (No spiky burst behind it: 2026-11-19, the user asked it gone.)
+		(void)Blast;
+		(void)Outer;
+		(void)HalfWidth;
 		const FGeometry Space = MakeSkewed(Center, -800.0f, -TextSize * 0.8f, 1600.0f, TextSize * 1.6f, -0.12f, Scale);
 		const float Shine = FMath::Frac(Age * 0.45f);
 		const FLinearColor Color = FMath::Lerp(Paper, Gold, 0.25f + 0.25f * FMath::Sin(Shine * UE_TWO_PI));
@@ -2181,6 +2611,10 @@ namespace
 	const FVector2f BallHolderHomes[] = {FVector2f(-122.0f, -104.0f), FVector2f(-218.0f, -72.0f)};
 	constexpr float BallHolderRings[] = {50.0f, 32.0f};
 	constexpr float BallHolderBalls[] = {33.0f, 21.0f};
+	/** 合体: the one holder the two become (a little toward the back from the front one, and wider), and its ball. */
+	const FVector2f FusionHolderHome(-151.0f, -94.0f);
+	constexpr float FusionHolderRing = 56.0f;
+	constexpr float FusionHolderBall = 38.0f;
 
 	FBox2D EasyButtonRect(const FVector2D& Size, const float S, const int32 Hit)
 	{
@@ -2226,6 +2660,530 @@ int32 UChaosImpactChargeWidget::GetGameplayPointerHit() const
 		// Empty pedestals and the count are still HUD, not places to throw a ball through.
 		if (FBox2D(Size + FVector2D(-262.0f, -176.0f) * S, Size + FVector2D(-40.0f, -36.0f) * S).IsInside(Pointer))
 		{ return 12; }
+	}
+	return 0;
+}
+
+float UChaosImpactChargeWidget::GetTouchCornerY(const float Height, const bool bRightSide) const
+{
+	// スマホ版: the HP and the ball holder sit higher, out from under the thumbs (the lower corners are where they rest);
+	// with ボタン方式 above the stick and above the buttons.
+	if (GTouchPreview.bOn)
+	{
+		return FChaosImpactTouchGestures::HudCornerY(Height, bRightSide, GTouchPreview.bButtons, GTouchPreview.bLeftHanded);
+	}
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (!PC || !PC->ShouldUseTouchControls())
+	{
+		return Height;
+	}
+	const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(PC->GetPawn());
+	return FChaosImpactTouchGestures::HudCornerY(Height, bRightSide, !Character || Character->IsTouchButtonStyle(),
+		Character && Character->IsTouchLeftHanded());
+}
+
+void UChaosImpactChargeWidget::GetTouchHudPlacement(const int32 Control, FVector2D& OutShift, float& OutSize) const
+{
+	OutShift = FVector2D::ZeroVector;
+	OutSize = 1.0f;
+	if (GTouchPreview.bOn)
+	{
+		// (The 配置 editor's picture: in its own units, which are the screen's.)
+		OutShift = GTouchPreview.Custom.Offset[Control] * FMath::Max(0.25, FMath::Min(GTouchPreview.Size.X, GTouchPreview.Size.Y) / 720.0);
+		OutSize = GTouchPreview.Custom.Size[Control];
+		return;
+	}
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const AChaosImpactCharacter* Character = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+	if (!Character || !Character->IsTouchControlled())
+	{
+		return;
+	}
+	int32 ViewX = 0;
+	int32 ViewY = 0;
+	PC->GetViewportSize(ViewX, ViewY);
+	const FVector2D Size = GetCachedGeometry().GetLocalSize();
+	if (ViewY <= 0 || Size.Y < 1.0)
+	{
+		return;
+	}
+	// (Kept in 720-pixel units of the screen's short side; this widget's units may differ from the screen's pixels.)
+	const double TouchScale = FMath::Max(0.25, FMath::Min(ViewX, ViewY) / 720.0);
+	const FChaosImpactTouchCustom& Custom = Character->GetTouchCustom();
+	OutShift = Custom.Offset[Control] * TouchScale * (Size.Y / ViewY);
+	OutSize = Custom.Size[Control];
+}
+
+void UChaosImpactChargeWidget::PaintTouchControls(const FGeometry& Geometry, FSlateWindowElementList& Elements, const int32 Layer) const
+{
+	using namespace ChaosImpactPaint;
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const AChaosImpactCharacter* Character = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+	if (!PC || !PC->IsGameplayActive() || !Character || !Character->IsTouchControlled() || Character->IsEliminated() || bSpectatorView)
+	{
+		return;
+	}
+	int32 ViewX = 0;
+	int32 ViewY = 0;
+	PC->GetViewportSize(ViewX, ViewY);
+	const FVector2D Size = Geometry.GetLocalSize();
+	if (ViewX <= 0 || ViewY <= 0 || Size.X < 1.0 || Size.Y < 1.0)
+	{
+		return;
+	}
+	// (The fingers are in the screen's pixels; this widget's own space may be scaled.)
+	const FVector2D ToLocal = Size / FVector2D(ViewX, ViewY);
+	const float Px = static_cast<float>(ToLocal.Y);
+	const FChaosImpactTouchLayout Layout = FChaosImpactTouchGestures::MakeLayout(FVector2D(ViewX, ViewY), Character->IsTouchLeftHanded(),
+		Character->IsTouchButtonStyle(), &Character->GetTouchCustom(), Character->IsTouchOneHand());
+	const FChaosImpactTouchFrame& Frame = Character->GetLastTouchFrame();
+	PaintTouchPad(FPainter{Geometry, Elements, Layer}, Layout, ToLocal, Frame, Character->IsTouchButtonStyle(), Character->IsTouchAimStickShown(),
+		Character->IsTouchSwapShown(), Character->IsTouchFuseShown(), Character->AreBallsFused(), Character->GetCarriedBallCount() > 0,
+		Character->CanDashNow(), Character->IsChargingThrow(), Character->GetThrowChargeAlpha(), NotEditing);
+}
+
+void UChaosImpactChargeWidget::PaintTouchPad(const ChaosImpactPaint::FPainter& Paint, const FChaosImpactTouchLayout& Layout, const FVector2D& ToLocal,
+	const FChaosImpactTouchFrame& Frame, const bool bButtons, const bool bAimStick, const bool bSwap, const bool bFuse, const bool bFused,
+	const bool bBalls, const bool bDashReady, const bool bCharging, const float ChargeAlpha, const int32 Picked)
+{
+	using namespace ChaosImpactPaint;
+	const float Px = static_cast<float>(ToLocal.Y);
+	// (Picked: the editor's control picked up; NotEditing: drawn in play.)
+	const bool bEditor = Picked != NotEditing;
+	const FLinearColor Shade(0.02f, 0.03f, 0.08f, 0.42f);
+	const FLinearColor Rim(1.0f, 1.0f, 1.0f, 0.55f);
+	const FLinearColor Lit(1.0f, 0.82f, 0.25f, 0.9f);
+	// (In the editor: each outlined, the one picked up in gold.)
+	const auto Outline = [&](const int32 Control, const FVector2D& Center, const float Radius)
+	{
+		if (!bEditor)
+		{
+			return;
+		}
+		const bool bPicked = Picked == Control;
+		HudAbove(Paint, 5).Ring(Center * ToLocal, Radius * Px + 6.0f * Px, bPicked ? Gold : WithAlpha(Paper, 0.5f), (bPicked ? 5.0f : 2.0f) * Px);
+	};
+	// The stick: where the thumb holds it, else faintly where it rests.
+	if (Frame.bStickShown)
+	{
+		const FVector2D Anchor = Frame.StickAnchor * ToLocal;
+		FVector2D Thumb = Frame.StickThumb * ToLocal;
+		const float Radius = Layout.StickRadius * Px;
+		if (FVector2D::Distance(Thumb, Anchor) > Radius)
+		{
+			Thumb = Anchor + (Thumb - Anchor).GetSafeNormal() * Radius;
+		}
+		Paint.Disc(Anchor, Radius, Shade);
+		Paint.Ring(Anchor, Radius, Rim, 3.0f * Px);
+		HudAbove(Paint, 1).Disc(Thumb, Radius * 0.42f, FLinearColor(1.0f, 1.0f, 1.0f, 0.7f));
+	}
+	else if (!Layout.bOneHand || bEditor)
+	{
+		// (片手モード in play: no resting place drawn, the thumb goes anywhere.)
+		const FVector2D Home = Layout.StickHome * ToLocal;
+		const float Alpha = bEditor ? 2.0f : 1.0f;
+		Paint.Ring(Home, Layout.StickRadius * Px, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f * Alpha), 2.5f * Px);
+		HudAbove(Paint, 1).Disc(Home, Layout.StickRadius * Px * 0.42f, FLinearColor(1.0f, 1.0f, 1.0f, 0.16f * Alpha));
+	}
+	Outline(FChaosImpactTouchCustom::Stick, Layout.StickHome, Layout.StickRadius);
+	// The buttons: a round one each, its word on it; held, it lights.
+	const auto Button = [&](const int32 Control, const FVector2D& Center, const float Radius, const TCHAR* Word, const bool bHeld, const bool bReady)
+	{
+		if (Radius <= 0.0f)
+		{
+			return;
+		}
+		Outline(Control, Center, Radius);
+		const FVector2D C = Center * ToLocal;
+		const float R = Radius * Px;
+		Paint.Disc(C, R, bHeld ? FLinearColor(1.0f, 0.75f, 0.2f, 0.45f) : Shade);
+		Paint.Ring(C, R, bHeld ? Lit : WithAlpha(Rim, bReady ? 0.6f : 0.25f), 3.0f * Px);
+		const FString Text(Word);
+		const float TextSize = HudFit(Text, R * 0.42f, R * 1.6f);
+		HudAbove(Paint, 2).Text(Text, static_cast<float>(C.X), static_cast<float>(C.Y) - TextSize * 0.7f, TextSize,
+			WithAlpha(Paper, bReady ? 0.95f : 0.45f), ETextAlign::Center, TEXT("Black"));
+	};
+	const uint8 Held = Frame.ButtonsHeld;
+	using FC = FChaosImpactTouchCustom;
+	using FG = FChaosImpactTouchGestures;
+	// 入れ替え / 合体 (解除): only when they can be used.
+	if (bSwap)
+	{
+		Button(FC::Swap, Layout.Swap, Layout.Radius[FC::Swap], TEXT("入れ替え"), (Held & FG::ButtonSwap) != 0, true);
+	}
+	if (bFuse)
+	{
+		Button(FC::Fuse, Layout.Fuse, Layout.Radius[FC::Fuse], bFused ? TEXT("解除") : TEXT("合体"), (Held & FG::ButtonFuse) != 0, true);
+	}
+	// The 向き stick: a ring with a knob, pushed the way to face.
+	if (bAimStick && Layout.Radius[FC::Aim] > 0.0f)
+	{
+		const FVector2D C = Layout.Aim * ToLocal;
+		const float R = Layout.Radius[FC::Aim] * Px;
+		Outline(FC::Aim, Layout.Aim, Layout.Radius[FC::Aim]);
+		const bool bHeld = Frame.bAimStickHeld;
+		Paint.Disc(C, R, bHeld ? FLinearColor(0.1f, 0.35f, 0.6f, 0.45f) : Shade);
+		Paint.Ring(C, R, bHeld ? WithAlpha(Ice, 0.95f) : WithAlpha(Rim, 0.5f), 3.0f * Px);
+		for (int32 Tick = 0; Tick < 4; ++Tick)
+		{
+			const FVector2D Way(FMath::Cos(Tick * UE_HALF_PI), FMath::Sin(Tick * UE_HALF_PI));
+			HudAbove(Paint, 1).Line(C + Way * R * 0.78f, C + Way * R * 0.92f, WithAlpha(Paper, 0.45f), 2.5f * Px);
+		}
+		const FVector2D Knob = bHeld ? Frame.AimStickThumb * ToLocal : C;
+		HudAbove(Paint, 2).Disc(Knob, R * 0.4f, bHeld ? WithAlpha(Ice, 0.85f) : FLinearColor(1.0f, 1.0f, 1.0f, 0.35f));
+		const FString Word = TEXT("向き");
+		const float TextSize = HudFit(Word, R * 0.36f, R * 1.4f);
+		HudAbove(Paint, 3).Text(Word, static_cast<float>(C.X), static_cast<float>(C.Y + R) + 2.0f * Px, TextSize, WithAlpha(Paper, 0.8f),
+			ETextAlign::Center, TEXT("Black"), 1.5f, Ink);
+	}
+	if (bButtons)
+	{
+		Button(FC::Throw, Layout.Throw, Layout.ThrowRadius, TEXT("投げる"), (Held & FG::ButtonThrow) != 0, bBalls);
+		if (bCharging)
+		{
+			// The charge round the throw button (gold; full: a closed ring), and where the thumb drags it to aim.
+			const FVector2D C = Layout.Throw * ToLocal;
+			HudAbove(Paint, 3).Arc(C, (Layout.ThrowRadius + 9.0f * Layout.Scale) * Px, -90.0f, -90.0f + 360.0f * ChargeAlpha, Gold, 6.0f * Px);
+			if (Held & FG::ButtonThrow)
+			{
+				HudAbove(Paint, 3).Line(C, Frame.ThrowThumb * ToLocal, WithAlpha(Lit, 0.7f), 4.0f * Px);
+				HudAbove(Paint, 4).Disc(Frame.ThrowThumb * ToLocal, 18.0f * Layout.Scale * Px, WithAlpha(Lit, 0.8f));
+			}
+		}
+		Button(FC::Dash, Layout.Dash, Layout.Radius[FC::Dash], TEXT("ダッシュ"), (Held & FG::ButtonDash) != 0, bDashReady);
+		Button(FC::Tackle, Layout.Tackle, Layout.Radius[FC::Tackle], TEXT("タックル"), (Held & FG::ButtonTackle) != 0, true);
+	}
+	Button(FC::Jump, Layout.Jump, Layout.Radius[FC::Jump], TEXT("ジャンプ"), (Held & FG::ButtonJump) != 0, true);
+	if (Layout.bOneHand)
+	{
+		// 片手モード: タックル in the row along the bottom too (no やめる: the thumb back on throws).
+		Button(FC::Tackle, Layout.Tackle, Layout.Radius[FC::Tackle], TEXT("タックル"), (Held & FG::ButtonTackle) != 0, true);
+		return;
+	}
+	// やめる: while a throw charges (the thumb let go on it puts the charge away; lit as the thumb comes over it).
+	if (bCharging)
+	{
+		const FVector2D C = Layout.Cancel * ToLocal;
+		const float R = Layout.Radius[FC::Cancel] * Px;
+		Outline(FC::Cancel, Layout.Cancel, Layout.Radius[FC::Cancel]);
+		const bool bOver = Frame.bOverCancel || (Held & FG::ButtonCancel) != 0;
+		Paint.Disc(C, R, bOver ? FLinearColor(0.9f, 0.15f, 0.1f, 0.55f) : FLinearColor(0.25f, 0.02f, 0.02f, 0.45f));
+		Paint.Ring(C, R, WithAlpha(Fire, bOver ? 1.0f : 0.75f), 3.0f * Px);
+		HudAbove(Paint, 1).Line(C + FVector2D(-R * 0.3f, -R * 0.3f), C + FVector2D(R * 0.3f, R * 0.3f), WithAlpha(Paper, 0.5f), 3.0f * Px);
+		HudAbove(Paint, 1).Line(C + FVector2D(R * 0.3f, -R * 0.3f), C + FVector2D(-R * 0.3f, R * 0.3f), WithAlpha(Paper, 0.5f), 3.0f * Px);
+		const FString Word = TEXT("やめる");
+		const float TextSize = HudFit(Word, R * 0.42f, R * 1.6f);
+		HudAbove(Paint, 2).Text(Word, static_cast<float>(C.X), static_cast<float>(C.Y) - TextSize * 0.7f, TextSize, Paper, ETextAlign::Center, TEXT("Black"));
+	}
+}
+
+namespace
+{
+	/** スマホ版: a HUD piece's own placing (the player's shift and size, and the point it grows round), in a widget of Size. */
+	bool TouchPiecePlacement(const APlayerController* Player, const int32 Control, const FVector2D& Size, FVector2D& OutShift, double& OutScale,
+		FVector2D& OutPivot)
+	{
+		OutShift = FVector2D::ZeroVector;
+		OutScale = 1.0;
+		OutPivot = FVector2D::ZeroVector;
+		if (Size.X < 1.0 || Size.Y < 1.0)
+		{
+			return false;
+		}
+		const float HudS = FChaosImpactTouchGestures::HudScale(Size, ChaosImpactSettings::GetHudSizeFactor());
+		const FVector2D Default = FChaosImpactTouchGestures::HudDefaultShift(Control, HudS);
+		if (GTouchPreview.bOn)
+		{
+			// (The 配置 editor's picture: in its own units, which are the screen's.)
+			OutShift = GTouchPreview.Custom.Offset[Control] * FMath::Max(0.25, FMath::Min(Size.X, Size.Y) / 720.0) + Default;
+			OutScale = FMath::Clamp(GTouchPreview.Custom.Size[Control], FChaosImpactTouchCustom::MinSize, FChaosImpactTouchCustom::MaxSize);
+			FChaosImpactTouchGestures::HudBaseBox(Control, Size, HudS, GTouchPreview.bButtons, GTouchPreview.bLeftHanded, OutPivot);
+			OutPivot -= Default;
+			return true;
+		}
+		const AChaosImpactCharacter* Character = Player ? Cast<AChaosImpactCharacter>(Player->GetPawn()) : nullptr;
+		if (!Character || !Character->IsTouchControlled())
+		{
+			return false;
+		}
+		if (Character->GetTouchCustom().IsHidden(Control) && FChaosImpactTouchCustom::CanHide(Control))
+		{
+			// Hidden: drawn far off the screen (nothing of it seen, nothing of it in the way).
+			OutShift = FVector2D(-100000.0, -100000.0);
+			return true;
+		}
+		int32 ViewX = 0;
+		int32 ViewY = 0;
+		Player->GetViewportSize(ViewX, ViewY);
+		if (ViewY <= 0)
+		{
+			return false;
+		}
+		const FChaosImpactTouchCustom& Custom = Character->GetTouchCustom();
+		// (Kept in 720-pixel units of the screen's short side; this widget's units may differ from the screen's pixels.)
+		const double TouchScale = FMath::Max(0.25, FMath::Min(ViewX, ViewY) / 720.0);
+		OutShift = Custom.Offset[Control] * TouchScale * (Size.Y / ViewY);
+		OutScale = FMath::Clamp(Custom.Size[Control], FChaosImpactTouchCustom::MinSize, FChaosImpactTouchCustom::MaxSize);
+		FChaosImpactTouchGestures::HudBaseBox(Control, Size, HudS, Character->IsTouchButtonStyle(), Character->IsTouchLeftHanded(), OutPivot);
+		// (Its place by touch before it is moved: drawn shifted from where it is drawn otherwise, grown round its own point.)
+		OutShift += Default;
+		OutPivot -= Default;
+		return !OutShift.IsNearlyZero() || !FMath::IsNearlyEqual(OutScale, 1.0);
+	}
+}
+
+FGeometry UChaosImpactChargeWidget::MoveForTouch(const APlayerController* Player, const FGeometry& Geometry, const int32 Control)
+{
+	FVector2D Shift;
+	double Scale = 1.0;
+	FVector2D Pivot;
+	if (!TouchPiecePlacement(Player, Control, Geometry.GetLocalSize(), Shift, Scale, Pivot))
+	{
+		return Geometry;
+	}
+	// The same space, grown or shrunk round the piece's own point and shifted (what is drawn in it moves with it).
+	return Geometry.MakeChild(FVector2f(Geometry.GetLocalSize()), FSlateLayoutTransform(static_cast<float>(Scale), FVector2f(Shift + Pivot * (1.0 - Scale))));
+}
+
+FBox2D UChaosImpactChargeWidget::MoveBoxForTouch(const APlayerController* Player, const FBox2D& Box, const FVector2D& Size, const int32 Control)
+{
+	FVector2D Shift;
+	double Scale = 1.0;
+	FVector2D Pivot;
+	if (!TouchPiecePlacement(Player, Control, Size, Shift, Scale, Pivot))
+	{
+		return Box;
+	}
+	return FBox2D(Pivot + (Box.Min - Pivot) * Scale + Shift, Pivot + (Box.Max - Pivot) * Scale + Shift);
+}
+
+bool UChaosImpactChargeWidget::IsCornerButtonShown(const int32 Hit, const bool bTouch) const
+{
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const AChaosImpactCharacter* Character = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+	if (!PC)
+	{
+		return false;
+	}
+	if (bTouch)
+	{
+		// (Hidden by the player in the 配置 editor.)
+		double Unused = 1.0;
+		const FChaosImpactTouchCustom* Custom = GetCurrentTouchCustom(GetCachedGeometry().GetLocalSize(), Unused);
+		const int32 Control = FChaosImpactTouchCustom::CornerOf(Hit);
+		if (Custom && Control != INDEX_NONE && Custom->IsHidden(Control) && FChaosImpactTouchCustom::CanHide(Control))
+		{
+			return false;
+		}
+	}
+	switch (Hit)
+	{
+	case 2: return PC->IsTrainingMode() && PC->IsPrimaryLocalPlayerController() && !PC->IsOnlineRoom() && !PC->IsVersusMatchWorld()
+		&& !CwIsTournamentWorld(this) && !PC->IsDojo();
+	case 3: return !bTouch;
+	case 4: return PC->CanToggleReady();
+	case 5: return PC->CanToggleSpectating();
+	case 6: return Character && !Character->GetBallForm()->IsCaptured() && Character->GetBallForm()->IsAvailable();
+	case 7: return bTouch;
+	case 8: return bTouch && PC->CanOpenRuleCard();
+	default: return Hit == 1;
+	}
+}
+
+const FChaosImpactTouchCustom* UChaosImpactChargeWidget::GetCurrentTouchCustom(const FVector2D& Size, double& OutTouchScale) const
+{
+	OutTouchScale = 1.0;
+	if (GTouchPreview.bOn)
+	{
+		OutTouchScale = FMath::Max(0.25, FMath::Min(GTouchPreview.Size.X, GTouchPreview.Size.Y) / 720.0);
+		return &GTouchPreview.Custom;
+	}
+	const APlayerController* PC = GetOwningPlayer();
+	const AChaosImpactCharacter* Character = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+	if (!Character || !Character->IsTouchControlled())
+	{
+		return nullptr;
+	}
+	int32 ViewX = 0;
+	int32 ViewY = 0;
+	PC->GetViewportSize(ViewX, ViewY);
+	if (ViewY <= 0 || Size.Y < 1.0)
+	{
+		return nullptr;
+	}
+	OutTouchScale = FMath::Max(0.25, FMath::Min(ViewX, ViewY) / 720.0) * (Size.Y / ViewY);
+	return &Character->GetTouchCustom();
+}
+
+FBox2D UChaosImpactChargeWidget::PlaceCornerButton(const FChaosImpactTouchCustom& Custom, const int32 Hit, const FBox2D& Box, const double TouchScale,
+	float& OutScale)
+{
+	OutScale = 1.0f;
+	const int32 Control = FChaosImpactTouchCustom::CornerOf(Hit);
+	if (Control == INDEX_NONE)
+	{
+		return Box;
+	}
+	OutScale = FMath::Clamp(Custom.Size[Control], FChaosImpactTouchCustom::MinSize, FChaosImpactTouchCustom::MaxSize);
+	const FVector2D Middle = Box.GetCenter() + Custom.Offset[Control] * TouchScale;
+	const FVector2D Half = Box.GetExtent() * OutScale;
+	return FBox2D(Middle - Half, Middle + Half);
+}
+
+float UChaosImpactChargeWidget::TopLeftRoom(const FVector2D& Size, const float S) const
+{
+	// From x 40 (HUD units) to the leftmost corner button at the top, less a margin; off touch, as much as anyone needs.
+	const auto* Owner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	if (!Owner || !Owner->ShouldUseTouchControls())
+	{
+		return 10000.0f;
+	}
+	float Leftmost = static_cast<float>(Size.X);
+	for (int32 Hit = 1; Hit <= 8; ++Hit)
+	{
+		if (IsCornerButtonShown(Hit, true))
+		{
+			const FBox2D Button = CornerButtonRect(Size, S, Hit, true);
+			if (Button.Min.Y < Size.Y * 0.3)
+			{
+				Leftmost = FMath::Min(Leftmost, static_cast<float>(Button.Min.X));
+			}
+		}
+	}
+	return Leftmost / S - 40.0f - 36.0f;
+}
+
+FBox2D UChaosImpactChargeWidget::CornerButtonRect(const FVector2D& Size, const float S, const int32 Hit, const bool bTouch, float* OutScale) const
+{
+	if (OutScale)
+	{
+		*OutScale = 1.0f;
+	}
+	if (!bTouch)
+	{
+		return EasyButtonRect(Size, S, Hit);
+	}
+	// By touch: where the player put it (and its size).
+	double TouchScale = 1.0;
+	const FChaosImpactTouchCustom* Custom = GetCurrentTouchCustom(Size, TouchScale);
+	float Scale = 1.0f;
+	const FBox2D Natural = TouchCornerBase(Size, S, Hit);
+	const FBox2D Placed = Custom ? PlaceCornerButton(*Custom, Hit, Natural, TouchScale, Scale) : Natural;
+	if (OutScale)
+	{
+		*OutScale = Scale;
+	}
+	return Placed;
+}
+
+FBox2D UChaosImpactChargeWidget::TouchCornerBase(const FVector2D& Size, const float S, const int32 Hit) const
+{
+	bool bShown[9] = {};
+	for (int32 Each = 1; Each <= 8; ++Each)
+	{
+		bShown[Each] = Each == Hit || IsCornerButtonShown(Each, true);
+	}
+	return CornerBaseFromShown(Size, S, Hit, bShown);
+}
+
+FBox2D UChaosImpactChargeWidget::TouchCornerBaseFor(const FVector2D& Size, const float S, const int32 Hit, const FString& Mode)
+{
+	bool bShown[9] = {};
+	for (int32 Each = 1; Each <= 8; ++Each)
+	{
+		const int32 Control = FChaosImpactTouchCustom::CornerOf(Each);
+		bShown[Each] = Control != INDEX_NONE && IsPieceInMode(Control, Mode);
+	}
+	return CornerBaseFromShown(Size, S, Hit, bShown);
+}
+
+FBox2D UChaosImpactChargeWidget::CornerBaseFromShown(const FVector2D& Size, const float S, const int32 Hit, const bool (&bShown)[9])
+{
+	// By touch: 全体マップ in the top row (left of 練習設定 when it is there), the rest down the column with no gaps (clear of
+	// the ball holder under them).
+	if (Hit == 7)
+	{
+		const FVector2D At(Size.X - (bShown[2] ? 460.0f : 300.0f) * S, 18.0f * S);
+		return FBox2D(At, At + FVector2D(148.0f, 44.0f) * S);
+	}
+	if (Hit == 4 || Hit == 5 || Hit == 6 || Hit == 8)
+	{
+		int32 Row = 0;
+		for (const int32 Before : {4, 5, 6, 8})
+		{
+			if (Before == Hit) { break; }
+			Row += bShown[Before] ? 1 : 0;
+		}
+		const FVector2D At(Size.X - 140.0f * S, (70.0f + Row * 52.0f) * S);
+		return FBox2D(At, At + FVector2D(120.0f, 44.0f) * S);
+	}
+	return EasyButtonRect(Size, S, Hit);
+}
+
+int32 UChaosImpactChargeWidget::GetTouchHudHit(const FVector2D& Fraction) const
+{
+	if (bReplacedByOwnHud || bVitalsHidden || bSpectatorView)
+	{
+		return 0;
+	}
+	const FVector2D Size = GetCachedGeometry().GetLocalSize();
+	if (Size.X < 1 || Size.Y < 1)
+	{
+		return 0;
+	}
+	const FVector2D Point = Fraction * Size;
+	const float S = GetHudScale(Size.X, Size.Y);
+	// (From the bottom-right corner, at the HUD's scale; a finger is wider than a cursor: a little room round each.)
+	FVector2D BallsShift;
+	float BallsSize = 1.0f;
+	GetTouchHudPlacement(FChaosImpactTouchCustom::Balls, BallsShift, BallsSize);
+	const FVector2D Local = (Point - FVector2D(Size.X, GetTouchCornerY(static_cast<float>(Size.Y), true)) - BallsShift) / (S * BallsSize);
+	const float Room = 14.0f;
+	const AChaosImpactPlayerController* PC = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const auto* Character = PC ? Cast<AChaosImpactCharacter>(PC->GetPawn()) : nullptr;
+	// The corner buttons (ポーズ, 練習設定, 準備OK, 観戦, ボール化, 全体マップ, ルール), as they are drawn.
+	if (PC)
+	{
+		for (int32 Hit = 1; Hit <= 8; ++Hit)
+		{
+			if (!IsCornerButtonShown(Hit, true)) { continue; }
+			const FBox2D R = MoveBoxForTouch(PC, CornerButtonRect(Size, S, Hit, true), Size, FChaosImpactTouchCustom::Menu);
+			// (A button made smaller still takes a finger.)
+			if (FBox2D(R.Min - FVector2D(10.0, 10.0) * S, R.Max + FVector2D(10.0, 10.0) * S).IsInside(Point))
+			{
+				return Hit;
+			}
+		}
+	}
+	const float KeyRight = BallHolderHomes[1].X - BallHolderRings[1] - 14.0f;
+	const FBox2D KeyRow(FVector2D(KeyRight - 150.0f, 0.0f), FVector2D(KeyRight + 4.0f, 0.0f));
+	const auto InKeyRow = [&Local, &KeyRow](const float Top)
+	{
+		return Local.X >= KeyRow.Min.X && Local.X <= KeyRow.Max.X && Local.Y >= Top - 6.0f && Local.Y <= Top + 30.0f;
+	};
+	if (bFusionShown)
+	{
+		if (InKeyRow(FusionHolderHome.Y - 12.0f) && Local.X <= FusionHolderHome.X - FusionHolderRing - 18.0f)
+		{
+			return 13;
+		}
+		return FVector2D::Distance(Local, FVector2D(FusionHolderHome)) <= FusionHolderRing + Room ? 12 : 0;
+	}
+	const float SwapTop = BallHolderHomes[1].Y - 12.0f;
+	if (Character && Character->CanFuseBalls() && InKeyRow(SwapTop - 31.0f))
+	{
+		return 13;
+	}
+	if (Character && Character->GetCarriedBallCount() >= 2 && InKeyRow(SwapTop))
+	{
+		return 11;
+	}
+	for (int32 BallIndex = 0; BallIndex < 2; ++BallIndex)
+	{
+		if (FVector2D::Distance(Local, FVector2D(BallHolderHomes[BallIndex])) <= BallHolderRings[BallIndex] + Room)
+		{
+			return 10 + BallIndex;
+		}
 	}
 	return 0;
 }
@@ -2299,34 +3257,32 @@ void UChaosImpactChargeWidget::PaintGameplayPointer(const FGeometry& Geometry,
 	// The cursor is in desktop coordinates; a paint geometry is in the window's own, so converting with it would be off
 	// by where the window sits. The cached (tick-space) geometry is the desktop one, and the local point is the same.
 	const FVector2D Pointer = GetCachedGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
-	const bool bEasy = ChaosImpactSettings::GetPlayerControlScheme(PC) != EChaosImpactControlScheme::Normal;
-	const int32 Hover = GetGameplayPointerHit();
+	// (スマホ版: the same corner buttons are tapped; no dash button there, a flick dashes.)
+	const bool bTouchButtons = ShoulderCharacter && ShoulderCharacter->IsTouchControlled();
+	const bool bEasy = (ChaosImpactSettings::GetPlayerControlScheme(PC) != EChaosImpactControlScheme::Normal || bTouchButtons)
+		;
+	const int32 Hover = bTouchButtons ? 0 : GetGameplayPointerHit();
 	// The pointer and its marks above the buttons (each a three-layer shard with its label on it).
 	const FPainter Paint{Geometry, Elements, Layer + 5};
 	// (Not in 訓練場's filmed clips: the picture keeps to the game itself.)
 	if (bEasy && !AChaosImpactDojo::IsRecordingRun())
 	{
-		for (int32 Hit = 1; Hit <= 6; ++Hit)
+		// (By touch: placed where the player put them, and two more: 全体マップ and the online room's ルール.)
+		const FGeometry MenuSpace = bTouchButtons ? MoveForTouch(PC, Geometry, FChaosImpactTouchCustom::Menu) : Geometry;
+		for (int32 Hit = 1; Hit <= (bTouchButtons ? 8 : 6); ++Hit)
 		{
-			if (Hit == 2 && (!PC->IsTrainingMode() || !PC->IsPrimaryLocalPlayerController() || PC->IsOnlineRoom() || PC->IsVersusMatchWorld() || CwIsTournamentWorld(this) || PC->IsDojo())) { continue; }
-			if (Hit == 4 && !PC->CanToggleReady()) { continue; }
-			if (Hit == 5 && !PC->CanToggleSpectating()) { continue; }
-			if (Hit == 6 && (!ShoulderCharacter || ShoulderCharacter->GetBallForm()->IsCaptured() || !ShoulderCharacter->GetBallForm()->IsAvailable())) { continue; }
-			const FBox2D R = EasyButtonRect(Size, S, Hit);
-			HudBoxes.Add(FBox2D(R.Min - FVector2D(8.0, 8.0) * S, R.Max + FVector2D(8.0, 8.0) * S));
+			if (!IsCornerButtonShown(Hit, bTouchButtons)) { continue; }
+			float Grown = 1.0f;
+			const FBox2D R = CornerButtonRect(Size, S, Hit, bTouchButtons, &Grown);
+			const FBox2D Taken = bTouchButtons ? MoveBoxForTouch(PC, R, Size, FChaosImpactTouchCustom::Menu) : R;
+			HudBoxes.Add(FBox2D(Taken.Min - FVector2D(8.0, 8.0) * S, Taken.Max + FVector2D(8.0, 8.0) * S));
 			const bool bHover = Hover == Hit;
-			const FPainter Button{Geometry, Elements, Layer};
-			HudShard(Button, {FVector2D(R.Min.X + 10.0f * S, R.Min.Y), FVector2D(R.Max.X, R.Min.Y), FVector2D(R.Max.X - 10.0f * S, R.Max.Y),
-				FVector2D(R.Min.X, R.Max.Y)}, bHover ? FireFill : NightFill, 2.5f * S, FVector2D(3.0f * S, 4.0f * S));
-			if (!bHover)
-			{
-				HudStroke(HudAbove(Button), {FVector2D(R.Min.X + 12.0f * S, R.Min.Y + 3.0f * S), FVector2D(R.Max.X - 3.0f * S, R.Min.Y + 3.0f * S)},
-					IceFill.Middle, 2.0f * S);
-			}
-			HudAbove(Button).Text(Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦")
-				: Hit == 6 ? (ShoulderCharacter->IsInBallForm() ? TEXT("元に戻る") : TEXT("ボール化")) : TEXT("ダッシュ"),
-				(R.Min.X + R.Max.X) * 0.5f, R.Min.Y + 10.0f * S, 18.0f * S,
-				bHover ? Navy : Paper, ETextAlign::Center, TEXT("Black"));
+			const FPainter Button{MenuSpace, Elements, Layer};
+			PaintCornerButton(Button, R, Hit == 1 ? TEXT("ポーズ") : Hit == 2 ? TEXT("練習設定") : Hit == 4 ? TEXT("準備OK") : Hit == 5 ? TEXT("観戦")
+				: Hit == 6 ? (ShoulderCharacter->IsInBallForm() ? TEXT("元に戻る") : TEXT("ボール化"))
+				: Hit == 7 ? (PC->IsOverviewMapOpen() ? TEXT("マップを閉じる") : TEXT("全体マップ"))
+				: Hit == 8 ? (PC->IsRuleCardOpen() ? TEXT("ルールを閉じる") : TEXT("ルール")) : TEXT("ダッシュ"),
+				S * Grown, bHover);
 		}
 	}
 	const AChaosImpactCharacter* Character = Cast<AChaosImpactCharacter>(PC->GetPawn());
@@ -2368,7 +3324,7 @@ float UChaosImpactChargeWidget::GetHudScale(const double Width, const double Hei
 		// fits in the view rather than shrunk in proportion to it.
 		return FMath::Clamp(static_cast<float>(FMath::Min(Width / 880.0, Height / 560.0)), 0.62f, 1.1f) * ChaosImpactSettings::GetHudSizeFactor();
 	}
-	return FMath::Clamp(static_cast<float>(FMath::Min(Width / 1600.0, Height / 900.0)), 0.5f, 1.4f) * ChaosImpactSettings::GetHudSizeFactor();
+	return FChaosImpactTouchGestures::HudScale(FVector2D(Width, Height), ChaosImpactSettings::GetHudSizeFactor());
 }
 
 void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& Paint, const FVector2D& Center, const float Radius, const bool bFilled,
@@ -2406,6 +3362,7 @@ void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& P
 	case EChaosImpactBallType::Swap: Body = FLinearColor(0.26f, 0.2f, 0.62f, 1.0f); break;
 	case EChaosImpactBallType::Barrier: Body = FLinearColor(0.08f, 0.3f, 0.62f, 1.0f); break;
 	case EChaosImpactBallType::Mine: Body = FLinearColor(0.16f, 0.05f, 0.07f, 1.0f); break;
+	case EChaosImpactBallType::Heal: Body = FLinearColor(1.0f, 0.46f, 0.68f, 1.0f); break;
 	default: break;
 	}
 	const FLinearColor Glow = ChaosImpactBallTypes::GetColor(Type);
@@ -2558,6 +3515,17 @@ void UChaosImpactChargeWidget::PaintBallIcon(const ChaosImpactPaint::FPainter& P
 		Paint.Disc(Center, Radius * 0.2f, WithAlpha(Glow, Blink));
 		break;
 	}
+	case EChaosImpactBallType::Heal:
+	{
+		// A white heart, softly beating: healing at a glance (two lobes and a point).
+		const float R = Radius * (1.0f + 0.07f * FMath::Max(0.0f, FMath::Sin(Time * 5.0f)));
+		const FLinearColor White(1.0f, 1.0f, 1.0f, 1.0f);
+		Paint.Disc(Center + FVector2D(-R * 0.25f, -R * 0.16f), R * 0.29f, White);
+		Paint.Disc(Center + FVector2D(R * 0.25f, -R * 0.16f), R * 0.29f, White);
+		HudPoly(Paint, {Center + FVector2D(-R * 0.52f, -R * 0.06f), Center + FVector2D(R * 0.52f, -R * 0.06f), Center + FVector2D(0.0f, R * 0.56f)},
+			SolidFill(White), 1);
+		break;
+	}
 	case EChaosImpactBallType::Prison:
 	{
 		Paint.Ring(Center,Radius*.82f,Glow,2.5f);
@@ -2695,7 +3663,11 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	const int32 PlayerIndex = OwningGameInstance && OwningLocalPlayer
 		? FMath::Max(0, OwningGameInstance->GetLocalPlayers().IndexOfByKey(OwningLocalPlayer)) : 0;
 	const FLinearColor Accent = PlayerAccents[PlayerIndex % 4];
-	const FGeometry Corner = MakeAnchor(AllottedGeometry, Size.X, Size.Y, S);
+	FVector2D BallsShift;
+	float BallsSize = 1.0f;
+	GetTouchHudPlacement(FChaosImpactTouchCustom::Balls, BallsShift, BallsSize);
+	const FGeometry Corner = MakeAnchor(AllottedGeometry, Size.X + static_cast<float>(BallsShift.X),
+		GetTouchCornerY(Size.Y, true) + static_cast<float>(BallsShift.Y), S * BallsSize);
 	Occupy(Corner, -300.0f, NovaParts != 0 ? -250.0f : -200.0f, 300.0f, NovaParts != 0 ? 250.0f : 200.0f);
 
 	// The holder: no plate, two round pedestals. The ball thrown next sits large on the front one, with a jagged blast
@@ -2730,8 +3702,14 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		return SlotIndex < CarriedBalls ? ChaosImpactBallTypes::GetColor(ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, SlotIndex))
 			: FLinearColor(0.35f, 0.42f, 0.55f, 0.7f);
 	};
-	PaintPedestal(FVector2D(BallHolderHomes[1]), BallHolderRings[1], SlotColor(1), false);
-	PaintPedestal(FVector2D(BallHolderHomes[0]), BallHolderRings[0], SlotColor(0), true);
+	// 合体: from the joining until the parting is over, the holders and their balls are the fusion's to draw (they come
+	// together into one holder of its own, PaintBallFusion).
+	const bool bFusionLayer = bFusionShown || (FusionClock - FusionSplitAt < FusionSplitSeconds && (!bFusionSplitThrown || CarriedBalls == 0));
+	if (!bFusionLayer)
+	{
+		PaintPedestal(FVector2D(BallHolderHomes[1]), BallHolderRings[1], SlotColor(1), false);
+		PaintPedestal(FVector2D(BallHolderHomes[0]), BallHolderRings[0], SlotColor(0), true);
+	}
 
 	// DrawSlot 0 (thrown next) sits large at the front, slot 1 smaller behind it; a swap flies each to the other's place.
 	const FVector2D Homes[] = {FVector2D(BallHolderHomes[0]), FVector2D(BallHolderHomes[1])};
@@ -2767,6 +3745,11 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		{
 			continue;
 		}
+		if (bFusionLayer)
+		{
+			// Joined, joining or parting: PaintBallFusion draws them.
+			continue;
+		}
 		EChaosImpactBallType IconType=ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes,DrawSlot);
 		if (const auto* OwnerPawn=GetOwningPlayer() ? Cast<AChaosImpactCharacter>(GetOwningPlayer()->GetPawn()) : nullptr)
 		{
@@ -2781,7 +3764,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 	{
 		const EChaosImpactBallType Type = ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, DrawSlot);
 		const AChaosImpactBuddyBall* Buddy = BuddyOwner ? BuddyOwner->GetBallForm()->GetHeldBall(DrawSlot) : nullptr;
-		if (Type == EChaosImpactBallType::Normal && !Buddy)
+		if (bFusionLayer || (Type == EChaosImpactBallType::Normal && !Buddy))
 		{
 			continue;
 		}
@@ -2800,7 +3783,7 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 				ChaosImpactBallTypes::GetColor(EChaosImpactBallType::Prison),3.f);
 		}
 	}
-	if (CarriedBalls > 0)
+	if (CarriedBalls > 0 && !bFusionLayer)
 	{
 		Labels.Text(TEXT("NEXT"), static_cast<float>(Centers[0].X - DrawnRadii[0]) - 6.0f,
 			static_cast<float>(Centers[0].Y - DrawnRadii[0]) - 10.0f, 10.0f, Accent, ETextAlign::Left, TEXT("Bold"), 2.0f, Ink);
@@ -2847,6 +3830,11 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		}
 	}
 
+	if (bFusionLayer)
+	{
+		PaintBallFusion(Corner, OutDrawElements, BaseLayer, FusionClock, Time);
+	}
+
 	// Pickup ripple and swap flash.
 	if (PickupAge < BallPickupSeconds && BallGainedSlot >= 0 && BallGainedSlot < 2)
 	{
@@ -2867,29 +3855,446 @@ void UChaosImpactChargeWidget::PaintBallInventory(const FGeometry& AllottedGeome
 		}
 	}
 
-	// Both hands full: a keycap showing how to swap.
-	if (CarriedBalls >= 2 && !bRespawnVisible)
+	// Both hands full: a keycap showing how to swap; and, where two can be joined, how to join them (合体) above it.
+	// Joined: swapping is off, and its place shows how to part them (解除).
+	const AChaosImpactPlayerController* CapController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+	const AChaosImpactCharacter* CapHolder = CapController ? Cast<AChaosImpactCharacter>(CapController->GetPawn()) : nullptr;
+	// (スマホ版を縦に、ボタン方式以外: the HP stands level with the holder, too near for the keycaps; the 入れ替え / 合体
+	// buttons and the hints say it.)
+	const bool bCapsCrowded = CapHolder && CapHolder->IsTouchControlled() && !CapHolder->IsTouchButtonStyle() && ChaosImpactSettings::IsScreenUpright();
+	if (CarriedBalls >= 2 && !bRespawnVisible && !bCapsCrowded)
 	{
-		const AChaosImpactPlayerController* InputController = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-		// The keys this player has set for swapping (about one letter's width each).
-		const FString SwapKeys = ChaosImpactSettings::DescribeAction(InputController, EChaosImpactAction::SwapBall);
-		float KeyWidth = 10.0f;
-		for (const TCHAR Letter : SwapKeys)
+		const AChaosImpactPlayerController* InputController = CapController;
+		const AChaosImpactCharacter* Holder = CapHolder;
+		const bool bJoined = bFusionShown;
+		const bool bCanJoin = !bJoined && Holder && Holder->CanFuseBalls();
+		// Left of the ball behind: a keycap shard (ice, or fire for 合体) with the key on it, the word beside it.
+		const auto Keycap = [&](const EChaosImpactAction Action, const TCHAR* Word, const float KeyTop, const FHudFill& Fill,
+			const FLinearColor& WordColor, const float KeyRight = BallHolderHomes[1].X - BallHolderRings[1] - 14.0f)
 		{
-			KeyWidth += Letter > 0x2000 ? 13.0f : 8.0f;
+			// The keys this player has set (about one letter's width each).
+			const AChaosImpactCharacter* KeyHolder = InputController ? Cast<AChaosImpactCharacter>(InputController->GetPawn()) : nullptr;
+			const FString Keys = KeyHolder && KeyHolder->IsTouchControlled() ? FString(TEXT("タップ"))
+				: ChaosImpactSettings::DescribeAction(InputController, Action);
+			float KeyWidth = 10.0f;
+			for (const TCHAR Letter : Keys)
+			{
+				KeyWidth += Letter > 0x2000 ? 13.0f : 8.0f;
+			}
+			KeyWidth = FMath::Max(KeyWidth, 24.0f);
+			const float KeyLeft = KeyRight - KeyWidth - 6.0f;
+			HudShard(FPainter{Corner, OutDrawElements, BaseLayer + 10}, {FVector2D(KeyLeft + 5.0f, KeyTop), FVector2D(KeyRight, KeyTop),
+				FVector2D(KeyRight - 5.0f, KeyTop + 24.0f), FVector2D(KeyLeft, KeyTop + 24.0f)}, Fill, 2.5f, FVector2D(3.0, 4.0));
+			FPainter{Corner, OutDrawElements, BaseLayer + 13}.Text(Keys, (KeyLeft + KeyRight) * 0.5f, KeyTop + 3.0f, 13.0f, Navy,
+				ETextAlign::Center, TEXT("Black"));
+			HudText3D(FPainter{Corner, OutDrawElements, BaseLayer + 13}, Word, KeyLeft - 8.0f, KeyTop + 1.0f, 14.0f, WordColor,
+				ETextAlign::Right, TEXT("Black"));
+		};
+		const float SwapTop = BallHolderHomes[1].Y - 12.0f;
+		if (bJoined)
+		{
+			Keycap(EChaosImpactAction::FuseBalls, TEXT("解除"), FusionHolderHome.Y - 12.0f, IceFill, Paper,
+				FusionHolderHome.X - FusionHolderRing - 22.0f);
 		}
-		KeyWidth = FMath::Max(KeyWidth, 24.0f);
-		// Left of the ball behind: a keycap shard of ice with the key on it, the word beside it.
-		const float KeyRight = BallHolderHomes[1].X - BallHolderRings[1] - 14.0f;
-		const float KeyTop = BallHolderHomes[1].Y - 12.0f;
-		const float KeyLeft = KeyRight - KeyWidth - 6.0f;
-		HudShard(FPainter{Corner, OutDrawElements, BaseLayer + 10}, {FVector2D(KeyLeft + 5.0f, KeyTop), FVector2D(KeyRight, KeyTop),
-			FVector2D(KeyRight - 5.0f, KeyTop + 24.0f), FVector2D(KeyLeft, KeyTop + 24.0f)}, IceFill, 2.5f, FVector2D(3.0, 4.0));
-		FPainter{Corner, OutDrawElements, BaseLayer + 13}.Text(SwapKeys, (KeyLeft + KeyRight) * 0.5f, KeyTop + 3.0f, 13.0f, Navy,
-			ETextAlign::Center, TEXT("Black"));
-		HudText3D(FPainter{Corner, OutDrawElements, BaseLayer + 13}, TEXT("持ち替え"), KeyLeft - 8.0f, KeyTop + 1.0f, 14.0f, Paper,
-			ETextAlign::Right, TEXT("Black"));
+		else
+		{
+			Keycap(EChaosImpactAction::SwapBall, TEXT("持ち替え"), SwapTop, IceFill, Paper);
+			if (bCanJoin)
+			{
+				// 合体 glows softly, the two balls' colours in turn, so it is seen without moving.
+				const float Beat = 0.5f + 0.5f * FMath::Sin(Time * 4.0f);
+				const FLinearColor WordColor = FMath::Lerp(Paper, FMath::Lerp(SlotColor(0), SlotColor(1), 0.5f + 0.5f * FMath::Sin(Time * 1.7f)),
+					0.35f + 0.3f * Beat);
+				Keycap(EChaosImpactAction::FuseBalls, TEXT("合体"), SwapTop - 31.0f, FireFill, WordColor);
+			}
+		}
 	}
+}
+
+namespace
+{
+	/** A soft round glow: Inner at the middle fading to Outer at the rim (a fan of coloured triangles). */
+	void FusionGlow(const ChaosImpactPaint::FPainter& P, const FVector2D& Center, const float Radius, const FLinearColor& Inner,
+		const FLinearColor& Outer, const int32 Segments = 40)
+	{
+		if (Radius <= 0.5f)
+		{
+			return;
+		}
+		TArray<FVector2D> Points;
+		TArray<FLinearColor> Colors;
+		TArray<SlateIndex> Indexes;
+		Points.Add(Center);
+		Colors.Add(Inner);
+		for (int32 Index = 0; Index <= Segments; ++Index)
+		{
+			const float Angle = UE_TWO_PI * Index / Segments;
+			Points.Add(Center + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+			Colors.Add(Outer);
+			if (Index > 0)
+			{
+				Indexes.Append({0, static_cast<SlateIndex>(Index), static_cast<SlateIndex>(Index + 1)});
+			}
+		}
+		ChaosImpactPaint::HudTriangles(P, Points, Colors, Indexes);
+	}
+
+	/** Half a disc on the Side side of the line through Center along Along. */
+	void FusionHalfDisc(const ChaosImpactPaint::FPainter& P, const FVector2D& Center, const float Radius, const FVector2D& Along,
+		const FVector2D& Side, const FLinearColor& Rim, const FLinearColor& Middle)
+	{
+		TArray<FVector2D> Points;
+		TArray<FLinearColor> Colors;
+		TArray<SlateIndex> Indexes;
+		Points.Add(Center);
+		Colors.Add(Middle);
+		constexpr int32 Segments = 24;
+		for (int32 Index = 0; Index <= Segments; ++Index)
+		{
+			const float Angle = UE_PI * Index / Segments;
+			Points.Add(Center + (Along * FMath::Cos(Angle) + Side * FMath::Sin(Angle)) * Radius);
+			Colors.Add(Rim);
+			if (Index > 0)
+			{
+				Indexes.Append({0, static_cast<SlateIndex>(Index), static_cast<SlateIndex>(Index + 1)});
+			}
+		}
+		ChaosImpactPaint::HudTriangles(P, Points, Colors, Indexes);
+	}
+
+	/** A spring settling: starts at 0, overshoots and wobbles in to 1. */
+	float FusionSpring(const float T)
+	{
+		const float U = FMath::Clamp(T, 0.0f, 1.0f);
+		return 1.0f - FMath::Exp(-6.5f * U) * FMath::Cos(11.0f * U);
+	}
+
+	FLinearColor FusionShade(const FLinearColor& Color, const float By)
+	{
+		return FLinearColor(Color.R * By, Color.G * By, Color.B * By, 1.0f);
+	}
+}
+
+void UChaosImpactChargeWidget::PaintFusedBallIcon(const ChaosImpactPaint::FPainter& Paint, const FVector2D& Center, const float Radius,
+	const EChaosImpactBallType A, const EChaosImpactBallType B, const float Time, const float Whiteness)
+{
+	using namespace ChaosImpactPaint;
+	const FLinearColor ColorA = ChaosImpactBallTypes::GetColor(A);
+	const FLinearColor ColorB = ChaosImpactBallTypes::GetColor(B);
+	const auto Up = [&Paint](const int32 Layers) { return FPainter{Paint.Geometry, Paint.Elements, Paint.Layer + Layers, Paint.Alpha}; };
+	// The outline, then the swirl: half and half of the two colours, turned slowly, with the small round lobes that make
+	// the line between them an S (each lobe the other colour's, so the two wind into each other).
+	Paint.Disc(Center + FVector2D(2.0, 3.0), Radius + 3.0f, WithAlpha(Extrude, 0.9f));
+	Paint.Disc(Center, Radius + 2.5f, Navy);
+	const float Turn = Time * 1.5f;
+	const FVector2D Along(FMath::Cos(Turn), FMath::Sin(Turn));
+	const FVector2D Side(-Along.Y, Along.X);
+	Up(1).Disc(Center, Radius, FusionShade(ColorA, 0.92f));
+	FusionHalfDisc(Up(2), Center, Radius, Along, Side, FusionShade(ColorB, 0.8f), FusionShade(ColorB, 1.0f));
+	Up(3).Disc(Center + Along * Radius * 0.5f, Radius * 0.5f, FusionShade(ColorA, 0.97f));
+	Up(3).Disc(Center - Along * Radius * 0.5f, Radius * 0.5f, FusionShade(ColorB, 0.92f));
+	// In each lobe a small ball of the other kind (the swirl's eyes): which two are in it, at a glance.
+	PaintBallIcon(Up(4), Center + Along * Radius * 0.5f, Radius * 0.24f, true, B, 0.0f, Time);
+	PaintBallIcon(Up(4), Center - Along * Radius * 0.5f, Radius * 0.24f, true, A, 0.0f, Time);
+	// Shaded round like a ball: darker toward the rim, a soft light top left, a thin bright edge.
+	FusionGlow(Up(9), Center, Radius, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 0.04f, 0.42f));
+	Up(9).Disc(Center + FVector2D(-0.34, -0.4) * Radius, Radius * 0.3f, FLinearColor(1.0f, 1.0f, 1.0f, 0.28f));
+	Up(9).Disc(Center + FVector2D(-0.38, -0.44) * Radius, Radius * 0.13f, FLinearColor(1.0f, 1.0f, 1.0f, 0.8f));
+	Up(9).Ring(Center, Radius - 1.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f), 1.5f);
+	if (Whiteness > 0.001f)
+	{
+		// The flash it is born in, fading off it.
+		Up(10).Disc(Center, Radius + 1.0f, FLinearColor(1.0f, 0.99f, 0.95f, FMath::Clamp(Whiteness, 0.0f, 1.0f)));
+	}
+}
+
+void UChaosImpactChargeWidget::PaintBallFusion(const FGeometry& Corner, FSlateWindowElementList& OutDrawElements,
+	const int32 BaseLayer, const double Clock, const float Time) const
+{
+	using namespace ChaosImpactPaint;
+	const FVector2D FrontHome(BallHolderHomes[0]);
+	const FVector2D BackHome(BallHolderHomes[1]);
+	const FVector2D FusedHome(FusionHolderHome);
+	const float FrontRing = BallHolderRings[0];
+	const float BackRing = BallHolderRings[1];
+	const float FrontRadius = BallHolderBalls[0];
+	const float BackRadius = BallHolderBalls[1];
+	const FLinearColor White(1.0f, 0.98f, 0.94f, 1.0f);
+	const FLinearColor EmptyRing(0.35f, 0.42f, 0.55f, 0.7f);
+	const FLinearColor PrimaryColor = ChaosImpactBallTypes::GetColor(FusionPrimary);
+	const FLinearColor SecondaryColor = ChaosImpactBallTypes::GetColor(FusionSecondary);
+	const FLinearColor Mix = FMath::Lerp(PrimaryColor, SecondaryColor, 0.5f);
+	const auto At = [&](const int32 Layer, const float Alpha = 1.0f) { return FPainter{Corner, OutDrawElements, BaseLayer + Layer, Alpha}; };
+
+	// One of the two ordinary pedestals (as PaintBallInventory draws them), anywhere, any size; Base is its lowest layer.
+	const auto Pedestal = [&](const FVector2D& Center, const float Radius, const FLinearColor& RingColor, const bool bFront,
+		const int32 Base, const float Alpha)
+	{
+		if (Alpha <= 0.01f)
+		{
+			return;
+		}
+		if (bFront)
+		{
+			HudBurst(At(0, Alpha), Center, Radius + 2.0f, Radius + 17.0f, 10, CarriedBalls > 0 ? FireFill : NightFill, Time * 12.0f,
+				FVector2D(1.0, 1.0), 3.5f, FVector2D(6.0, 7.0), 9.0f);
+		}
+		At(Base, Alpha).Disc(Center + FVector2D(4.0, 5.0), Radius + 4.0f, Extrude);
+		At(Base + 1, Alpha).Disc(Center, Radius + 4.0f, Navy);
+		At(Base + 2, Alpha).Disc(Center, Radius, FLinearColor(0.08f, 0.12f, 0.27f, 1.0f));
+		At(Base + 2, Alpha).Disc(Center + FVector2D(0.0, 3.0), Radius - 9.0f, FLinearColor(0.015f, 0.025f, 0.07f, 1.0f));
+		const float Turn = bFront ? Time * 40.0f : -Time * 25.0f;
+		const int32 Pieces = bFront ? 8 : 6;
+		for (int32 Piece = 0; Piece < Pieces; ++Piece)
+		{
+			const float From = Turn + 360.0f * Piece / Pieces;
+			At(Base + 3, Alpha).Arc(Center, Radius - 4.0f, From, From + 360.0f / Pieces - 9.0f, RingColor, bFront ? 5.0f : 4.0f);
+		}
+	};
+	// The fusion's own holder: one wider pedestal where the two became one. Its rim turns in the two colours, a dashed ring
+	// of light turns the other way outside it, four small gems of the two colours ride round on the rim, and a soft halo
+	// of both breathes behind it. Its face has the two colours' glow in it.
+	const auto FusedPedestal = [&](const FVector2D& Center, const float Radius, const float Alpha)
+	{
+		if (Alpha <= 0.01f || Radius <= 4.0f)
+		{
+			return;
+		}
+		const float Breath = 0.5f + 0.5f * FMath::Sin(Time * 3.2f);
+		FusionGlow(At(1, Alpha), Center, Radius + 22.0f + 6.0f * Breath, WithAlpha(Mix, 0.42f + 0.12f * Breath), WithAlpha(Mix, 0.0f));
+		At(2, Alpha).Disc(Center + FVector2D(4.0, 5.0), Radius + 6.0f, Extrude);
+		At(3, Alpha).Disc(Center, Radius + 6.0f, Navy);
+		At(4, Alpha).Disc(Center, Radius, FLinearColor(0.09f, 0.08f, 0.24f, 1.0f));
+		FusionGlow(At(4, Alpha), Center, Radius - 3.0f, WithAlpha(Mix, 0.3f), WithAlpha(Mix, 0.0f));
+		At(5, Alpha).Disc(Center + FVector2D(0.0, 3.0), Radius - 11.0f, FLinearColor(0.015f, 0.02f, 0.065f, 1.0f));
+		constexpr int32 Pieces = 10;
+		for (int32 Piece = 0; Piece < Pieces; ++Piece)
+		{
+			const float From = Time * 40.0f + 360.0f * Piece / Pieces;
+			At(6, Alpha).Arc(Center, Radius - 4.0f, From, From + 360.0f / Pieces - 8.0f, Piece % 2 == 0 ? PrimaryColor : SecondaryColor, 5.0f);
+		}
+		for (int32 Dash = 0; Dash < 18; ++Dash)
+		{
+			const float From = -Time * 26.0f + Dash * 20.0f;
+			At(6, Alpha).Arc(Center, Radius + 11.0f, From, From + 9.0f, WithAlpha(White, 0.55f), 2.0f);
+		}
+		for (int32 Gem = 0; Gem < 4; ++Gem)
+		{
+			const float Angle = FMath::DegreesToRadians(Time * 22.0f + Gem * 90.0f + 45.0f);
+			const FVector2D Out(FMath::Cos(Angle), FMath::Sin(Angle));
+			const FVector2D Side(-Out.Y, Out.X);
+			const FVector2D Spot = Center + Out * (Radius + 2.0f);
+			HudShard(At(6, Alpha), {Spot + Out * 7.0f, Spot + Side * 5.0f, Spot - Out * 7.0f, Spot - Side * 5.0f},
+				MakeFill(FMath::Lerp(Gem % 2 == 0 ? PrimaryColor : SecondaryColor, White, 0.45f), Gem % 2 == 0 ? PrimaryColor : SecondaryColor),
+				2.0f, FVector2D(1.5, 2.0));
+		}
+	};
+	// The fused ball, with what goes round it: motes of both colours on a tilted orbit (behind it, then in front).
+	const auto FusedBall = [&](const FVector2D& Center, const float Radius, const float Whiteness, const float Alpha)
+	{
+		const auto Motes = [&](const bool bFront)
+		{
+			for (int32 Mote = 0; Mote < 6; ++Mote)
+			{
+				const float Angle = Time * 2.3f + Mote * (UE_TWO_PI / 6.0f);
+				const float Depth = FMath::Sin(Angle);
+				if ((Depth >= 0.0f) != bFront)
+				{
+					continue;
+				}
+				const FVector2D Flat(FMath::Cos(Angle) * Radius * 1.32f, Depth * Radius * 0.4f);
+				const FVector2D Offset(Flat.X * 0.94f - Flat.Y * 0.34f, Flat.X * 0.34f + Flat.Y * 0.94f);
+				const FLinearColor Color = Mote % 2 == 0 ? PrimaryColor : SecondaryColor;
+				const float Size = (bFront ? 3.4f : 2.3f) + 0.7f * Depth;
+				FusionGlow(At(bFront ? 17 : 6, Alpha), Center + Offset, Size * 2.6f, WithAlpha(Color, bFront ? 0.55f : 0.3f), WithAlpha(Color, 0.0f), 16);
+				At(bFront ? 17 : 6, Alpha * (bFront ? 1.0f : 0.6f)).Disc(Center + Offset, Size, FMath::Lerp(Color, White, 0.45f));
+			}
+		};
+		Motes(false);
+		PaintFusedBallIcon(At(7, Alpha), Center, Radius, FusionPrimary, FusionSecondary, Time, Whiteness);
+		Motes(true);
+	};
+	// Its name under it (ドライブ×ファイア), on a tag underlined in the two colours.
+	const auto NameTag = [&](const FVector2D& Center, const float Radius, const float Alpha, const float Rise)
+	{
+		if (Alpha <= 0.01f || FusionName.IsEmpty())
+		{
+			return;
+		}
+		constexpr float TagWidth = 128.0f;
+		const FVector2D Under = Center + FVector2D(0.0f, Radius + 6.0f + Rise);
+		const FGeometry TagSpace = MakeSkewed(Corner, static_cast<float>(Under.X) - TagWidth * 0.5f, static_cast<float>(Under.Y),
+			TagWidth, 18.0f, -0.22f);
+		const FPainter Tag{TagSpace, OutDrawElements, BaseLayer + 18, Alpha};
+		Tag.Box(0.0f, 0.0f, TagWidth, 18.0f, WithAlpha(Ink, 0.9f));
+		Tag.Box(0.0f, 16.0f, TagWidth * 0.5f, 2.0f, PrimaryColor);
+		Tag.Box(TagWidth * 0.5f, 16.0f, TagWidth * 0.5f, 2.0f, SecondaryColor);
+		const float Size = HudFit(FusionName, 11.5f, TagWidth - 10.0f, TEXT("Bold"));
+		FPainter{Corner, OutDrawElements, BaseLayer + 19, Alpha}.Text(FusionName, static_cast<float>(Under.X),
+			static_cast<float>(Under.Y) + (11.5f - Size) * 0.5f, Size, Paper, ETextAlign::Center, TEXT("Bold"));
+	};
+
+	if (bFusionShown)
+	{
+		const float Age = static_cast<float>(Clock - FusionStartedAt);
+		if (Age < FusionPullSeconds)
+		{
+			// Drawn together, holders and all. First a breath of hesitation (each leans away a touch), then the pull, faster
+			// and faster, the one behind growing as it comes and leaving afterimages; a thread of light between the balls.
+			const float U = Age / FusionPullSeconds;
+			const float Lean = U < 0.2f ? FMath::Sin(U / 0.2f * UE_PI) : 0.0f;
+			const float Pull = U < 0.2f ? 0.0f : FMath::Pow((U - 0.2f) / 0.8f, 2.6f);
+			const FVector2D Axis = (BackHome - FrontHome).GetSafeNormal();
+			const auto BackAt = [&](const float P) { return FMath::Lerp(BackHome, FusedHome, P); };
+			const FVector2D Back = BackAt(Pull) + Axis * 5.0f * Lean;
+			const FVector2D Front = FMath::Lerp(FrontHome, FusedHome, Pull) - Axis * 4.0f * Lean;
+			const float BackR = FMath::Lerp(BackRadius, FrontRadius * 0.85f, Pull);
+			const float FrontR = FMath::Lerp(FrontRadius, FrontRadius * 0.85f, Pull);
+			const FLinearColor FrontColor = ChaosImpactBallTypes::GetColor(FusionFront);
+			const FLinearColor BackColor = ChaosImpactBallTypes::GetColor(FusionBack);
+			// The holders come together with their balls (the one behind under the one in front).
+			Pedestal(Back, FMath::Lerp(BackRing, FrontRing * 0.88f, Pull), BackColor, false, 1, 1.0f);
+			Pedestal(Front, FMath::Lerp(FrontRing, FrontRing * 0.92f, Pull), FrontColor, true, 3, 1.0f);
+			// Afterimages of the one rushing in.
+			for (int32 Ghost = 4; Ghost >= 1; --Ghost)
+			{
+				const float Before = FMath::Pow(FMath::Clamp((U - Ghost * 0.05f - 0.2f) / 0.8f, 0.0f, 1.0f), 2.6f);
+				if (Before >= Pull - 0.01f || Pull < 0.05f)
+				{
+					continue;
+				}
+				At(8, 0.32f * (1.0f - Ghost / 5.0f) * FMath::Clamp(Pull * 3.0f, 0.0f, 1.0f)).Disc(BackAt(Before),
+					BackR * (1.0f - 0.08f * Ghost), BackColor);
+			}
+			// The thread of light: a soft wide glow and a bright core, from one colour into the other, quivering.
+			const float ThreadAlpha = FMath::Clamp(U / 0.15f, 0.0f, 1.0f);
+			const FVector2D Normal(-Axis.Y, Axis.X);
+			constexpr int32 Steps = 12;
+			FVector2D Last = Front;
+			for (int32 Step = 1; Step <= Steps; ++Step)
+			{
+				const float S = static_cast<float>(Step) / Steps;
+				const FVector2D Point = FMath::Lerp(Front, Back, S)
+					+ Normal * FMath::Sin(S * UE_PI) * FMath::Sin(Time * 46.0f + S * 9.0f) * 3.0f * (1.0f - Pull);
+				const FLinearColor Color = FMath::Lerp(FrontColor, BackColor, S);
+				At(8, ThreadAlpha * 0.35f).Line(Last, Point, Color, 11.0f);
+				At(17, ThreadAlpha).Line(Last, Point, FMath::Lerp(Color, White, 0.6f), 2.5f + 2.0f * Pull);
+				Last = Point;
+			}
+			// Sparks running along it from both ends to the middle.
+			for (int32 Spark = 0; Spark < 6; ++Spark)
+			{
+				const float Run = FMath::Fmod(Time * 2.6f + Spark / 6.0f, 1.0f) * 0.5f;
+				const bool bFromFront = Spark % 2 == 0;
+				const FVector2D Point = bFromFront ? FMath::Lerp(Front, Back, Run) : FMath::Lerp(Back, Front, Run);
+				const FLinearColor Color = bFromFront ? FrontColor : BackColor;
+				FusionGlow(At(17, ThreadAlpha), Point, 7.0f, WithAlpha(FMath::Lerp(Color, White, 0.5f), 0.9f), WithAlpha(Color, 0.0f), 14);
+			}
+			// Each drawing the other in: thin rings of its colour closing in on it, over and over.
+			for (int32 Wave = 0; Wave < 2; ++Wave)
+			{
+				const float Phase = FMath::Fmod(U * 3.0f + Wave * 0.5f, 1.0f);
+				At(16, ThreadAlpha * Phase * 0.8f).Ring(Front, FrontR + 4.0f + 20.0f * (1.0f - Phase), FrontColor, 2.0f);
+				At(16, ThreadAlpha * Phase * 0.8f).Ring(Back, BackR + 4.0f + 16.0f * (1.0f - Phase), BackColor, 2.0f);
+			}
+			FusionGlow(At(8), Front, FrontR * 1.5f, WithAlpha(FrontColor, 0.25f + 0.45f * Pull), WithAlpha(FrontColor, 0.0f));
+			FusionGlow(At(8), Back, BackR * 1.5f, WithAlpha(BackColor, 0.25f + 0.45f * Pull), WithAlpha(BackColor, 0.0f));
+			PaintBallIcon(At(9), Back, BackR, true, FusionBack, 0.0f, Time);
+			PaintBallIcon(At(12), Front, FrontR, true, FusionFront, 0.0f, Time);
+			if (Pull > 0.6f)
+			{
+				At(16, (Pull - 0.6f) / 0.4f * 0.7f).Disc(Front, FrontR, White);
+				At(16, (Pull - 0.6f) / 0.4f * 0.7f).Disc(Back, BackR, White);
+			}
+			return;
+		}
+		// One. The flash (ピカッ) where they met: a soft white bloom, two clean rings of the two colours going out, motes of
+		// both colours thrown out and drawn back round it. The fusion's own holder and its ball spring out of the light.
+		const float Since = Age - FusionPullSeconds;
+		const float Settle = FMath::Clamp(Since / FusionSettleSeconds, 0.0f, 1.0f);
+		const float Scale = Settle < 1.0f ? 0.55f + 0.45f * FusionSpring(Settle) : 1.0f + 0.02f * FMath::Sin(Time * 3.2f);
+		const float Radius = FusionHolderBall * Scale;
+		FusedPedestal(FusedHome, FusionHolderRing * (Settle < 1.0f ? 0.7f + 0.3f * FusionSpring(Settle * 1.1f) : 1.0f), 1.0f);
+		FusedBall(FusedHome, Radius, FMath::Clamp(1.0f - Since / 0.22f, 0.0f, 1.0f), 1.0f);
+		if (Since < 0.5f)
+		{
+			const float T = Since / 0.5f;
+			const float Flash = FMath::Square(1.0f - FMath::Clamp(Since / 0.32f, 0.0f, 1.0f));
+			FusionGlow(At(16), FusedHome, 30.0f + 100.0f * EaseOut(FMath::Clamp(Since / 0.2f, 0.0f, 1.0f)),
+				WithAlpha(White, 0.95f * Flash), WithAlpha(White, 0.0f), 48);
+			FusionGlow(At(16), FusedHome, 20.0f + 44.0f * EaseOut(T), WithAlpha(White, Flash), WithAlpha(White, 0.0f), 32);
+			const float RingA = EaseOut(FMath::Clamp(Since / 0.4f, 0.0f, 1.0f));
+			const float RingB = EaseOut(FMath::Clamp((Since - 0.06f) / 0.4f, 0.0f, 1.0f));
+			At(17, 1.0f - RingA).Ring(FusedHome, FusionHolderRing + 4.0f + 50.0f * RingA, FMath::Lerp(PrimaryColor, White, 0.3f),
+				1.5f + 4.0f * (1.0f - RingA), 64);
+			if (Since > 0.06f)
+			{
+				At(17, 1.0f - RingB).Ring(FusedHome, FusionHolderRing + 40.0f * RingB, FMath::Lerp(SecondaryColor, White, 0.3f),
+					1.5f + 3.5f * (1.0f - RingB), 64);
+			}
+			for (int32 Mote = 0; Mote < 10; ++Mote)
+			{
+				const float Angle = Mote * (UE_TWO_PI / 10.0f) + T * 2.4f;
+				const float Out = FMath::Sin(FMath::Clamp(T, 0.0f, 1.0f) * UE_PI) * (34.0f + 8.0f * (Mote % 3));
+				const FVector2D Point = FusedHome + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * (Radius + Out);
+				const FLinearColor Color = Mote % 2 == 0 ? PrimaryColor : SecondaryColor;
+				FusionGlow(At(17, 1.0f - T), Point, 8.0f, WithAlpha(FMath::Lerp(Color, White, 0.4f), 0.95f), WithAlpha(Color, 0.0f), 14);
+			}
+		}
+		NameTag(FusedHome, Radius, FMath::Clamp((Since - 0.12f) / 0.2f, 0.0f, 1.0f),
+			6.0f * (1.0f - EaseOut(FMath::Clamp((Since - 0.12f) / 0.3f, 0.0f, 1.0f))));
+		return;
+	}
+
+	// Parted: the fusion's holder comes apart into the two ordinary ones again, springing back to their places.
+	const float Since = static_cast<float>(Clock - FusionSplitAt);
+	const float T = FMath::Clamp(Since / FusionSplitSeconds, 0.0f, 1.0f);
+	const float Spread = FusionSpring(FMath::Clamp((Since - 0.05f) / 0.45f, 0.0f, 1.0f));
+	const FVector2D BackNow = FMath::Lerp(FusedHome, BackHome, Spread);
+	const FVector2D FrontNow = FMath::Lerp(FusedHome, FrontHome, FMath::Min(1.0f, Spread * 1.15f));
+	// The one holder lets go in a last flash, fading as the two come out of it.
+	const float Release = FMath::Clamp(Since / 0.16f, 0.0f, 1.0f);
+	if (Release < 1.0f)
+	{
+		FusedPedestal(FusedHome, FusionHolderRing * (1.0f + 0.12f * EaseOut(Release)), 1.0f - Release);
+		FusionGlow(At(16), FusedHome, 30.0f + 50.0f * EaseOut(Release), WithAlpha(White, 0.8f * (1.0f - Release)), WithAlpha(White, 0.0f), 40);
+	}
+	const float Grow = FMath::Clamp(Spread, 0.0f, 1.2f);
+	if (bFusionSplitThrown)
+	{
+		// Thrown: the two holders come back empty; the two balls, as ghosts, spring back with them and fade into them.
+		Pedestal(BackNow, FMath::Lerp(FusionHolderRing * 0.6f, BackRing, Grow), EmptyRing, false, 1, 1.0f);
+		Pedestal(FrontNow, FMath::Lerp(FusionHolderRing * 0.8f, FrontRing, Grow), EmptyRing, true, 3, 1.0f);
+		if (Release < 1.0f)
+		{
+			FusedBall(FusedHome, FusionHolderBall * (1.0f + 0.25f * EaseOut(Release)), Release, 1.0f - Release);
+		}
+		const float Fade = FMath::Clamp(1.0f - (Since - 0.2f) / 0.35f, 0.0f, 1.0f);
+		FusionGlow(At(8, Fade), BackNow, BackRadius * 1.5f, WithAlpha(SecondaryColor, 0.5f), WithAlpha(SecondaryColor, 0.0f));
+		FusionGlow(At(8, Fade), FrontNow, FrontRadius * 1.4f, WithAlpha(PrimaryColor, 0.5f), WithAlpha(PrimaryColor, 0.0f));
+		PaintBallIcon(At(9, Fade * 0.85f), BackNow, FMath::Lerp(FrontRadius * 0.7f, BackRadius, Grow), true, FusionSecondary, 0.0f, Time);
+		PaintBallIcon(At(12, Fade * 0.85f), FrontNow, FrontRadius * FMath::Lerp(0.7f, 1.0f, FMath::Min(Grow, 1.0f)), true, FusionPrimary, 0.0f, Time);
+		if (Since > 0.3f)
+		{
+			// A soft ring as each comes home.
+			const float Home = FMath::Clamp((Since - 0.3f) / 0.25f, 0.0f, 1.0f);
+			At(17, 1.0f - Home).Ring(BackHome, BackRing + 4.0f + 14.0f * EaseOut(Home), SecondaryColor, 2.0f);
+			At(17, 1.0f - Home).Ring(FrontHome, FrontRing + 4.0f + 18.0f * EaseOut(Home), PrimaryColor, 2.0f);
+		}
+		return;
+	}
+	// Undone: the two balls come back out on their holders, a thread snapping between them.
+	const EChaosImpactBallType FrontType = CarriedBalls > 0 ? ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, 0) : FusionPrimary;
+	const EChaosImpactBallType BackType = CarriedBalls > 1 ? ChaosImpactBallTypes::GetPackedSlot(CarriedBallTypes, 1) : FusionSecondary;
+	Pedestal(BackNow, FMath::Lerp(FusionHolderRing * 0.6f, BackRing, Grow), ChaosImpactBallTypes::GetColor(BackType), false, 1, 1.0f);
+	Pedestal(FrontNow, FMath::Lerp(FusionHolderRing * 0.8f, FrontRing, Grow), ChaosImpactBallTypes::GetColor(FrontType), true, 3, 1.0f);
+	if (T < 0.35f)
+	{
+		const float Snap = T / 0.35f;
+		At(17, 1.0f - Snap).Line(FrontNow, BackNow, FMath::Lerp(ChaosImpactBallTypes::GetColor(FrontType), White, 0.5f), 3.0f * (1.0f - Snap));
+	}
+	PaintBallIcon(At(9), BackNow, FMath::Lerp(FrontRadius * 0.8f, BackRadius, Grow), true, BackType, 0.0f, Time);
+	PaintBallIcon(At(12), FrontNow, FrontRadius * FMath::Lerp(0.85f, 1.0f, FMath::Min(Grow, 1.0f)), true, FrontType, 0.0f, Time);
 }
 
 void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
@@ -2909,7 +4314,11 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	const ULocalPlayer* OwningLocalPlayer = GetOwningLocalPlayer();
 	const int32 PlayerIndex = OwningGameInstance && OwningLocalPlayer
 		? FMath::Max(0, OwningGameInstance->GetLocalPlayers().IndexOfByKey(OwningLocalPlayer)) : 0;
-	const FGeometry Corner = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
+	FVector2D VitalsShift;
+	float VitalsSize = 1.0f;
+	GetTouchHudPlacement(FChaosImpactTouchCustom::Vitals, VitalsShift, VitalsSize);
+	const FGeometry Corner = MakeAnchor(AllottedGeometry, static_cast<float>(VitalsShift.X), GetTouchCornerY(Size.Y, false)
+		+ static_cast<float>(VitalsShift.Y), S * VitalsSize);
 	Occupy(Corner, 0.0f, -185.0f, 400.0f, 185.0f);
 	const auto At = [](const float X, const float Y) { return FVector2D(X, Y); };
 	// No panel: the pieces stand on the game as they are, each outlined like the logo's letters.
@@ -2972,6 +4381,17 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 		if (bHave)
 		{
 			HudStroke(Top, {At(L + 4.0f, RowTop + 4.0f), At(R - Tip - 2.0f, RowTop + 4.0f)}, FLinearColor(1.0f, 1.0f, 1.0f, 0.8f), 2.0f);
+		}
+		// Won back (the heal ball): the chevron pops in white and pink, and settles.
+		if (const float HealAge = static_cast<float>(Clock - HealAt); bHave && Cell == GainedHealthSegment && HealAge < 0.7f)
+		{
+			const float Fade = 1.0f - HealAge / 0.7f;
+			const float Grow = 5.0f * FMath::Sin(FMath::Min(HealAge / 0.25f, 1.0f) * UE_PI) + 2.0f * Fade;
+			const FHudFill Glow = MakeFill(FLinearColor(1.0f, 1.0f, 1.0f, 0.9f * Fade), FLinearColor(1.0f, 0.5f, 0.72f, 0.85f * Fade));
+			HudShard(Top, {At(L - Grow, RowTop - Grow), At(R - Tip + Grow, RowTop - Grow), At(R + Grow, RowMiddle), At(L + Tip - Grow, RowMiddle)}, Glow, 0.0f,
+				FVector2D::ZeroVector, Navy, RowTop - Grow, RowBottom + Grow);
+			HudShard(Top, {At(L + Tip - Grow, RowMiddle), At(R + Grow, RowMiddle), At(R - Tip + Grow, RowBottom + Grow), At(L - Grow, RowBottom + Grow)}, Glow,
+				0.0f, FVector2D::ZeroVector, Navy, RowTop - Grow, RowBottom + Grow);
 		}
 		if (CombatSample)
 		{
@@ -3042,6 +4462,17 @@ void UChaosImpactChargeWidget::PaintVitals(const FGeometry& AllottedGeometry,
 	HudText3D(Top, TEXT("ST"), BladeRight + 8.0f, BladeTop - 7.0f, 16.0f, bCanDash ? FireFill.Top : Muted, ETextAlign::Left);
 	HudText3D(Top, FString::FromInt(FMath::FloorToInt(StaminaValue + KINDA_SMALL_NUMBER)),
 		BladeRight + 14.0f + HudMeasure(TEXT("ST"), 16.0f, TEXT("BlackItalic")), BladeTop - 10.0f, 19.0f, bCanDash ? Paper : Muted, ETextAlign::Left);
+}
+
+FBox2D UChaosImpactChargeWidget::SpectatorTouchButton(const int32 Index, const FVector2D& Size)
+{
+	// A row over the 観戦中 plate (bottom middle): ◀, the camera's mode, ▶.
+	const float S = FChaosImpactTouchGestures::HudScale(Size, ChaosImpactSettings::GetHudSizeFactor());
+	const float Lefts[3] = {-330.0f, -200.0f, 210.0f};
+	const float Widths[3] = {120.0f, 400.0f, 120.0f};
+	const FVector2D Base(Size.X * 0.5, Size.Y);
+	const FVector2D Min = Base + FVector2D(Lefts[Index], -236.0f) * S;
+	return FBox2D(Min, Min + FVector2D(Widths[Index], 84.0f) * S);
 }
 
 void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeometry,
@@ -3122,6 +4553,36 @@ void UChaosImpactChargeWidget::PaintSpectatorBar(const FGeometry& AllottedGeomet
 	P.Text(Showing, 375.0f, 12.0f + (30.0f - HudFit(Showing, 30.0f, 420.0f)) * 0.5f, HudFit(Showing, 30.0f, 420.0f), ShowingColor, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
 	const AChaosImpactPlayerController* Viewer = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
 	const bool bOnline = Viewer && Viewer->IsOnlineRoom();
+	if (UChaosImpactMenuWidget::IsPhoneBuild() && !ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(GetOwningPlayer())))
+	{
+		// (Not under a tournament's own screens: the call, its menu, the question about two CPUs.)
+		if (Viewer && Viewer->GetTournamentWidget() && Viewer->GetTournamentWidget()->CoversPlay())
+		{
+			return;
+		}
+		// By touch: buttons over the plate, and what a finger does on the field (free camera).
+		Occupy(Bottom, -340.0f, -250.0f, 680.0f, 250.0f);
+		const FString Labels[3] = {TEXT("◀"), Watched ? FString(TEXT("フリーカメラ")) : FString(TEXT("選手視点")), TEXT("▶")};
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			const FBox2D R = SpectatorTouchButton(Index, FVector2D(Size));
+			const FPainter B{AllottedGeometry, OutDrawElements, BaseLayer + 1, 1.0f};
+			const float BX = static_cast<float>(R.Min.X), BY = static_cast<float>(R.Min.Y);
+			const float BW = static_cast<float>(R.GetSize().X), BH = static_cast<float>(R.GetSize().Y);
+			RoundedBox(B, BX, BY, BW, BH, 12.0f * S, FLinearColor(0.012f, 0.016f, 0.03f, 0.82f));
+			B.Outline(BX, BY, BW, BH, WithAlpha(Paper, 0.25f), 1.0f);
+			const float TextSize = HudFit(Labels[Index], 26.0f * S, BW - 20.0f * S);
+			HudAbove(B, 1).Text(Labels[Index], BX + BW * 0.5f, BY + BH * 0.5f - TextSize * 0.74f, TextSize, Paper, ETextAlign::Center, TEXT("Black"));
+		}
+		if (!Watched)
+		{
+			const FString Help = TEXT("ドラッグ：視点　　2本指ドラッグ：移動");
+			const FPainter Line{MakeAnchor(Bottom, 0.0f, -54.0f, 1.0f), OutDrawElements, BaseLayer, 1.0f};
+			Line.Text(Help, 0.0f, 0.0f, HudFit(Help, 20.0f, Size.X / FMath::Max(S, 0.01f) - 40.0f, TEXT("Bold")), WithAlpha(Paper, 0.85f), ETextAlign::Center,
+				TEXT("Bold"), 1.5f, Ink);
+		}
+		return;
+	}
 	const FPainter Keys{MakeAnchor(Bottom, 0.0f, -54.0f, 1.0f), OutDrawElements, BaseLayer, 1.0f};
 	// In the names of what this player is holding (the spectator pawn's keys and buttons).
 	const EChaosImpactDevice HelpDevice = ChaosImpactHints::GetDevice(GetOwningPlayer());
@@ -3598,7 +5059,7 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 	// The opening runs on this machine's own clock, so a late arrival still sees all of it.
 	const float Elapsed = Match->GetIntroElapsedSeconds();
 	const FGeometry Center = MakeAnchor(AllottedGeometry, Size.X * 0.5f, Size.Y * 0.5f, S);
-	const FGeometry TopLeft = MakeAnchor(AllottedGeometry, 0.0f, 0.0f, S);
+	const FGeometry TopLeft = MakeAnchor(MoveForTouch(GetOwningPlayer(), AllottedGeometry, FChaosImpactTouchCustom::Standings), 0.0f, 0.0f, S);
 	const AChaosImpactPlayerState* Own = GetOwningPlayer()
 		? GetOwningPlayer()->GetPlayerState<AChaosImpactPlayerState>() : nullptr;
 	if (bSpectatorView)
@@ -3649,16 +5110,19 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			// Plain type over the flyover, rising slightly into place.
 			const float Rise = (1.0f - In) * 16.0f;
 			const FPainter Words{Center, OutDrawElements, BaseLayer + 2, Alpha};
-			Words.Text(Match->Rules.IsRubyRush() ? TEXT("ルビーを一番多く集めろ！") : Match->Rules.IsCrownKeep() ? TEXT("王冠を奪って守りきれ！")
+			// (Both lines fitted to the screen's width: a phone held upright is narrow.)
+			const float Room = static_cast<float>(Size.X) / S - 60.0f;
+			const FString Mission = Match->Rules.IsRubyRush() ? TEXT("ルビーを一番多く集めろ！") : Match->Rules.IsCrownKeep() ? TEXT("王冠を奪って守りきれ！")
 				: Match->Rules.bDuel ? TEXT("相手を3回当てて倒せ！") : Match->Rules.bCrashBall ? TEXT("巨大球を相手のゴールへ押し込め！")
-				: bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！"), 0.0f, -74.0f + Rise, 60.0f,
-				Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
+				: bTeams ? TEXT("チームで多く敵を倒せ！") : TEXT("時間内に多く敵を倒せ！");
+			const float MissionSize = HudFit(Mission, 60.0f, Room);
+			Words.Text(Mission, 0.0f, -14.0f - MissionSize * 1.0f + Rise, MissionSize, Paper, ETextAlign::Center, TEXT("Black"), 3.0f, Ink);
 			Words.Box(-150.0f * In, 18.0f + Rise, 300.0f * In, 2.0f, WithAlpha(Paper, 0.6f));
-			Words.Text(Match->Rules.bDuel
+			const FString About = Match->Rules.bDuel
 				? FString::Printf(TEXT("%s ・ 1ラウンド%d秒 ・ %s"), *ChaosImpactMatch::DescribeRule(Match->Rules),
-					FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::GetDuelStageName())
-				: FString::Printf(TEXT("%s ・ %d分"), *ChaosImpactMatch::DescribeRule(Match->Rules), Match->Rules.Minutes),
-				0.0f, 30.0f + Rise, 22.0f, WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Regular"), 2.0f, Ink);
+					FMath::RoundToInt(ChaosImpactMatch::DuelRoundSeconds), ChaosImpactMatch::GetDuelStageName(Match->Rules.StageIndex))
+				: FString::Printf(TEXT("%s ・ %d分"), *ChaosImpactMatch::DescribeRule(Match->Rules), Match->Rules.Minutes);
+			Words.Text(About, 0.0f, 30.0f + Rise, HudFit(About, 22.0f, Room, TEXT("Regular")), WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Regular"), 2.0f, Ink);
 		}
 		// Ready? is drawn once for the whole screen by UChaosImpactMatchAnnouncerWidget.
 		return;
@@ -3709,25 +5173,11 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			constexpr float RowHeight = 28.0f;
 			const float Y = RowTop + Row * 36.0f;
 			Occupy(TopLeft, 0.0f, Y - 8.0f, RowLeft + RowWidth + 60.0f, RowHeight + 16.0f);
-			const auto At = [](const float X, const float YY) { return FVector2D(X, YY); };
-			const FPainter Strip{TopLeft, OutDrawElements, BaseLayer};
-			// A strip with a torn right end; this player's own glows ice blue.
-			HudShard(Strip, {At(RowLeft + 10.0f, Y), At(RowLeft + RowWidth, Y), At(RowLeft + RowWidth - 8.0f, Y + RowHeight * 0.5f),
-				At(RowLeft + RowWidth - 2.0f, Y + RowHeight), At(RowLeft, Y + RowHeight)}, bOwn ? MakeFill(FLinearColor(0.16f, 0.3f, 0.6f, 0.96f),
-				FLinearColor(0.04f, 0.08f, 0.22f, 0.96f)) : NightFill, 2.5f, FVector2D(4.0, 5.0));
-			const FPainter Front = HudAbove(Strip);
-			HudStroke(Front, {At(RowLeft + 44.0f, Y + RowHeight - 3.0f), At(RowLeft + RowWidth - 6.0f, Y + RowHeight - 3.0f)}, WithAlpha(Accent, 0.9f), 2.0f);
-			// The place in a medal shard of its own.
-			const FHudFill Medal = Rank == 1 ? FireFill : Rank == 2 ? SilverFill : Rank == 3 ? BronzeFill : MakeFill(FLinearColor(0.3f, 0.36f, 0.5f),
-				FLinearColor(0.12f, 0.15f, 0.24f));
-			HudShard(Front, {At(RowLeft - 2.0f, Y - 4.0f), At(RowLeft + 36.0f, Y - 4.0f), At(RowLeft + 30.0f, Y + RowHeight + 4.0f),
-				At(RowLeft - 8.0f, Y + RowHeight + 4.0f)}, Medal, 2.5f, FVector2D(3.0, 4.0));
-			const FPainter Words = HudAbove(Front);
-			HudText3D(Words, Rank > 0 ? FString::FromInt(Rank) : FString(TEXT("-")), RowLeft + 14.0f, Y - 2.0f, 20.0f, Paper, ETextAlign::Center);
 			// (Clear of the points at the strip's right end; パーティルール: the gem or the crown before the number.)
 			const bool bPartyRow = Match->Rules.IsParty() && Player;
 			const float NumberW = HudMeasure(FString::FromInt(Points), 22.0f, TEXT("BlackItalic"));
-			const float PointsW = NumberW + (bPartyRow ? 26.0f : 0.0f);
+			PaintStandingRow(TopLeft, OutDrawElements, BaseLayer, RowTop, Row, Rank, Accent, Label, Points, bOwn, bPartyRow ? 26.0f : 0.0f);
+			const FPainter Words{TopLeft, OutDrawElements, BaseLayer + 6};
 			if (bPartyRow)
 			{
 				const FVector2D IconAt(RowLeft + RowWidth - 16.0f - NumberW - 14.0f, Y + RowHeight * 0.5f);
@@ -3747,9 +5197,6 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 					ChaosImpactParty::PaintRuby(HudAbove(Words, 1), IconAt, 9.5f, IconTime);
 				}
 			}
-			Words.Text(Label, RowLeft + 46.0f, Y + 3.0f, HudFit(Label, 15.0f, RowWidth - 16.0f - PointsW - 10.0f - 46.0f), bOwn ? Paper : WithAlpha(Paper, 0.85f),
-				ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
-			HudText3D(Words, FString::FromInt(Points), RowLeft + RowWidth - 16.0f, Y - 3.0f, 22.0f, bOwn ? IceFill.Top : Paper, ETextAlign::Right);
 			// Online: their connection, small, just past the strip (the host's own machine has none).
 			if (Player && Match->bOnlineRoom && !Player->IsABot())
 			{
@@ -3847,7 +5294,12 @@ void UChaosImpactChargeWidget::PaintVersusMatch(const FGeometry& AllottedGeometr
 			const FLinearColor Place = RankColor(OwnRank);
 			// Over the name: a tag in the medal's colours (gold, silver, bronze; night blue after that) with the place read
 			// as one word, the number large and 位 right after it, out of how many beside. It lands large when it changes.
-			const FGeometry BottomLeft = MakeAnchor(AllottedGeometry, 0.0f, Size.Y, S);
+			// (With the HP panel wherever it stands: by touch it sits higher, out from under the thumb, and may be moved.)
+			FVector2D BadgeShift;
+			float BadgeSize = 1.0f;
+			GetTouchHudPlacement(FChaosImpactTouchCustom::Vitals, BadgeShift, BadgeSize);
+			const FGeometry BottomLeft = MakeAnchor(AllottedGeometry, static_cast<float>(BadgeShift.X), GetTouchCornerY(Size.Y, false)
+				+ static_cast<float>(BadgeShift.Y), S * BadgeSize);
 			constexpr float BadgeLeft = 40.0f;
 			constexpr float BadgeTop = -236.0f;
 			constexpr float BadgeHeight = 58.0f;
@@ -3974,7 +5426,8 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		const bool bFound = Sessions->IsQueueMatched() || Sessions->IsDuelOffered();
 		const bool bDuel = Sessions->GetQueueMode() == EChaosImpactQueueMode::Duel;
 		const int32 Elapsed = FMath::Max(0, FMath::FloorToInt(Clock - Sessions->GetQueueStartedAt()));
-		constexpr float CW = 660.0f;
+		// (By touch: short of the corner buttons.)
+		const float CW = FMath::Clamp(TopLeftRoom(FVector2D(Size), S), 420.0f, 660.0f);
 		constexpr float CH = 124.0f;
 		const FPainter P{MakeSkewed(TopLeft, 40.0f, 36.0f, CW, CH, -0.18f), OutDrawElements, BaseLayer};
 		const FLinearColor Tone = bFound ? Gold : bDuel ? Gold : Fire;
@@ -4117,7 +5570,8 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 		};
 
 		// The room card: its name, the password and whether it recruits on tags, how full it is (a capsule per place).
-		constexpr float ListW = 500.0f;
+		// (By touch, the room's cards stop short of the corner buttons: a narrow screen held upright has little room.)
+		const float ListW = FMath::Clamp(TopLeftRoom(FVector2D(Size), S), 360.0f, 500.0f);
 		{
 			const FGeometry Header = MakeSkewed(TopLeft, 40.0f, 36.0f, ListW, 88.0f, -0.12f);
 			const FPainter H{Header, OutDrawElements, BaseLayer};
@@ -4287,8 +5741,15 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 					X += 32.0f;
 				}
 				const float TagX = X;
-				X += Tag(HudAbove(W2, 1), X, Y, Keys, 14.0f, WithAlpha(Paper, 0.9f), Ink) + 8.0f;
-				const FString SwitchLine = SwitchController->IsSpectating() ? TEXT("長押しでプレイヤーに戻る") : TEXT("長押しで観戦にする");
+				// (By touch: its 観戦 button, tapped; no key to name.)
+				const bool bTouchSwitch = SwitchController->ShouldUseTouchControls() && !SwitchController->IsUsingGamepad();
+				if (!bTouchSwitch)
+				{
+					X += Tag(HudAbove(W2, 1), X, Y, Keys, 14.0f, WithAlpha(Paper, 0.9f), Ink) + 8.0f;
+				}
+				const FString SwitchLine = bTouchSwitch
+					? (SwitchController->IsSpectating() ? TEXT("「観戦」ボタンでプレイヤーに戻る") : TEXT("「観戦」ボタンで観戦にする"))
+					: SwitchController->IsSpectating() ? TEXT("長押しでプレイヤーに戻る") : TEXT("長押しで観戦にする");
 				W2.Text(SwitchLine, X, Y + 2.0f, HudFit(SwitchLine, 17.0f, FMath::Max(60.0f, ListW - X - 16.0f), TEXT("Bold")),
 					WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
 				// How far the hold has gone, under the key.
@@ -4316,10 +5777,17 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				OccupyShared(Hint, -10.0f, -10.0f, 440.0f, 124.0f);
 				DrawCard(P, 420.0f, 104.0f, bCanClose ? Gold : Muted, 7.0f, false);
 				const FPainter P2 = HudAbove(P, 2);
-				HudText3D(P2, bCanClose ? TEXT("長押しで募集終了") : TEXT("メンバーの参加を待っています"), 24.0f, 10.0f,
-					HudFit(bCanClose ? TEXT("長押しで募集終了") : TEXT("メンバーの参加を待っています"), bCanClose ? 28.f : 22.f, 372.0f),
-					Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
-				if (bCanClose)
+				// (By touch: closed from the pause menu, no key held.)
+				const bool bTouchHost = Host->ShouldUseTouchControls() && !Host->IsUsingGamepad();
+				const FString Head = !bCanClose ? FString(TEXT("メンバーの参加を待っています"))
+					: bTouchHost ? FString(TEXT("メンバー募集を終了できます")) : FString(TEXT("長押しで募集終了"));
+				HudText3D(P2, Head, 24.0f, 10.0f, HudFit(Head, bCanClose ? 28.f : 22.f, 372.0f), Paper, ETextAlign::Left, TEXT("Black"), 2.0f);
+				if (bCanClose && bTouchHost)
+				{
+					const FString How = TEXT("「ポーズ」→「メンバー募集終了」で締め切れます");
+					P2.Text(How, 24.0f, 54.0f, HudFit(How, 18.0f, 372.0f, TEXT("Bold")), Paper, ETextAlign::Left, TEXT("Bold"));
+				}
+				else if (bCanClose)
 				{
 					const float KeyW = Tag(HudAbove(P2, 1), 24.0f, 50.0f, ChaosImpactSettings::DescribeAction(Host, EChaosImpactAction::LobbyReady), 15.0f,
 						WithAlpha(Paper, 0.9f), Ink);
@@ -4331,8 +5799,8 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 				}
 				else
 				{
-					P2.Text(TEXT("参加者がそろったら、ここから締め切れます"), 24.0f, 50.0f, HudFit(TEXT("参加者がそろったら、ここから締め切れます"), 16.0f, 372.0f, TEXT("Bold")),
-						Muted, ETextAlign::Left, TEXT("Bold"));
+					const FString Later = bTouchHost ? TEXT("参加者がそろったら、ポーズから締め切れます") : TEXT("参加者がそろったら、ここから締め切れます");
+					P2.Text(Later, 24.0f, 50.0f, HudFit(Later, bTouchHost ? 18.0f : 16.0f, 340.0f, TEXT("Bold")), Muted, ETextAlign::Left, TEXT("Bold"));
 					HudWaitBalls(HudAbove(P2, 1), FVector2D(384.0, 92.0), static_cast<float>(Clock), 11.0f);
 				}
 			}
@@ -4409,7 +5877,8 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			// ルール確認: its key, beside the title (the rules in full over the screen).
 			const float CardKeyLeft = 22.0f + HudMeasure(TEXT("ルール"), 24.0f, TEXT("Black")) + 18.0f;
 			float CardKeyRight = CardKeyLeft;
-			if (const auto* CardOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer()); CardOwner && CardOwner->CanOpenRuleCard())
+			if (const auto* CardOwner = Cast<AChaosImpactPlayerController>(GetOwningPlayer());
+				CardOwner && CardOwner->CanOpenRuleCard() && !(CardOwner->ShouldUseTouchControls() && !CardOwner->IsUsingGamepad()))
 			{
 				const FString CardKey = ChaosImpactSettings::DescribeAction(CardOwner, EChaosImpactAction::RuleCard);
 				const float CardKeyW = FMath::Max(HudMeasure(CardKey, 14.0f, TEXT("Black")) + 14.0f, 26.0f);
@@ -4421,7 +5890,7 @@ void UChaosImpactChargeWidget::PaintOnlineOverlay(const FGeometry& AllottedGeome
 			// The match's kind as the rules screen names it; a duel or a tournament is played in rounds in the duel arena,
 			// not for some minutes on a stage.
 			const bool bDuelRules = Rules.bTournament || Rules.bDuel;
-			const FString Where = bDuelRules ? FString(ChaosImpactMatch::GetDuelStageName()) : ChaosImpactMatch::GetStageLabel(Rules.StageIndex);
+			const FString Where = ChaosImpactMatch::DescribeStage(Rules);
 			P3.Text(Where, PW - 22.0f, 16.0f, HudFit(Where, 20.0f, FMath::Max(60.0f, PW - 22.0f - CardKeyRight - 14.0f)), Ink, ETextAlign::Right, TEXT("Black"));
 
 			// Chips on the right of the kind: the length, and the CPUs and how strong.
@@ -4623,7 +6092,10 @@ void UChaosImpactChargeWidget::PaintSmokeVeil(const FGeometry& AllottedGeometry,
 	Veil.Box(0.0f, 0.0f, Size.X, Size.Y, FLinearColor(0.3f, 0.29f, 0.34f, 0.8f));
 	const FPainter Clouds{AllottedGeometry, OutDrawElements, Layer + 1, Thick};
 	const float Span = FMath::Max(Size.X, Size.Y);
-	constexpr int32 CloudCount = 14;
+	// スマホ版: each cloud is drawn over much of a full-resolution screen, and a phone's GPU paid ~100 ms a frame for the
+	// 60 layers: fewer clouds, one denser layer each (the murky base hides the field all the same).
+	const bool bLight = UChaosImpactMenuWidget::IsPhoneBuild();
+	const int32 CloudCount = bLight ? 6 : 14;
 	for (int32 Index = 0; Index < CloudCount; ++Index)
 	{
 		// Scattered by a fixed pattern, each drifting on its own slow loop.
@@ -4637,18 +6109,18 @@ void UChaosImpactChargeWidget::PaintSmokeVeil(const FGeometry& AllottedGeometry,
 		const FLinearColor Tone = Index % 3 == 0 ? FLinearColor(0.2f, 0.19f, 0.23f) : FLinearColor(0.52f, 0.5f, 0.58f);
 		// Soft edges: a few faint layers, each a little off-centre, so no rim shows as a line. (Every layer is drawn
 		// over much of the screen, so they are kept few.)
-		constexpr int32 Layers = 4;
+		const int32 Layers = bLight ? 1 : 4;
 		for (int32 Ring = 0; Ring < Layers; ++Ring)
 		{
-			const float Shrink = 1.0f - Ring * 0.2f;
+			const float Shrink = bLight ? 0.85f : 1.0f - Ring * 0.2f;
 			const FVector2D Wobble(FMath::Sin(Seed + Ring * 1.9f + Time * 0.3f), FMath::Cos(Seed + Ring * 2.3f + Time * 0.25f));
-			Clouds.Disc(Center + Wobble * Radius * 0.06f, Radius * Shrink, FLinearColor(Tone.R, Tone.G, Tone.B, 0.15f));
+			Clouds.Disc(Center + Wobble * Radius * 0.06f, Radius * Shrink, FLinearColor(Tone.R, Tone.G, Tone.B, bLight ? 0.4f : 0.15f));
 		}
 	}
 	// Thickest in the middle of the view, where the player looks.
 	const FVector2D Middle(Size.X * 0.5f, Size.Y * 0.5f);
-	for (int32 Ring = 0; Ring < 4; ++Ring)
+	for (int32 Ring = 0; Ring < (bLight ? 1 : 4); ++Ring)
 	{
-		Clouds.Disc(Middle, Span * (0.34f - Ring * 0.07f), FLinearColor(0.4f, 0.39f, 0.45f, 0.17f));
+		Clouds.Disc(Middle, Span * (bLight ? 0.27f : 0.34f - Ring * 0.07f), FLinearColor(0.4f, 0.39f, 0.45f, bLight ? 0.5f : 0.17f));
 	}
 }

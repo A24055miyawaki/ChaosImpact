@@ -212,6 +212,10 @@ float AChaosImpactSimaeBoss::TakeDamage(const float DamageAmount, const FDamageE
 		return 0.0f;
 	}
 	// The first half of its health cannot be skipped: it always powers up on the way down.
+	if (bBeaten)
+	{
+		return 0.0f;
+	}
 	const float Half = MaxHealth * 0.5f;
 	float Amount = DamageAmount;
 	if (!bFullPower)
@@ -221,6 +225,21 @@ float AChaosImpactSimaeBoss::TakeDamage(const float DamageAmount, const FDamageE
 	if (Amount <= 0.0f)
 	{
 		return 0.0f;
+	}
+	if (bSceneDefeat && bFullPower && Health - Amount <= KINDA_SMALL_NUMBER)
+	{
+		// Its last hit, with a scene to follow: beaten, not knocked out (it stays for the scene; FinishBeaten ends it).
+		Amount = FMath::Max(Health - 0.001f, 0.0f);
+		Super::TakeDamage(Amount, DamageEvent, EventInstigator, DamageCauser);
+		bBeaten = true;
+		bHarmless = true;
+		bHoldMoves = true;
+		HitFlash = 1.0f;
+		HitShake = 1.0f;
+		PlayDefeat();
+		PlayClip(IdleClip, true, 0.6f);
+		UE_LOG(LogChaosImpact, Log, TEXT("Simae boss beaten: its scene follows"));
+		return Amount;
 	}
 	const float Applied = Super::TakeDamage(Amount, DamageEvent, EventInstigator, DamageCauser);
 	if (Applied > 0.0f)
@@ -403,8 +422,32 @@ void AChaosImpactSimaeBoss::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	ShownHealth = ShownHealth < 0.0f ? Health : FMath::FInterpConstantTo(ShownHealth, Health, DeltaSeconds, MaxHealth * 0.25f);
+	if (Move == EChaosImpactSimaeMove::None && GetCharacterMovement()->IsMovingOnGround() && GetMesh())
+	{
+		// (How high its hips stand above the snow, learnt while it walks about: the aura's roots follow its feet from there.)
+		const FVector Middle = BodyMiddle();
+		const float Up = static_cast<float>(Middle.Z - ChaosImpactSimaeFx::FindGround(GetWorld(), Middle, this).Z);
+		if (Up > 20.0f)
+		{
+			HipRest = HipRest < 0.0f ? Up : FMath::FInterpTo(HipRest, Up, DeltaSeconds, 2.0f);
+		}
+	}
 	UpdateAura(DeltaSeconds);
 	UpdateHitFlash(DeltaSeconds);
+	if (HasAuthority())
+	{
+		// Powering up (and beaten, waiting for its scene): it cannot be hit at all, balls glance off it.
+		const bool bShielded = Move == EChaosImpactSimaeMove::PowerUp || bBeaten;
+		if (CanBeDamaged() == bShielded)
+		{
+			SetCanBeDamaged(!bShielded);
+		}
+	}
+	if (bSceneHold || bBeaten)
+	{
+		// A scene has it (it moves and animates it), or it is beaten and waits for its scene.
+		return;
+	}
 	if (IsEliminated() || !HasAuthority())
 	{
 		return;
@@ -591,6 +634,8 @@ void AChaosImpactSimaeBoss::BeginMove(const EChaosImpactSimaeMove NewMove)
 	MoveTime = 0.0f;
 	MoveStage = 0;
 	bMoveFired = false;
+	// Whatever had hold of it (a wind, a hook, ice) lets go: it attacks.
+	ShakeOffMoveEffects();
 	MoveStart = GetActorLocation();
 	FVector Toward = (Predict(Target, 0.5f) - MoveStart).GetSafeNormal2D();
 	if (Toward.IsNearlyZero())
@@ -721,6 +766,62 @@ void AChaosImpactSimaeBoss::DropHeldBall()
 FVector AChaosImpactSimaeBoss::Bone(const FName Name) const
 {
 	return GetMesh()->GetSocketLocation(Name);
+}
+
+FVector AChaosImpactSimaeBoss::BodyMiddle() const
+{
+	const USkeletalMeshComponent* Body = GetMesh();
+	if (!Body || !Body->GetSkeletalMeshAsset())
+	{
+		return GetActorLocation();
+	}
+	if (HipBoneModel != Body->GetSkeletalMeshAsset())
+	{
+		HipBoneModel = Body->GetSkeletalMeshAsset();
+		HipBone = NAME_None;
+		const int32 Count = Body->GetNumBones();
+		for (const TCHAR* Want : {TEXT("PELVIS"), TEXT("HIP"), TEXT("WAIST"), TEXT("SPINE")})
+		{
+			for (int32 Index = 0; Index < Count && HipBone.IsNone(); ++Index)
+			{
+				const FString Name = Body->GetBoneName(Index).ToString();
+				// (Not one hip of two: HIP_L / HIP_R.)
+				if (Name.Contains(Want, ESearchCase::IgnoreCase) && !Name.EndsWith(TEXT("_L"), ESearchCase::IgnoreCase)
+					&& !Name.EndsWith(TEXT("_R"), ESearchCase::IgnoreCase))
+				{
+					HipBone = Body->GetBoneName(Index);
+				}
+			}
+		}
+		if (HipBone.IsNone() && Count > 1)
+		{
+			// (The root's first child: on most rigs the hips.)
+			HipBone = Body->GetBoneName(1);
+		}
+#if !UE_BUILD_SHIPPING
+		FString Names;
+		for (int32 Index = 0; Index < Count; ++Index) { Names += Body->GetBoneName(Index).ToString() + TEXT(" "); }
+		UE_LOG(LogChaosImpact, Log, TEXT("Simae boss hips: %s (bones: %s)"), *HipBone.ToString(), *Names);
+#endif
+	}
+	return HipBone.IsNone() ? Body->Bounds.Origin : Body->GetBoneLocation(HipBone);
+}
+
+FVector AChaosImpactSimaeBoss::BodyFeet() const
+{
+	const FVector Middle = BodyMiddle();
+	const FVector Ground = ChaosImpactSimaeFx::FindGround(GetWorld(), FVector(Middle.X, Middle.Y, GetActorLocation().Z), this);
+	if (HipRest <= 0.0f)
+	{
+		return FVector(Middle.X, Middle.Y, Ground.Z);
+	}
+	// Off the ground with it when it jumps; never under the snow.
+	return FVector(Middle.X, Middle.Y, FMath::Max(Ground.Z, Middle.Z - HipRest));
+}
+
+bool AChaosImpactSimaeBoss::IsMoveProof() const
+{
+	return Move != EChaosImpactSimaeMove::None || bSceneHold || bBeaten;
 }
 
 FVector AChaosImpactSimaeBoss::PalmLocation() const
@@ -1100,6 +1201,7 @@ void AChaosImpactSimaeBoss::TickCharge(const float DeltaSeconds)
 void AChaosImpactSimaeBoss::StartPowerUp()
 {
 	AbortMove();
+	ShakeOffMoveEffects();
 	GetCharacterMovement()->StopMovementImmediately();
 	Move = EChaosImpactSimaeMove::PowerUp;
 	MoveTime = 0.0f;
@@ -1418,7 +1520,8 @@ void AChaosImpactSimaeBoss::UpdateAura(const float DeltaSeconds)
 	const bool bVisible = Shown > 0.02f;
 	const float Time = GetWorld()->GetTimeSeconds();
 	AuraFlames->SetVisibility(bVisible);
-	UpdateAuraShell(bVisible, Shown);
+	// (2026-11-19: the shell of haze round the body is gone; the user wanted only the flames.)
+	UpdateAuraShell(false, Shown);
 	if (bVisible)
 	{
 		RebuildAuraFlames(Time);
@@ -1432,6 +1535,10 @@ void AChaosImpactSimaeBoss::UpdateAura(const float DeltaSeconds)
 	}
 	const float Flicker = 0.85f + 0.1f * FMath::Sin(Time * 17.0f) + 0.05f * FMath::Sin(Time * 41.0f);
 	AuraLight->SetIntensity(bVisible ? 26000.0f * Shown * Flicker : 0.0f);
+	if (bVisible)
+	{
+		AuraLight->SetWorldLocation(BodyMiddle() + FVector(0.0f, 0.0f, 20.0f * BossScale));
+	}
 	if (RimMaterial && bFullPower)
 	{
 		RimMaterial->SetScalarParameterValue(TEXT("Intensity"), (1.5f * Shown + HitFlash * 3.0f) * Flicker);
@@ -1531,7 +1638,7 @@ void AChaosImpactSimaeBoss::FeedAura(const float DeltaSeconds, const float Shown
 	if (AuraPulseOwed >= 1.0f)
 	{
 		AuraPulseOwed -= 1.0f;
-		const FVector Floor = ChaosImpactSimaeFx::FindGround(GetWorld(), GetActorLocation(), this) + FVector(0.0f, 0.0f, 4.0f) - Base;
+		const FVector Floor = ChaosImpactSimaeFx::FindGround(GetWorld(), BodyMiddle(), this) + FVector(0.0f, 0.0f, 4.0f) - Base;
 		FChaosImpactFxPiece Wave;
 		Wave.Look = EChaosImpactFxLook::SolidRing;
 		Wave.Location = Floor;
@@ -1587,7 +1694,8 @@ void AChaosImpactSimaeBoss::RebuildAuraFlames(const float Time)
 	// World up, turned flat to the camera (up the screen, as near world up as a card facing the camera can be).
 	FVector Up = FVector::UpVector - Ahead * FVector::DotProduct(FVector::UpVector, Ahead);
 	Up = Up.IsNearlyZero() ? Axes.GetUnitAxis(EAxis::Z) : Up.GetSafeNormal();
-	const FVector Feet = ChaosImpactSimaeFx::FindGround(GetWorld(), GetActorLocation(), this);
+	// (Rooted under the body as drawn, not the capsule: the flames stay on it through its charges, jumps and slams.)
+	const FVector Feet = BodyFeet();
 	const float Tall = FMath::Max(Bone(TEXT("HEAD")).Z - Feet.Z, 150.0f);
 	const float K = BossScale / 2.25f;
 	const FVector Trail = -GetVelocity() * FVector(1.0f, 1.0f, 0.0f) * 0.15f;
@@ -1750,4 +1858,70 @@ void AChaosImpactSimaeBoss::PaintHud(const UWorld* World, const FGeometry& Geome
 			P.Box(X - 2.0f, BarY - Lick * 0.55f, 4.0f, Lick * 0.55f, WithAlpha(FLinearColor(1.0f, 0.75f, 0.85f), 0.8f));
 		}
 	}
+}
+
+void AChaosImpactSimaeBoss::FinishBeaten()
+{
+	bBeaten = false;
+	bSceneHold = false;
+	Destroy();
+}
+
+void AChaosImpactSimaeBoss::GetEyes(FVector& OutMiddle, FVector& OutAcross) const
+{
+	const USkeletalMeshComponent* Body = GetMesh();
+	OutAcross = GetActorRightVector();
+	if (!Body)
+	{
+		OutMiddle = GetActorLocation();
+		return;
+	}
+	// Its eyes' fronts (EYEBALL_L_OUT / _R_OUT on its rig), else its eyeballs, else any two eye bones, else its head.
+	for (const TPair<const TCHAR*, const TCHAR*>& Pair : {TPair<const TCHAR*, const TCHAR*>(TEXT("EYEBALL_L_OUT"), TEXT("EYEBALL_R_OUT")),
+		TPair<const TCHAR*, const TCHAR*>(TEXT("EYEBALL_L"), TEXT("EYEBALL_R"))})
+	{
+		if (Body->GetBoneIndex(Pair.Key) != INDEX_NONE && Body->GetBoneIndex(Pair.Value) != INDEX_NONE)
+		{
+			const FVector Left = Body->GetBoneLocation(Pair.Key);
+			const FVector Right = Body->GetBoneLocation(Pair.Value);
+			OutMiddle = (Left + Right) * 0.5f;
+			OutAcross = (Right - Left) * 0.5f;
+			return;
+		}
+	}
+	TArray<FVector> Eyes;
+	int32 HeadBone = INDEX_NONE;
+	const int32 Count = Body->GetNumBones();
+	for (int32 Bone = 0; Bone < Count; ++Bone)
+	{
+		const FString Name = Body->GetBoneName(Bone).ToString();
+		if (Name.Contains(TEXT("eye"), ESearchCase::IgnoreCase) && !Name.Contains(TEXT("brow"), ESearchCase::IgnoreCase)
+			&& !Name.Contains(TEXT("lid"), ESearchCase::IgnoreCase) && !Name.EndsWith(TEXT("_end"), ESearchCase::IgnoreCase))
+		{
+			Eyes.Add(Body->GetBoneLocation(Body->GetBoneName(Bone)));
+		}
+		else if (HeadBone == INDEX_NONE && Name.Equals(TEXT("head"), ESearchCase::IgnoreCase))
+		{
+			HeadBone = Bone;
+		}
+	}
+#if !UE_BUILD_SHIPPING
+	static bool bListed = false;
+	if (!bListed)
+	{
+		bListed = true;
+		FString Names;
+		for (int32 Bone = 0; Bone < Count; ++Bone) { Names += Body->GetBoneName(Bone).ToString() + TEXT(" "); }
+		UE_LOG(LogChaosImpact, Log, TEXT("Simae boss bones: %s"), *Names);
+	}
+#endif
+	if (Eyes.Num() >= 2)
+	{
+		OutMiddle = (Eyes[0] + Eyes[1]) * 0.5f;
+		// (Half the way from one eye to the other: where each is from the middle.)
+		OutAcross = (Eyes[1] - Eyes[0]) * 0.5f;
+		return;
+	}
+	const FVector Head = HeadBone != INDEX_NONE ? Body->GetBoneLocation(Body->GetBoneName(HeadBone)) : GetActorLocation();
+	OutMiddle = Head + GetActorForwardVector() * 30.0f * BossScale;
 }

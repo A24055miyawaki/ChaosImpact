@@ -19,6 +19,13 @@ class CHAOSIMPACT_API UChaosImpactWorldMapWidget : public UUserWidget
 public:
 	void SetMap(AChaosImpactWorldMap* InMap);
 	void SetCardNode(const int32 Node) { CardNode = Node; }
+	/** The HUD's scale on a screen this big (its own units). */
+	static float HudScale(const FVector2D& Size);
+	/** スマホ版: where the stage's card stands (top right, out of the thumbs' way; a tap on it plays the stage). */
+	static FBox2D PhoneCardRect(const FVector2D& Size);
+	static float PhoneCardAnchorY(const FVector2D& Size);
+	/** スマホ版: the button for the whole map (and back), under the map's name. */
+	static FBox2D PhoneOverviewRect(const FVector2D& Size);
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,

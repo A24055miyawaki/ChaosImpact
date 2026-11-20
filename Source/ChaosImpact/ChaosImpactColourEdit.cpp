@@ -1,10 +1,11 @@
-#include "ChaosImpactColourEdit.h"
+﻿#include "ChaosImpactColourEdit.h"
 
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactBodyPaint.h"
 #include "ChaosImpactCustomColour.h"
 #include "ChaosImpactHints.h"
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactPaintStudio.h"
 #include "ChaosImpactPuppetComponent.h"
@@ -69,6 +70,101 @@ namespace
 	constexpr int32 Buttons = UE_ARRAY_COUNT(ButtonNames);
 	/** A drag on the model turns it. */
 	constexpr int32 DragModel = 100;
+
+	/**
+	 * スマホ版 (2026-11-17, as the settings screen): the model always large, three tabs (キャラ / 色をぬる / プリセット) choosing
+	 * what the panel beside it shows, and 保存 / もどる as big buttons. Sideways: the tabs, ペイント, 保存 and もどる down the
+	 * left, the model in the middle (the preset buttons under it), the panel on the right. Upright: the model top left with
+	 * its name, ペイント and the preset buttons beside it, the tabs as chips across, the panel under them, 保存 and もどる at the
+	 * foot. No keys named; every word fitted.
+	 */
+	struct FCePhone
+	{
+		bool bUpright = false;
+		FBox2D Preview, Panel, Inner, Save, Back, Paint;
+		FBox2D Tabs[3];
+		/** 別に保存, 名前, けす. */
+		FBox2D Small[3];
+		float PartH = 64.0f, PartGap = 10.0f, ModeH = 54.0f;
+	};
+
+	bool IsCePhone()
+	{
+		return UChaosImpactMenuWidget::IsPhoneBuild();
+	}
+
+	FCePhone MakeCePhone(const bool bUpright)
+	{
+		FCePhone L;
+		L.bUpright = bUpright;
+		if (!bUpright)
+		{
+			for (int32 Tab = 0; Tab < 3; ++Tab)
+			{
+				L.Tabs[Tab] = FBox2D(FVector2D(40.0f, 108.0f + Tab * 104.0f), FVector2D(340.0f, 200.0f + Tab * 104.0f));
+			}
+			L.Paint = FBox2D(FVector2D(40.0f, 440.0f), FVector2D(340.0f, 540.0f));
+			L.Save = FBox2D(FVector2D(40.0f, 636.0f), FVector2D(340.0f, 736.0f));
+			L.Back = FBox2D(FVector2D(40.0f, 756.0f), FVector2D(340.0f, 856.0f));
+			L.Preview = FBox2D(FVector2D(362.0f, 92.0f), FVector2D(758.0f, 620.0f));
+			for (int32 Button = 0; Button < 3; ++Button)
+			{
+				const float X = 362.0f + Button * 136.0f;
+				L.Small[Button] = FBox2D(FVector2D(X, 676.0f), FVector2D(X + 124.0f, 776.0f));
+			}
+			L.Panel = FBox2D(FVector2D(780.0f, 90.0f), FVector2D(1570.0f, 860.0f));
+		}
+		else
+		{
+			L.Preview = FBox2D(FVector2D(40.0f, 120.0f), FVector2D(430.0f, 640.0f));
+			L.Paint = FBox2D(FVector2D(450.0f, 300.0f), FVector2D(860.0f, 396.0f));
+			for (int32 Button = 0; Button < 3; ++Button)
+			{
+				const float Y = 412.0f + Button * 86.0f;
+				L.Small[Button] = FBox2D(FVector2D(450.0f, Y), FVector2D(860.0f, Y + 76.0f));
+			}
+			const float ChipW = (840.0f - 24.0f) / 3.0f;
+			for (int32 Tab = 0; Tab < 3; ++Tab)
+			{
+				const float X = 30.0f + Tab * (ChipW + 12.0f);
+				L.Tabs[Tab] = FBox2D(FVector2D(X, 680.0f), FVector2D(X + ChipW, 776.0f));
+			}
+			L.Panel = FBox2D(FVector2D(30.0f, 796.0f), FVector2D(870.0f, 1430.0f));
+			L.Save = FBox2D(FVector2D(30.0f, 1450.0f), FVector2D(440.0f, 1556.0f));
+			L.Back = FBox2D(FVector2D(460.0f, 1450.0f), FVector2D(870.0f, 1556.0f));
+		}
+		L.Inner = FBox2D(L.Panel.Min + FVector2D(20.0f, 20.0f), L.Panel.Max - FVector2D(20.0f, 20.0f));
+		return L;
+	}
+
+	const FCePhone& CePhone()
+	{
+		static const FCePhone Sideways = MakeCePhone(false);
+		static const FCePhone Upright = MakeCePhone(true);
+		return UChaosImpactMenuWidget::IsUprightCanvas() ? Upright : Sideways;
+	}
+
+	/** The panel's 色 page: the parts (three across, two lines), then パレット / こまかく with the recent colours, then the picker. */
+	float CeModeTop()
+	{
+		const FCePhone& L = CePhone();
+		return static_cast<float>(L.Inner.Min.Y) + 2.0f * (L.PartH + L.PartGap);
+	}
+	float CePickerTop()
+	{
+		return CeModeTop() + CePhone().ModeH + 16.0f;
+	}
+	/** The fine picker's ring on a phone (a thumb's size). */
+	constexpr float PhoneRingOuter = 120.0f;
+	constexpr float PhoneRingWidth = 26.0f;
+	constexpr float PhoneSquareHalf = 64.0f;
+	/** The recent colours a phone's row has room for. */
+	int32 CeRecentSlots()
+	{
+		const FCePhone& L = CePhone();
+		const float Room = static_cast<float>(L.Inner.GetSize().X) - 330.0f - 140.0f;
+		return FMath::Clamp(FMath::FloorToInt((Room + 6.0f) / 50.0f), 1, MaxRecent);
+	}
 
 	bool CeIsAny(const FKey& Key, std::initializer_list<FKey> Keys)
 	{
@@ -188,6 +284,8 @@ void UChaosImpactColourEdit::Open(AChaosImpactPlayerController* InController)
 	}
 	bOpen = true;
 	OpenedAt = FPlatformTime::Seconds();
+	PhonePage = 0;
+	PhonePageAt = OpenedAt;
 	bOfferApply = InController->IsColourEditApplyOffered();
 	bApplyAsk = false;
 	FActorSpawnParameters Parameters;
@@ -262,7 +360,9 @@ int32 UChaosImpactColourEdit::PresetChips() const
 int32 UChaosImpactColourEdit::RecentCount() const
 {
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
-	return Colours ? Colours->GetRecent().Num() : 0;
+	const int32 Count = Colours ? Colours->GetRecent().Num() : 0;
+	// (スマホ版: as many as its row has room for.)
+	return IsCePhone() ? FMath::Min(Count, CeRecentSlots()) : Count;
 }
 
 FColor UChaosImpactColourEdit::RecentColour(const int32 Index) const
@@ -425,20 +525,29 @@ void UChaosImpactColourEdit::MoveSquare(const int32 Columns, const int32 Rows)
 
 FVector2D UChaosImpactColourEdit::WheelCentre() const
 {
+	if (IsCePhone())
+	{
+		return FVector2D(CePhone().Inner.Min.X + PhoneRingOuter + 6.0f, CePickerTop() + PhoneRingOuter + 6.0f);
+	}
 	return FVector2D(RightLeft + RingOuter + 4.0f, PickerTop + RingOuter + 4.0f);
 }
 
 FBox2D UChaosImpactColourEdit::SquareRect() const
 {
 	const FVector2D Centre = WheelCentre();
-	return FBox2D(Centre - FVector2D(SquareHalf), Centre + FVector2D(SquareHalf));
+	const float Half = IsCePhone() ? PhoneSquareHalf : SquareHalf;
+	return FBox2D(Centre - FVector2D(Half), Centre + FVector2D(Half));
 }
 
 bool UChaosImpactColourEdit::PickRing(const FVector2D& Point, const bool bAnywhere)
 {
 	const FVector2D Offset = Point - WheelCentre();
 	const float Distance = static_cast<float>(Offset.Size());
-	if (!bAnywhere && (Distance > RingOuter || Distance < RingOuter - RingWidth - 4.0f))
+	const float Outer = IsCePhone() ? PhoneRingOuter : RingOuter;
+	const float Width = IsCePhone() ? PhoneRingWidth : RingWidth;
+	// (By touch a little wider: a fingertip is not a pointer.)
+	const float Slack = IsCePhone() ? 10.0f : 0.0f;
+	if (!bAnywhere && (Distance > Outer + Slack || Distance < Outer - Width - 4.0f - Slack))
 	{
 		return false;
 	}
@@ -464,7 +573,7 @@ bool UChaosImpactColourEdit::PickSquare(const FVector2D& Point, const bool bAnyw
 void UChaosImpactColourEdit::PickSlider(const int32 Slider, const FVector2D& Point)
 {
 	const FBox2D R = SliderRect(Slider);
-	const float Track0 = R.Min.X + 30.0f, Track1 = R.Max.X - 52.0f;
+	const float Track0 = R.Min.X + (IsCePhone() ? 40.0f : 30.0f), Track1 = R.Max.X - (IsCePhone() ? 74.0f : 52.0f);
 	const float Amount = FMath::Clamp(static_cast<float>((Point.X - Track0) / (Track1 - Track0)), 0.0f, 1.0f);
 	if (Slider == 0) { EditHue = Amount * 359.9f; ApplyHSB(); return; }
 	if (Slider == 1) { EditSaturation = Amount; ApplyHSB(); return; }
@@ -642,6 +751,10 @@ void UChaosImpactColourEdit::OpenPaint()
 
 FBox2D UChaosImpactColourEdit::PaintButtonRect() const
 {
+	if (IsCePhone())
+	{
+		return CePhone().Paint;
+	}
 	return FBox2D(FVector2D(PreviewLeft, ButtonsTop + 64.0f), FVector2D(PreviewLeft + PreviewWidth, ButtonsTop + 122.0f));
 }
 
@@ -1132,53 +1245,115 @@ bool UChaosImpactColourEdit::HandleAnalog(const FAnalogInputEvent& Event)
 
 FBox2D UChaosImpactColourEdit::TileRect(const int32 Index) const
 {
+	if (IsCePhone())
+	{
+		// Five across, upright cards.
+		const FBox2D Inner = CePhone().Inner;
+		const float W = (static_cast<float>(Inner.GetSize().X) - 4.0f * 14.0f) / 5.0f;
+		const float H = W * 1.18f;
+		const FVector2D At(Inner.Min.X + (Index % 5) * (W + 14.0f), Inner.Min.Y + (Index / 5) * (H + 14.0f));
+		return FBox2D(At, At + FVector2D(W, H));
+	}
 	const FVector2D At(CeGridLeft + (Index % GridColumns) * (Tile + TileGap), CeGridTop + (Index / GridColumns) * (Tile + TileGap));
 	return FBox2D(At, At + FVector2D(Tile));
 }
 
 FBox2D UChaosImpactColourEdit::ChipRect(const int32 Chip) const
 {
+	if (IsCePhone())
+	{
+		// Five across, big enough for a thumb (the 新規 chip after the saved ones).
+		const FBox2D Inner = CePhone().Inner;
+		const float W = (static_cast<float>(Inner.GetSize().X) - 4.0f * 14.0f) / 5.0f;
+		const float H = W * 0.95f;
+		const FVector2D At(Inner.Min.X + (Chip % 5) * (W + 14.0f), Inner.Min.Y + 56.0f + (Chip / 5) * (H + 14.0f));
+		return FBox2D(At, At + FVector2D(W, H));
+	}
 	const FVector2D At(RightLeft + Chip * (ChipSize + ChipGap), ChipTop);
 	return FBox2D(At, At + FVector2D(ChipSize, ChipSize + 12.0f));
 }
 
 FBox2D UChaosImpactColourEdit::PartRect(const int32 Part) const
 {
+	if (IsCePhone())
+	{
+		const FCePhone& L = CePhone();
+		const float W = (static_cast<float>(L.Inner.GetSize().X) - 2.0f * 12.0f) / 3.0f;
+		const FVector2D At(L.Inner.Min.X + (Part % 3) * (W + 12.0f), L.Inner.Min.Y + (Part / 3) * (L.PartH + L.PartGap));
+		return FBox2D(At, At + FVector2D(W, L.PartH));
+	}
 	const FVector2D At(RightLeft, PartsTop + Part * (PartHeight + PartGap));
 	return FBox2D(At, At + FVector2D(RightWidth, PartHeight));
 }
 
 FBox2D UChaosImpactColourEdit::TabRect(const bool bFineTab) const
 {
+	if (IsCePhone())
+	{
+		const FVector2D At(CePhone().Inner.Min.X + (bFineTab ? 160.0f : 0.0f), CeModeTop());
+		return FBox2D(At, At + FVector2D(150.0f, CePhone().ModeH));
+	}
 	const FVector2D At(RightLeft + RightWidth - (bFineTab ? 130.0f : 264.0f), PickerTop - 40.0f);
 	return FBox2D(At, At + FVector2D(126.0f, 32.0f));
 }
 
 FBox2D UChaosImpactColourEdit::SwatchRect(const int32 Index) const
 {
+	if (IsCePhone())
+	{
+		const FBox2D Inner = CePhone().Inner;
+		constexpr float Gap = 5.0f;
+		const float Size = FMath::Min(54.0f, (static_cast<float>(Inner.GetSize().X) - (PaletteColumns - 1) * Gap) / PaletteColumns);
+		const FVector2D At(Inner.Min.X + (Index % PaletteColumns) * (Size + Gap), CePickerTop() + (Index / PaletteColumns) * (Size + Gap));
+		return FBox2D(At, At + FVector2D(Size));
+	}
 	const FVector2D At(RightLeft + (Index % PaletteColumns) * (Swatch + SwatchGap), PickerTop + (Index / PaletteColumns) * (Swatch + SwatchGap));
 	return FBox2D(At, At + FVector2D(Swatch));
 }
 
 FBox2D UChaosImpactColourEdit::SliderRect(const int32 Slider) const
 {
+	if (IsCePhone())
+	{
+		// Beside the ring, each tall enough for a thumb.
+		const FBox2D Inner = CePhone().Inner;
+		const float Left = Inner.Min.X + PhoneRingOuter * 2.0f + 40.0f;
+		const FVector2D At(Left, CePickerTop() + Slider * 50.0f);
+		return FBox2D(At, FVector2D(Inner.Max.X, At.Y + 42.0f));
+	}
 	const FVector2D At(SlidersLeft, PickerTop + Slider * (SliderHeight + SliderGap));
 	return FBox2D(At, At + FVector2D(SliderWidth, SliderHeight));
 }
 
 FBox2D UChaosImpactColourEdit::RecentRect(const int32 Index) const
 {
+	if (IsCePhone())
+	{
+		const FVector2D At(CePhone().Inner.Min.X + 330.0f + Index * 50.0f, CeModeTop() + 5.0f);
+		return FBox2D(At, At + FVector2D(44.0f));
+	}
 	const FVector2D At(RightLeft + 56.0f + Index * (RecentSize + RecentGap), RecentTop + 1.0f);
 	return FBox2D(At, At + FVector2D(RecentSize));
 }
 
 FBox2D UChaosImpactColourEdit::OriginalRect() const
 {
+	if (IsCePhone())
+	{
+		const float Right = static_cast<float>(CePhone().Inner.Max.X);
+		return FBox2D(FVector2D(Right - 126.0f, CeModeTop()), FVector2D(Right, CeModeTop() + CePhone().ModeH));
+	}
 	return FBox2D(FVector2D(RightLeft + RightWidth - 82.0f, RecentTop), FVector2D(RightLeft + RightWidth, RecentTop + 30.0f));
 }
 
 FBox2D UChaosImpactColourEdit::ButtonRect(const int32 Button) const
 {
+	if (IsCePhone())
+	{
+		// 保存 and もどる the big buttons; 別に保存, 名前, けす by the model.
+		const FCePhone& L = CePhone();
+		return Button == 0 ? L.Save : Button == Buttons - 1 ? L.Back : L.Small[FMath::Clamp(Button - 1, 0, 2)];
+	}
 	const float Width = (PreviewWidth - (Buttons - 1) * 8.0f) / Buttons;
 	const FVector2D At(PreviewLeft + Button * (Width + 8.0f), ButtonsTop);
 	return FBox2D(At, At + FVector2D(Width, 54.0f));
@@ -1229,6 +1404,11 @@ void UChaosImpactColourEdit::HandleMouseMove(const FVector2D& Point, const bool 
 	else if (Dragging == 0) { PickRing(Point, true); return; }
 	else if (Dragging == 1) { PickSquare(Point, true); return; }
 	else if (Dragging >= 2) { PickSlider(Dragging - 2, Point); return; }
+	if (IsCePhone())
+	{
+		// (By touch nothing hovers: what is pressed is what is chosen.)
+		return;
+	}
 	for (int32 Index = 0; Index < ChaosImpactRoster::Num(); ++Index)
 	{
 		if (TileRect(Index).IsInside(Point)) { CharacterCursor = Index; Area = EArea::Characters; return; }
@@ -1308,6 +1488,10 @@ bool UChaosImpactColourEdit::HandleClick(const FVector2D& Point)
 		return true;
 	}
 	LastMouse = Point;
+	if (IsCePhone())
+	{
+		return HandlePhoneClick(Point);
+	}
 	for (int32 Index = 0; Index < ChaosImpactRoster::Num(); ++Index)
 	{
 		if (TileRect(Index).IsInside(Point)) { CharacterCursor = Index; Area = EArea::Characters; Confirm(); return true; }
@@ -1322,6 +1506,20 @@ bool UChaosImpactColourEdit::HandleClick(const FVector2D& Point)
 	{
 		if (ChipRect(Chip).IsInside(Point)) { ChipCursor = Chip; Area = EArea::Presets; Confirm(); return true; }
 	}
+	if (ClickColours(Point))
+	{
+		return true;
+	}
+	for (int32 Button = 0; Button < Buttons; ++Button)
+	{
+		if (ButtonRect(Button).IsInside(Point)) { ButtonCursor = Button; Area = EArea::Buttons; Confirm(); return true; }
+	}
+	if (PaintButtonRect().IsInside(Point)) { ButtonCursor = Buttons; Area = EArea::Buttons; Confirm(); return true; }
+	return true;
+}
+
+bool UChaosImpactColourEdit::ClickColours(const FVector2D& Point)
+{
 	for (int32 Part = 0; Part < PartCount(); ++Part)
 	{
 		if (PartRect(Part).IsInside(Point))
@@ -1394,11 +1592,83 @@ bool UChaosImpactColourEdit::HandleClick(const FVector2D& Point)
 		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiValue);
 		return true;
 	}
+	return false;
+}
+
+void UChaosImpactColourEdit::SetPhonePage(const int32 Page)
+{
+	const int32 Clamped = FMath::Clamp(Page, 0, 2);
+	if (Clamped != PhonePage)
+	{
+		ChaosImpactSfx::Play2D(Controller.Get(), EChaosImpactSfx::UiTab);
+		PhonePageAt = FPlatformTime::Seconds();
+	}
+	PhonePage = Clamped;
+	// (What the keys and a controller work follows the page.)
+	if (PhonePage == 0) { Area = EArea::Characters; }
+	else if (PhonePage == 2) { Area = EArea::Presets; }
+	else if (Area == EArea::Characters || Area == EArea::Presets) { Area = EArea::Parts; }
+}
+
+bool UChaosImpactColourEdit::HandlePhoneClick(const FVector2D& Point)
+{
+	const FCePhone& L = CePhone();
+	for (int32 Tab = 0; Tab < 3; ++Tab)
+	{
+		if (L.Tabs[Tab].ExpandBy(4.0).IsInside(Point))
+		{
+			SetPhonePage(Tab);
+			return true;
+		}
+	}
+	if (L.Preview.IsInside(Point))
+	{
+		// Dragged across: the model turns (only the model: nothing under it is pressed).
+		Dragging = DragModel;
+		return true;
+	}
 	for (int32 Button = 0; Button < Buttons; ++Button)
 	{
 		if (ButtonRect(Button).IsInside(Point)) { ButtonCursor = Button; Area = EArea::Buttons; Confirm(); return true; }
 	}
 	if (PaintButtonRect().IsInside(Point)) { ButtonCursor = Buttons; Area = EArea::Buttons; Confirm(); return true; }
+	if (!L.Panel.IsInside(Point))
+	{
+		return true;
+	}
+	if (PhonePage == 0)
+	{
+		for (int32 Index = 0; Index < ChaosImpactRoster::Num(); ++Index)
+		{
+			if (TileRect(Index).IsInside(Point))
+			{
+				CharacterCursor = Index;
+				Area = EArea::Characters;
+				Confirm();
+				// Picked: on to colouring it.
+				SetPhonePage(1);
+				return true;
+			}
+		}
+	}
+	else if (PhonePage == 2)
+	{
+		for (int32 Chip = 0; Chip < PresetChips(); ++Chip)
+		{
+			if (ChipRect(Chip).IsInside(Point))
+			{
+				ChipCursor = Chip;
+				Area = EArea::Presets;
+				Confirm();
+				Area = EArea::Presets;
+				return true;
+			}
+		}
+	}
+	else
+	{
+		ClickColours(Point);
+	}
 	return true;
 }
 
@@ -1480,6 +1750,10 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	if (IsPainting())
 	{
 		return Studio->Paint(Design, Elements, Layer);
+	}
+	if (IsCePhone())
+	{
+		return PaintPhone(Design, Elements, Layer);
 	}
 	const double Now = FPlatformTime::Seconds();
 	const float Pulse = 0.65f + 0.35f * FMath::Sin(static_cast<float>(Now - OpenedAt) * 6.0f);
@@ -1817,6 +2091,415 @@ int32 UChaosImpactColourEdit::Paint(const FGeometry& Design, FSlateWindowElement
 	return Layer + 4;
 }
 
+int32 UChaosImpactColourEdit::PaintPhone(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
+{
+	const FCePhone& L = CePhone();
+	const double Now = FPlatformTime::Seconds();
+	const FLinearColor Card(0.03f, 0.07f, 0.18f, 1.0f);
+	const FLinearColor CardOn(0.06f, 0.2f, 0.5f, 1.0f);
+	const FPainter Back{Design, Elements, Layer};
+	const FPainter P{Design, Elements, Layer + 1};
+	const FPainter Over{Design, Elements, Layer + 2};
+	const FPainter Top{Design, Elements, Layer + 3};
+	const FLinearColor TabColors[] = {Ice, Gold, Violet};
+	const FLinearColor Accent = TabColors[PhonePage];
+	// (A controller on the phone: its cursor shows; by touch, none.)
+	const bool bPad = ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(Controller.Get()));
+	const float Pulse = 0.65f + 0.35f * FMath::Sin(static_cast<float>(Now - OpenedAt) * 6.0f);
+	Back.Box(-1400.0f, -400.0f, 4400.0f, 2600.0f, FLinearColor(0.008f, 0.012f, 0.03f, 1.0f));
+
+	// ---- The title.
+	if (L.bUpright)
+	{
+		HudText3D(P, TEXT("カラーエディット"), 40.0f, 34.0f, 54.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"), 3.0f);
+	}
+	else
+	{
+		HudText3D(P, TEXT("カラーエディット"), 40.0f, 16.0f, 50.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"), 3.0f);
+	}
+
+	// ---- The tabs.
+	const TCHAR* const TabNames[] = {TEXT("キャラ"), TEXT("色をぬる"), TEXT("プリセット")};
+	const TCHAR* const TabNotes[] = {TEXT("色を変えるキャラをえらぶ"), TEXT("部位ごとに色をえらぶ"), TEXT("保存した色をよびだす")};
+	for (int32 Tab = 0; Tab < 3; ++Tab)
+	{
+		const FBox2D R = L.Tabs[Tab];
+		const float X = static_cast<float>(R.Min.X), Y = static_cast<float>(R.Min.Y);
+		const float W = static_cast<float>(R.GetSize().X), H = static_cast<float>(R.GetSize().Y);
+		const bool bCurrent = Tab == PhonePage;
+		if (bCurrent)
+		{
+			FLinearColor Deep = TabColors[Tab] * 0.35f;
+			Deep.A = 0.97f;
+			HudPoly(Back, {FVector2D(X, Y), FVector2D(X + W, Y), FVector2D(X + W, Y + H), FVector2D(X, Y + H)},
+				MakeFill(FMath::Lerp(TabColors[Tab], Paper, 0.1f) * FLinearColor(0.55f, 0.55f, 0.55f, 1.0f), Deep));
+			if (L.bUpright) { P.Box(X, Y + H - 6.0f, W, 6.0f, TabColors[Tab]); }
+			else { P.Box(X, Y, 6.0f, H, TabColors[Tab]); }
+			P.Outline(X, Y, W, H, WithAlpha(Paper, 0.25f), 1.0f);
+		}
+		else
+		{
+			RoundBox(Back, R, 10.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.9f));
+			if (L.bUpright) { P.Box(X + 14.0f, Y + H - 5.0f, W - 28.0f, 4.0f, WithAlpha(TabColors[Tab], 0.6f)); }
+			else { P.Box(X, Y + 14.0f, 4.0f, H - 28.0f, WithAlpha(TabColors[Tab], 0.6f)); }
+		}
+		const FLinearColor NameColour = bCurrent ? Paper : WithAlpha(Paper, 0.7f);
+		if (L.bUpright)
+		{
+			const float Size = HudFit(TabNames[Tab], 32.0f, W - 24.0f);
+			P.Text(TabNames[Tab], X + W * 0.5f, Y + H * 0.5f - Size * 0.72f - 2.0f, Size, NameColour, ETextAlign::Center, TEXT("Black"));
+		}
+		else
+		{
+			P.Text(TabNames[Tab], X + 26.0f, Y + 8.0f, HudFit(TabNames[Tab], 32.0f, W - 40.0f), NameColour, ETextAlign::Left, TEXT("Black"));
+			P.Text(TabNotes[Tab], X + 27.0f, Y + 56.0f, HudFit(TabNotes[Tab], 18.0f, W - 40.0f, TEXT("Bold")), bCurrent ? WithAlpha(Paper, 0.85f) : Muted,
+				ETextAlign::Left, TEXT("Bold"));
+		}
+	}
+
+	// ---- The model (dragged across: it turns), its name and the preset's.
+	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
+	const TArray<FChaosImpactColourPreset> NoPresets;
+	const TArray<FChaosImpactColourPreset>& Presets = Colours ? Colours->GetPresets(Character) : NoPresets;
+	const FString PresetName = (Presets.IsValidIndex(Preset) ? Presets[Preset].Name : FString(TEXT("新しいカラー"))) + (bDirty ? TEXT("（未保存）") : TEXT(""));
+	const FString CharacterName = ChaosImpactRoster::Get(Character).Name;
+	{
+		const FBox2D R = L.Preview;
+		RoundBox(Back, Grow(R, 8.0f), 18.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
+		PaintPicture(P, PreviewBrush, R);
+		if (L.bUpright)
+		{
+			// Beside it (upright): the name, the preset's name, how to turn it.
+			const float X = static_cast<float>(L.Paint.Min.X);
+			const float W = static_cast<float>(L.Paint.GetSize().X);
+			P.Text(CharacterName, X, 128.0f, HudFit(CharacterName, 42.0f, W), Paper, ETextAlign::Left, TEXT("Black"), 2.0f, Ink);
+			P.Text(PresetName, X, 190.0f, HudFit(PresetName, 26.0f, W, TEXT("Bold")), bDirty ? Gold : WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Bold"));
+			P.Text(TEXT("モデルをドラッグで回転"), X, 240.0f, HudFit(TEXT("モデルをドラッグで回転"), 20.0f, W, TEXT("Bold")), Muted, ETextAlign::Left, TEXT("Bold"));
+		}
+		else
+		{
+			const float CX = static_cast<float>(R.GetCenter().X);
+			const float W = static_cast<float>(R.GetSize().X) - 20.0f;
+			P.Text(CharacterName, CX, R.Min.Y + 8.0f, HudFit(CharacterName, 34.0f, W), Paper, ETextAlign::Center, TEXT("Black"), 2.0f, Ink);
+			P.Text(PresetName, CX, R.Max.Y - 44.0f, HudFit(PresetName, 24.0f, W, TEXT("Bold")), bDirty ? Gold : Paper, ETextAlign::Center, TEXT("Bold"), 2.0f, Ink);
+			P.Text(TEXT("ドラッグで回転"), CX, R.Max.Y + 16.0f, 20.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+		}
+	}
+
+	// ---- The buttons: 保存, もどる, 別に保存 / 名前 / けす, ペイント.
+	for (int32 Button = 0; Button < Buttons; ++Button)
+	{
+		const FBox2D R = ButtonRect(Button);
+		const bool bCursor = bPad && Area == EArea::Buttons && Button == ButtonCursor;
+		const bool bSave = Button == 0;
+		const bool bBack = Button == Buttons - 1;
+		const bool bDisabled = Button == 3 && Preset == INDEX_NONE;
+		const FLinearColor Tint = bSave ? Gold : Button == 1 ? Ice : Button == 2 ? Paper : Button == 3 ? Fire : Muted;
+		if (bSave && bDirty)
+		{
+			FLinearColor Deep = Gold * 0.3f;
+			Deep.A = 0.95f;
+			HudPoly(Back, {R.Min, FVector2D(R.Max.X, R.Min.Y), R.Max, FVector2D(R.Min.X, R.Max.Y)}, MakeFill(FMath::Lerp(Gold, Ink, 0.55f), Deep));
+			P.Outline(R.Min.X, R.Min.Y, R.GetSize().X, R.GetSize().Y, WithAlpha(Gold, Pulse), 1.5f);
+		}
+		else
+		{
+			RoundBox(Back, R, 12.0f, FLinearColor(0.02f, 0.03f, 0.06f, 0.95f));
+			P.Outline(R.Min.X, R.Min.Y, R.GetSize().X, R.GetSize().Y, WithAlpha(Paper, 0.14f), 1.0f);
+		}
+		P.Box(R.Min.X, R.Min.Y + 12.0f, 4.0f, R.GetSize().Y - 24.0f, WithAlpha(Tint, bDisabled ? 0.3f : 0.9f));
+		const FString Label = bSave ? FString(bDirty ? TEXT("保存する") : TEXT("保存")) : FString(ButtonNames[Button]);
+		const float Size = HudFit(Label, bSave || bBack ? 32.0f : 26.0f, R.GetSize().X - 24.0f);
+		P.Text(Label, R.GetCenter().X, R.GetCenter().Y - Size * 0.74f, Size, bDisabled ? WithAlpha(Muted, 0.6f) : Paper, ETextAlign::Center, TEXT("Black"));
+		if (bCursor)
+		{
+			DrawFrame(Top, Grow(R, 3.0f), WithAlpha(Gold, Pulse), 3.0f);
+		}
+	}
+	{
+		const FBox2D R = PaintButtonRect();
+		const bool bCursor = bPad && Area == EArea::Buttons && ButtonCursor == Buttons;
+		const FLinearColor Pink(1.0f, 0.42f, 0.72f, 1.0f);
+		FLinearColor Deep = Pink * 0.3f;
+		Deep.A = 0.97f;
+		HudPoly(Back, {R.Min, FVector2D(R.Max.X, R.Min.Y), R.Max, FVector2D(R.Min.X, R.Max.Y)}, MakeFill(FMath::Lerp(Pink, Ink, 0.5f), Deep));
+		P.Outline(R.Min.X, R.Min.Y, R.GetSize().X, R.GetSize().Y, WithAlpha(Pink, 0.7f), 1.5f);
+		const FVector2D Pen(R.Min.X + 44.0f, R.GetCenter().Y);
+		P.Line(Pen + FVector2D(-14.0, 14.0), Pen + FVector2D(12.0, -12.0), Paper, 7.0f);
+		P.Disc(Pen + FVector2D(-14.0, 14.0), 5.0f, Pink);
+		const FString Label = HasPaint() ? TEXT("ペイント（絵あり）") : TEXT("ペイント");
+		const float Size = HudFit(Label, 32.0f, R.GetSize().X - 96.0f);
+		P.Text(Label, R.Min.X + 80.0f, R.GetCenter().Y - Size * 0.74f, Size, Paper, ETextAlign::Left, TEXT("Black"));
+		if (bCursor)
+		{
+			DrawFrame(Top, Grow(R, 3.0f), WithAlpha(Gold, Pulse), 3.0f);
+		}
+	}
+
+	// ---- The panel, and its page.
+	{
+		const FBox2D R = L.Panel;
+		const float X = static_cast<float>(R.Min.X), Y = static_cast<float>(R.Min.Y);
+		const float W = static_cast<float>(R.GetSize().X), H = static_cast<float>(R.GetSize().Y);
+		Back.Box(X + 12.0f, Y + 14.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		HudPoly(Back, {FVector2D(X, Y), FVector2D(X + W, Y), FVector2D(X + W, Y + H), FVector2D(X, Y + H)},
+			MakeFill(FLinearColor(0.035f, 0.05f, 0.1f, 0.97f), FLinearColor(0.006f, 0.008f, 0.02f, 0.98f)));
+		P.Box(X, Y, W, 6.0f, Accent);
+	}
+	const FBox2D Inner = L.Inner;
+	// (The page over the panel: its own layers, so nothing of it sinks under the panel's fill.)
+	const FPainter PB{Design, Elements, Layer + 1}, PP{Design, Elements, Layer + 2}, PO{Design, Elements, Layer + 3}, PT{Design, Elements, Layer + 4};
+	if (PhonePage == 0)
+	{
+		for (int32 Index = 0; Index < ChaosImpactRoster::Num(); ++Index)
+		{
+			const FBox2D R = TileRect(Index);
+			const bool bChosen = Index == Character;
+			RoundBox(PB, R, 16.0f, bChosen ? CardOn : Card);
+			const float PlateH = 36.0f;
+			if (PortraitBrushes.IsValidIndex(Index) && PortraitBrushes[Index].GetResourceObject())
+			{
+				FSlateBrush Face = PortraitBrushes[Index];
+				const EChaosImpactModelKind Kind = ChaosImpactRoster::Get(Index).Kind;
+				const bool bWhole = Kind == EChaosImpactModelKind::Authored || Kind == EChaosImpactModelKind::Handstand;
+				FBox2f Region = bWhole ? FBox2f(FVector2f(0.03f, 0.2f), FVector2f(0.97f, 0.8f))
+					: Index == ChaosImpactRoster::CapIndex ? FBox2f(FVector2f(0.14f, 0.06f), FVector2f(0.86f, 0.62f))
+					: FBox2f(FVector2f(0.2f, 0.04f), FVector2f(0.8f, 0.5f));
+				const FBox2D FaceBox(R.Min + FVector2D(6.0f, 4.0f), R.Max - FVector2D(6.0f, PlateH + 6.0f));
+				// (A tall card: the picture taller too, keeping its shape.)
+				const float Tall = (Region.Max.X - Region.Min.X) * (static_cast<float>(AChaosImpactCharacterPreview::PictureWidth)
+					/ AChaosImpactCharacterPreview::PictureHeight) * static_cast<float>(FaceBox.GetSize().Y / FMath::Max(FaceBox.GetSize().X, 1.0));
+				Region.Max.Y = FMath::Min(1.0f, Region.Min.Y + Tall);
+				Region.Min.Y = FMath::Max(0.0f, Region.Max.Y - Tall);
+				Face.SetUVRegion(Region);
+				PaintPicture(PP, Face, FaceBox);
+			}
+			const FBox2D Plate(FVector2D(R.Min.X + 4.0f, R.Max.Y - PlateH - 4.0f), FVector2D(R.Max.X - 4.0f, R.Max.Y - 4.0f));
+			RoundBox(PO, Plate, 8.0f, FLinearColor(0.005f, 0.01f, 0.025f, 0.92f));
+			const FString Name = ChaosImpactRoster::Get(Index).Name;
+			const float Size = HudFit(Name, 20.0f, static_cast<float>(Plate.GetSize().X) - 10.0f);
+			PT.Text(Name, Plate.GetCenter().X, Plate.GetCenter().Y - Size * 0.74f, Size, Paper, ETextAlign::Center, TEXT("Black"));
+			if (bChosen)
+			{
+				DrawFrame(PT, Grow(R, 2.0f), WithAlpha(Ice, 0.95f), 3.0f);
+			}
+			if (bPad && Area == EArea::Characters && Index == CharacterCursor)
+			{
+				DrawFrame(PT, Grow(R, 5.0f), WithAlpha(Gold, Pulse), 4.0f);
+			}
+		}
+	}
+	else if (PhonePage == 2)
+	{
+		const FString Head = TEXT("タップでよびだす（＋：新しい色）");
+		PP.Text(Head, Inner.Min.X, Inner.Min.Y + 4.0f, HudFit(Head, 24.0f, static_cast<float>(Inner.GetSize().X), TEXT("Bold")), Muted, ETextAlign::Left, TEXT("Bold"));
+		for (int32 Chip = 0; Chip < PresetChips(); ++Chip)
+		{
+			const FBox2D R = ChipRect(Chip);
+			const bool bNewChip = !Presets.IsValidIndex(Chip);
+			const bool bCurrent = bNewChip ? Preset == INDEX_NONE : Chip == Preset;
+			RoundBox(PB, R, 14.0f, bCurrent ? CardOn : Card);
+			if (bNewChip)
+			{
+				PP.Text(TEXT("＋"), R.GetCenter().X, R.Min.Y + R.GetSize().Y * 0.2f, 48.0f, Paper, ETextAlign::Center, TEXT("Black"));
+				PP.Text(TEXT("新規"), R.GetCenter().X, R.Max.Y - 40.0f, 22.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+			}
+			else
+			{
+				const int32 Stripes = FMath::Max(1, FMath::Min(GetPartCount(Character), 4));
+				const float StripeW = (static_cast<float>(R.GetSize().X) - 20.0f) / Stripes;
+				for (int32 Stripe = 0; Stripe < Stripes; ++Stripe)
+				{
+					FColor Colour;
+					const bool bOn = GetPart(Presets[Chip].Parts, Stripe, Colour);
+					PP.Box(R.Min.X + 10.0f + Stripe * StripeW, R.Min.Y + 10.0f, StripeW, R.GetSize().Y * 0.5f,
+						bOn ? Shown(Colour) : FLinearColor(0.2f, 0.22f, 0.28f, 1.0f));
+				}
+				const FString Name = Presets[Chip].Name.IsEmpty() ? FString::FromInt(Chip + 1) : Presets[Chip].Name;
+				const float Size = HudFit(Name, 22.0f, static_cast<float>(R.GetSize().X) - 16.0f, TEXT("Bold"));
+				PP.Text(Name, R.GetCenter().X, R.Max.Y - 14.0f - Size * 1.3f, Size, Paper, ETextAlign::Center, TEXT("Bold"));
+			}
+			if (bCurrent)
+			{
+				DrawFrame(PT, Grow(R, 2.0f), WithAlpha(Violet, 0.95f), 3.0f);
+			}
+			if (bPad && Area == EArea::Presets && Chip == ChipCursor)
+			{
+				DrawFrame(PT, Grow(R, 5.0f), WithAlpha(Gold, Pulse), 4.0f);
+			}
+		}
+	}
+	else
+	{
+		// ---- 色をぬる: the parts, パレット / こまかく with the recent colours and 元の色, then the picker.
+		const TArray<FString>& Names = GetPartNames(Character);
+		for (int32 Part = 0; Part < PartCount(); ++Part)
+		{
+			const FBox2D R = PartRect(Part);
+			const bool bChosen = Part == PartCursor;
+			RoundBox(PB, R, 12.0f, bChosen ? CardOn : Card);
+			bool bOn = false;
+			const FColor Colour = PartColour(Part, &bOn);
+			// The colour along its foot; its name over it.
+			const FBox2D Strip(FVector2D(R.Min.X + 8.0f, R.Max.Y - 18.0f), FVector2D(R.Max.X - 8.0f, R.Max.Y - 8.0f));
+			if (bOn) { RoundBox(PP, Strip, 4.0f, Shown(Colour)); }
+			else { RoundBox(PP, Strip, 4.0f, FLinearColor(0.12f, 0.14f, 0.2f, 1.0f)); }
+			const FString Name = Names.IsValidIndex(Part) ? Names[Part] : FString();
+			const FString Shown2 = bOn ? Name : Name + TEXT("（元の色）");
+			const float Size = HudFit(Shown2, 24.0f, static_cast<float>(R.GetSize().X) - 20.0f, TEXT("Bold"));
+			PP.Text(Shown2, R.Min.X + 12.0f, R.Min.Y + 22.0f - Size * 0.74f, Size, Paper, ETextAlign::Left, TEXT("Bold"));
+			if (bChosen)
+			{
+				DrawFrame(PT, Grow(R, 2.0f), WithAlpha(bPad && Area == EArea::Parts ? Gold : Accent, bPad && Area == EArea::Parts ? Pulse : 0.95f), 3.0f);
+			}
+		}
+		bool bPartOn = false;
+		const FColor Current = PartColour(PartCursor, &bPartOn);
+		for (const bool bFineTab : {false, true})
+		{
+			const FBox2D R = TabRect(bFineTab);
+			const bool bChosen = bFine == bFineTab;
+			RoundBox(PB, R, 10.0f, bChosen ? Gold : Card);
+			const TCHAR* Label = bFineTab ? TEXT("こまかく") : TEXT("パレット");
+			const float Size = HudFit(Label, 24.0f, static_cast<float>(R.GetSize().X) - 16.0f);
+			PP.Text(Label, R.GetCenter().X, R.GetCenter().Y - Size * 0.74f, Size, bChosen ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+		}
+		for (int32 Index = 0; Index < CeRecentSlots(); ++Index)
+		{
+			const FBox2D R = RecentRect(Index);
+			if (Index < RecentCount()) { RoundBox(PP, R, 8.0f, Shown(RecentColour(Index))); }
+			else { RoundBox(PB, R, 8.0f, FLinearColor(0.05f, 0.08f, 0.16f, 1.0f)); }
+			if (bPad && Area == EArea::Recent && Index == RecentCursor && Index < RecentCount())
+			{
+				DrawFrame(PT, Grow(R, 3.0f), WithAlpha(Gold, Pulse), 3.0f);
+			}
+		}
+		{
+			const FBox2D Original = OriginalRect();
+			RoundBox(PB, Original, 10.0f, !bPartOn ? CardOn : Card);
+			const float Size = HudFit(TEXT("元の色"), 22.0f, static_cast<float>(Original.GetSize().X) - 12.0f, TEXT("Bold"));
+			PP.Text(TEXT("元の色"), Original.GetCenter().X, Original.GetCenter().Y - Size * 0.74f, Size, Paper, ETextAlign::Center, TEXT("Bold"));
+			if (bPad && Area == EArea::Recent && RecentCursor >= RecentCount())
+			{
+				DrawFrame(PT, Grow(Original, 3.0f), WithAlpha(Gold, Pulse), 3.0f);
+			}
+		}
+		if (!bFine)
+		{
+			for (int32 Index = 0; Index < PaletteColumns * PaletteRows; ++Index)
+			{
+				const FBox2D R = SwatchRect(Index);
+				const FColor Colour = GetPaletteSwatch(Index % PaletteColumns, Index / PaletteColumns);
+				RoundBox(PP, R, 8.0f, Shown(Colour));
+				if (bPartOn && Colour == Current)
+				{
+					DrawFrame(PO, Grow(R, 2.0f), WithAlpha(Paper, 0.95f), 4.0f);
+				}
+				if (bPad && Area == EArea::Palette && Index == SwatchCursor)
+				{
+					DrawFrame(PT, Grow(R, 4.0f), WithAlpha(Gold, Pulse), 3.0f);
+				}
+			}
+		}
+		else
+		{
+			const FVector2D Centre = WheelCentre();
+			TArray<FVector2f> RingPoints;
+			TArray<FLinearColor> RingColours;
+			constexpr int32 RingSteps = 180;
+			const float RingMid = PhoneRingOuter - PhoneRingWidth * 0.5f;
+			for (int32 Step = 0; Step <= RingSteps; ++Step)
+			{
+				const float Angle = 360.0f * Step / RingSteps;
+				const float Radians = FMath::DegreesToRadians(Angle);
+				RingPoints.Add(FVector2f(Centre + FVector2D(FMath::Cos(Radians), -FMath::Sin(Radians)) * RingMid));
+				RingColours.Add(Shown(FromHSV(Angle, 1.0f, 1.0f)));
+			}
+			FSlateDrawElement::MakeLines(PP.Elements, PP.Layer, PP.Geometry.ToPaintGeometry(), MoveTemp(RingPoints), MoveTemp(RingColours),
+				ESlateDrawEffect::None, FLinearColor::White, true, PhoneRingWidth);
+			const float HueRadians = FMath::DegreesToRadians(EditHue);
+			const FVector2D HueKnob = Centre + FVector2D(FMath::Cos(HueRadians), -FMath::Sin(HueRadians)) * RingMid;
+			PT.Ring(HueKnob, PhoneRingWidth * 0.5f + 3.0f, Ink, 5.0f);
+			PT.Ring(HueKnob, PhoneRingWidth * 0.5f + 3.0f, Paper, 2.5f);
+			const FBox2D Square = SquareRect();
+			Gradient(PP, Square, {FLinearColor::White, Shown(FromHSV(EditHue, 1.0f, 1.0f))});
+			Gradient(PO, Square, {FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f)}, false);
+			const FVector2D SquareKnob(Square.Min.X + Square.GetSize().X * EditSaturation, Square.Max.Y - Square.GetSize().Y * EditBrightness);
+			PT.Ring(SquareKnob, 10.0f, EditBrightness > 0.6f && EditSaturation < 0.4f ? Ink : Paper, 3.0f);
+			const FColor Fine = bPartOn ? Current : FromHSV(EditHue, EditSaturation, EditBrightness);
+			for (int32 Slider = 0; Slider < Sliders; ++Slider)
+			{
+				const FBox2D R = SliderRect(Slider);
+				RoundBox(PB, R, 10.0f, bPad && Area == EArea::Sliders && Slider == SliderCursor ? CardOn : Card);
+				PP.Text(SliderNames[Slider], R.Min.X + 12.0f, R.GetCenter().Y - 22.0f * 0.74f, 22.0f, Slider == 3 ? FLinearColor(1.0f, 0.4f, 0.4f)
+					: Slider == 4 ? FLinearColor(0.4f, 1.0f, 0.5f) : Slider == 5 ? FLinearColor(0.5f, 0.65f, 1.0f) : Paper, ETextAlign::Left, TEXT("Black"));
+				const FBox2D Track(FVector2D(R.Min.X + 40.0f, R.Min.Y + 12.0f), FVector2D(R.Max.X - 74.0f, R.Max.Y - 12.0f));
+				TArray<FLinearColor> Run;
+				float Amount = 0.0f;
+				FString Number;
+				if (Slider == 0)
+				{
+					for (int32 Stop = 0; Stop <= 6; ++Stop) { Run.Add(Shown(FromHSV(60.0f * Stop, 1.0f, 1.0f))); }
+					Amount = EditHue / 360.0f;
+					Number = FString::Printf(TEXT("%d°"), FMath::RoundToInt(EditHue));
+				}
+				else if (Slider <= 2)
+				{
+					const bool bSat = Slider == 1;
+					Run = {Shown(FromHSV(EditHue, bSat ? 0.0f : EditSaturation, bSat ? EditBrightness : 0.0f)),
+						Shown(FromHSV(EditHue, bSat ? 1.0f : EditSaturation, bSat ? EditBrightness : 1.0f))};
+					Amount = bSat ? EditSaturation : EditBrightness;
+					Number = FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Amount * 100.0f));
+				}
+				else
+				{
+					FColor Low = Fine, High = Fine;
+					(Slider == 3 ? Low.R : Slider == 4 ? Low.G : Low.B) = 0;
+					(Slider == 3 ? High.R : Slider == 4 ? High.G : High.B) = 255;
+					Run = {Shown(Low), Shown(High)};
+					const uint8 Channel = Slider == 3 ? Fine.R : Slider == 4 ? Fine.G : Fine.B;
+					Amount = Channel / 255.0f;
+					Number = FString::FromInt(Channel);
+				}
+				Gradient(PP, Track, Run);
+				PO.Box(static_cast<float>(Track.Min.X + Track.GetSize().X * Amount) - 4.0f, R.Min.Y + 5.0f, 8.0f, static_cast<float>(R.GetSize().Y) - 10.0f, Paper);
+				PP.Text(Number, R.Max.X - 10.0f, R.GetCenter().Y - 20.0f * 0.74f, HudFit(Number, 20.0f, 60.0f, TEXT("Bold")), Paper, ETextAlign::Right, TEXT("Bold"));
+			}
+			// The colour itself, with its code, under the sliders.
+			const FBox2D Last = SliderRect(Sliders - 1);
+			const FBox2D Sample(FVector2D(Last.Min.X, Last.Max.Y + 10.0f), FVector2D(Last.Min.X + 80.0f, Last.Max.Y + 50.0f));
+			PaintSwatch(PP, Sample, bPartOn, Current);
+			const FString Code = bPartOn ? FString::Printf(TEXT("#%02X%02X%02X"), Current.R, Current.G, Current.B) : FString(TEXT("元の色のまま"));
+			PP.Text(Code, Sample.Max.X + 14.0f, Sample.GetCenter().Y - 22.0f * 0.74f, HudFit(Code, 22.0f, static_cast<float>(Last.Max.X - Sample.Max.X) - 20.0f, TEXT("Bold")),
+				Paper, ETextAlign::Left, TEXT("Bold"));
+		}
+	}
+
+	// ---- A notice (over the model's foot, on a plate of its own).
+	if (Now - NoticeAt < 2.5)
+	{
+		const float Fade = FMath::Clamp(static_cast<float>(2.5 - (Now - NoticeAt)) / 0.4f, 0.0f, 1.0f);
+		const FPainter Note{Design, Elements, Layer + 5, Fade};
+		const FPainter NoteText{Design, Elements, Layer + 6, Fade};
+		const float CX = static_cast<float>(L.bUpright ? 450.0f : L.Preview.GetCenter().X);
+		const float W = L.bUpright ? 820.0f : static_cast<float>(L.Preview.GetSize().X) + 40.0f;
+		const float Y = static_cast<float>(L.Preview.Max.Y) - 120.0f;
+		const float Size = HudFit(NoticeText, 26.0f, W - 40.0f, TEXT("Bold"));
+		Note.Box(CX - W * 0.5f, Y, W, 56.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.96f));
+		NoteText.Text(NoticeText, CX, Y + 28.0f - Size * 0.74f, Size, Gold, ETextAlign::Center, TEXT("Bold"));
+	}
+	if (Naming.IsOpen())
+	{
+		return Naming.Paint(Design, Elements, Layer + 8);
+	}
+	if (bApplyAsk)
+	{
+		PaintApplyAsk(Design, Elements, Layer + 8, Now);
+		return Layer + 12;
+	}
+	return Layer + 8;
+}
+
 int32 UChaosImpactColourEdit::ApplyPlayers() const
 {
 	const UGameInstance* GameInstance = Controller.IsValid() ? Controller->GetGameInstance() : nullptr;
@@ -1828,10 +2511,13 @@ int32 UChaosImpactColourEdit::ApplyPlayers() const
 FBox2D UChaosImpactColourEdit::ApplyButtonRect(const int32 Choice) const
 {
 	const int32 Count = ApplyPlayers() + 1;
-	const float W = Count > 2 ? 170.0f : 230.0f;
-	constexpr float H = 58.0f, Gap = 16.0f;
-	const float Left = 800.0f - (Count * W + (Count - 1) * Gap) * 0.5f;
-	const FVector2D Min(Left + Choice * (W + Gap), 464.0f);
+	const bool bUpright = UChaosImpactMenuWidget::IsUprightCanvas();
+	const float W = Count > 2 ? 170.0f : bUpright ? 300.0f : 230.0f;
+	const float H = IsCePhone() ? 86.0f : 58.0f;
+	constexpr float Gap = 16.0f;
+	const float MidX = bUpright ? 450.0f : 800.0f;
+	const float Left = MidX - (Count * W + (Count - 1) * Gap) * 0.5f;
+	const FVector2D Min(Left + Choice * (W + Gap), bUpright ? 864.0f : 464.0f);
 	return FBox2D(Min, Min + FVector2D(W, H));
 }
 
@@ -1868,19 +2554,23 @@ void UChaosImpactColourEdit::PaintApplyAsk(const FGeometry& Design, FSlateWindow
 {
 	const float In = EaseOut(static_cast<float>(Now - ApplyAskAt) / 0.2f);
 	const FPainter Shade{Design, Elements, Layer, In};
-	Shade.Box(-1400.0f, -200.0f, 4400.0f, 1300.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
+	Shade.Box(-1400.0f, -400.0f, 4400.0f, 2600.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.6f));
 	const FPainter Panel{Design, Elements, Layer + 1, In};
 	const FPainter Words{Design, Elements, Layer + 3, In};
-	constexpr float PX = 440.0f, PY = 318.0f, PW = 720.0f, PH = 260.0f;
+	const bool bUpright = UChaosImpactMenuWidget::IsUprightCanvas();
+	const float PW = bUpright ? 820.0f : 720.0f;
+	const float PX = (bUpright ? 450.0f : 800.0f) - PW * 0.5f;
+	const float PY = bUpright ? 718.0f : 318.0f;
+	const float PH = IsCePhone() ? 300.0f : 260.0f;
 	RoundedBox(Panel, PX, PY + (1.0f - In) * 24.0f, PW, PH, 26.0f, FLinearColor(0.02f, 0.03f, 0.07f, 0.98f));
 	Panel.Box(PX + 40.0f, PY + 8.0f, PW - 80.0f, 5.0f, Gold);
-	Words.Text(TEXT("このキャラにしますか？"), 800.0f, PY + 30.0f, 34.0f, Paper, ETextAlign::Center, TEXT("Black"));
+	Words.Text(TEXT("このキャラにしますか？"), PX + PW * 0.5f, PY + 30.0f, 34.0f, Paper, ETextAlign::Center, TEXT("Black"));
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 	const TArray<FChaosImpactColourPreset>* Presets = Colours ? &Colours->GetPresets(Character) : nullptr;
 	const FString ColourName = Presets && Presets->IsValidIndex(Preset) ? FString::Printf(TEXT("カスタム：%s"), *(*Presets)[Preset].Name)
 		: FString(TEXT("いつもの色"));
 	const FString What = FString::Printf(TEXT("%s　（%s）"), ChaosImpactRoster::Get(Character).Name, *ColourName);
-	Words.Text(What, 800.0f, PY + 92.0f, HudFit(What, 22.0f, PW - 60.0f, TEXT("Bold")), Gold, ETextAlign::Center, TEXT("Bold"));
+	Words.Text(What, PX + PW * 0.5f, PY + 92.0f, HudFit(What, IsCePhone() ? 26.0f : 22.0f, PW - 60.0f, TEXT("Bold")), Gold, ETextAlign::Center, TEXT("Bold"));
 	const int32 Players = ApplyPlayers();
 	for (int32 Choice = 0; Choice <= Players; ++Choice)
 	{
@@ -1899,6 +2589,9 @@ void UChaosImpactColourEdit::PaintApplyAsk(const FGeometry& Design, FSlateWindow
 		Words.Text(Label, BX + BW * 0.5f, BY + (BH - 24.0f * 1.32f) * 0.5f, HudFit(Label, 24.0f, BW - 20.0f, TEXT("Black")),
 			bChosen ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
 	}
-	const FString Guide = ChaosImpactHints::Text(Controller.Get(), TEXT("決定：{Confirm} ・ {Back}：しない"));
-	Words.Text(Guide, 800.0f, PY + PH - 34.0f, HudFit(Guide, 15.0f, PW - 60.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
+	if (!IsCePhone())
+	{
+		const FString Guide = ChaosImpactHints::Text(Controller.Get(), TEXT("決定：{Confirm} ・ {Back}：しない"));
+		Words.Text(Guide, 800.0f, PY + PH - 34.0f, HudFit(Guide, 15.0f, PW - 60.0f, TEXT("Bold")), Muted, ETextAlign::Center, TEXT("Bold"));
+	}
 }

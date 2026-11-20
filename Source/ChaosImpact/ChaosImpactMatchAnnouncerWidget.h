@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+namespace ChaosImpactPaint { struct FHudFill; }
 #include "ChaosImpactMatchAnnouncerWidget.generated.h"
 
 class UChaosImpactResultsView;
@@ -40,6 +41,28 @@ private:
 	 * goal: how far each team has pushed (its count) and where the giant ball is now.
 	 */
 	/** クラウンキープ: under the clock, who wears the crown, their counts left and the count in progress. */
+public:
+	/** The match clock's slab at the top middle (TopCenter: its anchor), as it is drawn in a match (and in the 配置 editor). */
+	static void PaintClockSlab(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer, const FString& Text,
+		const FLinearColor& TextColor, float BladeFill, const ChaosImpactPaint::FHudFill& BladeStyle, bool bHurry);
+	/** The duel's scoreboard (the round clock, each side's plate, the round marks), from what it shows. */
+	struct FDuelBoardSide { FString Name; FLinearColor Color = FLinearColor::White; int32 Cells = 3; int32 Left = 3; int32 Wins = 0; bool bYou = false; bool bTookRound = false; };
+	struct FDuelBoard
+	{
+		bool bSudden = false;
+		bool bHurry = false;
+		int32 Round = 1;
+		int32 Seconds = 0;
+		FDuelBoardSide Plates[2];
+		FLinearColor SideColors[2] = {FLinearColor::White, FLinearColor::White};
+		bool bShowBalls = false;
+		TArray<int32> BallPicks;
+		TArray<int32> RoundResults;
+	};
+	static void PaintDuelBoard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer, float Time, const FDuelBoard& Board);
+	/** A side's colour on the duel's scoreboard. */
+	static FLinearColor GetDuelSideColor(int32 Side);
+private:
 	void PaintCrownPanel(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,
 		const AChaosImpactGameState& Match, double ServerNow, float Time) const;
 	void PaintCrashScoreboard(const FGeometry& TopCenter, FSlateWindowElementList& OutDrawElements, int32 BaseLayer,

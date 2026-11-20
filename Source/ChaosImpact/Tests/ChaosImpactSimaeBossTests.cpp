@@ -298,6 +298,8 @@ namespace
 				return false;
 			}
 			case 22:
+				Test->TestFalse(TEXT("Powering up, balls glance off it (it cannot be hit at all)"), Boss->CanBeDamaged());
+				Test->TestTrue(TEXT("Powering up, nothing moves it about"), Boss->IsMoveProof());
 				BeforeRelease = Player->GetActorLocation();
 				Shot(TEXT("14_PowerUp_Gathering.png"));
 				Wait(0.85);
@@ -383,6 +385,19 @@ namespace
 				Wait(0.82);
 				return false;
 			case 31:
+			{
+				// Mid-attack: ice and winds pass it by, and its aura stays on its body (not on its capsule).
+				Test->TestTrue(TEXT("Mid-slam, nothing moves it about"), Boss->IsMoveProof());
+				Boss->ApplyIceFreeze(2.0f);
+				Test->TestFalse(TEXT("Mid-slam, ice does not stop it"), Boss->IsIceFrozen());
+				const UProceduralMeshComponent* Flames = Boss->FindComponentByClass<UProceduralMeshComponent>();
+				const FVector Body = Boss->GetMesh()->Bounds.Origin;
+				const FVector Aura = Flames ? Flames->GetComponentLocation() : FVector::ZeroVector;
+				const float Apart = FVector::Dist2D(Body, Aura);
+				UE_LOG(LogTemp, Display, TEXT("SIMAEBOSS mid-slam: body %s aura roots %s apart %.0f (capsule %s)"), *Body.ToCompactString(),
+				*Aura.ToCompactString(), Apart, *Boss->GetActorLocation().ToCompactString());
+				Test->TestTrue(TEXT("Mid-slam, its aura stays under its body"), Flames && Apart < 120.0f * Boss->BossScale);
+			}
 				Shot(TEXT("21_FullPower_Slam.png"));
 				Wait(0.6);
 				return false;

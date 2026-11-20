@@ -151,10 +151,10 @@ namespace
 				Test->TestEqual(TEXT("The cursor stops at the grid's edge"), Select->GetCursorTile(2), 0);
 
 				// The mouse (1P's): pointing at an icon shows it, a click picks it, a second click on it finishes the colour.
-				Select->HandleMouseMove(UChaosImpactCharacterSelect::GetTileRect(3).GetCenter());
+				Select->HandleMouseMove(Select->GetTileRect(3).GetCenter());
 				Test->TestEqual(TEXT("Pointing moves the mouse player's cursor"), Select->GetCursorTile(0), 3);
 				Test->TestEqual(TEXT("Pointing shows that character"), Select->GetCharacter(0), 3);
-				Test->TestTrue(TEXT("A click picks 1P's character"), Select->HandleClick(UChaosImpactCharacterSelect::GetTileRect(0).GetCenter()));
+				Test->TestTrue(TEXT("A click picks 1P's character"), Select->HandleClick(Select->GetTileRect(0).GetCenter()));
 				Test->TestTrue(TEXT("The click picked the icon under it"), Select->GetCharacter(0) == 0
 					&& Select->GetStep(0) == (bColourStep ? EStep::Colour : EStep::Done));
 				if (bColourStep)
@@ -164,7 +164,7 @@ namespace
 					Test->TestTrue(TEXT("The row shows the カスタムカラー"), Chip.bIsValid);
 					Select->HandleClick(Chip.GetCenter());
 					Test->TestEqual(TEXT("A click on a chip wears it"), Select->GetPreset(0), 0);
-					Select->HandleClick(UChaosImpactCharacterSelect::GetTileRect(0).GetCenter());
+					Select->HandleClick(Select->GetTileRect(0).GetCenter());
 				}
 				Test->TestTrue(TEXT("1P is done by mouse alone"), Select->IsReady(0));
 				const EStep Before[] = {Select->GetStep(0), Select->GetStep(1), Select->GetStep(2)};

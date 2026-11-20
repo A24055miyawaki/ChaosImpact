@@ -153,6 +153,10 @@ void AChaosImpactTackleVFX::Rebuild()
         }
         Quad(Tail,Head+Side,Head+(Head-Tail).GetSafeNormal()*12,Head-Side);
     }
-    Mesh->CreateMeshSection_LinearColor(Pass,V,T,N,UV,TArray<FLinearColor>(),TArray<FProcMeshTangent>(),false);
+    // The same layer again (its points moved): updated in place, not built anew (each new section remade the drawing).
+    if(const FProcMeshSection* Old=Mesh->GetProcMeshSection(Pass); Old && Old->ProcVertexBuffer.Num()==V.Num() && Old->ProcIndexBuffer.Num()==T.Num() && V.Num()>0)
+    { Mesh->UpdateMeshSection_LinearColor(Pass,V,N,UV,TArray<FLinearColor>(),TArray<FProcMeshTangent>()); }
+    else
+    { Mesh->CreateMeshSection_LinearColor(Pass,V,T,N,UV,TArray<FLinearColor>(),TArray<FProcMeshTangent>(),false); }
     }
 }

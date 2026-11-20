@@ -6,6 +6,8 @@
 #include "GameFramework/Actor.h"
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactDriveBall.h"
+#include "ChaosImpactFusion.h"
+#include "ChaosImpactFusionEffects.h"
 #include "ChaosImpactBall.generated.h"
 
 class AChaosImpactHazardZone;
@@ -159,6 +161,49 @@ public:
 	void SetBallType(EChaosImpactBallType Type);
 	EChaosImpactBallType GetBallType() const { return BallType; }
 	bool IsSpecialBall() const { return BallType != EChaosImpactBallType::Normal; }
+	/**
+	 * 合体ボール: the second ball's kind riding along (Normal: not fused). Set before FinishSpawning. Its effect comes
+	 * where this ball bursts (ChaosImpactFusion::ApplySecondary); a black hole's pull and a fire's trail come along the way.
+	 */
+	void SetFusedType(EChaosImpactBallType Type);
+	EChaosImpactBallType GetFusedType() const { return FusedType; }
+	bool IsFused() const { return FusedType != EChaosImpactBallType::Normal; }
+	/** Any machine: a fused ball with a black hole riding along, in flight (it draws opponents near it). */
+	bool IsFusedPullActive() const;
+	APawn* GetFusionSource() const;
+	static constexpr float FusedPullRadius = 380.0f;
+	/**
+	 * 吸引ドライブ (ドライブ×ブラック) while it is steered: it bursts on nobody (each it meets takes its hit once), draws
+	 * everyone near in and along with it, and opens its black hole where the steering ends.
+	 */
+	bool IsDragDrive() const;
+	/** ドライブ×ビーム while it is steered: it passes through walls and through everyone on its way (each hit once). */
+	bool IsWallDrive() const;
+	/** A steered drive that bursts on nobody (吸引ドライブ, ドライブ×ビーム). */
+	bool IsPiercingDrive() const { return IsDragDrive() || IsWallDrive() || IsRamDrive(); }
+	/** 操縦ノヴァ (ドライブ×ノヴァ) and ターボドライブ (超ドライブ) while steered: they plough on through those they meet. */
+	bool IsRamDrive() const;
+	/** What one of its hits does: a nova's, with a ノヴァ riding along (never weaker than a nova: 2026-11-19). */
+	float GetHitDamage() const;
+	/** 合体 with a ノヴァ riding along: how big it was charged (ノヴァ砲's width, the blast where it ends). */
+	void SetFusionPower(const float Power) { FusionPower = Power; }
+	float GetFusionPower() const { return FusionPower; }
+	/** Server: a 電撃バリア turns it back; it is its owner's ball now. */
+	void TurnBackFor(APawn* NewThrower);
+	/** Server: its flight bent a little (a 吸引バリア drawing it in). */
+	void NudgeVelocity(const FVector& Change);
+	/** ビーム×スノー (極太光線): its shaft and its reach across as wide as the snow's size. */
+	float GetBeamWidthScale() const;
+	static constexpr float DragPullRadius = 450.0f;
+	/** How far its pull reaches, and how fast it flies (those it draws in are carried along at about its speed). */
+	float GetFusedPullRadius() const { return IsDragDrive() ? DragPullRadius : FusedPullRadius; }
+	float GetFusedPullSpeed() const;
+	/** 合体 with snow: how much further its effects reach (its snow's size, at most 1.8). */
+	float GetFusionReach() const;
+	static constexpr float FusionSnowCap = 1.8f;
+	/** 極太光線 (ビーム×スノー): how thick its beam is (hit and drawn), the snow not rolled and rolled as big as it goes. */
+	static constexpr float FusionBeamMinWidth = 2.0f;
+	static constexpr float FusionBeamMaxWidth = 3.0f;
 	/** Set before FinishSpawning on a thrown snowball: its size (to a normal ball's), hit area included. */
 	void SetSnowScale(float Scale);
 	float GetSnowScale() const { return SnowScale; }
@@ -241,6 +286,36 @@ protected:
 	void OnRep_BallType();
 	UFUNCTION()
 	void OnRep_Detonated();
+	UFUNCTION()
+	void OnRep_FusedType();
+	/** The fused look over the ball's own (this machine). */
+	void ApplyFusionPresentation();
+	UPROPERTY(ReplicatedUsing=OnRep_FusedType)
+	EChaosImpactBallType FusedType = EChaosImpactBallType::Normal;
+	ChaosImpactFusion::FFusionLook FusionLook;
+	float FusionPuffAt = 0.0f;
+	bool bFusionApplied = false;
+	UPROPERTY(Replicated)
+	float FusionPower = 0.0f;
+	/** 迅雷 (超サンダー): how many more times it splits as it rebounds. */
+	int32 SuperSplitsLeft = 3;
+	/** 吸引ドライブ: who has taken its hit already. */
+	TSet<TWeakObjectPtr<AActor>> DragHit;
+	/**
+	 * (2026-11-19) Outside the one-hit rule (1v1): a steered piercer hits again those it still drags or passes through,
+	 * at most this often each (when it last did).
+	 */
+	TMap<TWeakObjectPtr<AActor>, double> DragHitAt;
+	static constexpr double DragRepeatSeconds = 0.6;
+	void TickPiercingRepeats();
+	/** Server: what rides along, carried on the way (ChaosImpactFusion::TickCarry / OnStrike / OnBounce). */
+	ChaosImpactFusion::FFusionCarry FusionCarry;
+	/** ビーム×サンダー (レールガン): it has rebounded off its one wall; where it was last frame. */
+	bool bRailReflected = false;
+	FVector FusionLastAt = FVector::ZeroVector;
+	bool bFusionLastAtSet = false;
+	/** Server, each frame in flight: what rides along on the way; a railgun's one rebound. */
+	void TickFusionFlight();
 	/** Fire/ice look: glowing core, aura, crystals, light and a trail while flying. */
 	void ApplyBallTypePresentation();
 	void UpdateBallTypePresentation(float DeltaSeconds);
@@ -297,7 +372,7 @@ protected:
 	void UpdateBeamHits();
 	/** A character (or target) of this height and reach touches the beam's path From-To. */
 	static bool BeamTouches(const FVector& From, const FVector& To, const FVector& Center, float Radius, float HalfHeight,
-		FVector& OutPoint);
+		FVector& OutPoint, float Width = 1.0f);
 	FVector BeamLastLocation = FVector::ZeroVector;
 	TSet<TWeakObjectPtr<AActor>> BeamStruck;
 	/** Beam look: where the shaft of light starts, and the shaft itself (a bright core in a wider glow). */

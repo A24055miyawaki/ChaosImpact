@@ -47,8 +47,7 @@
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/PackageName.h"
-#include "JoyShockBlueprintLibrary.h"
-#include "JoyShockTypes.h"
+#include "ChaosImpactJoyShock.h"
 #include "TimerManager.h"
 
 AChaosImpactGameMode::AChaosImpactGameMode()
@@ -195,6 +194,11 @@ void AChaosImpactGameMode::BeginPlay()
 			}
 			else
 			{
+				// A new room: no rematches played yet.
+				if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+				{
+					Sessions->RoomRematches = 0;
+				}
 				GetWorldTimerManager().SetTimer(MatchmadeTimer, this, &AChaosImpactGameMode::UpdateMatchmadeRoom, 0.25f, true);
 				UE_LOG(LogChaosImpact, Log, TEXT("Matched room (%s): waiting for %d players"), Kind, RoomState->MatchmadeExpected);
 			}
@@ -1342,9 +1346,9 @@ void AChaosImpactGameMode::BeginStartingCountdown()
 		return;
 	}
 	Match->ReadyDeadline = 0.0;
-	SetMatchPhase(EChaosImpactOnlinePhase::Starting, AChaosImpactGameState::StartingSeconds);
+	SetMatchPhase(EChaosImpactOnlinePhase::Starting, Match->GetStartingSeconds());
 	GetWorldTimerManager().SetTimer(StartingTimer, this, &AChaosImpactGameMode::StartDecidedMatch,
-		AChaosImpactGameState::StartingSeconds, false);
+		Match->GetStartingSeconds(), false);
 }
 
 void AChaosImpactGameMode::StartDecidedMatch()
@@ -1410,6 +1414,11 @@ void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex, const bool 
 	{
 		return;
 	}
+	if (bDuelStage)
+	{
+		EnsureDuelStage(StageIndex);
+		return;
+	}
 	const int32 Stage = ChaosImpactMatch::SanitizeStage(StageIndex);
 	UClass* Wanted = bDuelStage ? (DuelStageClass ? DuelStageClass.Get() : AChaosImpactDuelStage::StaticClass())
 		: Stage == 1
@@ -1473,6 +1482,80 @@ void AChaosImpactGameMode::EnsureVersusStage(const int32 StageIndex, const bool 
 	UE_LOG(LogChaosImpact, Log, TEXT("VS stage spawned from %s"), *GetNameSafe(Wanted));
 	VersusStage = GetWorld()->SpawnActor<AChaosImpactStageBase>(Wanted,
 		Origin, FRotator::ZeroRotator, Parameters);
+}
+
+void AChaosImpactGameMode::EnsureDuelStage(const int32 StageIndex)
+{
+	// The 1v1 stages are told apart by their own number (a Blueprint of one still counts as it).
+	const int32 Want = ChaosImpactMatch::SanitizeDuelStage(StageIndex);
+	const auto Fits = [Want](const AActor* Stage)
+	{
+		const AChaosImpactDuelStage* Duel = Cast<AChaosImpactDuelStage>(Stage);
+		return Duel && Duel->GetDuelStageIndex() == Want;
+	};
+	if (IsValid(VersusStage) && Fits(VersusStage))
+	{
+		return;
+	}
+	// Any other stage here makes way (the level's own カオスアリーナ, or the last match's), the new one in its place.
+	AChaosImpactStageBase* Found = nullptr;
+	TOptional<FVector> ReplacedAt;
+	TArray<AChaosImpactStageBase*> Leaving;
+	for (TActorIterator<AChaosImpactStageBase> It(GetWorld()); It; ++It)
+	{
+		if (TournamentStages.Contains(*It))
+		{
+			continue;
+		}
+		if (Fits(*It))
+		{
+			Found = *It;
+		}
+		else if (It->IsA<AChaosImpactDuelStage>() || *It == VersusStage)
+		{
+			Leaving.Add(*It);
+		}
+	}
+	for (AChaosImpactStageBase* Old : Leaving)
+	{
+		if (!ReplacedAt.IsSet())
+		{
+			ReplacedAt = Old->GetActorLocation();
+		}
+		UE_LOG(LogChaosImpact, Log, TEXT("1v1 stage %s removed for stage %d"), *Old->GetName(), Want);
+		Old->Destroy();
+	}
+	if (!Leaving.IsEmpty())
+	{
+		VersusStage = nullptr;
+		DestroyStageBallSpawners();
+	}
+	AChaosImpactCPUController::ForgetStageGrid(GetWorld());
+	if (Found)
+	{
+		VersusStage = Found;
+		return;
+	}
+	FVector Origin = VersusStageLocation;
+	if (ReplacedAt.IsSet())
+	{
+		Origin = ReplacedAt.GetValue();
+	}
+	else if (const UGameInstance* GameInstance = GetGameInstance())
+	{
+		if (const APlayerController* Host = GameInstance->GetFirstLocalPlayerController(GetWorld()))
+		{
+			if (const ACharacter* HostCharacter = Cast<ACharacter>(Host->GetPawn()))
+			{
+				Origin.Z = HostCharacter->GetActorLocation().Z - HostCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+			}
+		}
+	}
+	UClass* Wanted = Want == 0 && DuelStageClass ? DuelStageClass.Get() : AChaosImpactDuelStage::GetDuelStageClass(Want);
+	FActorSpawnParameters Parameters;
+	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	UE_LOG(LogChaosImpact, Log, TEXT("1v1 stage %d spawned from %s"), Want, *GetNameSafe(Wanted));
+	VersusStage = GetWorld()->SpawnActor<AChaosImpactStageBase>(Wanted, Origin, FRotator::ZeroRotator, Parameters);
 }
 
 void AChaosImpactGameMode::ConfigureVersusMatch(const FChaosImpactMatchRules& InRules)
@@ -2292,7 +2375,8 @@ void AChaosImpactGameMode::RequestRematch(APlayerState* Member)
 	AChaosImpactPlayerState* Asker = Cast<AChaosImpactPlayerState>(Member);
 	AChaosImpactGameState* Match = GetGameState<AChaosImpactGameState>();
 	if (!Asker || !Match || Match->Matchmade != EChaosImpactMatchmade::Duel || !IsOnlineRoom()
-		|| Match->Phase != EChaosImpactOnlinePhase::Results || !Asker->bViewingResults || Asker->bWantsRematch)
+		|| Match->Phase != EChaosImpactOnlinePhase::Results || !Asker->bViewingResults || Asker->bWantsRematch
+		|| !Match->CanRematchAgain())
 	{
 		return;
 	}
@@ -2312,8 +2396,18 @@ void AChaosImpactGameMode::RequestRematch(APlayerState* Member)
 		UE_LOG(LogChaosImpact, Log, TEXT("%s asks for a rematch"), *Asker->GetPlayerName());
 		return;
 	}
-	// Both asked: the same two again, in a new game (the room stays open for it).
-	UE_LOG(LogChaosImpact, Log, TEXT("Matched 1v1: rematch"));
+	// Both asked: the same two again, in a new game (the room stays open for it), at most MaxDuelRematches times.
+	if (UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(this))
+	{
+		Sessions->RoomRematches = Match->RematchesPlayed + 1;
+	}
+	Match->RematchesPlayed += 1;
+	// Each game of the same two on another of the 1v1 stages.
+	{
+		const int32 Was = ChaosImpactMatch::SanitizeDuelStage(Match->Rules.StageIndex);
+		Match->Rules.StageIndex = (Was + FMath::RandRange(1, ChaosImpactMatch::DuelStageCount - 1)) % ChaosImpactMatch::DuelStageCount;
+	}
+	UE_LOG(LogChaosImpact, Log, TEXT("Matched 1v1: rematch %d of %d"), Match->RematchesPlayed, ChaosImpactMatch::MaxDuelRematches);
 	GetWorldTimerManager().ClearTimer(MatchmadeCloseTimer);
 	GetWorldTimerManager().ClearTimer(ResultsViewTimer);
 	for (AChaosImpactPlayerState* Player : Players)
@@ -2498,6 +2592,7 @@ void AChaosImpactGameMode::BeginRoomMatchLevel(AChaosImpactGameState* RoomState)
 		return;
 	}
 	RoomState->Rules = Sessions->RoomCarryRules;
+	RoomState->RematchesPlayed = Sessions->RoomRematches;
 	RoomState->bRulesDecided = true;
 	RoomState->bRecruitmentClosed = true;
 	SetMatchPhase(EChaosImpactOnlinePhase::Starting, 0.0f);
@@ -2878,14 +2973,18 @@ FChaosImpactMatchRules AChaosImpactGameMode::MakeMatchmadeRules(const int32 Huma
 	Rules.CPULevel = ChaosImpactMatch::CPULevelNormal;
 	if (Match && (Match->Matchmade == EChaosImpactMatchmade::Rank || Match->Matchmade == EChaosImpactMatchmade::Duel))
 	{
+		// On one of the 1v1 stages at random (a rematch moves to another one).
 		Rules.bDuel = true;
+		Rules.StageIndex = FMath::RandRange(0, ChaosImpactMatch::DuelStageCount - 1);
 		return ChaosImpactMatch::Sanitize(Rules, Humans);
 	}
-	// ランダムマッチ: everyone for themselves on a stage picked at random, three minutes, CPUs making up the eight.
+	// ランダムマッチ: everyone for themselves on a stage picked at random, three minutes, people only (no CPUs), the rule
+	// drawn from the free-for-all, ルビーラッシュ and クラウンキープ (shown to everyone before the stage opens).
 	Rules.Minutes = 3;
 	Rules.TeamCount = 0;
 	Rules.StageIndex = FMath::RandRange(0, ChaosImpactMatch::StageCount - 1);
-	Rules.CPUCount = ChaosImpactMatch::MaxCompetitors - Humans;
+	Rules.PartyRule = static_cast<uint8>(FMath::RandRange(0, 2));
+	Rules.CPUCount = 0;
 	return ChaosImpactMatch::Sanitize(Rules, Humans);
 }
 

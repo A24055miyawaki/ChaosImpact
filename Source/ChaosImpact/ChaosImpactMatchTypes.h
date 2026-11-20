@@ -70,6 +70,12 @@ struct FChaosImpactMatchRules
 	 */
 	UPROPERTY()
 	uint8 PartyRule = 0;
+	/**
+	 * 合体ボール in the match (local matches and 合言葉 rooms only; never a ranked / random match or a public tournament):
+	 * two special balls in hand may be joined with the 合体 button, in every rule.
+	 */
+	UPROPERTY()
+	bool bFusionBalls = false;
 
 	bool IsTeamBattle() const { return !bDuel && (bCrashBall || TeamCount >= 2); }
 	bool IsRubyRush() const { return PartyRule == 1 && !bDuel && !bBattleRoyale && !bTournament; }
@@ -166,6 +172,8 @@ namespace ChaosImpactMatch
 
 	// ---- ランクマッチ (the duel): rounds of 3 HP each, first to two rounds.
 	inline constexpr int32 DuelRoundsToWin = 2;
+	/** A ランダムマッチ 1v1: the same two may play again this many times (three games in all). */
+	inline constexpr int32 MaxDuelRematches = 2;
 	inline constexpr int32 DuelMaxRounds = 3;
 	inline constexpr float DuelRoundSeconds = 90.0f;
 	/** Level on health when a round's time runs out: the first hit within this long wins it, else it is drawn. */
@@ -174,7 +182,16 @@ namespace ChaosImpactMatch
 	inline constexpr float DuelRoundIntroSeconds = 2.0f;
 	/** The round's end held on screen before the next one (or the results). */
 	inline constexpr float DuelRoundOverSeconds = 3.4f;
-	inline const TCHAR* GetDuelStageName() { return TEXT("デュエルアリーナ"); }
+	/** The 1v1 stages (a duel's or a tournament's StageIndex): the same size, each its own layout and look. */
+	inline constexpr int32 DuelStageCount = 4;
+	inline int32 SanitizeDuelStage(const int32 Index) { return FMath::Clamp(Index, 0, DuelStageCount - 1); }
+	inline const TCHAR* GetDuelStageName(const int32 Index = 0)
+	{
+		static const TCHAR* Names[DuelStageCount] = {TEXT("カオスアリーナ"), TEXT("天空神殿"), TEXT("夕焼けコート"), TEXT("夜の屋上")};
+		return Names[SanitizeDuelStage(Index)];
+	}
+	/** A 対戦履歴 entry's stage for a 1v1 stage (the 8-player stages are 0..; the old 1v1 entries are -1, カオスアリーナ). */
+	inline constexpr int32 DuelStageHistoryBase = 40;
 	/** The special balls of a duel: this many kinds, drawn by the ball slot at the start of every match. */
 	inline constexpr int32 DuelBallPicks = 3;
 	/** The ball slot: its reels spin and stop one by one, then the kinds drawn are shown before ROUND 1. */
@@ -293,6 +310,8 @@ namespace ChaosImpactMatch
 				CPU.Level = CPU.Level < 0 ? INDEX_NONE : SanitizeCPULevel(CPU.Level);
 			}
 			Rules.CPUCount = Rules.Tournament.CPUs.Num();
+			Rules.StageIndex = SanitizeDuelStage(Rules.StageIndex);
+			Rules.Tournament.Stage = Rules.Tournament.Stage < 0 ? -1 : SanitizeDuelStage(Rules.Tournament.Stage);
 			return Rules;
 		}
 		if (Rules.bBattleRoyale)
@@ -327,6 +346,7 @@ namespace ChaosImpactMatch
 			Rules.Minutes = 3;
 			Rules.CPUCount = Humans >= 2 ? 0 : 1;
 			Rules.CPULevel = SanitizeCPULevel(Rules.CPULevel);
+			Rules.StageIndex = SanitizeDuelStage(Rules.StageIndex);
 			return Rules;
 		}
 		Humans = GetCompetingHumans(Rules, Humans);
@@ -374,6 +394,16 @@ namespace ChaosImpactMatch
 		return TeamCount >= 2 ? FString::Printf(TEXT("チーム戦  %dチーム"), TeamCount) : FString(TEXT("個人戦"));
 	}
 
+	/** The stage a match is played on, by name: a 1v1 stage's (a tournament's: ランダム when each match draws one), else ステージN. */
+	inline FString DescribeStage(const FChaosImpactMatchRules& Rules)
+	{
+		if (Rules.bTournament)
+		{
+			return Rules.Tournament.Stage < 0 ? FString(TEXT("ランダム")) : FString(GetDuelStageName(Rules.Tournament.Stage));
+		}
+		return Rules.bDuel ? FString(GetDuelStageName(Rules.StageIndex)) : GetStageLabel(Rules.StageIndex);
+	}
+
 	inline FString DescribeRule(const FChaosImpactMatchRules& Rules)
 	{
 		if (Rules.bTournament)
@@ -403,9 +433,9 @@ namespace ChaosImpactMatch
 	/** URL options for a local match level; ReadOptions is the inverse. */
 	inline FString ToOptions(const FChaosImpactMatchRules& Rules)
 	{
-		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d?CIOffBalls=%d?CIParty=%d"),
+		return FString::Printf(TEXT("CIMatch=1?CIMinutes=%d?CITeams=%d?CIMatchCPU=%d?CISpectate=%d?CIStage=%d?CICPULevel=%d?CICrashBall=%d?CIDuel=%d?CIBattleRoyale=%d?CIOffBalls=%d?CIParty=%d?CIFusion=%d"),
 			Rules.Minutes, Rules.TeamCount, Rules.CPUCount, Rules.bSpectate ? 1 : 0, Rules.StageIndex, Rules.CPULevel, Rules.bCrashBall ? 1 : 0,
-			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0, Rules.OffBalls, static_cast<int32>(Rules.PartyRule));
+			Rules.bDuel ? 1 : 0, Rules.bBattleRoyale ? 1 : 0, Rules.OffBalls, static_cast<int32>(Rules.PartyRule), Rules.bFusionBalls ? 1 : 0);
 	}
 
 	inline bool ReadOptions(const FURL& URL, FChaosImpactMatchRules& OutRules)
@@ -425,6 +455,8 @@ namespace ChaosImpactMatch
 		OutRules.bBattleRoyale = FCString::Atoi(URL.GetOption(TEXT("CIBattleRoyale="), TEXT("0"))) != 0;
 		OutRules.OffBalls = FCString::Atoi(URL.GetOption(TEXT("CIOffBalls="), TEXT("0")));
 		OutRules.PartyRule = static_cast<uint8>(FMath::Clamp(FCString::Atoi(URL.GetOption(TEXT("CIParty="), TEXT("0"))), 0, 2));
+		// (合体ボール: carried to the match's own level too; it was left behind, so the match never allowed it.)
+		OutRules.bFusionBalls = FCString::Atoi(URL.GetOption(TEXT("CIFusion="), TEXT("0"))) != 0;
 		if (OutRules.bCrashBall)
 		{
 			OutRules.TeamCount = 2;

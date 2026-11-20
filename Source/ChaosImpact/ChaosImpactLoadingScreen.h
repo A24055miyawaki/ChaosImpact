@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ChaosImpactSfx.h"
@@ -158,6 +158,8 @@ public:
 	/** When it began to fade out (negative while it is up). */
 	double FadeStartedAt = -1.0;
 	bool bCancelable = false;
+	/** スマホ版: a touch button pressed (0 stop, 1 game before, 2 game after, 3 again), for the subsystem to act on. */
+	int32 TouchButton = INDEX_NONE;
 	FRandomStream Random;
 
 	// Dodge
@@ -287,6 +289,11 @@ public:
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override { return FVector2D(1600.0f, 900.0f); }
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	/** スマホ版: the touch buttons, and the screen held upright. */
+	void PaintTouchButtons(const FGeometry& Space, FSlateWindowElementList& Elements, int32 Layer, const FChaosImpactLoadingState& S, float Fade,
+		bool bUpright) const;
+	int32 PaintUpright(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FChaosImpactLoadingState& S,
+		float Fade, float T, int32 Dots, const FString& Hint, bool bTouchWords) const;
 	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual bool SupportsKeyboardFocus() const override { return false; }
 

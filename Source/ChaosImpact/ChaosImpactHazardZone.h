@@ -49,7 +49,8 @@ public:
 	 */
 	static AChaosImpactHazardZone* Detonate(UWorld* World, EChaosImpactBallType Type, const FVector& Location,
 		APawn* SourcePawn, AActor* DirectVictim, float Scale = 1.0f,
-		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr);
+		TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage = nullptr,
+		EChaosImpactBallType FusionTint = EChaosImpactBallType::Normal, float FusionTintAmount = 0.0f, float ReachScale = 1.0f);
 	/**
 	 * Server: a small fire on the ground under a flying fire ball (its trail). No blast; it burns like the fire
 	 * zone. Leader is the first fire of the same trail, which keeps one burn clock for all of them so standing
@@ -184,6 +185,15 @@ protected:
 	/** How big the burst looks (Detonate's Scale). */
 	UPROPERTY(Replicated)
 	float BurstScale = 1.0f;
+
+	/** 合体ボール: its look turned toward the other kind's colour (percent), so the burst is one of the two. */
+	UPROPERTY(Replicated)
+	EChaosImpactBallType FusionTint = EChaosImpactBallType::Normal;
+	UPROPERTY(Replicated)
+	uint8 FusionTintPercent = 0;
+	/** 合体 with snow: its reach (and look) this many times as far (the snow's size, at most 1.8). */
+	UPROPERTY(Replicated)
+	float ReachScale = 1.0f;
 
 	/** SpawnVisual: no gameplay at all, and its own size and time. */
 	bool bVisualOnly = false;

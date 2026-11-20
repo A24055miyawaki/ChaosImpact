@@ -46,6 +46,19 @@ enum class EChaosImpactSfx : uint8
 	DojoRing, ChestOpen, CoinPick,
 	// The duel's own calls: a tournament match's opening, the ball slot, ROUND, FIGHT!, SUDDEN DEATH, a round decided, WIN
 	DuelOpening, DuelReelSpin, DuelReelStop, DuelReelDone, DuelRound, DuelFight, DuelSudden, DuelRoundOver, DuelWin,
+	// 合体ボール: two balls drawn together into one (with its flash), and parted again
+	FusionJoin, FusionSplit,
+	// The boss scenes (シマエナガ戦): the coming, the fall, the landing, the war cry, the name card, the camera's swing, the
+	// beaten boss flying off; a line's letters appearing, and on to the next line
+	SceneRumble, SceneFall, SceneLand, SceneRoar, SceneTitle, SceneWhoosh, SceneFlee, TalkBlip, TalkNext, SceneGlint,
+	// 回復ボール (2026-11-19, solo only): its spot opening, a heal, the spot running out unused.
+	HealSpot, HealGain, HealFade,
+	// ラスボス ドッチ・ボール大統領 (2026-11-19): its moves.
+	PresThrow, PresHatch, PresBeamCharge, PresBeamFire, PresBeamEnd, PresCarTransform, PresCarRev, PresCarRush, PresCarHorn,
+	PresNovaCharge, PresNovaLaunch, PresNovaFall, PresNovaBlast, PresStun, PresPowerUp,
+	// Its hall's scenes: the great doors, footsteps in the hall, the lights going out, the soldiers' stamp, a ball lighting
+	// in a hand, the soldiers' rush, the hero's special ball (its wind-up and its blast), soldiers flying off into stars.
+	HallDoor, HallStep, HallLightOff, HallStomp, HallBallLight, HallRush, HeroSpecialCharge, HeroSpecialBlast, HallStarFly,
 	Count
 };
 

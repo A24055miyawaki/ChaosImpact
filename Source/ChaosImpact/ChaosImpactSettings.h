@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
+#include "ChaosImpactTouchControls.h"
 
 class APlayerController;
 class UObject;
@@ -29,6 +30,8 @@ enum class EChaosImpactAction : uint8
 	OverviewMap,
 	/** Online room: the decided rules in full over the screen (while waiting for the match). */
 	RuleCard,
+	/** Training and an online room's lobby: two special balls in hand join into one (合体ボール, a prototype). */
+	FuseBalls,
 	Count
 };
 
@@ -71,6 +74,18 @@ struct FChaosImpactProfile
 	bool bAimAssist = true;
 	EChaosImpactControlScheme Schemes[DeviceCount] = {};
 	bool bMouseDoubleClickDash = true;
+	/** Keyboard and mouse: the mouse wheel (either way) swaps the two balls held too. */
+	bool bWheelSwap = false;
+	/** スマホ版: the screen's halves swapped (左利き: the left thumb the ball, the right the body). */
+	bool bTouchLeftHanded = false;
+	/** スマホ版: how easily a flick counts (0 かため, 1 ふつう, 2 やわらかめ). */
+	int32 TouchFlick = 1;
+	/** スマホ版: a tap (or a charge not dragged) throws at whoever is near. */
+	bool bTouchAutoAim = true;
+	/** スマホ版: 0 ボタン方式 (buttons on the screen), 1 ジェスチャー方式 (the halves of the screen, no buttons), 2 片手モード. */
+	int32 TouchStyle = 0;
+	/** スマホ版: the player's own placing of the controls and the HUD, for each kind of play (GetTouchModeKey). */
+	TMap<FString, FChaosImpactTouchCustom> TouchLayouts;
 	/** The top-down camera: 0 近い, 1 普通, 2 遠い (each person's own, so every pane of a split screen has its own). */
 	int32 CameraDistance = 1;
 	/** Shoulder-camera multipliers: per device, [horizontal, vertical]. Old saves keep 100%. */
@@ -126,6 +141,20 @@ namespace ChaosImpactSettings
 	CHAOSIMPACT_API EChaosImpactControlScheme GetPlayerControlScheme(const APlayerController* Player);
 	CHAOSIMPACT_API FString GetControlSchemeName(EChaosImpactControlScheme Scheme);
 	CHAOSIMPACT_API void SetMouseDoubleClickDash(int32 Profile, bool bOn);
+	CHAOSIMPACT_API void SetWheelSwap(int32 Profile, bool bOn);
+	CHAOSIMPACT_API void SetTouchLeftHanded(int32 Profile, bool bOn);
+	CHAOSIMPACT_API void SetTouchFlick(int32 Profile, int32 Level);
+	CHAOSIMPACT_API void SetTouchAutoAim(int32 Profile, bool bOn);
+
+	CHAOSIMPACT_API void SetTouchStyle(int32 Profile, int32 Style);
+	/** スマホ版: which kind of play a player is in now (each its own placing of the controls), and its name. */
+	CHAOSIMPACT_API FString GetTouchModeKey(const APlayerController* Player);
+	CHAOSIMPACT_API FString GetTouchModeName(const FString& Key);
+	/** (Kept apart for the screen held upright and sideways: the one for the way it is held now.) */
+	CHAOSIMPACT_API FChaosImpactTouchCustom GetTouchLayout(int32 Profile, const FString& Key);
+	CHAOSIMPACT_API void SetTouchLayout(int32 Profile, const FString& Key, const FChaosImpactTouchCustom& Layout);
+	CHAOSIMPACT_API FString GetTouchStyleName(int32 Style);
+	CHAOSIMPACT_API FString GetTouchFlickName(int32 Level);
 	/** 移動方向に投げる, per nickname and device. */
 	CHAOSIMPACT_API void SetThrowToMove(int32 Profile, EChaosImpactDevice Device, bool bOn);
 	CHAOSIMPACT_API bool GetThrowToMove(int32 Profile, EChaosImpactDevice Device);
@@ -203,6 +232,12 @@ namespace ChaosImpactSettings
 	/** The button hints down the side of the screen in play. */
 	CHAOSIMPACT_API bool IsButtonHintsOn();
 	CHAOSIMPACT_API void SetButtonHintsOn(bool bOn);
+	/** メニュー中の振動 (on by default): the menus tick the controller lightly (the controller's own rumble setting still rules). */
+	CHAOSIMPACT_API bool IsMenuRumbleOn();
+	CHAOSIMPACT_API void SetMenuRumbleOn(bool bOn);
+	/** FPS表示 (off by default): the frames a second now, small in the screen's top-left corner on every screen. */
+	CHAOSIMPACT_API bool IsFpsShown();
+	CHAOSIMPACT_API void SetFpsShown(bool bOn);
 	/** ペイント: other players' pictures on their characters shown (off: only this machine's own). */
 	CHAOSIMPACT_API bool IsOthersPaintShown();
 	CHAOSIMPACT_API void SetOthersPaintShown(bool bOn);
@@ -217,6 +252,12 @@ namespace ChaosImpactSettings
 	/** 1-10, 5 is the standard picture. */
 	CHAOSIMPACT_API int32 GetBrightness();
 	CHAOSIMPACT_API void SetBrightness(int32 Level);
+	/** スマホ版の画面の向き: 0 自動回転, 1 縦画面, 2 横画面 (applied at once, and at start). */
+	CHAOSIMPACT_API int32 GetScreenOrientation();
+	CHAOSIMPACT_API void SetScreenOrientation(int32 Orientation);
+	CHAOSIMPACT_API FString GetScreenOrientationName(int32 Orientation);
+	/** The screen is taller than it is wide now (a phone held upright): the touch placing kept for it apart. */
+	CHAOSIMPACT_API bool IsScreenUpright();
 	/** The sound volume and brightness, once at start (Unreal applies its own screen and picture settings). */
 	CHAOSIMPACT_API void ApplyStartupSettings();
 

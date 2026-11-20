@@ -12,6 +12,7 @@
 #include "ChaosImpactLightning.h"
 #include "ChaosImpactTrainingTarget.h"
 #include "ChaosImpactCrashBall.h"
+#include "ChaosImpactHazardZone.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -102,7 +103,7 @@ AChaosImpactTornado::AChaosImpactTornado()
 }
 
 AChaosImpactTornado* AChaosImpactTornado::Release(UWorld* World, const FVector& From, const FVector& Direction,
-	APawn* Source)
+	APawn* Source, const EChaosImpactBallType Fused, const EChaosImpactBallType Tint, const float TintAmount)
 {
 	if (!World)
 	{
@@ -139,6 +140,10 @@ AChaosImpactTornado* AChaosImpactTornado::Release(UWorld* World, const FVector& 
 	Tornado->SourcePawn = Source;
 	Tornado->DuelThrowDamage = FChaosImpactDuelThrowDamage::Create(World);
 	Tornado->Seed = FMath::Rand();
+	Tornado->FusedType = Fused;
+	Tornado->SpeedScale = Fused == EChaosImpactBallType::Thunder ? ThunderSpeedScale : 1.0f;
+	Tornado->TintType = Tint;
+	Tornado->TintPercent = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(TintAmount * 100.0f), 0, 100));
 	Tornado->FinishSpawning(SpawnTransform);
 	UE_LOG(LogChaosImpact, Log, TEXT("Wind tornado released at %s heading %s by %s"), *Floor.ToCompactString(),
 		*Flat.ToCompactString(), *GetNameSafe(Source));
@@ -334,7 +339,7 @@ void AChaosImpactTornado::MulticastGust_Implementation(FVector_NetQuantize Locat
 		if (UNiagaraComponent* Burst = UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, GustSparks, Location,
 			FRotator::ZeroRotator, FVector(bBig ? 1.4f : 0.7f)))
 		{
-			SetEffectColor(Burst, TEXT("Color"), TornadoColor * 6.0f);
+			SetEffectColor(Burst, TEXT("Color"), Hue(TornadoColor) * 6.0f);
 		}
 	}
 }
@@ -347,6 +352,10 @@ void AChaosImpactTornado::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME_CONDITION(AChaosImpactTornado, StartServerTime, COND_InitialOnly);
 	DOREPLIFETIME_CONDITION(AChaosImpactTornado, SourcePawn, COND_InitialOnly);
 	DOREPLIFETIME_CONDITION(AChaosImpactTornado, Seed, COND_InitialOnly);
+	DOREPLIFETIME(AChaosImpactTornado, FusedType);
+	DOREPLIFETIME_CONDITION(AChaosImpactTornado, TintType, COND_InitialOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactTornado, SpeedScale, COND_InitialOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactTornado, TintPercent, COND_InitialOnly);
 }
 
 double AChaosImpactTornado::GetServerNow() const
@@ -364,9 +373,11 @@ void AChaosImpactTornado::StepPath(const float Seconds)
 	// sideways sway is centred on the line thrown along; the side it swings to first and the pace vary.
 	const float Sign = (Seed & 1) ? 1.0f : -1.0f;
 	const float Pace = 4.6f + static_cast<float>(Seed % 97) / 97.0f * 0.8f;
-	const float WeaveDegrees = Sign * (52.0f * FMath::Cos(T * Pace) + 12.0f * FMath::Cos(T * 1.7f));
+	// (雷雲竜巻: fast as thunder and nearly straight, as a thunder ball goes.)
+	const float Straight = SpeedScale > 1.0f ? 0.25f : 1.0f;
+	const float WeaveDegrees = Sign * Straight * (52.0f * FMath::Cos(T * Pace) + 12.0f * FMath::Cos(T * 1.7f));
 	const FVector Direction = PathHeading.RotateAngleAxis(WeaveDegrees, FVector::UpVector);
-	const FVector Move = Direction * TravelSpeed * Seconds;
+	const FVector Move = Direction * TravelSpeed * SpeedScale * Seconds;
 	const FVector Lift(0.0f, 0.0f, TornadoTraceHeight);
 	FHitResult Wall;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(ChaosImpactTornadoPath), false);
@@ -388,9 +399,26 @@ void AChaosImpactTornado::StepPath(const float Seconds)
 	PathPosition += Move;
 }
 
+bool AChaosImpactTornado::IsStillCaught(const AActor* Victim) const
+{
+	const double* At = Caught.Find(Victim);
+	if (!At)
+	{
+		return false;
+	}
+	// A fused tornado, outside the one-hit rule: it can catch them again once they are clear of it a while.
+	return FusedType == EChaosImpactBallType::Normal || ChaosImpactFusion::IsOneHitRule(GetWorld())
+		|| (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0) - *At < 1.6;
+}
+
+void AChaosImpactTornado::MarkCaught(AActor* Victim)
+{
+	Caught.Add(Victim, GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0);
+}
+
 bool AChaosImpactTornado::CanCatch(const AActor* Victim) const
 {
-	if (!IsValid(Victim) || Victim == SourcePawn || Caught.Contains(Victim)
+	if (!IsValid(Victim) || Victim == SourcePawn || IsStillCaught(Victim)
 		|| AChaosImpactGameState::AreTeammates(GetWorld(), SourcePawn, Victim))
 	{
 		return false;
@@ -424,15 +452,16 @@ void AChaosImpactTornado::CatchCharacters()
 			{
 				continue;
 			}
-			Caught.Add(Character);
-			UGameplayStatics::ApplyDamage(Character, 1.0f, SourceController, this, nullptr);
+			MarkCaught(Character);
+			UGameplayStatics::ApplyDamage(Character, GetNovaRiderDamage(), SourceController, this, nullptr);
 			Character->BeginWindCarry(this);
+			StrikeFused(Character);
 		}
 		else if (Character->IsLocallyControlled())
 		{
 			UE_LOG(LogChaosImpact, Log, TEXT("Tornado caught this screen's %s at sim %.2f"), *GetNameSafe(Character->GetPlayerState()),
 				SimulatedSeconds);
-			Caught.Add(Character);
+			MarkCaught(Character);
 			Character->BeginWindCarry(this);
 			Character->ServerReportTornadoHit(this);
 		}
@@ -445,8 +474,8 @@ void AChaosImpactTornado::CatchCharacters()
 	{
 		if (!It->IsDefeated() && CanCatch(*It) && FVector::DistSquared2D(It->GetActorLocation(), Center) <= FMath::Square(CatchRadius + 50.0f))
 		{
-			Caught.Add(*It);
-			UGameplayStatics::ApplyDamage(*It, 1.0f, SourceController, this, nullptr);
+			MarkCaught(*It);
+			UGameplayStatics::ApplyDamage(*It, GetNovaRiderDamage(), SourceController, this, nullptr);
 		}
 	}
 }
@@ -463,10 +492,11 @@ bool AChaosImpactTornado::TryApplyReportedHit(AChaosImpactCharacter* Victim)
 	{
 		return false;
 	}
-	Caught.Add(Victim);
-	UGameplayStatics::ApplyDamage(Victim, 1.0f, SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
+	MarkCaught(Victim);
+	UGameplayStatics::ApplyDamage(Victim, GetNovaRiderDamage(), SourcePawn ? SourcePawn->GetController() : nullptr, this, nullptr);
 	// Everyone else sees the owner carried (the owner already moves it).
 	Victim->BeginWindCarry(this);
+	StrikeFused(Victim);
 	return true;
 }
 
@@ -573,6 +603,73 @@ void AChaosImpactTornado::Tick(const float DeltaSeconds)
 	{
 		UpdatePresentation(Age, DeltaSeconds);
 	}
+	if (FusedType != EChaosImpactBallType::Normal)
+	{
+		TickFusion(Age, DeltaSeconds);
+	}
+}
+
+void AChaosImpactTornado::StrikeFused(AChaosImpactCharacter* Victim)
+{
+	if (FusedType != EChaosImpactBallType::Normal && HasAuthority())
+	{
+		ChaosImpactFusion::OnStrike(GetWorld(), EChaosImpactBallType::Wind, FusedType, Victim, PathHeading, SourcePawn, DuelThrowDamage,
+			&FusionCarry);
+	}
+}
+
+void AChaosImpactTornado::TickFusion(const float Age, const float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		// What rides along is carried on its way (炎の竜巻's fires, 吹雪's frozen floor, 砂嵐's smoke, 雷雲竜巻's lightning…).
+		if (bActive)
+		{
+			ChaosImpactFusion::TickCarry(World, EChaosImpactBallType::Wind, FusedType, Center + FVector::UpVector * 60.0f, SourcePawn,
+				DuelThrowDamage, FusionCarry);
+		}
+		// Where it ends, the second kind's own effect.
+		if (!bActive && !bFusionApplied)
+		{
+			bFusionApplied = true;
+			ChaosImpactFusion::ApplySecondary(World, FusedType, Center + FVector::UpVector * 40.0f, PathHeading, SourcePawn,
+				nullptr, DuelThrowDamage, AChaosImpactBall::StaticClass(), EChaosImpactBallType::Wind);
+			ChaosImpactFusion::PlayFusedBurst(this, Center + FVector::UpVector * 40.0f, EChaosImpactBallType::Wind, FusedType);
+		}
+	}
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	// The fused look riding halfway up the funnel, big; the two colours spiralling up round it.
+	if (!FusionLook.IsBuilt() && GetRootComponent())
+	{
+		// No body and no crossed rings (round a funnel they read as a bubble stuck in it: the funnel itself has taken the
+		// colour); the other kind's marks, big, halfway up it, and its pull drawn round it when a black hole rides along.
+		ChaosImpactFusion::FFusionLookOptions Options;
+		Options.Scale = 2.4f;
+		Options.Offset = FVector(0.0f, 0.0f, 150.0f);
+		Options.bBody = false;
+		Options.bAtom = false;
+		Options.SuctionRadius = FusedType == EChaosImpactBallType::Black ? FusedPullRadius : 0.0f;
+		ChaosImpactFusion::BuildLook(this, GetRootComponent(), EChaosImpactBallType::Wind, FusedType, FusionLook, Options);
+	}
+	ChaosImpactFusion::UpdateLook(FusionLook, Age, DeltaSeconds, bActive && !IsHidden(), 0.0f, bActive);
+	if (bActive && Age >= FusionPuffAt)
+	{
+		FusionPuffAt = Age + 0.07f;
+		const float Height = FMath::Fmod(Age * 520.0f, FunnelHeight);
+		const float Turn = Age * 9.0f;
+		const float Round = 60.0f + Height * 0.25f;
+		const FVector At = Center + FVector(FMath::Cos(Turn) * Round, FMath::Sin(Turn) * Round, Height);
+		ChaosImpactFusion::PlayTrailPuff(this, At, FVector(-FMath::Sin(Turn), FMath::Cos(Turn), 0.3f) * 600.0f,
+			EChaosImpactBallType::Wind, FusedType, 1.5f);
+	}
 }
 
 UStaticMeshComponent* AChaosImpactTornado::AddShape(UStaticMesh* Mesh, UMaterialInstanceDynamic* Material)
@@ -598,13 +695,13 @@ void AChaosImpactTornado::BuildPresentation()
 	if (UMaterialInterface* Streak = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/ChaosImpact/FX/Kit/M_CIFX_Streak.M_CIFX_Streak")))
 	{
 		StrandLook = UMaterialInstanceDynamic::Create(Streak, this);
-		StrandLook->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.12f, 0.95f, 0.3f));
-		StrandLook->SetVectorParameterValue(TEXT("CoreColor"), FLinearColor(0.8f, 1.0f, 0.85f));
+		StrandLook->SetVectorParameterValue(TEXT("Color"), Hue(FLinearColor(0.12f, 0.95f, 0.3f)));
+		StrandLook->SetVectorParameterValue(TEXT("CoreColor"), Hue(FLinearColor(0.8f, 1.0f, 0.85f)));
 		StrandLook->SetScalarParameterValue(TEXT("Erode"), 0.0f);
 	}
 	else
 	{
-		StrandLook = MakeAdditive(this, FLinearColor(0.16f, 1.0f, 0.26f), 1.0f);
+		StrandLook = MakeAdditive(this, Hue(FLinearColor(0.16f, 1.0f, 0.26f)), 1.0f);
 	}
 	FunnelMaterial = StrandLook;
 	Funnel = ChaosImpactLightning::CreateComponent(this, SceneRoot, StrandLook);
@@ -615,8 +712,8 @@ void AChaosImpactTornado::BuildPresentation()
 	{
 		FDebris& Piece = Debris.AddDefaulted_GetRef();
 		const bool bBright = Stream.FRand() < 0.45f;
-		Piece.Mesh = AddShape(Cube, bBright ? MakeAdditive(this, TornadoCoreColor, 2.2f)
-			: MakeEmissive(this, FLinearColor(0.1f, 0.34f, 0.14f), 0.6f));
+		Piece.Mesh = AddShape(Cube, bBright ? MakeAdditive(this, Hue(TornadoCoreColor), 2.2f)
+			: MakeEmissive(this, Hue(FLinearColor(0.1f, 0.34f, 0.14f)), 0.6f));
 		Piece.Angle = Stream.FRand() * UE_TWO_PI;
 		Piece.Height = Stream.FRand() * FunnelHeight;
 		Piece.Speed = Stream.FRandRange(0.7f, 1.4f);
@@ -626,7 +723,7 @@ void AChaosImpactTornado::BuildPresentation()
 	UPointLightComponent* Glow = NewObject<UPointLightComponent>(this);
 	Glow->SetupAttachment(SceneRoot);
 	Glow->SetRelativeLocation(FVector(0.0f, 0.0f, 160.0f));
-	Glow->SetLightColor(TornadoColor);
+	Glow->SetLightColor(Hue(TornadoColor));
 	Glow->SetIntensity(0.0f);
 	Glow->SetAttenuationRadius(700.0f);
 	Glow->SetCastShadows(false);
@@ -638,7 +735,7 @@ void AChaosImpactTornado::BuildPresentation()
 		if (UNiagaraComponent* Glints = UNiagaraFunctionLibrary::SpawnSystemAttached(Continuous, SceneRoot, NAME_None,
 			FVector(0.0f, 0.0f, 120.0f), FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, false))
 		{
-			SetEffectColor(Glints, TEXT("Color"), TornadoColor * 4.0f);
+			SetEffectColor(Glints, TEXT("Color"), Hue(TornadoColor) * 4.0f);
 			Sparks = Glints;
 		}
 	}
@@ -654,8 +751,8 @@ void AChaosImpactTornado::BuildPresentation()
 		Flash.Life = 0.25f;
 		Flash.SizeFrom = 200.0f;
 		Flash.SizeTo = 480.0f;
-		Flash.Color = TornadoColor;
-		Flash.CoreColor = TornadoCoreColor;
+		Flash.Color = Hue(TornadoColor);
+		Flash.CoreColor = Hue(TornadoCoreColor);
 		Flash.Intensity = 4.0f;
 		Flash.Attack = 0.05f;
 		Fx->Add(Flash);
@@ -667,8 +764,8 @@ void AChaosImpactTornado::BuildPresentation()
 		Form.RingFrom = 0.08f;
 		Form.RingTo = 0.92f;
 		Form.RingWidth = 0.05f;
-		Form.Color = TornadoColor;
-		Form.CoreColor = TornadoCoreColor;
+		Form.Color = Hue(TornadoColor);
+		Form.CoreColor = Hue(TornadoCoreColor);
 		Form.Intensity = 3.0f;
 		Form.Attack = 0.04f;
 		Form.ErodeTo = 0.7f;
@@ -680,8 +777,8 @@ void AChaosImpactTornado::BuildPresentation()
 		Lit.Attack = 0.3f / Whirl;
 		Lit.Hold = FMath::Max(0.0f, 1.0f - 0.5f / Whirl);
 		Lit.SizeFrom = Lit.SizeTo = 520.0f;
-		Lit.Color = TornadoColor;
-		Lit.CoreColor = TornadoCoreColor;
+		Lit.Color = Hue(TornadoColor);
+		Lit.CoreColor = Hue(TornadoCoreColor);
 		Lit.Intensity = 0.9f;
 		Lit.NoiseAmount = 0.7f;
 		Lit.NoiseSpeed = 1.2f;
@@ -695,8 +792,8 @@ void AChaosImpactTornado::BuildPresentation()
 		Roll.RingFrom = 0.18f;
 		Roll.RingTo = 0.92f;
 		Roll.RingWidth = 0.05f;
-		Roll.Color = TornadoColor;
-		Roll.CoreColor = TornadoCoreColor;
+		Roll.Color = Hue(TornadoColor);
+		Roll.CoreColor = Hue(TornadoCoreColor);
 		Roll.Intensity = 1.8f;
 		Roll.Attack = 0.2f;
 		Roll.ErodeTo = 0.7f;
@@ -871,4 +968,9 @@ void AChaosImpactTornado::UpdatePresentation(const float Age, const float DeltaS
 		Funnel->SetVisibility(false);
 		TornadoDust(Center, 6, 0.9f);
 	}
+}
+
+float AChaosImpactTornado::GetNovaRiderDamage() const
+{
+	return FusedType == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaDamage(1.0f) : 1.0f;
 }

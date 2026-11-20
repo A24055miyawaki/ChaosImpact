@@ -41,8 +41,10 @@ void ChaosImpactCombatHealth::PaintBreak(const ChaosImpactPaint::FPainter& Paint
 bool UChaosImpactChargeWidget::SupportsCombatHealth() const
 {
     const auto* PC=Cast<AChaosImpactPlayerController>(GetOwningPlayer());
-    const auto* World=GetWorld(); if(!PC || !World || PC->IsSoloMode()
+    const auto* World=GetWorld(); if(!PC || !World
         || World->URL.HasOption(TEXT("CIRPGPrototype=1")) || World->URL.HasOption(TEXT("CIOpenWorld=1"))) { return false; }
+    // ソロモード (2026-11-19): every enemy's health shown over its head, all the time (not on the map or the title).
+    if(PC->IsSoloMode()) { return !PC->IsSoloWorldMap() && !PC->IsSoloTitle(); }
     const auto* Match=World->GetGameState<AChaosImpactGameState>();
     return PC->ShowsTrainingPauseEntries() || (Match && Match->bVersusMatch && Match->Phase==EChaosImpactOnlinePhase::Match);
 }
@@ -63,7 +65,14 @@ bool UChaosImpactChargeWidget::GetCombatHealthPresentation(const AChaosImpactCha
     if(!SupportsCombatHealth() || !PC->IsGameplayActive() || !IsValid(Character)
         || Character==GetOwningPlayerPawn()) { return false; }
     const auto* State=CombatHealth.Find(Character);
-    return State && State->Present(GetWorld()->GetTimeSeconds(),Out);
+    if(!State || !State->Present(GetWorld()->GetTimeSeconds(),Out)) { return false; }
+    if(PC->IsSoloMode())
+    {
+        // (A room's boss has its own bar at the top instead.)
+        if(Character->GetMaxHealth()>6.f || Character->Tags.Contains(TEXT("CI.SoloBoss"))) { return false; }
+        if(!State->Eliminated) { Out.Alpha=1.f; }
+    }
+    return true;
 }
 bool UChaosImpactChargeWidget::IsLastHealthWarningActive() const
 {

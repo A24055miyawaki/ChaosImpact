@@ -1,4 +1,5 @@
 #include "ChaosImpactDemoPlay.h"
+#include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactGameState.h"
@@ -379,7 +380,7 @@ int32 UChaosImpactDemoWidget::NativePaint(const FPaintArgs& Args, const FGeometr
 			const FPainter Row{Prompt, OutDrawElements, Base + 4, PromptIn};
 			Row.Box(280.0f - 260.0f * PromptIn, 28, 80, 12, Ice);
 			Row.Box(200.0f + 260.0f * PromptIn, 28, 80, 12, Fire);
-			Row.Text(TEXT("PRESS START"), 280, 4, 44, WithAlpha(Paper, Blink), ETextAlign::Center, TEXT("Black"), 3.0f, Navy);
+			Row.Text(UChaosImpactMenuWidget::IsPhoneBuild() ? TEXT("TAP TO START") : TEXT("PRESS START"), 280, 4, 44, WithAlpha(Paper, Blink), ETextAlign::Center, TEXT("Black"), 3.0f, Navy);
 		}
 	}
 	// Coming in from the dark (and dark while a mid-battle demo runs ahead), going out to it.

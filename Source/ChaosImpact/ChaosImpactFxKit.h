@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ChaosImpactBallTypes.h"
 #include "ChaosImpactFxKit.generated.h"
 
 class UMaterialInstanceDynamic;
@@ -118,6 +119,9 @@ public:
 
 	/** Scales every piece made from now on (a bigger or smaller version of the same effect). */
 	float Scale = 1.0f;
+	/** 合体ボール: every piece made from now on turned toward this kind's colour (Spawn takes its context's). */
+	EChaosImpactBallType TintToward = EChaosImpactBallType::Normal;
+	float TintAmount = 0.0f;
 	/** A random stream for the jitter (seeded per effect so each looks a little different). */
 	FRandomStream Stream;
 

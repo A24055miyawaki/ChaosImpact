@@ -1,4 +1,5 @@
-#include "ChaosImpactDojoMenu.h"
+﻿#include "ChaosImpactDojoMenu.h"
+#include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactDojo.h"
@@ -18,14 +19,45 @@ using namespace ChaosImpactPaint;
 
 namespace
 {
-	constexpr int32 DojoVisibleRows = 9;
-	constexpr float DojoListX = 70.0f;
-	constexpr float DojoListY = 232.0f;
-	constexpr float DojoListW = 690.0f;
-	constexpr float DojoRowH = 60.0f;
-	constexpr float DojoPreviewX = 800.0f;
-	constexpr float DojoPreviewW = 730.0f;
-	constexpr float DojoVideoH = DojoPreviewW * 9.0f / 16.0f;
+	/**
+	 * Where everything is. The PC (and a phone held sideways): the list on the left, the lesson's clip on the right. スマホ版
+	 * held upright (2026-11-18): the groups across the top, the clip under them, its name and points, the list, the task;
+	 * もどる and はじめる at the foot. By touch no keys are named.
+	 */
+	struct FDojoLayout
+	{
+		bool bUpright = false;
+		int32 Rows = 9;
+		float ListX = 70.0f, ListY = 232.0f, ListW = 690.0f, RowH = 60.0f;
+		float PreviewX = 800.0f, PreviewY = 232.0f, PreviewW = 730.0f;
+		float VideoH = 730.0f * 9.0f / 16.0f;
+		float TabsLeft = 70.0f, TabsRight = 1530.0f, TabsTop = 138.0f, TabsH = 70.0f;
+		float TaskY = 778.0f;
+	};
+	FDojoLayout MakeDojoLayout(const bool bUpright)
+	{
+		FDojoLayout L;
+		if (bUpright)
+		{
+			L.bUpright = true;
+			L.TabsLeft = 30.0f; L.TabsRight = 870.0f; L.TabsTop = 146.0f; L.TabsH = 86.0f;
+			L.PreviewX = 50.0f; L.PreviewY = 262.0f; L.PreviewW = 800.0f; L.VideoH = 800.0f * 9.0f / 16.0f;
+			L.ListX = 40.0f; L.ListY = 870.0f; L.ListW = 820.0f; L.RowH = 72.0f; L.Rows = 6;
+			L.TaskY = 1316.0f;
+		}
+		return L;
+	}
+	const FDojoLayout& DojoL()
+	{
+		static const FDojoLayout Wide = MakeDojoLayout(false);
+		static const FDojoLayout Upright = MakeDojoLayout(true);
+		return UChaosImpactMenuWidget::IsUprightCanvas() ? Upright : Wide;
+	}
+	/** スマホ版 by touch: no keys to name. */
+	bool DojoTouch(const AChaosImpactPlayerController* Owner)
+	{
+		return UChaosImpactMenuWidget::IsPhoneBuild() && !ChaosImpactHints::IsPad(ChaosImpactHints::GetDevice(Owner));
+	}
 	const FLinearColor DojoCard(0.035f, 0.055f, 0.12f, 0.96f);
 	const FLinearColor DojoCardHi(0.07f, 0.13f, 0.3f, 1.0f);
 
@@ -119,33 +151,52 @@ void UChaosImpactDojoMenu::Open(AChaosImpactPlayerController* InController)
 
 FBox2D UChaosImpactDojoMenu::TabRect(const int32 Index) const
 {
+	const FDojoLayout& DL = DojoL();
 	// The groups share the width (list to preview's right edge).
 	const int32 Count = FMath::Max(ChaosImpactDojo::GetCategories().Num(), 1);
-	const float W = (DojoPreviewX + DojoPreviewW - DojoListX - (Count - 1) * 14.0f) / Count;
-	const float X = DojoListX + Index * (W + 14.0f);
-	return FBox2D(FVector2D(X, 138.0f), FVector2D(X + W, 208.0f));
+	const float Gap = DL.bUpright ? 10.0f : 14.0f;
+	const float W = (DL.TabsRight - DL.TabsLeft - (Count - 1) * Gap) / Count;
+	const float X = DL.TabsLeft + Index * (W + Gap);
+	return FBox2D(FVector2D(X, DL.TabsTop), FVector2D(X + W, DL.TabsTop + DL.TabsH));
 }
 
 int32 UChaosImpactDojoMenu::FirstVisible() const
 {
+	const FDojoLayout& DL = DojoL();
 	const int32 Count = ChaosImpactDojo::GetCategories()[Tab].Lessons.Num();
-	return FMath::Clamp(Selected - DojoVisibleRows / 2, 0, FMath::Max(Count - DojoVisibleRows, 0));
+	return FMath::Clamp(Selected - DL.Rows / 2, 0, FMath::Max(Count - DL.Rows, 0));
 }
 
 FBox2D UChaosImpactDojoMenu::RowRect(const int32 Row) const
 {
-	const float Y = DojoListY + Row * DojoRowH;
-	return FBox2D(FVector2D(DojoListX, Y), FVector2D(DojoListX + DojoListW, Y + DojoRowH - 8.0f));
+	const FDojoLayout& DL = DojoL();
+	const float Y = DL.ListY + Row * DL.RowH;
+	return FBox2D(FVector2D(DL.ListX, Y), FVector2D(DL.ListX + DL.ListW, Y + DL.RowH - 8.0f));
 }
 
 FBox2D UChaosImpactDojoMenu::StartRect() const
 {
-	return FBox2D(FVector2D(DojoPreviewX + DojoPreviewW - 250.0f, 778.0f), FVector2D(DojoPreviewX + DojoPreviewW, 840.0f));
+	const FDojoLayout& DL = DojoL();
+	if (DL.bUpright)
+	{
+		return FBox2D(FVector2D(440.0f, 1446.0f), FVector2D(860.0f, 1536.0f));
+	}
+	return FBox2D(FVector2D(DL.PreviewX + DL.PreviewW - 250.0f, 778.0f), FVector2D(DL.PreviewX + DL.PreviewW, 840.0f));
 }
 
 FBox2D UChaosImpactDojoMenu::BackRect() const
 {
-	return FBox2D(FVector2D(DojoListX, 790.0f), FVector2D(DojoListX + 250.0f, 840.0f));
+	const FDojoLayout& DL = DojoL();
+	if (DL.bUpright)
+	{
+		return FBox2D(FVector2D(40.0f, 1446.0f), FVector2D(420.0f, 1536.0f));
+	}
+	if (DojoTouch(Controller.Get()))
+	{
+		// (By touch: bigger, a thumb's size.)
+		return FBox2D(FVector2D(DL.ListX, 778.0f), FVector2D(DL.ListX + 300.0f, 852.0f));
+	}
+	return FBox2D(FVector2D(DL.ListX, 790.0f), FVector2D(DL.ListX + 250.0f, 840.0f));
 }
 
 FString UChaosImpactDojoMenu::GetSelectedClip() const
@@ -276,6 +327,7 @@ bool UChaosImpactDojoMenu::HandleAnalog(const FAnalogInputEvent& Event)
 
 void UChaosImpactDojoMenu::HandleMouseMove(const FVector2D& DesignPoint)
 {
+	const FDojoLayout& DL = DojoL();
 	if (DesignPoint.Equals(Mouse, 0.5))
 	{
 		return;
@@ -283,7 +335,7 @@ void UChaosImpactDojoMenu::HandleMouseMove(const FVector2D& DesignPoint)
 	Mouse = DesignPoint;
 	const int32 Count = ChaosImpactDojo::GetCategories()[Tab].Lessons.Num();
 	const int32 First = FirstVisible();
-	for (int32 Row = 0; Row < DojoVisibleRows && First + Row < Count; ++Row)
+	for (int32 Row = 0; Row < DL.Rows && First + Row < Count; ++Row)
 	{
 		if (RowRect(Row).IsInside(DesignPoint) && Selected != First + Row)
 		{
@@ -299,6 +351,7 @@ void UChaosImpactDojoMenu::HandleMouseMove(const FVector2D& DesignPoint)
 
 bool UChaosImpactDojoMenu::HandleClick(const FVector2D& DesignPoint)
 {
+	const FDojoLayout& DL = DojoL();
 	for (int32 Index = 0; Index < ChaosImpactDojo::GetCategories().Num(); ++Index)
 	{
 		if (TabRect(Index).IsInside(DesignPoint))
@@ -309,7 +362,7 @@ bool UChaosImpactDojoMenu::HandleClick(const FVector2D& DesignPoint)
 	}
 	const int32 Count = ChaosImpactDojo::GetCategories()[Tab].Lessons.Num();
 	const int32 First = FirstVisible();
-	for (int32 Row = 0; Row < DojoVisibleRows && First + Row < Count; ++Row)
+	for (int32 Row = 0; Row < DL.Rows && First + Row < Count; ++Row)
 	{
 		if (RowRect(Row).IsInside(DesignPoint))
 		{
@@ -342,6 +395,7 @@ bool UChaosImpactDojoMenu::HandleClick(const FVector2D& DesignPoint)
 
 int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer) const
 {
+	const FDojoLayout& DL = DojoL();
 	if (!bOpen)
 	{
 		return Layer;
@@ -364,9 +418,12 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller.Get());
 	const bool bSwap = Device == EChaosImpactDevice::Switch && ChaosImpactSettings::IsSwitchConfirmRight();
 	const FLinearColor Accent = Group.Color;
+	const bool bTouch = DojoTouch(Controller.Get());
+	const float PageW = DL.bUpright ? 900.0f : 1600.0f;
+	const float PageH = DL.bUpright ? 1600.0f : 900.0f;
 
 	// ---- The backdrop: deep navy over the stage, the group's colour washing in from the right, slow stripes, its name huge.
-	HudPoly(Back, {FVector2D(-1400.0, 0.0), FVector2D(3000.0, 0.0), FVector2D(3000.0, 900.0), FVector2D(-1400.0, 900.0)},
+	HudPoly(Back, {FVector2D(-1400.0, -400.0), FVector2D(3000.0, -400.0), FVector2D(3000.0, 2000.0), FVector2D(-1400.0, 2000.0)},
 		MakeFill(FLinearColor(0.012f, 0.024f, 0.06f, 0.94f), FLinearColor(0.004f, 0.008f, 0.02f, 0.97f)), 1);
 	HudPoly(HudAbove(Back, 1), {FVector2D(900.0, 0.0), FVector2D(3000.0, 0.0), FVector2D(3000.0, 900.0), FVector2D(600.0, 900.0)},
 		SolidFill(WithAlpha(Accent, 0.07f)), 1);
@@ -376,12 +433,12 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		HudPoly(HudAbove(Back, 1), {FVector2D(X, 0.0), FVector2D(X + 36.0f, 0.0), FVector2D(X - 264.0f, 900.0), FVector2D(X - 300.0f, 900.0)},
 			SolidFill(WithAlpha(Paper, 0.018f)), 1);
 	}
-	HudAbove(Back, 2).Text(Group.English, 1560.0f, 620.0f, 150.0f, WithAlpha(Accent, 0.07f), ETextAlign::Right, TEXT("BlackItalic"));
+	HudAbove(Back, 2).Text(Group.English, PageW - 40.0f, PageH - 280.0f, DL.bUpright ? 110.0f : 150.0f, WithAlpha(Accent, 0.07f), ETextAlign::Right, TEXT("BlackItalic"));
 	Back.Box(-1400.0f, 0.0f, 4400.0f, 5.0f, Accent);
 
 	// ---- The title: an emblem (a target, ticking round), 訓練場, the line under it.
 	{
-		const FVector2D E(112.0f, 70.0f);
+		const FVector2D E(DL.bUpright ? 76.0f : 112.0f, 70.0f);
 		P.Disc(E, 44.0f, Navy);
 		P.Disc(E, 40.0f, FLinearColor(0.05f, 0.09f, 0.2f, 1.0f));
 		for (int32 Tick = 0; Tick < 12; ++Tick)
@@ -393,10 +450,13 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		HudAbove(P, 1).Ring(E, 24.0f, Paper, 3.0f);
 		HudAbove(P, 1).Ring(E, 13.0f, Accent, 4.0f);
 		HudAbove(P, 1).Disc(E, 5.0f, Paper);
-		HudText3D(HudAbove(P, 2), TEXT("訓練場"), 172.0f, 14.0f, 50.0f, Paper, ETextAlign::Left);
+		const float TitleX = E.X + 60.0f;
+		HudText3D(HudAbove(P, 2), TEXT("訓練場"), TitleX, 14.0f, 50.0f, Paper, ETextAlign::Left);
 		const float TitleW = HudMeasure(TEXT("訓練場"), 50.0f, TEXT("BlackItalic"));
-		HudAbove(P, 2).Text(TEXT("DOJO"), 180.0f + TitleW + 14.0f, 44.0f, 18.0f, WithAlpha(Accent, 0.9f), ETextAlign::Left, TEXT("BlackItalic"));
-		HudAbove(P, 2).Text(TEXT("ゲームのしくみを、ひとつずつ体でおぼえよう"), 176.0f, 90.0f, 16.0f, WithAlpha(Paper, 0.6f), ETextAlign::Left, TEXT("Bold"));
+		HudAbove(P, 2).Text(TEXT("DOJO"), TitleX + 8.0f + TitleW + 14.0f, 44.0f, 18.0f, WithAlpha(Accent, 0.9f), ETextAlign::Left, TEXT("BlackItalic"));
+		const FString About = TEXT("ゲームのしくみを、ひとつずつ体でおぼえよう");
+		HudAbove(P, 2).Text(About, TitleX + 4.0f, 90.0f, HudFit(About, bTouch ? 20.0f : 16.0f, DL.bUpright ? 400.0f : 700.0f, TEXT("Bold")), WithAlpha(Paper, 0.6f),
+			ETextAlign::Left, TEXT("Bold"));
 	}
 	// ---- Everything cleared: a ring filling round its percentage.
 	{
@@ -408,13 +468,13 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 			Total += All[Index].Lessons.Num();
 		}
 		const float Share = static_cast<float>(Cleared) / FMath::Max(Total, 1);
-		const FVector2D C(1486.0f, 70.0f);
+		const FVector2D C(PageW - 114.0f, 70.0f);
 		P.Disc(C, 46.0f, Navy);
 		P.Ring(C, 38.0f, FLinearColor(0.08f, 0.12f, 0.24f, 1.0f), 9.0f);
 		HudAbove(P, 1).Arc(C, 38.0f, -90.0f, -90.0f + 360.0f * Share * In, Gold, 9.0f);
 		HudAbove(P, 2).Text(FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Share * 100.0f)), C.X, C.Y - 16.0f, 22.0f, Paper, ETextAlign::Center, TEXT("Black"));
-		HudAbove(P, 2).Text(TEXT("クリア"), 1424.0f, 40.0f, 16.0f, WithAlpha(Paper, 0.6f), ETextAlign::Right, TEXT("Bold"));
-		HudAbove(P, 2).Text(FString::Printf(TEXT("%d / %d"), Cleared, Total), 1424.0f, 64.0f, 26.0f, Paper, ETextAlign::Right, TEXT("Black"));
+		HudAbove(P, 2).Text(TEXT("クリア"), C.X - 62.0f, 40.0f, 16.0f, WithAlpha(Paper, 0.6f), ETextAlign::Right, TEXT("Bold"));
+		HudAbove(P, 2).Text(FString::Printf(TEXT("%d / %d"), Cleared, Total), C.X - 62.0f, 64.0f, 26.0f, Paper, ETextAlign::Right, TEXT("Black"));
 	}
 
 	// ---- The groups: slanted tabs with their sign, name, English and progress; the chosen one raised and lit.
@@ -438,6 +498,19 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		}
 		HudShard(HudAbove(P, 1), Shape, bOn ? MakeFill(Color * 1.05f, Color * 0.5f) : MakeFill(FLinearColor(0.07f, 0.1f, 0.2f, 0.97f),
 			FLinearColor(0.035f, 0.05f, 0.11f, 0.97f)), 2.5f, FVector2D(4.0, 5.0), bOn ? Paper : WithAlpha(Color, 0.55f));
+		if (DL.bUpright)
+		{
+			// Upright (five across, narrow): its sign above its name, its count in the corner.
+			GroupGlyph(HudAbove(P, 5), Index, FVector2D(R.GetCenter().X, Top + 26.0f), 16.0f, bOn ? Paper : Color, Time);
+			const float NameSize = HudFit(All[Index].Name, 22.0f, static_cast<float>(R.GetSize().X) - 22.0f);
+			HudAbove(P, 8).Text(All[Index].Name, static_cast<float>(R.GetCenter().X), Top + 50.0f, NameSize, Paper, ETextAlign::Center, TEXT("Black"));
+			const int32 DoneUp = ChaosImpactDojo::CountCleared(Index);
+			const int32 CountUp = All[Index].Lessons.Num();
+			RoundedBox(HudAbove(P, 6), R.Min.X + 16.0f, R.Max.Y - 9.0f, R.GetSize().X - 32.0f, 5.0f, 2.5f, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f));
+			RoundedBox(HudAbove(P, 7), R.Min.X + 16.0f, R.Max.Y - 9.0f, (R.GetSize().X - 32.0f) * DoneUp / FMath::Max(CountUp, 1), 5.0f, 2.5f,
+				DoneUp >= CountUp ? Gold : Paper);
+			continue;
+		}
 		GroupGlyph(HudAbove(P, 5), Index, FVector2D(R.Min.X + 44.0f, R.GetCenter().Y - Lift * 0.5f), 22.0f, bOn ? Paper : Color, Time);
 		const FPainter Label = HudAbove(P, 8);
 		Label.Text(All[Index].Name, R.Min.X + 78.0f, Top + 8.0f, HudFit(All[Index].Name, 24.0f, R.GetSize().X - 180.0f), Paper, ETextAlign::Left, TEXT("Black"));
@@ -457,10 +530,13 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		const FBox2D B = TabRect(FMath::Min(FMath::FloorToInt(TabShown) + 1, All.Num() - 1));
 		const float F = FMath::Frac(TabShown);
 		const float X = FMath::Lerp(A.Min.X, B.Min.X, F);
-		RoundedBox(HudAbove(P, 9), X + 18.0f, 214.0f, A.GetSize().X - 36.0f, 5.0f, 2.5f, Accent);
-		// The keys that change it, at either end.
-		MenuKeyCap(HudAbove(P, 9), DojoListX - 54.0f, 158.0f, ChaosImpactHints::Text(Device, TEXT("{LB|Q}")), 14.0f);
-		MenuKeyCap(HudAbove(P, 9), TabRect(All.Num() - 1).Max.X + 12.0f, 158.0f, ChaosImpactHints::Text(Device, TEXT("{RB|E}")), 14.0f);
+		RoundedBox(HudAbove(P, 9), X + 18.0f, DL.TabsTop + DL.TabsH + 6.0f, A.GetSize().X - 36.0f, 5.0f, 2.5f, Accent);
+		// The keys that change it, at either end (none by touch).
+		if (!bTouch)
+		{
+			MenuKeyCap(HudAbove(P, 9), DL.ListX - 54.0f, 158.0f, ChaosImpactHints::Text(Device, TEXT("{LB|Q}")), 14.0f);
+			MenuKeyCap(HudAbove(P, 9), TabRect(All.Num() - 1).Max.X + 12.0f, 158.0f, ChaosImpactHints::Text(Device, TEXT("{RB|E}")), 14.0f);
+		}
 	}
 
 	// ---- The lessons: a card each, the chosen one lit with a highlight that glides to it.
@@ -473,11 +549,11 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 	}
 	SelShown = FMath::FInterpTo(SelShown, static_cast<float>(SelRow), Dt, 18.0f);
 	{
-		const float Y = DojoListY + SelShown * DojoRowH;
+		const float Y = DL.ListY + SelShown * DL.RowH;
 		const float Glow = 0.5f + 0.5f * FMath::Sin(Time * 5.0f);
-		RoundedBox(P, DojoListX - 6.0f, Y - 6.0f, DojoListW + 12.0f, DojoRowH + 4.0f, 14.0f, WithAlpha(Accent, 0.18f + 0.1f * Glow));
-		RoundedBox(HudAbove(P, 1), DojoListX, Y, DojoListW, DojoRowH - 8.0f, 10.0f, DojoCardHi);
-		RoundedBox(HudAbove(P, 2), DojoListX, Y, 8.0f, DojoRowH - 8.0f, 4.0f, Accent);
+		RoundedBox(P, DL.ListX - 6.0f, Y - 6.0f, DL.ListW + 12.0f, DL.RowH + 4.0f, 14.0f, WithAlpha(Accent, 0.18f + 0.1f * Glow));
+		RoundedBox(HudAbove(P, 1), DL.ListX, Y, DL.ListW, DL.RowH - 8.0f, 10.0f, DojoCardHi);
+		RoundedBox(HudAbove(P, 2), DL.ListX, Y, 8.0f, DL.RowH - 8.0f, 4.0f, Accent);
 	}
 	int32 FirstOpen = INDEX_NONE;
 	for (int32 Index = 0; Index < Count; ++Index)
@@ -488,7 +564,7 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 			break;
 		}
 	}
-	for (int32 Row = 0; Row < DojoVisibleRows && First + Row < Count; ++Row)
+	for (int32 Row = 0; Row < DL.Rows && First + Row < Count; ++Row)
 	{
 		const int32 Index = First + Row;
 		const FChaosImpactDojoLesson& L = Group.Lessons[Index];
@@ -517,11 +593,15 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 			HudAbove(Card, 5).Text(FString::FromInt(Index + 1), Badge.X, Badge.Y - 13.0f, 18.0f, Paper, ETextAlign::Center, TEXT("Black"));
 		}
 		const float TextX = R.Min.X + Shift + 76.0f;
-		const float TextW = DojoListW - 76.0f - 120.0f;
-		HudAbove(Card, 5).Text(L.Name, TextX, R.Min.Y + 2.0f, HudFit(L.Name, 20.0f, TextW), bOn ? Paper : WithAlpha(Paper, 0.88f), ETextAlign::Left,
+		const float TextW = DL.ListW - 76.0f - 120.0f;
+		// (By touch bigger, as the row's height allows.)
+		const bool bTallRow = DL.RowH >= 70.0f;
+		const float NameSize = bTouch ? (bTallRow ? 24.0f : 21.0f) : 20.0f;
+		const float SummarySize = bTouch ? (bTallRow ? 16.0f : 13.0f) : 12.0f;
+		HudAbove(Card, 5).Text(L.Name, TextX, R.Min.Y + 2.0f, HudFit(L.Name, NameSize, TextW), bOn ? Paper : WithAlpha(Paper, 0.88f), ETextAlign::Left,
 			TEXT("Black"));
-		HudAbove(Card, 5).Text(L.Summary, TextX, R.Min.Y + 31.0f, HudFit(L.Summary, 12.0f, TextW, TEXT("Bold")), WithAlpha(Paper, bOn ? 0.75f : 0.5f),
-			ETextAlign::Left, TEXT("Bold"));
+		HudAbove(Card, 5).Text(L.Summary, TextX, R.Min.Y + NameSize * 1.4f + 2.0f, HudFit(L.Summary, SummarySize, TextW, TEXT("Bold")),
+			WithAlpha(Paper, bOn ? 0.75f : 0.5f), ETextAlign::Left, TEXT("Bold"));
 		// Its state at the right: CLEAR, or NEXT on the first not yet cleared; a chevron on the chosen one.
 		const float ChipX = R.Max.X + Shift - 108.0f;
 		if (bCleared || Index == FirstOpen)
@@ -539,14 +619,14 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 	}
 	if (First > 0)
 	{
-		HudPoly(P, {FVector2D(DojoListX + DojoListW * 0.5f, DojoListY - 22.0f), FVector2D(DojoListX + DojoListW * 0.5f - 10.0f, DojoListY - 12.0f),
-			FVector2D(DojoListX + DojoListW * 0.5f + 10.0f, DojoListY - 12.0f)}, SolidFill(WithAlpha(Paper, 0.6f)), 1);
+		HudPoly(P, {FVector2D(DL.ListX + DL.ListW * 0.5f, DL.ListY - 22.0f), FVector2D(DL.ListX + DL.ListW * 0.5f - 10.0f, DL.ListY - 12.0f),
+			FVector2D(DL.ListX + DL.ListW * 0.5f + 10.0f, DL.ListY - 12.0f)}, SolidFill(WithAlpha(Paper, 0.6f)), 1);
 	}
-	if (First + DojoVisibleRows < Count)
+	if (First + DL.Rows < Count)
 	{
-		const float Y = DojoListY + DojoVisibleRows * DojoRowH - 4.0f;
-		HudPoly(P, {FVector2D(DojoListX + DojoListW * 0.5f, Y + 10.0f), FVector2D(DojoListX + DojoListW * 0.5f - 10.0f, Y),
-			FVector2D(DojoListX + DojoListW * 0.5f + 10.0f, Y)}, SolidFill(WithAlpha(Paper, 0.6f)), 1);
+		const float Y = DL.ListY + DL.Rows * DL.RowH - 4.0f;
+		HudPoly(P, {FVector2D(DL.ListX + DL.ListW * 0.5f, Y + 10.0f), FVector2D(DL.ListX + DL.ListW * 0.5f - 10.0f, Y),
+			FVector2D(DL.ListX + DL.ListW * 0.5f + 10.0f, Y)}, SolidFill(WithAlpha(Paper, 0.6f)), 1);
 	}
 
 	// ---- The chosen lesson: its clip, filmed from the game, in a frame; its name, its points and its task.
@@ -556,28 +636,28 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		const float Since = static_cast<float>(Now - MovedAt);
 		const float Swap = EaseOut(FMath::Clamp(Since / 0.22f, 0.0f, 1.0f));
 		const FPainter Card{Design, Elements, Layer + 4, In * Swap};
-		const float AX = DojoPreviewX + (1.0f - Swap) * 24.0f;
-		const float AY = DojoListY;
+		const float AX = DL.PreviewX + (1.0f - Swap) * 24.0f;
+		const float AY = DL.PreviewY;
 		// The frame: a dark bezel, a rim in the group's colour, the picture inside.
-		RoundedBox(Card, AX - 10.0f, AY - 10.0f, DojoPreviewW + 20.0f, DojoVideoH + 20.0f, 18.0f, Navy);
-		RoundedBox(HudAbove(Card, 1), AX - 6.0f, AY - 6.0f, DojoPreviewW + 12.0f, DojoVideoH + 12.0f, 16.0f, WithAlpha(Accent, 0.85f));
-		RoundedBox(HudAbove(Card, 2), AX - 2.0f, AY - 2.0f, DojoPreviewW + 4.0f, DojoVideoH + 4.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 1.0f));
+		RoundedBox(Card, AX - 10.0f, AY - 10.0f, DL.PreviewW + 20.0f, DL.VideoH + 20.0f, 18.0f, Navy);
+		RoundedBox(HudAbove(Card, 1), AX - 6.0f, AY - 6.0f, DL.PreviewW + 12.0f, DL.VideoH + 12.0f, 16.0f, WithAlpha(Accent, 0.85f));
+		RoundedBox(HudAbove(Card, 2), AX - 2.0f, AY - 2.0f, DL.PreviewW + 4.0f, DL.VideoH + 4.0f, 12.0f, FLinearColor(0.0f, 0.0f, 0.0f, 1.0f));
 		const AChaosImpactDojo* Dojo = Controller.IsValid() ? AChaosImpactDojo::Find(Controller->GetWorld()) : nullptr;
 		const UChaosImpactDojoVideo* Video = DemoVideo ? DemoVideo.Get() : Dojo ? Dojo->GetVideo() : nullptr;
 		const FSlateBrush* Picture = Video ? Video->GetBrush() : nullptr;
 		if (Picture)
 		{
-			FSlateDrawElement::MakeBox(Elements, Layer + 8, Design.ToPaintGeometry(FVector2f(DojoPreviewW, DojoVideoH), FSlateLayoutTransform(FVector2f(AX, AY))),
+			FSlateDrawElement::MakeBox(Elements, Layer + 8, Design.ToPaintGeometry(FVector2f(DL.PreviewW, DL.VideoH), FSlateLayoutTransform(FVector2f(AX, AY))),
 				Picture, ESlateDrawEffect::None, FLinearColor(1.0f, 1.0f, 1.0f, Card.Alpha));
 		}
 		else
 		{
 			const EChaosImpactDojoArt Art = L.Slides.IsEmpty() ? EChaosImpactDojoArt::Review : L.Slides[0].Art;
-			AChaosImpactDojo::PaintArt(HudAbove(Card, 4), Art, L.Ball, AX, AY, DojoPreviewW, DojoVideoH, Time);
+			AChaosImpactDojo::PaintArt(HudAbove(Card, 4), Art, L.Ball, AX, AY, DL.PreviewW, DL.VideoH, Time);
 		}
 		// The clip's progress, and a tag in its corner.
-		RoundedBox(HudAbove(Card, 12), AX, AY + DojoVideoH - 6.0f, DojoPreviewW, 6.0f, 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
-		HudAbove(Card, 13).Box(AX, AY + DojoVideoH - 6.0f, DojoPreviewW * (Video ? Video->GetProgress() : FMath::Frac(Time / 4.0f)), 6.0f,
+		RoundedBox(HudAbove(Card, 12), AX, AY + DL.VideoH - 6.0f, DL.PreviewW, 6.0f, 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		HudAbove(Card, 13).Box(AX, AY + DL.VideoH - 6.0f, DL.PreviewW * (Video ? Video->GetProgress() : FMath::Frac(Time / 4.0f)), 6.0f,
 			FLinearColor(1.0f, 0.2f, 0.22f, 1.0f));
 		RoundedBox(HudAbove(Card, 12), AX + 14.0f, AY + 14.0f, 132.0f, 30.0f, 15.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
 		HudAbove(Card, 13).Disc(FVector2D(AX + 32.0f, AY + 29.0f), 6.0f, FLinearColor(1.0f, 0.2f, 0.22f, 0.6f + 0.4f * FMath::Sin(Time * 5.0f)));
@@ -585,32 +665,33 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 		if (ChaosImpactDojo::IsCleared(L.Id))
 		{
 			// The CLEAR stamp, tilted in the corner.
-			const FGeometry Stamp = MakeSkewed(Design, AX + DojoPreviewW - 190.0f, AY + 16.0f, 170.0f, 54.0f, -0.2f);
+			const FGeometry Stamp = MakeSkewed(Design, AX + DL.PreviewW - 190.0f, AY + 16.0f, 170.0f, 54.0f, -0.2f);
 			const FPainter SP{Stamp, Elements, Layer + 20, Card.Alpha};
 			RoundedBox(SP, 0.0f, 0.0f, 170.0f, 54.0f, 10.0f, Navy);
 			RoundedBox(HudAbove(SP, 1), 4.0f, 4.0f, 162.0f, 46.0f, 8.0f, Gold);
 			HudAbove(SP, 2).Text(TEXT("CLEAR"), 85.0f, 10.0f, 26.0f, Navy, ETextAlign::Center, TEXT("BlackItalic"));
 		}
 		// Its name with its number.
-		const float TY = AY + DojoVideoH + 22.0f;
+		const float TY = AY + DL.VideoH + 22.0f;
 		const FString Number = FString::Printf(TEXT("LESSON %d"), Selected + 1);
 		const float NumberW = HudMeasure(Number, 14.0f, TEXT("BlackItalic")) + 22.0f;
 		RoundedBox(HudAbove(Card, 2), AX, TY + 8.0f, NumberW, 26.0f, 13.0f, Accent);
 		HudAbove(Card, 3).Text(Number, AX + NumberW * 0.5f, TY + 11.0f, 14.0f, Paper, ETextAlign::Center, TEXT("BlackItalic"));
-		HudAbove(Card, 3).Text(L.Name, AX + NumberW + 14.0f, TY, HudFit(L.Name, 30.0f, DojoPreviewW - NumberW - 20.0f), Paper, ETextAlign::Left,
+		HudAbove(Card, 3).Text(L.Name, AX + NumberW + 14.0f, TY, HudFit(L.Name, 30.0f, DL.PreviewW - NumberW - 20.0f), Paper, ETextAlign::Left,
 			TEXT("Black"));
 		// Its points, from its slides.
 		float PY = TY + 50.0f;
 		for (int32 Point = 0; Point < FMath::Min(L.Slides.Num(), 2); ++Point)
 		{
 			HudAbove(Card, 3).Disc(FVector2D(AX + 9.0f, PY + 13.0f), 4.0f, Accent);
-			HudAbove(Card, 3).Text(L.Slides[Point].Text, AX + 24.0f, PY, HudFit(L.Slides[Point].Text, 17.0f, DojoPreviewW - 30.0f, TEXT("Bold")),
+			HudAbove(Card, 3).Text(L.Slides[Point].Text, AX + 24.0f, PY, HudFit(L.Slides[Point].Text, 17.0f, DL.PreviewW - 30.0f, TEXT("Bold")),
 				WithAlpha(Paper, 0.82f), ETextAlign::Left, TEXT("Bold"));
 			PY += 27.0f;
 		}
 		// The task, with what it counts.
-		const float KY = 778.0f;
-		const float KW = DojoPreviewW - 270.0f;
+		// (Upright: across the screen, above もどる / はじめる.)
+		const float KY = DL.TaskY;
+		const float KW = DL.bUpright ? DL.PreviewW : DL.PreviewW - 270.0f;
 		RoundedBox(HudAbove(Card, 2), AX, KY, KW, 62.0f, 12.0f, FLinearColor(0.05f, 0.08f, 0.18f, 1.0f));
 		RoundedBox(HudAbove(Card, 3), AX, KY, 70.0f, 62.0f, 12.0f, Accent);
 		HudAbove(Card, 4).Text(TEXT("課題"), AX + 35.0f, KY + 17.0f, 19.0f, Paper, ETextAlign::Center, TEXT("Black"));
@@ -625,17 +706,36 @@ int32 UChaosImpactDojoMenu::Paint(const FGeometry& Design, FSlateWindowElementLi
 			FVector2D(S.Min.X, S.Max.Y)};
 		HudPoly(HudAbove(Card, 2), HudInflate(Button, 5.0f + 5.0f * Pulse), SolidFill(WithAlpha(Accent, 0.25f + 0.2f * Pulse)), 1);
 		HudShard(HudAbove(Card, 3), Button, MakeFill(Accent * 1.1f, Accent * 0.55f), 2.5f, FVector2D(4.0, 5.0), Paper);
-		const FString StartKey = ChaosImpactHints::Key(Device, bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom, TEXT("Enter"));
-		const float CapW = MenuKeyCap(HudAbove(Card, 8), S.Min.X + 30.0f, S.Min.Y + 17.0f, StartKey, 15.0f);
-		const float StartSize = HudFit(TEXT("はじめる"), 24.0f, S.GetSize().X - CapW - 74.0f);
-		HudAbove(Card, 8).Text(TEXT("はじめる"), S.Min.X + 42.0f + CapW, S.Min.Y + (62.0f - StartSize * 1.38f) * 0.5f, StartSize, Paper, ETextAlign::Left,
-			TEXT("Black"));
+		if (bTouch)
+		{
+			// (By touch: just the word, big.)
+			const float StartSize = HudFit(TEXT("はじめる"), 32.0f, S.GetSize().X - 60.0f);
+			HudAbove(Card, 8).Text(TEXT("はじめる"), S.GetCenter().X, S.GetCenter().Y - StartSize * 0.72f, StartSize, Paper, ETextAlign::Center, TEXT("Black"));
+		}
+		else
+		{
+			const FString StartKey = ChaosImpactHints::Key(Device, bSwap ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_FaceButton_Bottom, TEXT("Enter"));
+			const float CapW = MenuKeyCap(HudAbove(Card, 8), S.Min.X + 30.0f, S.Min.Y + 17.0f, StartKey, 15.0f);
+			const float StartSize = HudFit(TEXT("はじめる"), 24.0f, S.GetSize().X - CapW - 74.0f);
+			HudAbove(Card, 8).Text(TEXT("はじめる"), S.Min.X + 42.0f + CapW, S.Min.Y + (62.0f - StartSize * 1.38f) * 0.5f, StartSize, Paper, ETextAlign::Left,
+				TEXT("Black"));
+		}
 	}
 
 	// ---- Back, and the keys along the bottom.
 	{
 		const FBox2D B = BackRect();
 		RoundedBox(P, B.Min.X, B.Min.Y, B.GetSize().X, B.GetSize().Y, 12.0f, DojoCard);
+		if (bTouch)
+		{
+			// (By touch: もどる with its arrow, big; no keys along the bottom.)
+			const FVector2D Arrow(B.Min.X + 30.0f, B.GetCenter().Y);
+			HudAbove(P, 2).Line(Arrow + FVector2D(12.0, -13.0), Arrow, Paper, 5.0f);
+			HudAbove(P, 2).Line(Arrow, Arrow + FVector2D(12.0, 13.0), Paper, 5.0f);
+			const float BackSize = HudFit(TEXT("モード選択へ"), 28.0f, B.GetSize().X - 74.0f);
+			HudAbove(P, 2).Text(TEXT("モード選択へ"), B.Min.X + 56.0f, B.GetCenter().Y - BackSize * 0.72f, BackSize, Paper, ETextAlign::Left, TEXT("Black"));
+			return Layer + 40;
+		}
 		const float CapW = MenuKeyCap(HudAbove(P, 2), B.Min.X + 16.0f, B.Min.Y + 12.0f,
 			ChaosImpactHints::Key(Device, bSwap ? EKeys::Gamepad_FaceButton_Bottom : EKeys::Gamepad_FaceButton_Right, TEXT("Esc")), 14.0f);
 		HudAbove(P, 2).Text(TEXT("モード選択へ"), B.Min.X + 28.0f + CapW, B.Min.Y + 12.0f, 18.0f, WithAlpha(Paper, 0.85f), ETextAlign::Left, TEXT("Black"));

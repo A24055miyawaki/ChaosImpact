@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 
@@ -72,6 +72,13 @@ struct FChaosImpactRecords
 	FChaosImpactRating FfaRating;
 };
 
+/** What a player plays on (a phone or a PC) and how ("key", "pad" or "touch"). */
+struct FChaosImpactPlayerKind
+{
+	bool bPhone = false;
+	FString Device = TEXT("pad");
+};
+
 /** A ランダムマッチ 1v1 the relay found: who it is against and where both stand on accepting it. */
 struct FChaosImpactDuelOffer
 {
@@ -80,6 +87,9 @@ struct FChaosImpactDuelOffer
 	int32 Character = 0;
 	int32 Colour = 0;
 	bool bKeyboard = false;
+	/** How they play ("key", "pad" or "touch") and on what (a phone, or a PC). */
+	FString Device = TEXT("pad");
+	bool bPhone = false;
 	FChaosImpactDuelRecord Record;
 	/** Round trip through the relay, the most it takes (a direct line, found once they connect, is quicker). */
 	int32 PingMs = 0;

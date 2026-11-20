@@ -83,4 +83,15 @@ private:
 	float DevCycleElapsed = 0.0f;
 	int32 DevCycleShots = 0;
 	float ViewSyncElapsed = 0.0f;
+
+	/** スマホ版: fingers on the field (a tap on the buttons, one finger looks, two move the free camera). */
+	void UpdateTouch(APlayerController* Viewer);
+	bool bTouchWasDown[2] = {false, false};
+	FVector2D TouchLast[2];
+	FVector2D TouchStart = FVector2D::ZeroVector;
+	double TouchStartAt = 0.0;
+	bool bTouchMoved = false;
+	/** This frame's look (degrees) and move (-1..1, forward / right) from the fingers. */
+	FVector2D TouchLook = FVector2D::ZeroVector;
+	FVector2D TouchMove = FVector2D::ZeroVector;
 };

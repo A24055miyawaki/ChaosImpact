@@ -1,10 +1,11 @@
-#include "ChaosImpactRecordBoards.h"
+﻿#include "ChaosImpactRecordBoards.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
 #include "ChaosImpactHints.h"
 #include "ChaosImpactMatchTypes.h"
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactPaint.h"
 #include "ChaosImpactParty.h"
 #include "ChaosImpactPlayerController.h"
@@ -27,6 +28,23 @@ namespace
 	const FLinearColor RbBronze(0.86f, 0.52f, 0.26f, 1.0f);
 	constexpr float RbListLeft = 80.0f;
 	constexpr float RbTop = 176.0f;
+
+	/**
+	 * スマホ版 upright (2026-11-18): 対戦履歴 the list above, the chosen game under it; ランキング the podium and this player's
+	 * place above, the list from 4th under them. Drawn as the landscape page's parts, moved (never shrunk).
+	 */
+	bool RbUpright()
+	{
+		return UChaosImpactMenuWidget::IsUprightCanvas();
+	}
+	/** A part of the landscape page drawn elsewhere: its point From lands on To. */
+	FGeometry RbMove(const FGeometry& Design, const FVector2D& From, const FVector2D& To)
+	{
+		return Design.MakeChild(FVector2f(Design.GetLocalSize()), FSlateLayoutTransform(1.0f, FVector2f(To - From)));
+	}
+	/** Upright: where the history list and the ranking list start. */
+	constexpr float RbUprightHistoryTop = 290.0f;
+	constexpr float RbUprightRankingTop = 856.0f;
 
 	bool RbIsAny(const FKey& Key, std::initializer_list<FKey> Keys)
 	{
@@ -69,7 +87,10 @@ namespace
 
 	FString RbStageName(const int32 Stage)
 	{
-		return Stage < 0 ? FString(ChaosImpactMatch::GetDuelStageName()) : ChaosImpactMatch::GetStageLabel(Stage);
+		// (-1: a 1v1 from before there were more 1v1 stages, played on カオスアリーナ.)
+		return Stage < 0 ? FString(ChaosImpactMatch::GetDuelStageName(0))
+			: Stage >= ChaosImpactMatch::DuelStageHistoryBase ? FString(ChaosImpactMatch::GetDuelStageName(Stage - ChaosImpactMatch::DuelStageHistoryBase))
+			: ChaosImpactMatch::GetStageLabel(Stage);
 	}
 
 	FDateTime RbLocal(const int64 At)
@@ -213,6 +234,7 @@ void UChaosImpactRecordBoards::Request(const bool bForDuel, const int32 Page)
 	Message->SetStringField(TEXT("name"), Sessions->GetPlayerName());
 	Message->SetStringField(TEXT("mode"), bForDuel ? TEXT("duel") : TEXT("ffa"));
 	Message->SetNumberField(TEXT("page"), Page);
+	Message->SetStringField(TEXT("platform"), UChaosImpactSessionSubsystem::GetLocalPlatformKey());
 	++Pending;
 	const int32 Asked = Generation;
 	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactRecordBoards>(this), Asked, bForDuel, Page](TSharedPtr<FJsonObject> Reply, int32)
@@ -304,6 +326,8 @@ void UChaosImpactRecordBoards::ReadGames(const TSharedPtr<FJsonObject>& Reply, T
 			(*Opponent)->TryGetStringField(TEXT("n"), Game.Opponent);
 			Game.OpponentCharacter = (*Opponent)->TryGetNumberField(TEXT("ch"), Number) ? static_cast<int32>(Number) : 0;
 			Game.OpponentColour = (*Opponent)->TryGetNumberField(TEXT("co"), Number) ? static_cast<int32>(Number) : -1;
+			FString Platform;
+			Game.bOpponentPhone = (*Opponent)->TryGetStringField(TEXT("p"), Platform) && Platform == TEXT("phone");
 		}
 		const TArray<TSharedPtr<FJsonValue>>* Seats = nullptr;
 		if (Item->TryGetArrayField(TEXT("ps"), Seats))
@@ -367,6 +391,8 @@ void UChaosImpactRecordBoards::ReadRanking(const TSharedPtr<FJsonObject>& Reply,
 			Row.Character = Item->TryGetNumberField(TEXT("c"), Number) ? static_cast<int32>(Number) : 0;
 			Row.Colour = Item->TryGetNumberField(TEXT("o"), Number) ? static_cast<int32>(Number) : -1;
 			Item->TryGetBoolField(TEXT("me"), Row.bMe);
+			FString Platform;
+			Row.bPhone = Item->TryGetStringField(TEXT("p"), Platform) && Platform == TEXT("phone");
 			OutRows.Add(Row);
 		}
 	}
@@ -398,6 +424,12 @@ void UChaosImpactRecordBoards::SetForTests(const bool bForDuel, const TArray<FGa
 
 // ---- Moving about --------------------------------------------------------------------------------------------------------
 
+int32 UChaosImpactRecordBoards::ShownRows() const
+{
+	// (Upright: fewer, the rest of the page being under them.)
+	return Board == EBoard::History ? (RbUpright() ? 7 : HistoryRows) : (RbUpright() ? 8 : RankingRows);
+}
+
 int32 UChaosImpactRecordBoards::GetCount() const
 {
 	// The ranking's list starts below the podium's three.
@@ -407,7 +439,7 @@ int32 UChaosImpactRecordBoards::GetCount() const
 void UChaosImpactRecordBoards::ClampScroll()
 {
 	const int32 Count = GetCount();
-	const int32 Rows = Board == EBoard::History ? HistoryRows : RankingRows;
+	const int32 Rows = ShownRows();
 	Selected = FMath::Clamp(Selected, 0, FMath::Max(0, Count - 1));
 	Scroll = FMath::Clamp(Scroll, FMath::Max(0, Selected - Rows + 1), FMath::Min(Selected, FMath::Max(0, Count - Rows)));
 }
@@ -464,7 +496,7 @@ bool UChaosImpactRecordBoards::HandleKeyDown(const FKeyEvent& Event)
 	}
 	const FKey Key = ChaosImpactSettings::ToMenuKey(Raw, Event.GetInputDeviceId().GetId());
 	const bool bRepeat = Event.IsRepeat();
-	const int32 Page = Board == EBoard::History ? HistoryRows : RankingRows;
+	const int32 Page = ShownRows();
 	if (RbIsAny(Key, {EKeys::Gamepad_DPad_Up, EKeys::Up, EKeys::W})) { Move(-1); }
 	else if (RbIsAny(Key, {EKeys::Gamepad_DPad_Down, EKeys::Down, EKeys::S})) { Move(1); }
 	else if (RbIsAny(Key, {EKeys::Gamepad_LeftTrigger, EKeys::PageUp})) { Move(-Page); }
@@ -514,6 +546,12 @@ bool UChaosImpactRecordBoards::HandleAnalog(const FAnalogInputEvent& Event)
 
 FBox2D UChaosImpactRecordBoards::RowRect(const int32 Visible) const
 {
+	if (RbUpright())
+	{
+		return Board == EBoard::History
+			? FBox2D(FVector2D(60.0f, RbUprightHistoryTop + Visible * 74.0f), FVector2D(830.0f, RbUprightHistoryTop + Visible * 74.0f + 66.0f))
+			: FBox2D(FVector2D(60.0f, RbUprightRankingTop + Visible * 66.0f), FVector2D(830.0f, RbUprightRankingTop + Visible * 66.0f + 58.0f));
+	}
 	if (Board == EBoard::History)
 	{
 		return FBox2D(FVector2D(RbListLeft, RbTop + Visible * 74.0f), FVector2D(860.0f, RbTop + Visible * 74.0f + 66.0f));
@@ -523,23 +561,67 @@ FBox2D UChaosImpactRecordBoards::RowRect(const int32 Visible) const
 
 FBox2D UChaosImpactRecordBoards::TabRect(const int32 Index) const
 {
+	if (UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		// スマホ版: bigger, a thumb's size.
+		const float Top = RbUpright() ? 150.0f : 98.0f;
+		return FBox2D(FVector2D((RbUpright() ? 60.0f : RbListLeft) + Index * 186.0f, Top), FVector2D((RbUpright() ? 60.0f : RbListLeft) + Index * 186.0f + 174.0f, Top + 58.0f));
+	}
 	return FBox2D(FVector2D(RbListLeft + Index * 176.0f, 104.0f), FVector2D(RbListLeft + Index * 176.0f + 164.0f, 150.0f));
 }
 
 FBox2D UChaosImpactRecordBoards::BackRect() const
 {
+	if (RbUpright())
+	{
+		return FBox2D(FVector2D(60.0f, 1446.0f), FVector2D(440.0f, 1536.0f));
+	}
+	if (UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		return FBox2D(FVector2D(RbListLeft, 790.0f), FVector2D(RbListLeft + 340.0f, 880.0f));
+	}
 	return FBox2D(FVector2D(RbListLeft, 806.0f), FVector2D(RbListLeft + 260.0f, 862.0f));
 }
 
 FBox2D UChaosImpactRecordBoards::MineRect() const
 {
+	// (Upright: drawn moved, as the podium; this is where it is on the landscape page.)
 	return FBox2D(FVector2D(RbListLeft, 610.0f), FVector2D(790.0f, 770.0f));
 }
 
 void UChaosImpactRecordBoards::HandleMouseMove(const FVector2D& DesignPoint)
 {
+	if (bPressing)
+	{
+		const float Moved = static_cast<float>(DesignPoint.Y - PressPoint.Y);
+		if (!bDragging && FMath::Abs(Moved) > 20.0f)
+		{
+			bDragging = true;
+		}
+		if (bDragging)
+		{
+			const float Step = Board == EBoard::History ? 74.0f : 66.0f;
+			const int32 Rows = ShownRows();
+			const int32 Before = Scroll;
+			Scroll = FMath::Clamp(PressScroll - FMath::RoundToInt(Moved / Step), 0, FMath::Max(0, GetCount() - Rows));
+			// The chosen row comes along (it stays on screen).
+			Selected = FMath::Clamp(Selected, Scroll, FMath::Max(Scroll, FMath::Min(GetCount() - 1, Scroll + Rows - 1)));
+			if (Scroll != Before)
+			{
+				SelectedAt = FPlatformTime::Seconds();
+			}
+		}
+		Hovered = INDEX_NONE;
+		return;
+	}
+	if (UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		// (By touch nothing hovers.)
+		Hovered = INDEX_NONE;
+		return;
+	}
 	Hovered = INDEX_NONE;
-	const int32 Rows = Board == EBoard::History ? HistoryRows : RankingRows;
+	const int32 Rows = ShownRows();
 	for (int32 Visible = 0; Visible < Rows && Scroll + Visible < GetCount(); ++Visible)
 	{
 		if (RowRect(Visible).IsInside(DesignPoint))
@@ -549,12 +631,33 @@ void UChaosImpactRecordBoards::HandleMouseMove(const FVector2D& DesignPoint)
 	}
 }
 
+void UChaosImpactRecordBoards::HandleMouseUp(const FVector2D& DesignPoint)
+{
+	if (!bOpen || !bPressing)
+	{
+		return;
+	}
+	bPressing = false;
+	if (!bDragging)
+	{
+		HandleMouseMove(PressPoint);
+		if (Hovered != INDEX_NONE)
+		{
+			Select(Hovered);
+		}
+	}
+	bDragging = false;
+	Hovered = INDEX_NONE;
+}
+
 void UChaosImpactRecordBoards::HandleMouseDown(const FVector2D& DesignPoint, const FKey& Button)
 {
 	if (!bOpen)
 	{
 		return;
 	}
+	bPressing = false;
+	bDragging = false;
 	if (Button == EKeys::RightMouseButton || Button == EKeys::ThumbMouseButton || BackRect().IsInside(DesignPoint))
 	{
 		Back();
@@ -572,6 +675,14 @@ void UChaosImpactRecordBoards::HandleMouseDown(const FVector2D& DesignPoint, con
 			return;
 		}
 	}
+	if (UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		// スマホ版: on the list, a drag scrolls it; a tap (let go where it began) chooses the row.
+		bPressing = true;
+		PressPoint = DesignPoint;
+		PressScroll = Scroll;
+		return;
+	}
 	HandleMouseMove(DesignPoint);
 	if (Hovered != INDEX_NONE)
 	{
@@ -581,7 +692,7 @@ void UChaosImpactRecordBoards::HandleMouseDown(const FVector2D& DesignPoint, con
 
 void UChaosImpactRecordBoards::HandleWheel(const FVector2D& DesignPoint, const float Delta)
 {
-	const int32 Rows = Board == EBoard::History ? HistoryRows : RankingRows;
+	const int32 Rows = ShownRows();
 	const int32 Before = Scroll;
 	Scroll = FMath::Clamp(Scroll - FMath::RoundToInt(Delta) * 2, 0, FMath::Max(0, GetCount() - Rows));
 	// The chosen row comes along (it stays on screen).
@@ -714,7 +825,7 @@ int32 UChaosImpactRecordBoards::Paint(const FGeometry& Design, FSlateWindowEleme
 	const FLinearColor Accent = bDuel ? Gold : Fire;
 	const FPainter Back{Design, Elements, Layer};
 	const FPainter P{Design, Elements, Layer + 2};
-	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, RbBack);
+	Back.Box(-1400.0f, -400.0f, 4400.0f, 2600.0f, RbBack);
 	// Slow light behind, in the mode's colour.
 	for (int32 Blob = 0; Blob < 3; ++Blob)
 	{
@@ -733,12 +844,24 @@ int32 UChaosImpactRecordBoards::Paint(const FGeometry& Design, FSlateWindowEleme
 	const bool bHistory = Board == EBoard::History;
 	const FString English = bHistory ? TEXT("HISTORY") : TEXT("RANKING");
 	const float In = EaseOut(Time / 0.35f);
-	HudText3D(P, English, RbListLeft - (1.0f - In) * 60.0f, 20.0f, 56.0f, WithAlpha(Paper, In), ETextAlign::Left, TEXT("BlackItalic"));
-	const float HeadRight = RbListLeft + HudMeasure(English, 56.0f, TEXT("BlackItalic")) + 26.0f;
-	P.Text(bHistory ? TEXT("対戦履歴") : TEXT("ランキング"), HeadRight, 40.0f, 32.0f, Accent, ETextAlign::Left, TEXT("Black"));
+	const bool bUpright = RbUpright();
+	const bool bPhone = UChaosImpactMenuWidget::IsPhoneBuild();
+	const float HeadLeft = bUpright ? 60.0f : RbListLeft;
+	const float HeadTop = bUpright ? 36.0f : 20.0f;
+	HudText3D(P, English, HeadLeft - (1.0f - In) * 60.0f, HeadTop, 56.0f, WithAlpha(Paper, In), ETextAlign::Left, TEXT("BlackItalic"));
+	const float HeadRight = HeadLeft + HudMeasure(English, 56.0f, TEXT("BlackItalic")) + 26.0f;
+	P.Text(bHistory ? TEXT("対戦履歴") : TEXT("ランキング"), HeadRight, HeadTop + 20.0f, 32.0f, Accent, ETextAlign::Left, TEXT("Black"));
 	const FString Sub = bHistory ? FString::Printf(TEXT("ランダムマッチ%sの最近%d戦"), bDuel ? TEXT("1v1") : TEXT("8人"), HistoryKeep)
-		: FString::Printf(TEXT("ランダムマッチ%sのレート上位%d人"), bDuel ? TEXT("1v1") : TEXT("8人"), RankingTop);
-	RbText(P, Sub, 1520.0f, 50.0f, 18.0f, 520.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+		: FString::Printf(TEXT("ランダムマッチ%sのレート順"), bDuel ? TEXT("1v1") : TEXT("8人"));
+	if (bUpright)
+	{
+		// (Upright: under the heading.)
+		RbText(P, Sub, 840.0f, 116.0f, 20.0f, 420.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	}
+	else
+	{
+		RbText(P, Sub, 1520.0f, 50.0f, bPhone ? 22.0f : 18.0f, 560.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	}
 
 	// The tabs: 1v1 / 8人.
 	const float Pulse = 0.6f + 0.4f * FMath::Sin(Time * 5.0f);
@@ -752,13 +875,17 @@ int32 UChaosImpactRecordBoards::Paint(const FGeometry& Design, FSlateWindowEleme
 			RbRound(Back, RbGrow(R, 4.0f), 14.0f, WithAlpha(TabColor, 0.25f + 0.15f * Pulse));
 		}
 		RbRound(HudAbove(Back, 1), R, 12.0f, bOn ? TabColor : RbCard);
-		RbText(P, Index == 0 ? TEXT("1v1") : TEXT("8人"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 7.0f, 24.0f,
+		const float TabSize = bPhone ? 30.0f : 24.0f;
+		RbText(P, Index == 0 ? TEXT("1v1") : TEXT("8人"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - TabSize * 0.72f, TabSize,
 			static_cast<float>(R.GetSize().X) - 20.0f, bOn ? Ink : Paper, ETextAlign::Center, TEXT("BlackItalic"));
 	}
-	// Hints in the names of what is being played with right now.
+	// Hints in the names of what is being played with right now (none by touch).
 	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller.Get());
-	P.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E} ・ ← →")), static_cast<float>(TabRect(0).Min.X), static_cast<float>(TabRect(0).Max.Y) + 3.0f, 12.0f,
-		WithAlpha(Muted, 0.85f), ETextAlign::Left, TEXT("Bold"));
+	if (!bPhone)
+	{
+		P.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E} ・ ← →")), static_cast<float>(TabRect(0).Min.X), static_cast<float>(TabRect(0).Max.Y) + 3.0f, 12.0f,
+			WithAlpha(Muted, 0.85f), ETextAlign::Left, TEXT("Bold"));
+	}
 
 	const int32 BodyLayer = Layer + 4;
 	if (bHistory)
@@ -775,8 +902,13 @@ int32 UChaosImpactRecordBoards::Paint(const FGeometry& Design, FSlateWindowEleme
 	const FBox2D BackBox = BackRect();
 	RbRound(Bottom, BackBox, 14.0f, WithAlpha(Muted, 0.3f));
 	RbRound(HudAbove(Bottom, 1), RbGrow(BackBox, -3.0f), 12.0f, RbCard);
-	HudAbove(Bottom, 2).Text(TEXT("戻る"), static_cast<float>(BackBox.GetCenter().X), static_cast<float>(BackBox.Min.Y) + 12.0f, 24.0f, Paper,
+	const float BackSize = bPhone ? 32.0f : 24.0f;
+	HudAbove(Bottom, 2).Text(TEXT("戻る"), static_cast<float>(BackBox.GetCenter().X), static_cast<float>(BackBox.GetCenter().Y) - BackSize * 0.72f, BackSize, Paper,
 		ETextAlign::Center, TEXT("Black"));
+	if (bPhone)
+	{
+		return Layer + 46;
+	}
 	const FString Keys = ChaosImpactHints::Text(Device, bHistory ? TEXT("↑↓ 試合を選ぶ　　{LB|Q} / {RB|E} 1v1・8人　　{Back} 戻る")
 		: TEXT("↑↓ 選ぶ　　{LB|Q} / {RB|E} 1v1・8人　　{Y|F} 自分の順位へ　　{Back} 戻る"));
 	RbText(Bottom, Keys, 1520.0f, 826.0f, 17.0f, 1100.0f, WithAlpha(Paper, 0.7f), ETextAlign::Right, TEXT("Bold"));
@@ -820,20 +952,23 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 			Chips.Add({TEXT("平均"), FString::Printf(TEXT("%.1f位"), static_cast<float>(Places) / FMath::Max(1, Games.Num()))});
 		}
 		Chips.Add({TEXT("レートの増減"), RbDelta(Moved)});
-		float X = 460.0f;
+		// (Upright: a row of their own under the tabs.)
+		float X = RbUpright() ? 60.0f : 460.0f;
+		const float ChipY = RbUpright() ? 220.0f : 104.0f;
 		for (int32 Index = 0; Index < Chips.Num(); ++Index)
 		{
 			const float W = FMath::Max(120.0f, HudMeasure(Chips[Index].Value, 22.0f, TEXT("BlackItalic")) + 36.0f);
-			RbRound(Back, FBox2D(FVector2D(X, 104.0), FVector2D(X + W, 150.0)), 10.0f, RbCard);
-			P.Text(Chips[Index].Key, X + 14.0f, 106.0f, 11.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			RbRound(Back, FBox2D(FVector2D(X, ChipY), FVector2D(X + W, ChipY + 46.0)), 10.0f, RbCard);
+			P.Text(Chips[Index].Key, X + 14.0f, ChipY + 2.0f, 11.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 			const bool bDeltaChip = Index == Chips.Num() - 1;
-			RbText(P, Chips[Index].Value, X + 14.0f, 120.0f, 20.0f, W - 24.0f, bDeltaChip ? RbDeltaColor(Moved) : Paper, ETextAlign::Left, TEXT("BlackItalic"));
+			RbText(P, Chips[Index].Value, X + 14.0f, ChipY + 16.0f, 20.0f, W - 24.0f, bDeltaChip ? RbDeltaColor(Moved) : Paper, ETextAlign::Left, TEXT("BlackItalic"));
 			X += W + 10.0f;
 		}
 	}
 
 	// Loading, nothing to show, or no line to the relay.
-	const FBox2D ListArea(FVector2D(RbListLeft, RbTop), FVector2D(1520.0, 770.0));
+	const FBox2D ListArea = RbUpright() ? FBox2D(FVector2D(60.0, RbUprightHistoryTop), FVector2D(840.0, 1400.0))
+		: FBox2D(FVector2D(RbListLeft, RbTop), FVector2D(1520.0, 770.0));
 	if (Games.IsEmpty())
 	{
 		RbRound(Back, ListArea, 20.0f, WithAlpha(RbCard, 0.75f));
@@ -859,7 +994,8 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 	// The list: the newest first.
 	const double Now = FPlatformTime::Seconds();
 	const float Pick = EaseOut(static_cast<float>(Now - SelectedAt) / 0.18f);
-	for (int32 Visible = 0; Visible < HistoryRows && Scroll + Visible < Games.Num(); ++Visible)
+	const int32 Shown = ShownRows();
+	for (int32 Visible = 0; Visible < Shown && Scroll + Visible < Games.Num(); ++Visible)
 	{
 		const int32 Index = Scroll + Visible;
 		const FGame& Game = Games[Index];
@@ -916,16 +1052,17 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 			RateColor, ETextAlign::Right, TEXT("BlackItalic"));
 	}
 	// The scroll bar.
-	if (Games.Num() > HistoryRows)
+	const float ListTop = RbUpright() ? RbUprightHistoryTop : RbTop;
+	const float BarX = RbUpright() ? 846.0f : 872.0f;
+	if (Games.Num() > Shown)
 	{
-		const float BarTop = RbTop;
-		const float BarH = HistoryRows * 74.0f - 8.0f;
-		RoundedBox(Back, 872.0f, BarTop, 6.0f, BarH, 3.0f, WithAlpha(Paper, 0.08f));
-		const float Share = static_cast<float>(HistoryRows) / Games.Num();
+		const float BarH = Shown * 74.0f - 8.0f;
+		RoundedBox(Back, BarX, ListTop, 6.0f, BarH, 3.0f, WithAlpha(Paper, 0.08f));
+		const float Share = static_cast<float>(Shown) / Games.Num();
 		const float Start = static_cast<float>(Scroll) / Games.Num();
-		RoundedBox(P, 872.0f, BarTop + BarH * Start, 6.0f, FMath::Max(24.0f, BarH * Share), 3.0f, WithAlpha(Accent, 0.85f));
+		RoundedBox(P, BarX, ListTop + BarH * Start, 6.0f, FMath::Max(24.0f, BarH * Share), 3.0f, WithAlpha(Accent, 0.85f));
 	}
-	P.Text(FString::Printf(TEXT("%d / %d"), Selected + 1, Games.Num()), 860.0f, RbTop + HistoryRows * 74.0f + 2.0f, 14.0f, Muted,
+	P.Text(FString::Printf(TEXT("%d / %d"), Selected + 1, Games.Num()), RbUpright() ? 830.0f : 860.0f, ListTop + Shown * 74.0f + 2.0f, 14.0f, Muted,
 		ETextAlign::Right, TEXT("Bold"));
 
 	// The chosen game in detail.
@@ -936,7 +1073,9 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 	const FGame& Game = Games[Selected];
 	const FBox2D Panel(FVector2D(900.0, RbTop), FVector2D(1520.0, 770.0));
 	const float Show = EaseOut(static_cast<float>(Now - SelectedAt) / 0.25f);
-	const FPainter D{Design, Elements, Layer, Show};
+	// (Upright: under the list, in the middle.)
+	const FGeometry DetailDesign = RbUpright() ? RbMove(Design, FVector2D(900.0, RbTop), FVector2D(140.0, 846.0)) : Design;
+	const FPainter D{DetailDesign, Elements, Layer, Show};
 	const FPainter DP = HudAbove(D, 2);
 	const FPainter DT = HudAbove(D, 6);
 	RoundedBox(D, static_cast<float>(Panel.Min.X) + 10.0f, static_cast<float>(Panel.Min.Y) + 12.0f, static_cast<float>(Panel.GetSize().X),
@@ -971,7 +1110,7 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 			const FLinearColor SideColor = Side == 0 ? Ice : Fire;
 			RbRound(HudAbove(D, 1), RbGrow(Box, 3.0f), 16.0f, WithAlpha(SideColor, 0.55f));
 			RbRound(HudAbove(D, 2), Box, 14.0f, FLinearColor(0.012f, 0.02f, 0.05f, 1.0f));
-			PaintPortrait(Design, Elements, Layer + 3, Side, Box, Show);
+			PaintPortrait(DetailDesign, Elements, Layer + 3, Side, Box, Show);
 			const FString Name = Side == 0 ? (Controller.IsValid() && UChaosImpactSessionSubsystem::Get(Controller.Get())
 				? UChaosImpactSessionSubsystem::Get(Controller.Get())->GetPlayerName() : FString(TEXT("あなた"))) : Game.Opponent;
 			const float CX = static_cast<float>(Box.GetCenter().X);
@@ -996,7 +1135,7 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 		const FBox2D Box(FVector2D(PX + 24.0f, BodyTop), FVector2D(PX + 204.0f, BodyTop + 240.0f));
 		RbRound(HudAbove(D, 1), RbGrow(Box, 3.0f), 16.0f, WithAlpha(RbMedal(Game.Place), 0.6f));
 		RbRound(HudAbove(D, 2), Box, 14.0f, FLinearColor(0.012f, 0.02f, 0.05f, 1.0f));
-		PaintPortrait(Design, Elements, Layer + 3, 0, Box, Show);
+		PaintPortrait(DetailDesign, Elements, Layer + 3, 0, Box, Show);
 		const float CX = static_cast<float>(Box.GetCenter().X);
 		RbText(DT, RbCharacterName(Game.Character), CX, static_cast<float>(Box.Max.Y) + 10.0f, 16.0f, 180.0f, Paper, ETextAlign::Center, TEXT("Black"));
 		RbText(DT, FString::Printf(TEXT("%dpt　%dKO"), Game.Points, Game.Knockouts), CX, static_cast<float>(Box.Max.Y) + 36.0f, 15.0f, 180.0f, Muted,
@@ -1057,12 +1196,23 @@ void UChaosImpactRecordBoards::PaintHistory(const FGeometry& Design, FSlateWindo
 	}
 }
 
+FString UChaosImpactRecordBoards::RankingStats(const FRow& Row) const
+{
+	// 1v1: games and win rate; 8 players: games and wins (1st places).
+	return bDuel ? FString::Printf(TEXT("%d試合　勝率%d%%"), Row.Games, FMath::RoundToInt(100.0f * Row.Wins / FMath::Max(1, Row.Wins + Row.Losses)))
+		: FString::Printf(TEXT("%d試合　1位%d回"), Row.Games, Row.Wins);
+}
+
 void UChaosImpactRecordBoards::PaintRanking(const FGeometry& Design, FSlateWindowElementList& Elements, const int32 Layer, const float Time) const
 {
 	const FLinearColor Accent = bDuel ? Gold : Fire;
-	const FPainter Back{Design, Elements, Layer};
-	const FPainter P{Design, Elements, Layer + 2};
-	const FPainter Top{Design, Elements, Layer + 6};
+	// (Upright: the podium, the count and this player's place moved above the list.)
+	const FGeometry SideDesign = RbUpright() ? RbMove(Design, FVector2D(80.0, 104.0), FVector2D(95.0, 150.0)) : Design;
+	const FPainter Back{SideDesign, Elements, Layer};
+	const FPainter P{SideDesign, Elements, Layer + 2};
+	const FPainter Top{SideDesign, Elements, Layer + 6};
+	const FPainter ListBack{Design, Elements, Layer};
+	const FPainter ListP{Design, Elements, Layer + 2};
 	const TArray<FRow>& Rows = GetRows();
 	const FMine& Mine = GetMine();
 	const double Now = FPlatformTime::Seconds();
@@ -1104,7 +1254,7 @@ void UChaosImpactRecordBoards::PaintRanking(const FGeometry& Design, FSlateWindo
 		// A spotlight down onto the 1st place's block.
 		{
 			const float Glow = 0.07f + 0.02f * FMath::Sin(Time * 2.0f);
-			const FPainter Beam{Design, Elements, Layer, 1.0f};
+			const FPainter Beam{SideDesign, Elements, Layer, 1.0f};
 			HudPoly(Beam, {FVector2D(395.0, RbTop + 6.0), FVector2D(475.0, RbTop + 6.0), FVector2D(560.0, 438.0), FVector2D(310.0, 438.0)},
 				MakeFill(WithAlpha(Accent, 0.0f), WithAlpha(Accent, Glow)));
 		}
@@ -1125,7 +1275,7 @@ void UChaosImpactRecordBoards::PaintRanking(const FGeometry& Design, FSlateWindo
 			const float X = Place.Left;
 			const int32 Rank = Place.Index + 1;
 			const FLinearColor Metal = RbMedal(Rank);
-			const FPainter Pd{Design, Elements, Layer + 1, Rise};
+			const FPainter Pd{SideDesign, Elements, Layer + 1, Rise};
 			// The block: lit from above in its metal.
 			HudPoly(Pd, {FVector2D(X, Floor - H), FVector2D(X + W, Floor - H), FVector2D(X + W, Floor), FVector2D(X, Floor)},
 				MakeFill(FMath::Lerp(Metal, Paper, 0.15f) * 0.75f, Metal * 0.22f));
@@ -1141,18 +1291,27 @@ void UChaosImpactRecordBoards::PaintRanking(const FGeometry& Design, FSlateWindo
 			const FRow& Row = Rows[Place.Index];
 			// The character standing on it.
 			const FBox2D Picture(FVector2D(X + 14.0f, Floor - H - 226.0f), FVector2D(X + W - 14.0f, Floor - H - 4.0f));
-			PaintPortrait(Design, Elements, Layer + 2, Place.Index, Picture, Rise);
+			PaintPortrait(SideDesign, Elements, Layer + 2, Place.Index, Picture, Rise);
 			if (Rank == 1)
 			{
 				ChaosImpactParty::PaintCrown(HudAbove(Pd, 6), FVector2D(X + W * 0.5f, Floor - H - 238.0f + FMath::Sin(Time * 2.4f) * 3.0f), 20.0f, Time, 1.0f);
 			}
-			// Name and rating on the block's face (or just over a short one).
+			// Name, rating and the same record as the list from 4th on, on the block's face.
 			const FPainter Words = HudAbove(Pd, 4);
-			const float NameY = Floor - H + 28.0f;
-			RbText(Words, Row.Name, X + W * 0.5f, NameY, 19.0f, W - 24.0f, Row.bMe ? Gold : Paper, ETextAlign::Center, TEXT("Black"));
+			// (Below the medal on the block's top edge.)
+			const float NameY = Floor - H + 25.0f;
+			// (Its mark, then the name, centred together.)
+			const float NameRoom = W - 50.0f;
+			const float NameSize = HudFit(Row.Name, 17.0f, NameRoom);
+			const float Together = 20.0f + HudMeasure(Row.Name, NameSize);
+			const float Start = X + W * 0.5f - Together * 0.5f;
+			const float Mark = PaintPlatformMark(Words, Start, NameY + 3.0f, 16.0f, Row.bPhone, WithAlpha(Paper, 0.75f));
+			Words.Text(Row.Name, Start + Mark + 6.0f, NameY, NameSize, Row.bMe ? Gold : Paper, ETextAlign::Left, TEXT("Black"));
 			const FString Rate = FString::FromInt(Row.Rate);
-			HudText3D(Words, Rate, X + W * 0.5f, NameY + 28.0f, HudFit(Rate, 28.0f, W - 40.0f, TEXT("BlackItalic")), FMath::Lerp(Metal, Paper, 0.25f),
+			HudText3D(Words, Rate, X + W * 0.5f, NameY + 22.0f, HudFit(Rate, 24.0f, W - 40.0f, TEXT("BlackItalic")), FMath::Lerp(Metal, Paper, 0.25f),
 				ETextAlign::Center, TEXT("BlackItalic"));
+			RbText(Words, RankingStats(Row), X + W * 0.5f, NameY + 52.0f, 13.0f, W - 20.0f, FMath::Lerp(Muted, Paper, 0.35f), ETextAlign::Center,
+				TEXT("Bold"));
 		}
 		Top.Text(TEXT("TOP 3"), RbListLeft + 22.0f, RbTop + 14.0f, 20.0f, WithAlpha(Accent, 0.9f), ETextAlign::Left, TEXT("BlackItalic"));
 	}
@@ -1210,16 +1369,19 @@ void UChaosImpactRecordBoards::PaintRanking(const FGeometry& Design, FSlateWindo
 	}
 
 	// The list from 4th on.
-	const FBox2D ListBox(FVector2D(820.0, RbTop - 6.0), FVector2D(1520.0, RbTop + RankingRows * 66.0f));
-	RbRound(Back, ListBox, 18.0f, WithAlpha(RbCard, 0.55f));
+	const int32 Shown = ShownRows();
+	const float ListTop = RbUpright() ? RbUprightRankingTop : RbTop;
+	const FBox2D ListBox = RbUpright() ? FBox2D(FVector2D(50.0, ListTop - 6.0), FVector2D(856.0, ListTop + Shown * 66.0f))
+		: FBox2D(FVector2D(820.0, RbTop - 6.0), FVector2D(1520.0, RbTop + RankingRows * 66.0f));
+	RbRound(ListBack, ListBox, 18.0f, WithAlpha(RbCard, 0.55f));
 	const int32 Count = GetCount();
 	if (Count == 0 && !Rows.IsEmpty())
 	{
-		RbText(P, TEXT("4位から下は、まだいません"), static_cast<float>(ListBox.GetCenter().X), static_cast<float>(ListBox.GetCenter().Y) - 14.0f, 22.0f, 600.0f,
+		RbText(ListP, TEXT("4位から下は、まだいません"), static_cast<float>(ListBox.GetCenter().X), static_cast<float>(ListBox.GetCenter().Y) - 14.0f, 22.0f, 600.0f,
 			Muted, ETextAlign::Center, TEXT("Bold"));
 	}
 	const float Pick = EaseOut(static_cast<float>(Now - SelectedAt) / 0.18f);
-	for (int32 Visible = 0; Visible < RankingRows && Scroll + Visible < Count; ++Visible)
+	for (int32 Visible = 0; Visible < Shown && Scroll + Visible < Count; ++Visible)
 	{
 		const int32 Index = Scroll + Visible;
 		const FRow& Row = Rows[Index + 3];
@@ -1251,25 +1413,26 @@ void UChaosImpactRecordBoards::PaintRanking(const FGeometry& Design, FSlateWindo
 		HudText3D(RowTop, RankText, X + 46.0f, Y + 9.0f, HudFit(RankText, 30.0f, 70.0f, TEXT("BlackItalic")), Row.Rank <= 10 ? Accent : Paper, ETextAlign::Center,
 			TEXT("BlackItalic"));
 		RowP.Box(X + 90.0f, Y + 12.0f, 2.0f, 34.0f, WithAlpha(Paper, 0.12f));
-		const float NameW = W * 0.36f - (Row.bMe ? 56.0f : 0.0f);
-		RbText(RowP, Row.Name, X + 108.0f, Y + 5.0f, 22.0f, NameW, Row.bMe ? Gold : Paper, ETextAlign::Left, TEXT("Black"));
+		// What they play on (a PC or a phone), then the name.
+		const float MarkW = PaintPlatformMark(RowP, X + 108.0f, Y + 9.0f, 22.0f, Row.bPhone, WithAlpha(Paper, 0.75f)) + 10.0f;
+		const float NameW = W * 0.36f - (Row.bMe ? 56.0f : 0.0f) - MarkW;
+		RbText(RowP, Row.Name, X + 108.0f + MarkW, Y + 5.0f, 22.0f, NameW, Row.bMe ? Gold : Paper, ETextAlign::Left, TEXT("Black"));
 		RbText(RowP, RbCharacterName(Row.Character), X + 110.0f, Y + 34.0f, 13.0f, W * 0.36f, Muted, ETextAlign::Left, TEXT("Bold"));
 		if (Row.bMe)
 		{
-			const float After = X + 108.0f + FMath::Min(NameW, HudMeasure(Row.Name, 22.0f)) + 10.0f;
+			const float After = X + 108.0f + MarkW + FMath::Min(NameW, HudMeasure(Row.Name, 22.0f)) + 10.0f;
 			RoundedBox(RowP, After, Y + 10.0f, 46.0f, 20.0f, 6.0f, Gold);
 			RowTop.Text(TEXT("YOU"), After + 23.0f, Y + 11.0f, 12.0f, Ink, ETextAlign::Center, TEXT("BlackItalic"));
 		}
-		const FString Stats = bDuel ? FString::Printf(TEXT("%d試合　勝率%d%%"), Row.Games, FMath::RoundToInt(100.0f * Row.Wins / FMath::Max(1, Row.Wins + Row.Losses)))
-			: FString::Printf(TEXT("%d試合　1位%d回"), Row.Games, Row.Wins);
-		RbText(RowP, Stats, X + W - 150.0f, Y + 20.0f, 14.0f, 140.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+		RbText(RowP, RankingStats(Row), X + W - 150.0f, Y + 20.0f, 14.0f, 140.0f, Muted, ETextAlign::Right, TEXT("Bold"));
 		const FString Rate = FString::FromInt(Row.Rate);
 		HudText3D(RowTop, Rate, X + W - 18.0f, Y + 10.0f, HudFit(Rate, 30.0f, 110.0f, TEXT("BlackItalic")), Paper, ETextAlign::Right, TEXT("BlackItalic"));
 	}
-	if (Count > RankingRows)
+	if (Count > Shown)
 	{
-		const float BarH = RankingRows * 66.0f - 8.0f;
-		RoundedBox(Back, 1500.0f, RbTop, 6.0f, BarH, 3.0f, WithAlpha(Paper, 0.08f));
-		RoundedBox(P, 1500.0f, RbTop + BarH * Scroll / Count, 6.0f, FMath::Max(24.0f, BarH * RankingRows / Count), 3.0f, WithAlpha(Accent, 0.85f));
+		const float BarH = Shown * 66.0f - 8.0f;
+		const float BarX = RbUpright() ? 840.0f : 1500.0f;
+		RoundedBox(ListBack, BarX, ListTop, 6.0f, BarH, 3.0f, WithAlpha(Paper, 0.08f));
+		RoundedBox(ListP, BarX, ListTop + BarH * Scroll / Count, 6.0f, FMath::Max(24.0f, BarH * Shown / Count), 3.0f, WithAlpha(Accent, 0.85f));
 	}
 }

@@ -21,4 +21,12 @@ public:
 
 private:
 	bool bSingleDuelLayout = false;
+	/** FPS表示: the frames a second, top-left over every screen (kept added across maps while the setting is on). */
+	void UpdateFpsDisplay(float DeltaTime);
+	TSharedPtr<class SWidget> FpsWidget;
+	TSharedPtr<class STextBlock> FpsText;
+	float FpsTime = 0.0f;
+	int32 FpsFrames = 0;
+	FText FpsShown;
+	FSlateColor FpsColor;
 };

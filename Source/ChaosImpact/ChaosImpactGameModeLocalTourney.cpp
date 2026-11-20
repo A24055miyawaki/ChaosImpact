@@ -10,8 +10,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
-#include "JoyShockBlueprintLibrary.h"
-#include "JoyShockTypes.h"
+#include "ChaosImpactJoyShock.h"
 #include "TimerManager.h"
 
 namespace

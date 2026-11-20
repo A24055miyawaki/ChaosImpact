@@ -1,4 +1,5 @@
-#include "ChaosImpactDojo.h"
+﻿#include "ChaosImpactDojo.h"
+#include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpactChargeWidget.h"
 #include "ChaosImpactDojoVideo.h"
@@ -60,10 +61,43 @@ namespace
 
 	/** The keys of a lesson's task, as this player has them (the first key of each; a stick once for the four moves),
 	 *  in the control type set (the simple and mouse types tackle with both buttons, put balls down with a hold...). */
+	/** スマホ版 by touch: the controls as the screen's buttons and sticks are named. */
+	bool DojoPaintTouch(const AChaosImpactPlayerController* Controller)
+	{
+		return UChaosImpactMenuWidget::IsPhoneBuild() && Controller && Controller->ShouldUseTouchControls() && !Controller->IsUsingGamepad();
+	}
+
 	TArray<FString> DojoKeys(const AChaosImpactPlayerController* Controller, const FChaosImpactDojoLesson& Lesson)
 	{
 		using namespace ChaosImpactSettings;
 		TArray<FString> Out;
+		if (DojoPaintTouch(Controller))
+		{
+			for (const EChaosImpactAction Action : Lesson.TaskKeys)
+			{
+				const TCHAR* Name = Action == EChaosImpactAction::MoveUp || Action == EChaosImpactAction::MoveDown || Action == EChaosImpactAction::MoveLeft
+					|| Action == EChaosImpactAction::MoveRight ? TEXT("左側をドラッグ")
+					: Action == EChaosImpactAction::Throw ? TEXT("投げる")
+					: Action == EChaosImpactAction::CancelThrow ? TEXT("やめる")
+					: Action == EChaosImpactAction::Dash ? TEXT("ダッシュ")
+					: Action == EChaosImpactAction::Jump ? TEXT("ジャンプ")
+					: Action == EChaosImpactAction::Tackle ? TEXT("タックル")
+					: Action == EChaosImpactAction::SwapBall ? TEXT("ボール枠をタップ")
+					: Action == EChaosImpactAction::DropBall ? TEXT("ボール枠を長押し")
+					: Action == EChaosImpactAction::FuseBalls ? TEXT("合体")
+					: Action == EChaosImpactAction::OverviewMap ? TEXT("全体マップ")
+					: Lesson.Goal == EChaosImpactDojoGoal::BallForm ? TEXT("ボール化") : nullptr;
+				if (Name)
+				{
+					Out.AddUnique(Name);
+				}
+			}
+			if (Lesson.Goal == EChaosImpactDojoGoal::BallForm)
+			{
+				Out.AddUnique(TEXT("ボール化"));
+			}
+			return Out;
+		}
 		const bool bPad = Controller && Controller->IsUsingGamepad();
 		const EChaosImpactControlScheme Scheme = Controller ? GetPlayerControlScheme(Controller) : EChaosImpactControlScheme::Normal;
 		const bool bSimple = !bPad && Scheme == EChaosImpactControlScheme::Simple;
@@ -268,7 +302,7 @@ void AChaosImpactDojo::PaintHud(const FGeometry& Geometry, FSlateWindowElementLi
 	LastHudSize = Size;
 	const float W = static_cast<float>(Size.X);
 	const float H = static_cast<float>(Size.Y);
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f);
+	const float S = AChaosImpactDojo::HudScale(W, H);
 	const float Time = static_cast<float>(GetWorld()->GetTimeSeconds());
 	const FPainter P{Geometry, Elements, Layer, 1.0f};
 	const TArray<FChaosImpactDojoCategory>& All = ChaosImpactDojo::GetCategories();
@@ -369,7 +403,7 @@ void AChaosImpactDojo::PaintClearMenu(const FPainter& P, const AChaosImpactPlaye
 	{
 		return;
 	}
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f);
+	const float S = AChaosImpactDojo::HudScale(W, H);
 	const TArray<FChaosImpactDojoCategory>& All = ChaosImpactDojo::GetCategories();
 	const FLinearColor Accent = All.IsValidIndex(Category) ? All[Category].Color : Gold;
 	int32 NextCategory = 0;
@@ -404,6 +438,12 @@ void AChaosImpactDojo::PaintClearMenu(const FPainter& P, const AChaosImpactPlaye
 	}
 	// How to choose, under the buttons.
 	const FPainter Hint{P.Geometry, P.Elements, P.Layer, EaseOut(FMath::Clamp((Since - 0.2f) / 0.3f, 0.0f, 1.0f))};
+	if (DojoPaintTouch(Viewer))
+	{
+		const float HY = static_cast<float>(ClearButton(0, W, H).Max.Y) + 22.0f * S;
+		HudAbove(Hint, 1).Text(TEXT("ボタンをタップしてえらぶ"), W * 0.5f, HY, 20.0f * S, WithAlpha(Paper, 0.85f), ETextAlign::Center, TEXT("Black"), 2.0f, Navy);
+		return;
+	}
 	const FString Key = DojoConfirmKey(Viewer);
 	const FString Words = TEXT("で決定");
 	const float CapW = DojoKeyCapWidth(Key, 15.0f * S);
@@ -423,7 +463,7 @@ void AChaosImpactDojo::PaintSlides(const FPainter& P, const float W, const float
 		return;
 	}
 	const FLinearColor Accent = All[Category].Color;
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f);
+	const float S = AChaosImpactDojo::HudScale(W, H);
 	const double Now = GetWorld()->GetTimeSeconds();
 	const float SinceOpen = static_cast<float>(Now - PhaseAt);
 	const float SinceSlide = static_cast<float>(Now - SlideAt);
@@ -436,7 +476,7 @@ void AChaosImpactDojo::PaintSlides(const FPainter& P, const float W, const float
 	P.Box(0.0f, H * 0.5f - 300.0f * S, W, 600.0f * S, WithAlpha(Accent, 0.06f * Open));
 
 	// The panel: a header (the lesson's name, where in its slides this is), the clip, the line under it.
-	const float PW = FMath::Min(W * 0.74f, 1360.0f * S);
+	const float PW = H > W * 1.15f ? W * 0.94f : FMath::Min(W * 0.74f, 1360.0f * S);
 	const float VideoW = PW - 56.0f * S;
 	const float VideoH = VideoW * 9.0f / 16.0f;
 	const float HeadH = 70.0f * S;
@@ -512,6 +552,28 @@ void AChaosImpactDojo::PaintSlides(const FPainter& P, const float W, const float
 		const AChaosImpactPlayerController* Viewer = GetPlayer();
 		const bool bLast = Slide + 1 >= Count;
 		const float Pulse = 0.6f + 0.4f * FMath::Sin(Time * 5.0f);
+		TouchBack = FBox2D(ForceInit);
+		if (DojoPaintTouch(Viewer))
+		{
+			// スマホ版: a tap anywhere goes on; もどる is a button of its own.
+			const FString Next = bLast ? TEXT("タップで課題へ") : TEXT("タップでつぎへ");
+			const float NextSize = 26.0f * S;
+			HudAbove(Foot, 2).Text(Next, PX + PW - 48.0f * S, FY - 2.0f * S, NextSize, WithAlpha(bLast ? Gold : Paper, 0.75f + 0.25f * Pulse), ETextAlign::Right,
+				TEXT("Black"));
+			if (Slide > 0)
+			{
+				const float BW = 190.0f * S;
+				const float BH = 46.0f * S;
+				const float BX = PX + 40.0f * S;
+				const float BY = FY - 8.0f * S;
+				TouchBack = FBox2D(FVector2D(BX, BY), FVector2D(BX + BW, BY + BH)).ExpandBy(12.0f * S);
+				RoundedBox(HudAbove(Foot, 1), BX, BY, BW, BH, BH * 0.5f, FLinearColor(0.06f, 0.09f, 0.18f, 0.96f));
+				HudAbove(Foot, 2).Line(FVector2D(BX + 28.0f * S, BY + BH * 0.5f - 9.0f * S), FVector2D(BX + 19.0f * S, BY + BH * 0.5f), Paper, 3.5f * S);
+				HudAbove(Foot, 2).Line(FVector2D(BX + 19.0f * S, BY + BH * 0.5f), FVector2D(BX + 28.0f * S, BY + BH * 0.5f + 9.0f * S), Paper, 3.5f * S);
+				HudAbove(Foot, 2).Text(TEXT("もどる"), BX + 40.0f * S, BY + BH * 0.5f - 22.0f * S * 0.72f, 22.0f * S, Paper, ETextAlign::Left, TEXT("Black"));
+			}
+			return;
+		}
 		float X = PX + PW - 48.0f * S;
 		const FString Next = bLast ? TEXT("課題へ") : TEXT("つぎへ");
 		X -= HudMeasure(Next, 24.0f * S) ;
@@ -538,7 +600,7 @@ void AChaosImpactDojo::PaintTask(const FPainter& P, const AChaosImpactPlayerCont
 		return;
 	}
 	const FLinearColor Accent = All[Category].Color;
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f) * 1.12f;
+	const float S = AChaosImpactDojo::HudScale(W, H) * 1.12f;
 	const bool bReady = Phase == EChaosImpactDojoPhase::Ready;
 	const double Now = GetWorld()->GetTimeSeconds();
 	const float In = EaseOut(FMath::Clamp(static_cast<float>(Now - PhaseAt) / 0.32f, 0.0f, 1.0f));
@@ -662,6 +724,25 @@ void AChaosImpactDojo::PaintTask(const FPainter& P, const AChaosImpactPlayerCont
 			FVector2D(BX, BY + 58.0f * S)};
 		HudPoly(Card, HudInflate(Button, (4.0f + 6.0f * Pulse) * S), SolidFill(WithAlpha(Accent, 0.2f + 0.25f * Pulse)), 1);
 		HudShard(HudAbove(Card, 1), Button, MakeFill(Accent * 1.1f, Accent * 0.55f), 2.5f, FVector2D(4.0, 5.0), Paper);
+		TouchBack = FBox2D(ForceInit);
+		if (DojoPaintTouch(Viewer))
+		{
+			// スマホ版: the word only (a tap anywhere starts), and 説明をもう一度 as a button of its own.
+			const FString Go = Missing.IsEmpty() ? TEXT("タップではじめる！") : TEXT("タップでとばす");
+			HudAbove(Card, 6).Text(Go, BX + BW * 0.5f, BY + 29.0f * S - 26.0f * S * 0.72f, HudFit(Go, 26.0f * S, BW - 40.0f * S), Paper, ETextAlign::Center,
+				TEXT("Black"));
+			if (!L->Slides.IsEmpty())
+			{
+				const FString Again = TEXT("説明をもう一度");
+				const float AW = HudMeasure(Again, 20.0f * S) + 40.0f * S;
+				const float AX = X + CardW - AW;
+				const float AY = BY + 72.0f * S;
+				TouchBack = FBox2D(FVector2D(AX, AY), FVector2D(AX + AW, AY + 44.0f * S)).ExpandBy(12.0f * S);
+				RoundedBox(HudAbove(Card, 5), AX, AY, AW, 44.0f * S, 22.0f * S, FLinearColor(0.06f, 0.09f, 0.18f, 0.96f));
+				HudAbove(Card, 6).Text(Again, AX + AW * 0.5f, AY + 22.0f * S - 20.0f * S * 0.72f, 20.0f * S, Paper, ETextAlign::Center, TEXT("Black"));
+			}
+			return;
+		}
 		const FString Key = DojoConfirmKey(Viewer);
 		const float CapW = DojoKeyCap(HudAbove(Card, 6), BX + 34.0f * S, BY + 14.0f * S, Key, 17.0f * S);
 		HudAbove(Card, 6).Text(Missing.IsEmpty() ? TEXT("はじめる！") : TEXT("とばす"), BX + 46.0f * S + CapW, BY + 10.0f * S, 28.0f * S, Paper,
@@ -678,7 +759,7 @@ void AChaosImpactDojo::PaintTask(const FPainter& P, const AChaosImpactPlayerCont
 
 void AChaosImpactDojo::PaintClear(const FPainter& P, const float W, const float H, const float Time) const
 {
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f);
+	const float S = AChaosImpactDojo::HudScale(W, H);
 	const float Since = static_cast<float>(GetWorld()->GetTimeSeconds() - PhaseAt);
 	const float In = EaseOut(FMath::Clamp(Since / 0.25f, 0.0f, 1.0f));
 	// (Kept up while its choices are shown under it.)
@@ -819,7 +900,7 @@ void AChaosImpactDojo::PaintObjectives(const FPainter& P, const AChaosImpactPlay
 	{
 		return;
 	}
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f);
+	const float S = AChaosImpactDojo::HudScale(W, H);
 	struct FMark
 	{
 		FVector At;

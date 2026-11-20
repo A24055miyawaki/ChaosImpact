@@ -143,6 +143,8 @@ namespace
 					{
 						FChaosImpactMatchRules Rules;
 						Rules.CPUCount = 1;
+						// -CIShotRandomRule=0/1/2: the rule a ランダムマッチ drew (個人戦 / ルビーラッシュ / クラウンキープ).
+						FParse::Value(FCommandLine::Get(), TEXT("-CIShotRandomRule="), Rules.PartyRule);
 						Mode->DecideLobbyRules(Rules);
 					}
 					return false;
@@ -165,6 +167,11 @@ namespace
 				{
 					return false;
 				}
+				if (FString Drawn; FParse::Value(FCommandLine::Get(), TEXT("-CIShotRandomRule="), Drawn))
+				{
+					// Shown as a ランダムマッチ's countdown (only while it is on screen: the room is not really matched).
+					const_cast<AChaosImpactGameState*>(Room)->Matchmade = EChaosImpactMatchmade::Random;
+				}
 				NextAt = Now + 0.5;
 				++Step;
 				return false;
@@ -178,6 +185,8 @@ namespace
 				++Step;
 				return false;
 			case 8:
+				// (The screenshot is taken on the next frame: the room stops looking matched only after it.)
+				const_cast<AChaosImpactGameState*>(Room)->Matchmade = EChaosImpactMatchmade::None;
 				if (Room->Phase != EChaosImpactOnlinePhase::Intro && Room->Phase != EChaosImpactOnlinePhase::Match)
 				{
 					return false;

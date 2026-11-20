@@ -51,7 +51,7 @@ FString AChaosImpactDojo::GetClipName(const EChaosImpactDojoArt Art, const EChao
 	static const TCHAR* Names[] = {TEXT("Move"), TEXT("PickUp"), TEXT("Throw"), TEXT("Charge"), TEXT("Aim"), TEXT("Dash"), TEXT("Jump"),
 		TEXT("Tackle"), TEXT("Swap"), TEXT("Cancel"), TEXT("Drop"), TEXT("Health"), TEXT("KnockOut"), TEXT("Moving"), TEXT("Dodge"),
 		TEXT("DashThrough"), TEXT("Interrupt"), TEXT("BallForm"), TEXT("Map"), TEXT("Ball"), TEXT("Teams"), TEXT("Duel"), TEXT("SuddenDeath"),
-		TEXT("Review"), TEXT("Stamina"), TEXT("Curve"), TEXT("DriveCourse")};
+		TEXT("Review"), TEXT("Stamina"), TEXT("Curve"), TEXT("DriveCourse"), TEXT("Fusion")};
 	const int32 Index = static_cast<int32>(Art);
 	return Index >= 0 && Index < UE_ARRAY_COUNT(Names) ? FString(Names[Index]) : FString();
 }
@@ -100,6 +100,7 @@ const TArray<AChaosImpactDojo::FRecClip>& AChaosImpactDojo::GetClips()
 	Add(GetClipName(EArt::Duel, EBall::Normal), TEXT("r_duel"), 6.0f, ERecScript::PadFight);
 	Add(GetClipName(EArt::DriveCourse, EBall::Normal), TEXT("c_drivecourse"), 5.0f, ERecScript::DriveCourse);
 	Add(GetClipName(EArt::SuddenDeath, EBall::Normal), TEXT("r_sudden"), 6.0f, ERecScript::Wander);
+	Add(GetClipName(EArt::Fusion, EBall::Normal), TEXT("x_fusion"), 4.6f, ERecScript::Fusion);
 	const TPair<EBall, const TCHAR*> Balls[] = {{EBall::Fire, TEXT("x_fire")}, {EBall::Ice, TEXT("x_ice")}, {EBall::Thunder, TEXT("x_thunder")},
 		{EBall::Black, TEXT("x_black")}, {EBall::Wind, TEXT("x_wind")}, {EBall::Smoke, TEXT("x_smoke")}, {EBall::Beam, TEXT("x_beam")},
 		{EBall::Snow, TEXT("x_snow")}, {EBall::Nova, TEXT("x_nova")}, {EBall::Simae, TEXT("x_simae")}, {EBall::Drive, TEXT("x_drive")},
@@ -679,6 +680,17 @@ void AChaosImpactDojo::RunRecScript(const FRecClip& Clip, const float T)
 		}
 		break;
 	}
+	case ERecScript::Fusion:
+		// 合体: the two held joined (their holders pulled together into one), then the fused ball thrown at the CPU.
+		if (RecOnce(TEXT("fuse"), T >= 0.45f) && !Me->AreBallsFused())
+		{
+			Me->RequestBallFusion();
+		}
+		if (Foe)
+		{
+			Throw(TEXT("f1"), 1.8f, 0.55f, Lead(Foe));
+		}
+		break;
 	case ERecScript::BallAtCPU:
 	default:
 		if (!CPUs.IsEmpty())

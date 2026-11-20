@@ -1,10 +1,12 @@
 #include "ChaosImpactMusic.h"
+#include "ChaosImpactBossScene.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactDojo.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactPlayerController.h"
+#include "ChaosImpactPresidentBoss.h"
 #include "ChaosImpactScreen.h"
 #include "ChaosImpactSettings.h"
 #include "Components/AudioComponent.h"
@@ -12,6 +14,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/GameStateBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
@@ -28,11 +31,13 @@ namespace
 	const TCHAR* const ResultsJingle = TEXT("BGM_Fireworks");
 	const TCHAR* const ResultsSong = TEXT("BGM_Clap");
 	const TCHAR* const DojoSong = TEXT("BGM_TanukichiAdventure");
+	const TCHAR* const SoloTitleSong = TEXT("BGM_ShuseiNiKiyu");
+	const TCHAR* const FinalBossSong = TEXT("BGM_TacticalEncounter");
 
 	/** Each song's own level under the sound effects (the files are levelled alike; a battle's music sits lowest). */
 	float SongLevel(const FString& Name)
 	{
-		if (Name.Contains(TEXT("TrickStyle")) || Name.Contains(TEXT("BattleJourney")))
+		if (Name.Contains(TEXT("TrickStyle")) || Name.Contains(TEXT("BattleJourney")) || Name.Contains(TEXT("TacticalEncounter")))
 		{
 			return 0.42f;
 		}
@@ -226,6 +231,11 @@ EChaosImpactBgm UChaosImpactMusic::Decide(UWorld* World, bool& bOutPaused) const
 	{
 		return EChaosImpactBgm::None;
 	}
+	if (AChaosImpactBossScene::IsEnding(World))
+	{
+		// The final boss's ending: quiet (its own music is to be chosen).
+		return EChaosImpactBgm::None;
+	}
 	if (Screen == EChaosImpactScreen::ColourEdit || Screen == EChaosImpactScreen::Gallery)
 	{
 		return EChaosImpactBgm::ColourEdit;
@@ -317,8 +327,24 @@ EChaosImpactBgm UChaosImpactMusic::Decide(UWorld* World, bool& bOutPaused) const
 		// moment of the menus' music before the battle's (its team and character picks are menus, above).
 		return EChaosImpactBgm::None;
 	}
+	if (Player->IsSoloTitle())
+	{
+		// The solo mode's title screen: its own song.
+		return EChaosImpactBgm::SoloTitle;
+	}
 	if (Player->IsSoloMode())
 	{
+		// The final boss's stage: quiet until the fight is on (after the arrival and the talk), then its own song, kept on to
+		// the ending (its after-talk, and a fall that puts the room back, change nothing).
+		for (TActorIterator<AChaosImpactPresidentBoss> It(World); It; ++It)
+		{
+			if (Current == EChaosImpactBgm::FinalBoss || (!It->IsDormant() && !It->IsSceneHeld() && !It->IsBeaten()))
+			{
+				return EChaosImpactBgm::FinalBoss;
+			}
+			// Its stage before the fight (the corridor, the arrival, the talk): quiet.
+			return EChaosImpactBgm::None;
+		}
 		return EChaosImpactBgm::Battle;
 	}
 	if (Player->IsTrainingMode() && !Player->IsVersusMatchWorld())
@@ -491,6 +517,12 @@ void UChaosImpactMusic::StartScene(UWorld* World)
 		break;
 	case EChaosImpactBgm::Dojo:
 		Playing = Start(World, DojoSong, ChangeIn);
+		break;
+	case EChaosImpactBgm::SoloTitle:
+		Playing = Start(World, SoloTitleSong, 1.2f);
+		break;
+	case EChaosImpactBgm::FinalBoss:
+		Playing = Start(World, FinalBossSong, 0.3f);
 		break;
 	case EChaosImpactBgm::Battle:
 	{

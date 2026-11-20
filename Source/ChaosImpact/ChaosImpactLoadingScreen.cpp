@@ -1,4 +1,5 @@
-#include "ChaosImpactLoadingScreen.h"
+﻿#include "ChaosImpactLoadingScreen.h"
+#include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactBallTypes.h"
@@ -43,9 +44,10 @@ namespace
 		{EChaosImpactBallType::Drive, TEXT("ドライブは投げたあと自分で操れる。逆を押すとその場で折り返す！")},
 		{EChaosImpactBallType::Hook, TEXT("フックは当てた相手を引き寄せる。ダッシュで振りほどける！床のボールも拾える。")},
 		{EChaosImpactBallType::Anchor, TEXT("アンカーを壁や床に打ちこむと、そこまで一気に飛んでいける。逃げにも回りこみにも！")},
-		{EChaosImpactBallType::Swap, TEXT("スワップボールを当てると、相手と自分の場所が入れ替わる。ダメージはなし！")},
-		{EChaosImpactBallType::Barrier, TEXT("バリアボールは落ちた所に光の壁を立てる。ボールを1つだけ止めて砕ける。人は通れる。")},
+		{EChaosImpactBallType::Swap, TEXT("スワップボールを当てると、1ダメージを与えて相手と自分の場所が入れ替わる！")},
+		{EChaosImpactBallType::Barrier, TEXT("バリアは光の壁。自分は通れて自分の球も貫通、相手の球は止めて砕ける。相手が通ろうとするとダメージではじかれ、壁も砕ける。")},
 		{EChaosImpactBallType::Mine, TEXT("マインは床に置かれる。相手が近づくと赤く光って爆発！ダッシュで逃げられる。")},
+		{EChaosImpactBallType::Heal, TEXT("ソロモードのヒールボールは、投げた所に回復スポットを作る。乗るとすぐ1回復、しばらく乗っているともう1回復！")},
 		{EChaosImpactBallType::Normal, TEXT("ダッシュ中は無敵。飛んでくるボールもすり抜けられる。")},
 		{EChaosImpactBallType::Normal, TEXT("ボールは2つまで持てる。入れ替えで投げる順番を変えられる。")},
 		{EChaosImpactBallType::Normal, TEXT("長押しでためると、速くて強い球になる。")},
@@ -56,7 +58,8 @@ namespace
 		EChaosImpactBallType::Ice, EChaosImpactBallType::Thunder, EChaosImpactBallType::Black, EChaosImpactBallType::Wind,
 		EChaosImpactBallType::Smoke, EChaosImpactBallType::Beam, EChaosImpactBallType::Snow, EChaosImpactBallType::Nova,
 		EChaosImpactBallType::Simae, EChaosImpactBallType::Drive, EChaosImpactBallType::Hook,
-		EChaosImpactBallType::Anchor, EChaosImpactBallType::Swap, EChaosImpactBallType::Barrier, EChaosImpactBallType::Mine};
+		EChaosImpactBallType::Anchor, EChaosImpactBallType::Swap, EChaosImpactBallType::Barrier, EChaosImpactBallType::Mine,
+		EChaosImpactBallType::Heal};
 	constexpr int32 LoadingBallTypeCount = UE_ARRAY_COUNT(LoadingBallTypes);
 
 	EChaosImpactBallType LoadingBallType(const int32 Type)
@@ -228,6 +231,62 @@ namespace
 	EChaosImpactDevice LoadingHintDevice()
 	{
 		return IsInGameThread() ? LoadingPressDevice : EChaosImpactDevice::KeyboardMouse;
+	}
+
+	/**
+	 * スマホ版 (2026-11-18). By touch: no keys named (タップ, ドラッグ), and buttons of its own to stop, and in the arcade to
+	 * change game and to try again. Held upright: the game in the middle of the screen, the words (what loads, the game's
+	 * name, a tip, how to play) big above and under it, on a 900 x 1600 page.
+	 */
+	bool LoadingPhone()
+	{
+		return UChaosImpactMenuWidget::IsPhoneBuild();
+	}
+	/** スマホ版: the games a finger plays (a tap, or a drag left and right); the rest want keys or a stick. */
+	bool LoadingPlayableByTouch(const EChaosImpactLoadingGame Game)
+	{
+		using G = EChaosImpactLoadingGame;
+		return Game == G::Pop || Game == G::Dodge || Game == G::Juggle || Game == G::Target || Game == G::Gallery || Game == G::Breakout
+			|| Game == G::Flappy || Game == G::Avoid || Game == G::Catch || Game == G::LaneRush || Game == G::Golf || Game == G::Fishing
+			|| Game == G::Rhythm || Game == G::Parry || Game == G::Reaction;
+	}
+	bool LoadingUpright(const FVector2D& Size)
+	{
+		return LoadingPhone() && Size.Y > Size.X * 1.15;
+	}
+	/** The upright page over the screen (900 x 1600, fitted and centred). */
+	float LoadingPageFit(const FVector2D& Size)
+	{
+		return FMath::Min(Size.X / 900.0, Size.Y / 1600.0);
+	}
+	FVector2D LoadingPageOffset(const FVector2D& Size)
+	{
+		const float Fit = LoadingPageFit(Size);
+		return (Size - FVector2D(900.0, 1600.0) * Fit) * 0.5;
+	}
+	/** The touch buttons (0 stop, 1 game before, 2 game after, 3 again): on the upright page, or on the landscape design. */
+	FBox2D LoadingTouchButton(const int32 Index, const bool bUpright)
+	{
+		if (bUpright)
+		{
+			const float Lefts[] = {40.0f, 350.0f, 520.0f, 690.0f};
+			const float Rights[] = {330.0f, 500.0f, 670.0f, 860.0f};
+			return FBox2D(FVector2D(Lefts[Index], 1490.0f), FVector2D(Rights[Index], 1572.0f));
+		}
+		const float Lefts[] = {40.0f, 320.0f, 450.0f, 580.0f};
+		const float Rights[] = {300.0f, 430.0f, 560.0f, 760.0f};
+		return FBox2D(FVector2D(Lefts[Index], 816.0f), FVector2D(Rights[Index], 888.0f));
+	}
+	/** The words of a hint as a finger plays it. */
+	FString LoadingTouchWords(FString Hint)
+	{
+		Hint.ReplaceInline(TEXT("（クリックした所へも投げられる）"), TEXT("（タップした所へも投げられる）"));
+		Hint.ReplaceInline(TEXT("クリック・スペース"), TEXT("タップ"));
+		Hint.ReplaceInline(TEXT("スペース・クリック"), TEXT("タップ"));
+		Hint.ReplaceInline(TEXT("←→・マウス"), TEXT("ドラッグ"));
+		Hint.ReplaceInline(TEXT("スペース"), TEXT("タップ"));
+		Hint.ReplaceInline(TEXT("クリック"), TEXT("タップ"));
+		return Hint;
 	}
 
 	/** Left or right on a key (keys, the d-pad); 0 for any other. The stick comes as an analog value instead. */
@@ -932,7 +991,17 @@ void FChaosImpactLoadingState::SwitchGame(const int32 Direction)
 {
 	QueueSound(EChaosImpactSfx::UiTab);
 	constexpr int32 Count = static_cast<int32>(EChaosImpactLoadingGame::Count);
-	StartGame(static_cast<EChaosImpactLoadingGame>((static_cast<int32>(Game) + Direction % Count + Count) % Count));
+	int32 Next = static_cast<int32>(Game);
+	for (int32 Tries = 0; Tries < Count; ++Tries)
+	{
+		Next = (Next + Direction % Count + Count) % Count;
+		// (スマホ版: only the games a finger plays.)
+		if (!LoadingPhone() || LoadingPlayableByTouch(static_cast<EChaosImpactLoadingGame>(Next)))
+		{
+			break;
+		}
+	}
+	StartGame(static_cast<EChaosImpactLoadingGame>(Next));
 }
 
 void FChaosImpactLoadingState::SetSteerKey(const int32 Direction, const bool bDown, const double Now)
@@ -1315,6 +1384,21 @@ FReply SChaosImpactLoadingScreen::OnMouseButtonDown(const FGeometry& MyGeometry,
 	const FVector2D Local = FVector2D(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()));
 	const FVector2D Design = (Local - (Size - FVector2D(1600.0f, 900.0f) * Fit) * 0.5f) / Fit;
 	FScopeLock Guard(&State->Lock);
+	if (LoadingPhone() && State->FadeStartedAt < 0.0)
+	{
+		// スマホ版: its own buttons (stop; the arcade's game before / after and again).
+		const bool bUpright = LoadingUpright(Size);
+		const FVector2D Point = bUpright ? (Local - LoadingPageOffset(Size)) / LoadingPageFit(Size) : Design;
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			const bool bShown = Index == 0 ? State->bCancelable : State->bArcade;
+			if (bShown && LoadingTouchButton(Index, bUpright).ExpandBy(6.0).IsInside(Point))
+			{
+				State->TouchButton = Index;
+				return FReply::Handled();
+			}
+		}
+	}
 	if (State->FadeStartedAt < 0.0)
 	{
 		State->ClickAt(Design, FPlatformTime::Seconds());
@@ -1351,8 +1435,10 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	// The hints in the names of what was used last (any key or button plays: the keyboard is told Space, a controller its
 	// decide button, as its back button can leave).
 	const EChaosImpactDevice Device = LoadingHintDevice();
-	const FString PressOrClick = ChaosImpactHints::Text(Device, TEXT("{kb:スペース・クリック}{pad:{Confirm}ボタン}"));
-	const FString Press = ChaosImpactHints::Text(Device, TEXT("{kb:スペース}{pad:{Confirm}ボタン}"));
+	// (By touch: タップ.)
+	const bool bTouchWords = LoadingPhone() && !ChaosImpactHints::IsPad(Device);
+	const FString PressOrClick = bTouchWords ? FString(TEXT("タップ")) : ChaosImpactHints::Text(Device, TEXT("{kb:スペース・クリック}{pad:{Confirm}ボタン}"));
+	const FString Press = bTouchWords ? FString(TEXT("タップ")) : ChaosImpactHints::Text(Device, TEXT("{kb:スペース}{pad:{Confirm}ボタン}"));
 	const double Now = FPlatformTime::Seconds();
 	S.Step(Now);
 	const float T = static_cast<float>(Now - S.StartedAt);
@@ -1388,7 +1474,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 			LoadingDrawBall(Back, Front, Ball.Position, Ball.Radius, Ball.Type);
 		}
 		Hint = FString::Printf(TEXT("%sでボールを割れる！　割った数 %d"),
-			*ChaosImpactHints::Text(Device, TEXT("{kb:クリック・スペース}{pad:{Confirm}ボタン}")), S.Score);
+			*ChaosImpactHints::Text(Device, TEXT("{kb:クリック・スペース}{pad:{Confirm}ボタン}{touch:タップ}")), S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Dodge:
@@ -1511,7 +1597,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
 		Hint = FString::Printf(TEXT("%sで投げる%s　小さい的ほど高得点　%d点"), *Press,
-			*ChaosImpactHints::Text(Device, TEXT("{kb:（クリックした所へも投げられる）}")), S.Score);
+			*ChaosImpactHints::Text(Device, TEXT("{kb:（クリックした所へも投げられる）}{touch:（タップした所へも投げられる）}")), S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Gallery:
@@ -1593,7 +1679,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
 		Hint = FString::Printf(TEXT("%sで動かす　%sで発射　こわした数 %d"),
-			*ChaosImpactHints::Text(Device, TEXT("{kb:←→・マウス}{pad:{DPad}←→・{LStick}}")), *Press, S.Score);
+			*ChaosImpactHints::Text(Device, TEXT("{kb:←→・マウス}{pad:{DPad}←→・{LStick}}{touch:ドラッグ}")), *Press, S.Score);
 		break;
 	}
 	case EChaosImpactLoadingGame::Flappy:
@@ -1677,7 +1763,7 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 				LoadingPaint::ETextAlign::Center, TEXT("BlackItalic"));
 		}
 		Hint = FString::Printf(TEXT("%sでよける　よけた数 %d"),
-			*ChaosImpactHints::Text(Device, TEXT("{kb:←→・マウス}{pad:{DPad}←→・{LStick}}")), S.Score);
+			*ChaosImpactHints::Text(Device, TEXT("{kb:←→・マウス}{pad:{DPad}←→・{LStick}}{touch:ドラッグ}")), S.Score);
 		break;
 	}
 	default:
@@ -1708,15 +1794,27 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 		}
 	}
 
+	if (bTouchWords)
+	{
+		Hint = LoadingTouchWords(Hint);
+	}
+	const int32 Dots = FMath::FloorToInt(T * 3.0f) % 4;
+	if (LoadingUpright(FVector2D(Size)))
+	{
+		return PaintUpright(AllottedGeometry, OutDrawElements, LayerId, S, Fade, T, Dots, Hint, bTouchWords);
+	}
+
 	// What is loading, and how far it has got.
 	const LoadingPaint::FPainter Text{Design, OutDrawElements, LayerId + 5, Fade};
-	const int32 Dots = FMath::FloorToInt(T * 3.0f) % 4;
 	if (S.bArcade)
 	{
 		Text.Text(TEXT("MINI GAME"), 70.0f, 46.0f, 56.0f, LoadingPaint::Paper, LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f,
 			LoadingPaint::Ink);
-		Text.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E} 切りかえ　{Start|R} リトライ")), 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f),
-			LoadingPaint::ETextAlign::Left, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+		if (!bTouchWords)
+		{
+			Text.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E} 切りかえ　{Start|R} リトライ")), 74.0f, 126.0f, 22.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f),
+				LoadingPaint::ETextAlign::Left, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+		}
 	}
 	else
 	{
@@ -1774,15 +1872,120 @@ int32 SChaosImpactLoadingScreen::OnPaint(const FPaintArgs& Args, const FGeometry
 	if (bInteractive)
 	{
 		const float Pulse = 0.6f + 0.4f * FMath::Sin(T * 3.0f);
-		Hints.Text(Hint, 1540.0f, 838.0f, 18.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, Pulse), LoadingPaint::ETextAlign::Right,
-			TEXT("Bold"), 2.0f, LoadingPaint::Ink);
-		if (S.bCancelable)
+		const float HintSize = bTouchWords ? 22.0f : 18.0f;
+		const float HintRoom = bTouchWords ? 1540.0f - 790.0f : 1400.0f;
+		Hints.Text(Hint, 1540.0f, bTouchWords ? 834.0f : 838.0f, LoadingPaint::HudFit(Hint, HintSize, HintRoom), LoadingPaint::WithAlpha(LoadingPaint::Paper, Pulse),
+			LoadingPaint::ETextAlign::Right, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+		if (bTouchWords)
+		{
+			PaintTouchButtons(Design, OutDrawElements, LayerId + 8, S, Fade, false);
+		}
+		else if (S.bCancelable)
 		{
 			Hints.Text(ChaosImpactHints::Text(Device, S.bArcade ? TEXT("{Back} でもどる") : TEXT("{Back} でやめる")), 70.0f, 838.0f, 18.0f, LoadingPaint::Muted,
 				LoadingPaint::ETextAlign::Left, TEXT("Bold"));
 		}
 	}
 	return LayerId + 9;
+}
+
+void SChaosImpactLoadingScreen::PaintTouchButtons(const FGeometry& Space, FSlateWindowElementList& Elements, const int32 Layer,
+	const FChaosImpactLoadingState& S, const float Fade, const bool bUpright) const
+{
+	const LoadingPaint::FPainter Back{Space, Elements, Layer, Fade};
+	const LoadingPaint::FPainter Words{Space, Elements, Layer + 1, Fade};
+	const TCHAR* const Labels[] = {S.bArcade ? TEXT("もどる") : TEXT("やめる"), TEXT("◀"), TEXT("▶"), TEXT("リトライ")};
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		if (Index == 0 ? !S.bCancelable : !S.bArcade)
+		{
+			continue;
+		}
+		const FBox2D R = LoadingTouchButton(Index, bUpright);
+		const float X = static_cast<float>(R.Min.X), Y = static_cast<float>(R.Min.Y);
+		const float W = static_cast<float>(R.GetSize().X), H = static_cast<float>(R.GetSize().Y);
+		Back.Box(X + 5.0f, Y + 6.0f, W, H, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		Back.Box(X, Y, W, H, FLinearColor(0.02f, 0.03f, 0.06f, 0.94f));
+		Back.Box(X, Y, 5.0f, H, Index == 0 ? LoadingPaint::Muted : LoadingPaint::Gold);
+		const float Size = LoadingPaint::HudFit(Labels[Index], bUpright ? 30.0f : 26.0f, W - 20.0f, TEXT("Black"));
+		Words.Text(Labels[Index], X + W * 0.5f, Y + H * 0.5f - Size * 0.72f, Size, LoadingPaint::Paper, LoadingPaint::ETextAlign::Center, TEXT("Black"));
+	}
+}
+
+int32 SChaosImpactLoadingScreen::PaintUpright(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
+	const FChaosImpactLoadingState& S, const float Fade, const float T, const int32 Dots, const FString& Hint, const bool bTouchWords) const
+{
+	// The page: 900 x 1600 over the screen; the game (drawn already) in its middle.
+	const FVector2D Size = FVector2D(AllottedGeometry.GetLocalSize());
+	const float Fit = LoadingPageFit(Size);
+	const FVector2D Offset = LoadingPageOffset(Size);
+	const FGeometry Page = AllottedGeometry.MakeChild(FVector2f(900.0f, 1600.0f), FSlateLayoutTransform(Fit, FVector2f(Offset)));
+	const LoadingPaint::FPainter Text{Page, OutDrawElements, LayerId + 5, Fade};
+	// What is loading, and how far it has got (the arcade: MINI GAME).
+	const FString Title = S.bArcade ? FString(TEXT("MINI GAME")) : FString(TEXT("LOADING")) + FString::ChrN(Dots, TEXT('.'));
+	Text.Text(Title, 40.0f, 56.0f, 64.0f, LoadingPaint::Paper, LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"), 3.0f, LoadingPaint::Ink);
+	if (!S.bArcade)
+	{
+		Text.Text(S.Status, 44.0f, 152.0f, LoadingPaint::HudFit(S.Status, 28.0f, 820.0f), LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.85f),
+			LoadingPaint::ETextAlign::Left, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+		if (S.Progress >= 0.0f)
+		{
+			const float Done = FMath::Clamp(S.Progress, 0.0f, 1.0f);
+			Text.Box(44.0f, 206.0f, 700.0f, 12.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.15f));
+			Text.Box(44.0f, 206.0f, 700.0f * Done, 12.0f, LoadingPaint::Gold);
+			Text.Text(FString::Printf(TEXT("%d%%"), FMath::RoundToInt(100.0f * Done)), 860.0f, 194.0f, 26.0f, LoadingPaint::Gold,
+				LoadingPaint::ETextAlign::Right, TEXT("Bold"));
+		}
+	}
+	// Which game this is, and its best.
+	Text.Text(S.bArcade ? FString::Printf(TEXT("%d / %d"), static_cast<int32>(S.Game) + 1, static_cast<int32>(EChaosImpactLoadingGame::Count))
+		: FString(TEXT("MINI GAME")), 44.0f, 262.0f, 20.0f, LoadingPaint::Gold, LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"));
+	const FString Name = LoadingGameName(S.Game);
+	Text.Text(Name, 44.0f, 290.0f, LoadingPaint::HudFit(Name, 44.0f, 560.0f, TEXT("BlackItalic")), LoadingPaint::Paper, LoadingPaint::ETextAlign::Left,
+		TEXT("BlackItalic"), 3.0f, LoadingPaint::Ink);
+	if (S.Game != EChaosImpactLoadingGame::Gallery && S.Best > 0)
+	{
+		Text.Text(FString::Printf(TEXT("ベスト %d"), S.Best), 860.0f, 304.0f, 26.0f, LoadingPaint::WithAlpha(LoadingPaint::Paper, 0.8f),
+			LoadingPaint::ETextAlign::Right, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+	}
+	// A tip under the game (the gallery is all tips already).
+	if (S.Game != EChaosImpactLoadingGame::Gallery && !S.bArcade)
+	{
+		const FLoadingTip& Tip = LoadingTips[FMath::Clamp(S.Tip, 0, static_cast<int32>(UE_ARRAY_COUNT(LoadingTips)) - 1)];
+		const float In = LoadingPaint::EaseOut(T / 0.35f);
+		const TArray<FString> TipLines = LoadingWrap(Tip.Text, 19);
+		const int32 Lines = FMath::Min(TipLines.Num(), 3);
+		const float CardH = 76.0f + Lines * 46.0f;
+		const FGeometry Card = LoadingPaint::MakeSkewed(Page, 40.0f + (1.0f - In) * 60.0f, 1110.0f, 820.0f, CardH, -0.1f);
+		const LoadingPaint::FPainter CardBack{Card, OutDrawElements, LayerId + 6, Fade * In};
+		const LoadingPaint::FPainter CardFront{Card, OutDrawElements, LayerId + 7, Fade * In};
+		CardBack.Box(10.0f, 12.0f, 820.0f, CardH, FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+		CardBack.Box(0.0f, 0.0f, 820.0f, CardH, FLinearColor(0.02f, 0.03f, 0.06f, 0.96f));
+		CardBack.Box(0.0f, 0.0f, 10.0f, CardH, LoadingPaint::Gold);
+		const FLinearColor BallColor = Tip.Ball == EChaosImpactBallType::Normal ? FLinearColor(0.92f, 0.94f, 1.0f)
+			: Tip.Ball == EChaosImpactBallType::Simae ? FLinearColor(0.97f, 0.97f, 0.97f) : ChaosImpactBallTypes::GetColor(Tip.Ball);
+		const float Bob = 4.0f * FMath::Sin(T * 3.0f);
+		CardFront.Disc(FVector2D(60.0f, 46.0f + Bob), 26.0f, BallColor);
+		CardFront.Text(TEXT("豆知識"), 104.0f, 22.0f, 26.0f, LoadingPaint::Gold, LoadingPaint::ETextAlign::Left, TEXT("BlackItalic"));
+		for (int32 Line = 0; Line < Lines; ++Line)
+		{
+			CardFront.Text(TipLines[Line], 36.0f, 74.0f + Line * 46.0f, LoadingPaint::HudFit(TipLines[Line], 30.0f, 760.0f), LoadingPaint::Paper,
+				LoadingPaint::ETextAlign::Left, TEXT("Bold"));
+		}
+	}
+	// How to play it, and the buttons at the foot.
+	if (bInteractive)
+	{
+		const LoadingPaint::FPainter Hints{Page, OutDrawElements, LayerId + 8, Fade};
+		const float Pulse = 0.6f + 0.4f * FMath::Sin(T * 3.0f);
+		Hints.Text(Hint, 450.0f, 1420.0f, LoadingPaint::HudFit(Hint, 28.0f, 820.0f), LoadingPaint::WithAlpha(LoadingPaint::Paper, Pulse),
+			LoadingPaint::ETextAlign::Center, TEXT("Bold"), 2.0f, LoadingPaint::Ink);
+		if (bTouchWords)
+		{
+			PaintTouchButtons(Page, OutDrawElements, LayerId + 8, S, Fade, true);
+		}
+	}
+	return LayerId + 10;
 }
 
 // =====================================================================================================================
@@ -1831,6 +2034,15 @@ EChaosImpactLoadingGame UChaosImpactLoadingSubsystem::ChooseGame()
 		const int32 Pick = FMath::RandRange(0, LastGame == EChaosImpactLoadingGame::Count ? Count - 1 : Count - 2);
 		Game = static_cast<EChaosImpactLoadingGame>(LastGame != EChaosImpactLoadingGame::Count && Pick >= static_cast<int32>(LastGame)
 			? Pick + 1 : Pick);
+		// (スマホ版: the next one a finger plays.)
+		for (int32 Tries = 0; LoadingPhone() && !LoadingPlayableByTouch(Game) && Tries < Count; ++Tries)
+		{
+			Game = static_cast<EChaosImpactLoadingGame>((static_cast<int32>(Game) + 1) % Count);
+			if (Game == LastGame)
+			{
+				Game = static_cast<EChaosImpactLoadingGame>((static_cast<int32>(Game) + 1) % Count);
+			}
+		}
 	}
 	LastGame = Game;
 	return Game;
@@ -2061,6 +2273,21 @@ bool UChaosImpactLoadingSubsystem::Tick(const float DeltaSeconds)
 		{
 			ChaosImpactSfx::Play2D(GetGameInstance(), Sound);
 		}
+	}
+	int32 Touched = INDEX_NONE;
+	{
+		FScopeLock Guard(&State->Lock);
+		Touched = State->TouchButton;
+		State->TouchButton = INDEX_NONE;
+	}
+	if (Touched == 0 && CancelAction)
+	{
+		bCancelRequested = true;
+	}
+	else if (Touched == 1 || Touched == 2 || Touched == 3)
+	{
+		// (The arcade's: as its keys.)
+		HandleKey(Touched == 1 ? EKeys::Q : Touched == 2 ? EKeys::E : EKeys::R, 0);
 	}
 	const double Now = FPlatformTime::Seconds();
 	if (bCancelRequested)

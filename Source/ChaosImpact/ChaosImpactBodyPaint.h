@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
@@ -127,6 +127,8 @@ public:
 	/** The stroke goes on, but the next dab does not join up with the last (the pen went off the model). */
 	void Lift() { bHasLastDab = false; }
 	void EndStroke();
+	/** The stroke under way taken back as if never drawn (no undo step; what can be done again is kept). */
+	void CancelStroke();
 	bool IsStroking() const { return bStroking; }
 	/** Everything joined to the hit across the surface that is the colour clicked, filled with the brush's colour. */
 	void Fill(const TArray<UChaosImpactPaintLayer*>& Layers, const FHit& Hit, const FChaosImpactBrush& Brush);

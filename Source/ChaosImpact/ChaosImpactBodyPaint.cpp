@@ -1,4 +1,4 @@
-#include "ChaosImpactBodyPaint.h"
+﻿#include "ChaosImpactBodyPaint.h"
 
 #include "ChaosImpactPuppetComponent.h"
 #include "Components/SkinnedMeshComponent.h"
@@ -1173,6 +1173,32 @@ void FChaosImpactPaintSurface::EndStroke()
 	FinishStep();
 	bStroking = false;
 	StrokeWeights.Reset();
+}
+
+void FChaosImpactPaintSurface::CancelStroke()
+{
+	if (!bStroking)
+	{
+		return;
+	}
+	// Every tile it touched back as it was before the stroke.
+	for (const FTileEdit& Edit : StrokeStep.Tiles)
+	{
+		PutTile(StrokeLayers.IsValidIndex(Edit.Layer) ? StrokeLayers[Edit.Layer] : nullptr, Edit.Tile, Edit.Before);
+	}
+	for (UChaosImpactPaintLayer* Layer : StrokeLayers)
+	{
+		if (Layer)
+		{
+			Layer->Flush();
+		}
+	}
+	bStroking = false;
+	bHasLastDab = false;
+	StrokeStep = FStep();
+	StrokeTiles.Reset();
+	StrokeWeights.Reset();
+	StrokeRects.Reset();
 }
 
 void FChaosImpactPaintSurface::FinishStep()

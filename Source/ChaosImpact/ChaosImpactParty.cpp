@@ -1338,6 +1338,11 @@ void AChaosImpactRubyField::PlayPickupEffect(const FVector& At, const uint8 Valu
 		PickupStreakAt = Now;
 		const float Pitch = 1.0f + 0.06f * FMath::Min(PickupStreak, 10);
 		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::RubyPick, bBig ? 1.0f : 0.8f, Pitch);
+		// A slight tick in the hands (a little more for a big one).
+		if (const AChaosImpactCharacter* Picker = Cast<AChaosImpactCharacter>(Collector))
+		{
+			Picker->PlayControllerRumble(bBig ? 0.3f : 0.16f, bBig ? 0.14f : 0.04f, bBig ? 0.1f : 0.05f);
+		}
 		if (bBig)
 		{
 			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::RubyBig, bHuge ? 1.0f : 0.7f, bHuge ? 0.9f : 1.05f);
@@ -1994,6 +1999,7 @@ void AChaosImpactCrown::DetectLocalPickup(const double Now)
 			LocalTaker = Character;
 			LocalTakenAt = Now;
 			PlayTakeEffect(ShownLocation, true);
+			Character->PlayControllerRumble(0.35f, 0.25f, 0.16f);
 			if (HasAuthority())
 			{
 				Claim(Character, Now);

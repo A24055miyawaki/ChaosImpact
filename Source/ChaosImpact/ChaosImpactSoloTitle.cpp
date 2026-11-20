@@ -1,4 +1,4 @@
-#include "ChaosImpactSoloTitle.h"
+﻿#include "ChaosImpactSoloTitle.h"
 
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactPlayerController.h"
@@ -303,7 +303,7 @@ void AChaosImpactSoloTitle::UpdateInput(APlayerController* PC, const float Delta
 	const bool bConfirm = Pressed({EKeys::Enter, EKeys::SpaceBar, EKeys::Gamepad_FaceButton_Bottom, EKeys::Gamepad_Special_Right});
 	const bool bBack = Pressed({EKeys::Escape, EKeys::BackSpace, EKeys::Gamepad_FaceButton_Right, EKeys::RightMouseButton});
 	const bool bErase = Pressed({EKeys::Delete, EKeys::Gamepad_FaceButton_Top});
-	const bool bClick = Pressed({EKeys::LeftMouseButton});
+	bool bClick = Pressed({EKeys::LeftMouseButton});
 	int32 Direction = Pressed({EKeys::Left, EKeys::A, EKeys::Gamepad_DPad_Left}) ? -1 : Pressed({EKeys::Right, EKeys::D, EKeys::Gamepad_DPad_Right}) ? 1 : 0;
 	// The stick: one step each time it is pushed over.
 	const float Stick = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX);
@@ -315,7 +315,38 @@ void AChaosImpactSoloTitle::UpdateInput(APlayerController* PC, const float Delta
 
 	// The mouse, in the widget's space.
 	const FVector2D Viewport = UWidgetLayoutLibrary::GetViewportSize(this) / FMath::Max(UWidgetLayoutLibrary::GetViewportScale(this), 0.01f);
-	const FVector2D Mouse = UWidgetLayoutLibrary::GetMousePositionOnViewport(this);
+	FVector2D Mouse = UWidgetLayoutLibrary::GetMousePositionOnViewport(this);
+	// スマホ版: a finger (no cursor there: the mouse's place is stale). A tap acts as the finger lifts, where it went down.
+	{
+		float TouchX = 0.0f;
+		float TouchY = 0.0f;
+		bool bTouching = false;
+		PC->GetInputTouchState(ETouchIndex::Touch1, TouchX, TouchY, bTouching);
+		const float Scale = FMath::Max(UWidgetLayoutLibrary::GetViewportScale(this), 0.01f);
+		const FVector2D Finger = FVector2D(TouchX, TouchY) / Scale;
+		// (A quick tap can go down and up between two frames: seen only as pressed and let go at once.)
+		const bool bQuickTap = !bTouching && !bFingerDown && PC->WasInputKeyJustPressed(EKeys::TouchKeys[ETouchIndex::Touch1]);
+		if ((bTouching && !bFingerDown) || bQuickTap)
+		{
+			FingerStart = Finger;
+		}
+		if (bTouching || bQuickTap)
+		{
+			FingerAt = Finger;
+		}
+		const bool bTap = bQuickTap || (!bTouching && bFingerDown && FVector2D::Distance(FingerAt, FingerStart) < 30.0);
+		bFingerDown = bTouching;
+#if PLATFORM_ANDROID || PLATFORM_IOS
+		Mouse = bTap ? FingerStart : LastMouse;
+		bClick = bClick || bTap;
+#else
+		if (bTap)
+		{
+			Mouse = FingerStart;
+			bClick = true;
+		}
+#endif
+	}
 	const bool bMouseMoved = FVector2D::DistSquared(Mouse, LastMouse) > 4.0;
 	LastMouse = Mouse;
 	int32 Over = INDEX_NONE;
@@ -328,6 +359,24 @@ void AChaosImpactSoloTitle::UpdateInput(APlayerController* PC, const float Delta
 	}
 	bEraseHovered = Step == EChaosImpactSoloTitleStep::Files && Files[Selected].bExists
 		&& UChaosImpactSoloTitleWidget::EraseRect(Viewport, Selected).IsInside(Mouse);
+	// スマホ版: every file has its けす (no picking before a tap), and もどる at the top left.
+	int32 EraseOver = bEraseHovered ? Selected : INDEX_NONE;
+	if (UChaosImpactSoloTitleWidget::IsPhone() && Step == EChaosImpactSoloTitleStep::Files)
+	{
+		for (int32 I = 0; I < 3; ++I)
+		{
+			if (Files[I].bExists && UChaosImpactSoloTitleWidget::EraseRect(Viewport, I).IsInside(Mouse))
+			{
+				EraseOver = I;
+			}
+		}
+	}
+	if (bClick && UChaosImpactSoloTitleWidget::BackRect(Viewport).bIsValid && UChaosImpactSoloTitleWidget::BackRect(Viewport).IsInside(Mouse)
+		&& Step != EChaosImpactSoloTitleStep::ConfirmErase && Step != EChaosImpactSoloTitleStep::Leaving)
+	{
+		Back();
+		return;
+	}
 
 	switch (Step)
 	{
@@ -355,9 +404,10 @@ void AChaosImpactSoloTitle::UpdateInput(APlayerController* PC, const float Delta
 		{
 			Move(Direction);
 		}
-		else if (bClick && bEraseHovered)
+		else if (bClick && EraseOver != INDEX_NONE)
 		{
-			AskErase(Selected);
+			Selected = EraseOver;
+			AskErase(EraseOver);
 		}
 		else if (bClick && Over != INDEX_NONE)
 		{

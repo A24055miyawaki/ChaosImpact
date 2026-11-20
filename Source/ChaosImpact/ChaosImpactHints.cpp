@@ -1,8 +1,11 @@
-#include "ChaosImpactHints.h"
+﻿#include "ChaosImpactHints.h"
 
 #include "ChaosImpactPlayerController.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Widgets/Input/SVirtualJoystick.h"
 #include "InputCoreTypes.h"
 
 namespace
@@ -163,7 +166,9 @@ void ChaosImpactHints::StartTracking()
 		return;
 	}
 	bTracking = true;
-	FSlateApplication::Get().RegisterInputPreProcessor(MakeShared<FHintInputWatcher>());
+	// Ahead of the game's own (the menus answer and keep their keys in theirs): it only watches, and must see every press,
+	// or a controller working a menu was still taken for the mouse (and a cursor sitting still took the choice back).
+	FSlateApplication::Get().RegisterInputPreProcessor(MakeShared<FHintInputWatcher>(), EInputPreProcessorType::PreGame);
 }
 
 void ChaosImpactHints::SetLastDeviceForTests(const EChaosImpactDevice Device)
@@ -184,6 +189,11 @@ EChaosImpactDevice ChaosImpactHints::GetDevice(const APlayerController* Player)
 	if (!Controller)
 	{
 		return LastDevice;
+	}
+	if (Controller->IsPhoneSolo())
+	{
+		// スマホ版: the touch screen, whatever else the phone reports.
+		return EDevice::KeyboardMouse;
 	}
 	if (!Controller->FollowsLastDevice())
 	{
@@ -234,6 +244,9 @@ FString ChaosImpactHints::Key(const EChaosImpactDevice Device, const FKey& PadKe
 FString ChaosImpactHints::Text(const EChaosImpactDevice Device, const FString& Template)
 {
 	const bool bPad = IsPad(Device);
+	// スマホ版 (no controller in use): neither the keys' nor the pad's lines; the screen is tapped (the menus' back button).
+	static const bool bTouchScreen = SVirtualJoystick::ShouldDisplayTouchInterface() || FParse::Param(FCommandLine::Get(), TEXT("CITouch"));
+	const bool bTouch = bTouchScreen && !bPad;
 	FString Out;
 	Out.Reserve(Template.Len() + 16);
 	for (int32 Index = 0; Index < Template.Len(); ++Index)
@@ -251,10 +264,19 @@ FString ChaosImpactHints::Text(const EChaosImpactDevice Device, const FString& T
 		}
 		const FString Inside = Template.Mid(Index + 1, Close - Index - 1);
 		Index = Close;
+		if (Inside.StartsWith(TEXT("touch:")))
+		{
+			// (スマホ版 by touch only: how a finger does it.)
+			if (bTouch)
+			{
+				Out.Append(Inside.Mid(6));
+			}
+			continue;
+		}
 		if (Inside.StartsWith(TEXT("pad:")) || Inside.StartsWith(TEXT("kb:")))
 		{
 			const bool bForPad = Inside.StartsWith(TEXT("pad:"));
-			if (bForPad == bPad)
+			if (bForPad == bPad && !bTouch)
 			{
 				Out.Append(Text(Device, Inside.Mid(bForPad ? 4 : 3)));
 			}

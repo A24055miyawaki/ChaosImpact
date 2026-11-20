@@ -1,6 +1,7 @@
 #include "ChaosImpactSimaeBird.h"
 #include "ChaosImpactDuelBallBalance.h"
 #include "ChaosImpactFxKit.h"
+#include "ChaosImpactFusionEffects.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
@@ -31,6 +32,9 @@
 /** Server-only record shared by every bird. Retargeting cannot reset an enemy's damage cap or shake-off. */
 struct FChaosImpactSimaeFlockState
 {
+	/** 合体: what rode along with the flock (OnStrike on the first perch on each one). */
+	EChaosImpactBallType FusedWith = EChaosImpactBallType::Normal;
+	ChaosImpactFusion::FFusionCarry FusionCarry;
 	struct FTarget
 	{
 		float FirstPerchedAt = -1.0f;
@@ -132,7 +136,7 @@ void AChaosImpactSimaeBird::ConfigureBird(const int32 InFlockId, const int32 InB
 }
 
 void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location, APawn* ThrowingPawn, AActor* DirectVictim,
-	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage)
+	TSharedPtr<FChaosImpactDuelThrowDamage> ThrowDamage, const EChaosImpactBallType FusedWith)
 {
 	if (!World || World->GetNetMode() == NM_Client)
 	{
@@ -175,6 +179,7 @@ void AChaosImpactSimaeBird::ReleaseFlock(UWorld* World, const FVector& Location,
 	}
 	const TSharedPtr<FChaosImpactSimaeFlockState> SharedState = MakeShared<FChaosImpactSimaeFlockState>();
 	SharedState->ThrowDamage = ThrowDamage ? ThrowDamage : FChaosImpactDuelThrowDamage::Create(World);
+	SharedState->FusedWith = FusedWith;
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::SimaeBirdCount; ++Index)
 	{
 		const float Angle = 360.0f * Index / ChaosImpactBallTypes::SimaeBirdCount + FMath::FRandRange(-10.0f, 10.0f);
@@ -430,6 +435,12 @@ void AChaosImpactSimaeBird::BeginPerch()
 		Schedule.NextPeckAt = StateStartedAt + ChaosImpactBallTypes::SimaePerchSeconds;
 		Schedule.Leader = this;
 		MulticastChirp(1);
+		if (FlockState->FusedWith != EChaosImpactBallType::Normal)
+		{
+			// 合体: the first to perch on someone brings what rode along (火の鳥, 氷の群れ, 霧の群れ, 渦の群れ, 鳥の入れ替え…).
+			ChaosImpactFusion::OnStrike(GetWorld(), EChaosImpactBallType::Simae, FlockState->FusedWith, TargetCharacter.Get(),
+				GetVelocity(), SourcePawn, FlockState->ThrowDamage, &FlockState->FusionCarry);
+		}
 	}
 	FirstPerchedAt = Schedule.FirstPerchedAt;
 	NextPeckAt = Schedule.NextPeckAt;

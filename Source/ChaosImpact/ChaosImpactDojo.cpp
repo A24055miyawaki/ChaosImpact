@@ -1,4 +1,5 @@
-#include "ChaosImpactDojo.h"
+﻿#include "ChaosImpactDojo.h"
+#include "ChaosImpactMenuWidget.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactHints.h"
@@ -108,6 +109,13 @@ AChaosImpactDojo::AChaosImpactDojo()
 	PrimaryActorTick.bTickEvenWhenPaused = true;
 	bReplicates = false;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
+}
+
+bool AChaosImpactDojo::AllowsFusion(const UWorld* World)
+{
+	const AChaosImpactDojo* Dojo = Find(World);
+	const FChaosImpactDojoLesson* L = Dojo ? Dojo->GetLesson() : nullptr;
+	return L && L->bFusion;
 }
 
 AChaosImpactDojo* AChaosImpactDojo::Find(const UWorld* World)
@@ -709,10 +717,41 @@ bool AChaosImpactDojo::IsClearMenuUp() const
 	return Phase == EChaosImpactDojoPhase::Clear && GetWorld() && GetWorld()->GetTimeSeconds() - PhaseAt >= ClearMenuDelay;
 }
 
+float AChaosImpactDojo::HudScale(const float W, const float H)
+{
+	// (スマホ版 held upright: sized for an upright screen, not shrunk to fit a wide one across.)
+	if (H > W * 1.15f && UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		return FMath::Min(W / 1080.0f, H / 1920.0f);
+	}
+	return FMath::Min(W / 1920.0f, H / 1080.0f);
+}
+
+bool AChaosImpactDojo::TappedAt(const APlayerController* PC, FVector2D& OutHud) const
+{
+	// A finger set down this frame (スマホ版), where it landed in the HUD's own units.
+	if (!PC || !UChaosImpactMenuWidget::IsPhoneBuild() || !PC->WasInputKeyJustPressed(EKeys::TouchKeys[ETouchIndex::Touch1]))
+	{
+		return false;
+	}
+	float X = 0.0f;
+	float Y = 0.0f;
+	bool bPressed = false;
+	PC->GetInputTouchState(ETouchIndex::Touch1, X, Y, bPressed);
+	FVector2D Viewport = LastHudSize;
+	if (GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->GetViewportSize(Viewport);
+	}
+	OutHud = FVector2D(X * LastHudSize.X / FMath::Max(Viewport.X, 1.0), Y * LastHudSize.Y / FMath::Max(Viewport.Y, 1.0));
+	return true;
+}
+
 FBox2D AChaosImpactDojo::ClearButton(const int32 Index, const float W, const float H)
 {
-	const float S = FMath::Min(W / 1920.0f, H / 1080.0f);
-	const float BW = 340.0f * S;
+	const float S = HudScale(W, H);
+	// (Upright: narrower, to sit three across.)
+	const float BW = (H > W * 1.15f ? 300.0f : 340.0f) * S;
 	const float BH = 74.0f * S;
 	const float Gap = 28.0f * S;
 	const float Left = W * 0.5f - (3.0f * BW + 2.0f * Gap) * 0.5f + Index * (BW + Gap);
@@ -785,6 +824,19 @@ void AChaosImpactDojo::TickClearMenu()
 	if (!bAnswering)
 	{
 		return;
+	}
+	// (A finger: on a button, that one.)
+	FVector2D Tap;
+	if (TappedAt(PC, Tap))
+	{
+		for (int32 Index = bNext ? 0 : 1; Index < 3; ++Index)
+		{
+			if (ClearButton(Index, static_cast<float>(LastHudSize.X), static_cast<float>(LastHudSize.Y)).ExpandBy(10.0).IsInside(Tap))
+			{
+				ChooseAfterClear(Index);
+				return;
+			}
+		}
 	}
 	const bool bClick = PC->WasInputKeyJustPressed(EKeys::LeftMouseButton);
 	const bool bSwap = IsPadSwapped(PC);
@@ -1304,9 +1356,14 @@ void AChaosImpactDojo::TickInput()
 	{
 		return;
 	}
+	FVector2D Tap;
+	const bool bTap = TappedAt(PC, Tap);
+	const bool bTapBack = bTap && TouchBack.bIsValid && TouchBack.IsInside(Tap);
+	const bool bConfirm = IsConfirm(PC) || (bTap && !bTapBack);
+	const bool bBack = IsBack(PC) || bTapBack;
 	if (Phase == EChaosImpactDojoPhase::Intro)
 	{
-		if (IsConfirm(PC))
+		if (bConfirm)
 		{
 			++Slide;
 			SlideAt = Now;
@@ -1321,7 +1378,7 @@ void AChaosImpactDojo::TickInput()
 				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiConfirm);
 			}
 		}
-		else if (IsBack(PC) && Slide > 0)
+		else if (bBack && Slide > 0)
 		{
 			--Slide;
 			SlideAt = Now;
@@ -1330,7 +1387,7 @@ void AChaosImpactDojo::TickInput()
 	}
 	else if (Phase == EChaosImpactDojoPhase::Ready)
 	{
-		if (IsConfirm(PC) && !GetMissingControl().IsEmpty())
+		if (bConfirm && !GetMissingControl().IsEmpty())
 		{
 			// Not in this control type: on to the next lesson held here (or back to the list).
 			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiConfirm);
@@ -1344,16 +1401,16 @@ void AChaosImpactDojo::TickInput()
 				ReturnToList();
 			}
 		}
-		else if (IsConfirm(PC) && L->bRealMatch)
+		else if (bConfirm && L->bRealMatch)
 		{
 			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiConfirm);
 			PC->OpenDojoMatch(MatchRulesFor(*L), FString::Printf(TEXT("%d_%d"), Category, LessonIndex));
 		}
-		else if (IsConfirm(PC))
+		else if (bConfirm)
 		{
 			BeginPlayPhase();
 		}
-		else if (IsBack(PC) && !L->Slides.IsEmpty())
+		else if (bBack && !L->Slides.IsEmpty())
 		{
 			Phase = EChaosImpactDojoPhase::Intro;
 			Slide = L->Slides.Num() - 1;
@@ -1487,6 +1544,24 @@ void AChaosImpactDojo::OnCharacterDamaged(AChaosImpactCharacter* Victim, const f
 		return;
 	}
 	const EChaosImpactBallType Kind = KindOf(Causer);
+	if (L->Goal == EGoal::FusionHit)
+	{
+		// One count a fused throw (its fires and the like hitting too are the same throw); a ball not joined: try again.
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (Now - FusedThrowAt < 7.0)
+		{
+			if (CountedFusedThrowAt != FusedThrowAt)
+			{
+				CountedFusedThrowAt = FusedThrowAt;
+				Count();
+			}
+		}
+		else
+		{
+			Fail(TEXT("2個を合体させてから当てよう"));
+		}
+		return;
+	}
 	if (L->Goal == EGoal::NovaBuild && Kind == EChaosImpactBallType::Nova && Done >= 3)
 	{
 		Count(L->Count - Done);
@@ -1762,6 +1837,12 @@ void AChaosImpactDojo::TickGoal(const float DeltaSeconds)
 	const bool bInForm = Player->IsInBallForm();
 	const bool bMap = PC->IsOverviewMapOpen();
 	const bool bThrown = bChargeEndPending && Balls < BallsAtChargeEnd && Now - ChargeEndedAt < 1.2;
+	// 合体ボール: both balls left the hands at once while joined (a fused throw).
+	if (bWasFused && LastBalls == 2 && Balls == 0)
+	{
+		FusedThrowAt = Now;
+	}
+	bWasFused = Player->AreBallsFused();
 
 	switch (L->Goal)
 	{

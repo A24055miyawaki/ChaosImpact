@@ -563,7 +563,7 @@ void AChaosImpactCharacterPreview::ShowLoadout(const int32 CharacterIndex, const
 
 void AChaosImpactCharacterPreview::PlayReady()
 {
-	if (Model && Model->HasAuthoredAnimations())
+	if (Model && Model->HasSelectionAppeal())
 	{
 		Model->PlaySelectionAppeal();
 		SpinKick += 40.0f;

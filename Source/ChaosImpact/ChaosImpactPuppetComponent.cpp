@@ -1,4 +1,5 @@
 #include "ChaosImpactPuppetComponent.h"
+#include "Animation/AnimSequenceBase.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactCharacterRoster.h"
@@ -202,6 +203,8 @@ bool UChaosImpactPuppetComponent::Initialize(USkeletalMeshComponent* InSource, c
 		}
 		Material = UMaterialInstanceDynamic::Create(Parent, this);
 		ColourTextures.Reset();
+		// (Its own select-screen pose, if it has one.)
+		SkinnedAppealClip = LoadObject<UAnimSequenceBase>(nullptr, *AssetPath(CharacterIndex, TEXT("A"), TEXT("Select")), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		return InitializeSkinned(SkinnedMesh);
 	}
 	UStaticMesh* BodyMesh = LoadObject<UStaticMesh>(nullptr, *AssetPath(CharacterIndex, TEXT("SM"), TEXT("Body")));
@@ -369,7 +372,7 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 {
 	// The parts belong to the owning actor, so they would outlive this component unless removed with it.
 	bReady = false;
-	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin, AuthoredMesh})
+	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin, AuthoredMesh, SkinnedAppealMesh})
 	{
 		if (IsValid(Part) && !Part->IsBeingDestroyed())
 		{
@@ -377,6 +380,8 @@ void UChaosImpactPuppetComponent::OnComponentDestroyed(const bool bDestroyingHie
 		}
 	}
 	Skin = nullptr;
+	SkinnedAppealMesh = nullptr;
+	SkinnedAppealRemaining = 0.0f;
 	AuthoredMesh = nullptr;
 	AuthoredClips.Reset();
 	Body = nullptr;
@@ -432,6 +437,11 @@ void UChaosImpactPuppetComponent::SetColourIndex(const int32 Index)
 
 void UChaosImpactPuppetComponent::SetPartsVisible(const bool bShow)
 {
+	// (A select-screen pose in progress ends with it: the model shown again is the one that follows the game.)
+	if (SkinnedAppealRemaining > 0.0f)
+	{
+		EndSkinnedAppeal();
+	}
 	SetVisibility(bShow, false);
 	for (USceneComponent* Part : TArray<USceneComponent*>{Body, ArmL, ArmR, LegL, LegR, Skin, AuthoredMesh})
 	{
@@ -574,6 +584,14 @@ void UChaosImpactPuppetComponent::TickComponent(const float DeltaTime, const ELe
 	if (bCustomColoursDirty && bReady)
 	{
 		ApplyCustomColours();
+	}
+	if (SkinnedAppealRemaining > 0.0f)
+	{
+		SkinnedAppealRemaining -= DeltaTime;
+		if (SkinnedAppealRemaining <= 0.0f)
+		{
+			EndSkinnedAppeal();
+		}
 	}
 	UpdatePose(false, DeltaTime);
 }

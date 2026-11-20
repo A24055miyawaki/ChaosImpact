@@ -169,9 +169,17 @@ public:
 
 	UFUNCTION(BlueprintPure, Category="Chaos Impact|Solo Room")
 	bool AreDoorsClosed() const { return bDoorsClosed; }
+	/** A scene of its own over the doorway (the final boss's great doors): the door's field put away meanwhile. */
+	void SetDoorHiddenForScene(const bool bHide) { bDoorHiddenForScene = bHide; }
+	bool bDoorHiddenForScene = false;
 
 	/** The minions this run of the room brings in all (the stage's difficulty in solo mode, else Minion Count). */
 	int32 GetPlannedMinionCount() const { return PlannedMinions; }
+	/** A boss scene (AChaosImpactBossScene) is over: the waiting boss wakes and the fight is on. */
+	void WakeBossAfterScene();
+	/** The boss being fought (in its fight), and whether this room has one. */
+	AChaosImpactCharacter* GetBoss() const { return Boss.Get(); }
+	bool HasBoss() const { return bSpawnBoss; }
 	/** How many come in at once (the rest step in as those go down). */
 	int32 GetFirstWaveCount() const { return FMath::Min(PlannedMinions, MaxAliveMinions); }
 
@@ -211,6 +219,8 @@ private:
 	EChaosImpactSoloRoomPhase Phase = EChaosImpactSoloRoomPhase::Waiting;
 	TArray<TWeakObjectPtr<AChaosImpactCharacter>> Enemies;
 	TWeakObjectPtr<AChaosImpactCharacter> Boss;
+	/** Its boss's arrival scene has been seen (a retry after a knockout goes straight to the fight). */
+	bool bBossSceneSeen = false;
 	TWeakObjectPtr<AChaosImpactCharacter> Player;
 	int32 Defeated = 0;
 	int32 PlannedMinions = 0;

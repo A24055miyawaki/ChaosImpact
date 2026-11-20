@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
@@ -438,8 +438,24 @@ namespace ChaosImpactPaint
 		{
 			return 0.0f;
 		}
-		return static_cast<float>(FSlateApplication::Get().GetRenderer()->GetFontMeasureService()
+		// (The same words are measured every frame, to fit them: measured once, then remembered. Painting is on the game
+		// thread only.)
+		static TMap<uint64, float> Known;
+		const uint64 Key = HashCombineFast(static_cast<uint64>(GetTypeHash(Value)) << 1,
+			HashCombineFast(static_cast<uint64>(GetTypeHash(Face)), static_cast<uint64>(GetTypeHash(Size))))
+			^ (static_cast<uint64>(Value.Len()) << 48);
+		if (const float* Width = Known.Find(Key))
+		{
+			return *Width;
+		}
+		if (Known.Num() > 8192)
+		{
+			Known.Reset();
+		}
+		const float Width = static_cast<float>(FSlateApplication::Get().GetRenderer()->GetFontMeasureService()
 			->Measure(Value, FCoreStyle::GetDefaultFontStyle(Face, Size)).X);
+		Known.Add(Key, Width);
+		return Width;
 	}
 
 	/** The size at which Value fits in MaxWidth (Size itself when it already does): no text runs out of its box. */
@@ -518,6 +534,37 @@ namespace ChaosImpactPaint
 			const FVector2D Glint = Foot + FVector2D(-Size * 0.16f * SquashX, -Size * 0.72f * SquashY - Height);
 			P.Line(Glint, Glint + FVector2D(Size * 0.14f, -Size * 0.06f), WithAlpha(Paper, 0.9f), 3.0f);
 		}
+	}
+
+	/**
+	 * What a player plays on, as a small mark H tall with its top left at X, Y: a phone (an upright handset) or a PC (a
+	 * monitor on its stand). Returns its width.
+	 */
+	inline float PaintPlatformMark(const FPainter& P, const float X, const float Y, const float H, const bool bPhone, const FLinearColor& Colour)
+	{
+		const float Line = FMath::Max(1.5f, H * 0.1f);
+		if (bPhone)
+		{
+			const float W = H * 0.58f;
+			P.Box(X, Y, W, H, WithAlpha(Colour, 0.18f));
+			P.Outline(X, Y, W, H, Colour, Line);
+			P.Box(X + W * 0.32f, Y + Line * 1.6f, W * 0.36f, Line * 0.7f, Colour);
+			P.Disc(FVector2D(X + W * 0.5f, Y + H - Line * 2.2f), Line * 0.75f, Colour);
+			return W;
+		}
+		const float W = H * 1.32f;
+		const float ScreenH = H * 0.7f;
+		P.Box(X, Y, W, ScreenH, WithAlpha(Colour, 0.18f));
+		P.Outline(X, Y, W, ScreenH, Colour, Line);
+		P.Box(X + W * 0.5f - H * 0.07f, Y + ScreenH, H * 0.14f, H * 0.16f, Colour);
+		P.Box(X + W * 0.5f - H * 0.3f, Y + H - Line, H * 0.6f, Line, Colour);
+		return W;
+	}
+
+	/** The words for how a player plays: "key" キーボード, "touch" タッチ, otherwise パッド. */
+	inline const TCHAR* DeviceWord(const FString& Device)
+	{
+		return Device == TEXT("key") ? TEXT("キーボード") : Device == TEXT("touch") ? TEXT("タッチ") : TEXT("パッド");
 	}
 
 	/** Minutes and seconds since a wait began ("0:07"). */

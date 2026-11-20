@@ -74,17 +74,17 @@ namespace
 				Test->TestTrue(TEXT("Live training menu opens"),PC->IsTrainingOverlayOpen());
 				WorldTime = PC->GetWorld()->GetTimeSeconds();
 				Menu->OpenTrainingBallPicker();
-				Test->TestEqual(TEXT("Every ball plus back appear together"),Menu->GetEntryCount(),ChaosImpactBallTypes::Count + 1);
+				Test->TestEqual(TEXT("Every ball plus back appear together"),Menu->GetEntryCount(),ChaosImpactBallTypes::SharedCount + 1);
 				return Next(0.7);
 			case 5:
 				Test->TestTrue(TEXT("The ball list does not pause world time"),PC->GetWorld()->GetTimeSeconds() > WorldTime);
 				Shot(TEXT("03-TrainingBallList.png")); return Next(0.5);
 			case 6:
 				// Select every type through the same menu navigation and confirm path used by mouse/pad input.
-				for (int32 Type = 0; Type < ChaosImpactBallTypes::Count; ++Type)
+				for (int32 Type = 0; Type < ChaosImpactBallTypes::SharedCount; ++Type)
 				{
 					Menu->OpenTrainingBallPicker();
-					for (int32 Move = 0; Move < ChaosImpactBallTypes::Count + 1 && Menu->GetSelectedIndex() != Type; ++Move) { Menu->Navigate(EKeys::Tab); }
+					for (int32 Move = 0; Move < ChaosImpactBallTypes::SharedCount + 1 && Menu->GetSelectedIndex() != Type; ++Move) { Menu->Navigate(EKeys::Tab); }
 					Menu->ConfirmSelection();
 					Test->TestEqual(TEXT("Selected ball type is applied directly"),static_cast<int32>(PC->GetTrainingSummonBallType()),Type);
 					Test->TestFalse(TEXT("Picking a ball returns to training options"),Menu->IsTrainingBallPickerOpen());
@@ -93,9 +93,9 @@ namespace
 				{
 					// (Four a row; the last kind picked is the list's last tile.)
 					constexpr int32 Columns = 4;
-					const int32 Last = ChaosImpactBallTypes::Count - 1;
+					const int32 Last = ChaosImpactBallTypes::SharedCount - 1;
 					const int32 RowStart = (Last / Columns) * Columns;
-					const int32 InRow = FMath::Min(Columns, ChaosImpactBallTypes::Count - RowStart);
+					const int32 InRow = FMath::Min(Columns, ChaosImpactBallTypes::SharedCount - RowStart);
 					const int32 Left = RowStart + (Last - RowStart + InRow - 1) % InRow;
 					Menu->OpenTrainingBallPicker(); Menu->Navigate(EKeys::Gamepad_DPad_Left);
 					Test->TestEqual(TEXT("Grid left stays on its row"),Menu->GetSelectedIndex(),Left);

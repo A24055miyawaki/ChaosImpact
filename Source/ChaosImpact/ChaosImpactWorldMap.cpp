@@ -1,10 +1,13 @@
 #include "ChaosImpactWorldMap.h"
+#include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
 #include "ChaosImpactEase.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactCharacter.h"
 #include "ChaosImpactLoadingScreen.h"
+#include "ChaosImpactMenuWidget.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "ChaosImpactPlayerController.h"
 #include "ChaosImpactSettings.h"
 #include "ChaosImpactSfx.h"
@@ -2199,7 +2202,15 @@ void AChaosImpactWorldMap::UpdateInput(AChaosImpactCharacter* Player)
 		return;
 	}
 	const bool bClick = PC->IsInputKeyDown(EKeys::LeftMouseButton);
-	const bool bClickEdge = (bClick && !bClickHeld) || PC->WasInputKeyJustPressed(EKeys::LeftMouseButton);
+	bool bClickEdge = (bClick && !bClickHeld) || PC->WasInputKeyJustPressed(EKeys::LeftMouseButton);
+	// (Where a click points into the world: the mouse, or a phone's tap.)
+	bool bTapPoint = false;
+	FVector2D TapPoint = FVector2D::ZeroVector;
+	const auto PointInto = [PC, &bTapPoint, &TapPoint](FVector& Origin, FVector& Direction)
+	{
+		return bTapPoint ? UGameplayStatics::DeprojectScreenToWorld(PC, TapPoint, Origin, Direction)
+			: PC->DeprojectMousePositionToWorld(Origin, Direction);
+	};
 	bClickHeld = bClick;
 	const bool bConfirm = PC->IsInputKeyDown(EKeys::Enter) || PC->IsInputKeyDown(EKeys::SpaceBar)
 		|| PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Bottom)
@@ -2226,6 +2237,60 @@ void AChaosImpactWorldMap::UpdateInput(AChaosImpactCharacter* Player)
 			bMaskDirty = true;
 		}
 		return;
+	}
+	// スマホ版: a tap (a finger, or -CITouch's mouse) on the whole map's button, or on the card of the stage underfoot.
+	if (UChaosImpactMenuWidget::IsPhoneBuild())
+	{
+		float TouchX = 0.0f, TouchY = 0.0f;
+		bool bFinger = false;
+		PC->GetInputTouchState(ETouchIndex::Touch1, TouchX, TouchY, bFinger);
+		FVector2D Point(TouchX, TouchY);
+		if (!bFinger && bClick)
+		{
+			bFinger = PC->GetMousePosition(TouchX, TouchY);
+			Point = FVector2D(TouchX, TouchY);
+		}
+		// (A quick tap can go down and up between two frames: seen only as pressed and let go at once.)
+		const bool bQuickTap = !bFinger && !bTapDown && PC->WasInputKeyJustPressed(EKeys::TouchKeys[ETouchIndex::Touch1]);
+		if ((bFinger && !bTapDown) || bQuickTap)
+		{
+			TapStart = Point;
+			TapStartAt = Now;
+		}
+		if (bFinger || bQuickTap)
+		{
+			TapLast = Point;
+		}
+		const bool bTap = bQuickTap || (!bFinger && bTapDown && Now - TapStartAt < 0.4 && FVector2D::Distance(TapLast, TapStart) < 24.0);
+		bTapDown = bFinger;
+		if (bTap)
+		{
+			const float DpiScale = FMath::Max(UWidgetLayoutLibrary::GetViewportScale(PC), 0.01f);
+			int32 SizeX = 0, SizeY = 0;
+			PC->GetViewportSize(SizeX, SizeY);
+			const FVector2D Size(SizeX / DpiScale, SizeY / DpiScale);
+			const FVector2D Local = TapStart / DpiScale;
+			if (UChaosImpactWorldMapWidget::PhoneOverviewRect(Size).ExpandBy(8.0).IsInside(Local))
+			{
+				SetOverview(!bOverview);
+				ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiSelect);
+				return;
+			}
+			if (!bOverview && FocusedNode && CardAlpha > 0.5f && UChaosImpactWorldMapWidget::PhoneCardRect(Size).IsInside(Local))
+			{
+				ConfirmFocused();
+				return;
+			}
+			// Anywhere else: as a click there (a pedestal or a path walked to; from above, a stage picked).
+			bTapPoint = true;
+			TapPoint = TapStart;
+			bClickEdge = true;
+		}
+		else if (bFinger)
+		{
+			// (A finger on the screen is not a mouse click: what it does is settled when it lifts, as a tap.)
+			bClickEdge = false;
+		}
 	}
 	// The whole map: M or the pad's Y open and close it, the wheel pulls out to it and back in.
 	const bool bOverviewKey = PC->IsInputKeyDown(EKeys::M) || PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Top);
@@ -2256,7 +2321,7 @@ void AChaosImpactWorldMap::UpdateInput(AChaosImpactCharacter* Player)
 			// A click on a stage seen from above: back down onto it at once if it is open, else walk toward it.
 			FVector Origin;
 			FVector Direction;
-			if (PC->DeprojectMousePositionToWorld(Origin, Direction) && FMath::Abs(Direction.Z) > 0.05)
+			if (PointInto(Origin, Direction) && FMath::Abs(Direction.Z) > 0.05)
 			{
 				const FVector Hit = Origin + Direction * ((GetActorLocation().Z + PathTop - Origin.Z) / Direction.Z);
 				const FVector2D P(GetActorTransform().InverseTransformPosition(Hit));
@@ -2297,7 +2362,7 @@ void AChaosImpactWorldMap::UpdateInput(AChaosImpactCharacter* Player)
 		// A click on the board: a pedestal walks there (or plays it, if already standing on it), a path walks to that point.
 		FVector Origin;
 		FVector Direction;
-		if (!PC->DeprojectMousePositionToWorld(Origin, Direction) || FMath::Abs(Direction.Z) < 0.05)
+		if (!PointInto(Origin, Direction) || FMath::Abs(Direction.Z) < 0.05)
 		{
 			return;
 		}
@@ -2642,20 +2707,34 @@ void AChaosImpactWorldMap::UpdateCamera(AChaosImpactCharacter* Player, const flo
 	{
 		// The whole map from high above, turned so the journey runs left to right across the screen.
 		FVector2D ViewportSize(16.0, 9.0);
-		if (GEngine && GEngine->GameViewport)
+		// (The player's own view's size: the screen as it is held.)
+		int32 ViewX = 0, ViewY = 0;
+		if (const APlayerController* Viewer = GetWorld()->GetFirstPlayerController(); Viewer)
+		{
+			Viewer->GetViewportSize(ViewX, ViewY);
+		}
+		if (ViewX > 0 && ViewY > 0)
+		{
+			ViewportSize = FVector2D(ViewX, ViewY);
+		}
+		else if (GEngine && GEngine->GameViewport)
 		{
 			GEngine->GameViewport->GetViewportSize(ViewportSize);
 		}
 		const float Aspect = FMath::Max(1.0f, static_cast<float>(ViewportSize.X / FMath::Max(ViewportSize.Y, 1.0)));
 		const FRotator Above(-68.0f, -90.0f, 0.0f);
 		const float HalfTan = FMath::Tan(FMath::DegreesToRadians(45.0f * 0.5f));
+		// (A screen held upright keeps the angle up and down, so the map's width needs the camera further off.)
+		const float RealAspect = static_cast<float>(ViewportSize.X / FMath::Max(ViewportSize.Y, 1.0));
+		const bool bUpright = RealAspect < 1.0f;
 		const float HalfWide = (NodeBounds.GetExtent().X + 1500.0f) / HalfTan;
 		const float HalfTall = (NodeBounds.GetExtent().Y + 1500.0f) * FMath::Sin(FMath::DegreesToRadians(68.0f)) / (HalfTan / Aspect);
 		const FVector Center = GetActorTransform().TransformPosition(FVector(NodeBounds.GetCenter(), 0.0f));
 		// OverviewBlend is already eased. The look-at point and the turn go across with it; the distance changes by
 		// the same ratio each moment, so the pull-back reads as one even zoom instead of rushing off and crawling in.
 		const float A = OverviewBlend;
-		const float AboveDistance = FMath::Max(FMath::Max(HalfWide, HalfTall), Distance);
+		// (Upright: the board's width across a narrow screen, further off by as much as the screen is narrower.)
+		const float AboveDistance = FMath::Max(FMath::Max(HalfWide, HalfTall), Distance) * (bUpright ? FMath::Clamp(1.6f / RealAspect, 1.0f, 3.0f) : 1.0f);
 		const FVector Focus = FMath::Lerp(CameraFocus, Center, A);
 		Rotation = FQuat::Slerp(View.Quaternion(), Above.Quaternion(), A).Rotator();
 		Location = Focus - Rotation.Vector() * (Distance * FMath::Pow(AboveDistance / Distance, A));
@@ -2665,8 +2744,10 @@ void AChaosImpactWorldMap::UpdateCamera(AChaosImpactCharacter* Player, const flo
 	static const bool bLogCamera = FParse::Param(FCommandLine::Get(), TEXT("CIMapCamLog"));
 	if (bLogCamera)
 	{
-		UE_LOG(LogTemp, Display, TEXT("MAPCAM t=%.4f x=%.1f y=%.1f z=%.1f glide=%d over=%.3f"), GetWorld()->GetTimeSeconds(), Location.X, Location.Y,
-			Location.Z, IsCameraGliding() ? 1 : 0, OverviewBlend);
+		int32 LogX = 0, LogY = 0;
+		if (const APlayerController* Viewer = GetWorld()->GetFirstPlayerController()) { Viewer->GetViewportSize(LogX, LogY); }
+		UE_LOG(LogTemp, Display, TEXT("MAPCAM t=%.4f x=%.1f y=%.1f z=%.1f glide=%d over=%.3f view=%dx%d"), GetWorld()->GetTimeSeconds(), Location.X, Location.Y,
+			Location.Z, IsCameraGliding() ? 1 : 0, OverviewBlend, LogX, LogY);
 	}
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
 	{
@@ -2785,9 +2866,13 @@ bool AChaosImpactWorldMap::ConfirmFocused()
 	}
 	if (ChaosImpactSolo::GetLevelPackage(FocusedNode).IsEmpty())
 	{
-		// Not made yet (準備中).
-		ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiDeny);
-		return false;
+		// Not made yet (準備中): picking it counts as clearing it (every build), so the way on opens.
+		if (Progress->IsCleared(FocusedNode))
+		{
+			ChaosImpactSfx::Play2D(this, EChaosImpactSfx::UiDeny);
+			return false;
+		}
+		return ClearFocused();
 	}
 	bLeaving = true;
 	Progress->LastNode = FocusedNode;
@@ -2802,6 +2887,12 @@ bool AChaosImpactWorldMap::DevClearFocused()
 #if UE_BUILD_SHIPPING
 	return false;
 #else
+	return ClearFocused();
+#endif
+}
+
+bool AChaosImpactWorldMap::ClearFocused()
+{
 	const FChaosImpactSoloStageInfo* Info = FocusedNode ? ChaosImpactSolo::FindStage(FocusedNode) : nullptr;
 	if (!Info || Info->Kind == EChaosImpactSoloStageKind::Gate || IsRevealing() || bLeaving || !Progress)
 	{
@@ -2825,7 +2916,6 @@ bool AChaosImpactWorldMap::DevClearFocused()
 	}
 	Progress->Save();
 	ChaosImpactSfx::Play2D(this, EChaosImpactSfx::SoloClear);
-	UE_LOG(LogTemp, Display, TEXT("World map: stage %d counted as cleared (development key)"), Info->Number);
+	UE_LOG(LogTemp, Display, TEXT("World map: stage %d counted as cleared"), Info->Number);
 	return true;
-#endif
 }

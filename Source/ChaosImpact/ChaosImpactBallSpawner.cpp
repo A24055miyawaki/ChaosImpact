@@ -70,6 +70,7 @@ float* AChaosImpactBallSpawner::WeightFor(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Swap: return &SwapBallChance;
 	case EChaosImpactBallType::Barrier: return &BarrierBallChance;
 	case EChaosImpactBallType::Mine: return &MineBallChance;
+	case EChaosImpactBallType::Heal: return &HealBallChance;
 	default: return nullptr;
 	}
 }
@@ -78,12 +79,16 @@ float AChaosImpactBallSpawner::GetChance(const EChaosImpactBallType Type) const
 {
 	const bool bAllowPrison = !GetWorld() || !GetWorld()->IsGameWorld() || ChaosImpactBallTypes::IsPrisonMode(GetWorld());
 	if (ChaosImpactBallTypes::IsVersusOnly(Type) && !bAllowPrison) { return 0.f; }
+	// The heal ball: solo mode only.
+	const bool bSolo = GetWorld() && GetWorld()->URL.HasOption(TEXT("CISolo=1"));
+	if (ChaosImpactBallTypes::IsSoloOnly(Type) && !bSolo) { return 0.f; }
 	// ボールスイッチ: a kind the host switched off never comes out.
 	if (ChaosImpactBallSwitch::IsOff(GetWorld(), Type)) { return 0.f; }
 	float Total = 0.0f;
 	for (int32 Index = 0; Index < ChaosImpactBallTypes::Count; ++Index)
 	{
 		if (ChaosImpactBallTypes::IsVersusOnly(static_cast<EChaosImpactBallType>(Index)) && !bAllowPrison) { continue; }
+		if (ChaosImpactBallTypes::IsSoloOnly(static_cast<EChaosImpactBallType>(Index)) && !bSolo) { continue; }
 		if (ChaosImpactBallSwitch::IsOff(GetWorld(), static_cast<EChaosImpactBallType>(Index))) { continue; }
 		const float* Weight = WeightFor(static_cast<EChaosImpactBallType>(Index));
 		Total += Weight ? FMath::Max(0.0f, *Weight) : 0.0f;

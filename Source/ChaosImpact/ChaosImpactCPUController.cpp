@@ -1,4 +1,5 @@
-#include "ChaosImpactCPUController.h"
+﻿#include "ChaosImpactCPUController.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "ChaosImpactParty.h"
 #include "ChaosImpactCrashBall.h"
 #include "ChaosImpactGameMode.h"
@@ -157,6 +158,34 @@ namespace
 		return Cells.FindOrAdd(World);
 	}
 
+	/**
+	 * Heights for the CPUs' wall checks, from a character's feet (2026-11-16: they were taken from its middle, so a wall
+	 * a jump clears was never seen: the CPU walked into it, could not get on, and rocked left and right in front of it).
+	 * What a jump clears is jumped; anything taller is a wall to go round.
+	 */
+	float CpuHalfHeight(const ACharacter* Character)
+	{
+		return Character && Character->GetCapsuleComponent() ? Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 96.0f;
+	}
+	float CpuJumpClearance(const ACharacter* Character)
+	{
+		const UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr;
+		if (!Movement)
+		{
+			return 105.0f;
+		}
+		const float Gravity = FMath::Max(1.0f, FMath::Abs(Movement->GetGravityZ()));
+		// The top of the arc, less a margin to clear the wall's top while still moving on.
+		return FMath::Clamp(FMath::Square(Movement->JumpZVelocity) / (2.0f * Gravity) - 14.0f, 50.0f, 140.0f);
+	}
+	/** The wall check's body: as wide as a character and a little more, standing just above what a jump clears. */
+	constexpr float CpuWallRadius = 46.0f;
+	constexpr float CpuWallHalf = 62.0f;
+	float CpuWallLift(const ACharacter* Character)
+	{
+		return CpuJumpClearance(Character) + CpuWallHalf - CpuHalfHeight(Character);
+	}
+
 	/** The VS stage's grid, built the first time any CPU needs it (a few thousand overlap tests, once). */
 	const FChaosImpactCPUNavGrid* FindCPUNavGrid(UWorld* World, const FVector& BodyLocation, const AActor* Ignored)
 	{
@@ -189,14 +218,17 @@ namespace
 		Fresh->Blocked.SetNumZeroed(Fresh->NX * Fresh->NY);
 		FCollisionObjectQueryParams WallObjects;
 		WallObjects.AddObjectTypesToQuery(ECC_WorldStatic);
+		// (And the fences that stop characters only: a gap's or a stage's edge.)
+		WallObjects.AddObjectTypesToQuery(ECC_Destructible);
 		FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUNavGrid), false, Ignored);
 		// The same body as the CPU's own wall checks (SweepWalls), a little wider so a route keeps off the corners.
-		const FCollisionShape Body = FCollisionShape::MakeCapsule(44.0f, 62.0f);
+		const FCollisionShape Body = FCollisionShape::MakeCapsule(CpuWallRadius + 4.0f, CpuWallHalf);
+		const float Lift = CpuWallLift(Cast<ACharacter>(Ignored));
 		for (int32 Y = 0; Y < Fresh->NY; ++Y)
 		{
 			for (int32 X = 0; X < Fresh->NX; ++X)
 			{
-				const FVector At = Fresh->CenterOf(FIntPoint(X, Y)) + FVector::UpVector * 68.0f;
+				const FVector At = Fresh->CenterOf(FIntPoint(X, Y)) + FVector::UpVector * Lift;
 				Fresh->Blocked[Y * Fresh->NX + X] = World->OverlapAnyTestByObjectType(At, FQuat::Identity, WallObjects, Body, Parameters) ? 1 : 0;
 			}
 		}
@@ -204,8 +236,20 @@ namespace
 	}
 }
 
+void AChaosImpactCPUController::ForgetStageGrid(const UWorld* World)
+{
+	for (auto It = GetCPUNavGrids().CreateIterator(); It; ++It)
+	{
+		if (!It->Key.IsValid() || It->Key.Get() == World)
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
 void AChaosImpactCPUController::Tick(const float DeltaSeconds)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CICPUTick);
 	Super::Tick(DeltaSeconds);
 	const double ThinkStartedAt = FPlatformTime::Seconds();
 	ON_SCOPE_EXIT { DevThinkSeconds += FPlatformTime::Seconds() - ThinkStartedAt; };
@@ -1115,8 +1159,8 @@ bool AChaosImpactCPUController::UpdateTornadoEvasion(AChaosImpactCharacter* Self
 		const FVector Heading = Tornado->GetTravelDirection();
 		const FVector Offset = Location - Tornado->GetCenter();
 		const float Ahead = FMath::Clamp(static_cast<float>(FVector::DotProduct(FVector(Offset.X, Offset.Y, 0.0f), Heading))
-			/ AChaosImpactTornado::TravelSpeed, 0.0f, LookAhead);
-		const FVector Future = Tornado->GetCenter() + Heading * AChaosImpactTornado::TravelSpeed * Ahead;
+			/ Tornado->GetTravelSpeed(), 0.0f, LookAhead);
+		const FVector Future = Tornado->GetCenter() + Heading * Tornado->GetTravelSpeed() * Ahead;
 		// Its weave swings it about a funnel's width either side of its line.
 		const float Reach = AChaosImpactTornado::CatchRadius + CapsuleRadius + 110.0f;
 		const float Miss = static_cast<float>(FVector::Dist2D(Location, Future));
@@ -1528,6 +1572,7 @@ void AChaosImpactCPUController::UpdateOffense(
 	AChaosImpactCharacter* Self, AChaosImpactCharacter* Target, const float Now)
 {
 	const int32 Balls = Self->GetCarriedBallCount();
+	UpdateFusion(Self, Now);
 	if (!Target || Balls <= 0)
 	{
 		if (Self->IsChargingThrow())
@@ -1601,7 +1646,19 @@ void AChaosImpactCPUController::UpdateOffense(
 	// While charging, keep re-solving for the speed the ball would have if released now, so the
 	// aim stays correct as the target moves and as the charge (and therefore flight time) grows.
 	const float Alpha = Self->GetThrowChargeAlpha();
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	// スマホ版: re-solved every other frame (each solve flies the ball's path through the stage: seven CPUs doing so
+	// every frame cost a phone's game thread more than anything else of theirs). A bank search is always solved.
+	if (bBankSearch || ChargingPlanTarget.Get() != Target || Now - ChargingPlanAt >= 0.03f || Now < ChargingPlanAt)
+	{
+		ChargingPlan = PlanShot(Self, Target, Alpha, bBankSearch);
+		ChargingPlanTarget = Target;
+		ChargingPlanAt = Now;
+	}
+	const FShotPlan Plan = ChargingPlan;
+#else
 	const FShotPlan Plan = PlanShot(Self, Target, Alpha, bBankSearch);
+#endif
 	if (bBankSearch)
 	{
 		NextBankSearchAt = Now + 0.2f;
@@ -1645,7 +1702,7 @@ AChaosImpactBall* AChaosImpactCPUController::SelectPickup(const AChaosImpactChar
 	for (TActorIterator<AChaosImpactBall> BallIt(GetWorld()); BallIt; ++BallIt)
 	{
 		AChaosImpactBall* Ball = *BallIt;
-		if (!Ball->IsPickup())
+		if (!Ball->IsPickup() || Ball->GetBallType() == EChaosImpactBallType::Heal)
 		{
 			continue;
 		}
@@ -2061,10 +2118,10 @@ float AChaosImpactCPUController::SweepWalls(const FVector& Origin, const FVector
 	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUClearance), false, GetPawn());
 	Parameters.AddIgnoredActor(IgnoredActor);
 	FHitResult Hit;
-	const FVector Start = Origin + FVector::UpVector * 68.0f;
+	const FVector Start = Origin + FVector::UpVector * CpuWallLift(Cast<ACharacter>(GetPawn()));
 	const FVector Unit = Direction.GetSafeNormal2D();
 	if (!GetWorld()->SweepSingleByObjectType(Hit, Start, Start + Unit * MaxDistance, FQuat::Identity,
-		WallObjects, FCollisionShape::MakeCapsule(38.0f, 62.0f), Parameters))
+		WallObjects, FCollisionShape::MakeCapsule(CpuWallRadius, CpuWallHalf), Parameters))
 	{
 		return MaxDistance;
 	}
@@ -2146,7 +2203,7 @@ void AChaosImpactCPUController::TryTraverseObstacle(
 	ControlledCharacter->Jump();
 	bHoldingJump = true;
 	StopJumpAt = Now + 0.18f;
-	NextJumpAt = Now + FMath::FRandRange(1.6f, 2.8f);
+	NextJumpAt = Now + FMath::FRandRange(0.8f, 1.2f);
 }
 
 void AChaosImpactCPUController::UpdateStuckRecovery(
@@ -2166,9 +2223,30 @@ void AChaosImpactCPUController::UpdateStuckRecovery(
 	if (bWasTryingToMove && Progress < FMath::Max(34.0f, Expected * 0.35f))
 	{
 		++StuckStreak;
-		// Each try gets bolder: a sidestep, then the other way and a wider angle, then straight back out.
-		const float Angle = StuckStreak == 1 ? 92.0f : StuckStreak == 2 ? 132.0f : 180.0f;
-		StrafeSign *= -1.0f;
+		// A wall a jump clears straight ahead: over it, not round it (round it after all, if three jumps did not do it).
+		if (StuckStreak <= 3 && HasLowObstacleAhead(Location, DesiredMoveDirection))
+		{
+			NextJumpAt = FMath::Min(NextJumpAt, Now);
+			TryTraverseObstacle(ControlledCharacter, DesiredMoveDirection, Now);
+			LastProgressLocation = Location;
+			LastProgressCheckAt = Now;
+			return;
+		}
+		// Round it: the side with more room first, kept to (flipping sides every try is what rocked the CPU left and
+		// right in front of a wall); the other side only once that one has failed twice, then straight back out.
+		if (StuckStreak == 1)
+		{
+			const FVector Left = DesiredMoveDirection.RotateAngleAxis(92.0f, FVector::UpVector).GetSafeNormal2D();
+			const FVector Right = DesiredMoveDirection.RotateAngleAxis(-92.0f, FVector::UpVector).GetSafeNormal2D();
+			const float LeftRoom = GetFreeTravel(Location, Left, 600.0f);
+			const float RightRoom = GetFreeTravel(Location, Right, 600.0f);
+			StrafeSign = LeftRoom > RightRoom + 40.0f ? 1.0f : RightRoom > LeftRoom + 40.0f ? -1.0f : StrafeSign;
+		}
+		else if (StuckStreak == 3)
+		{
+			StrafeSign *= -1.0f;
+		}
+		const float Angle = StuckStreak == 1 ? 92.0f : StuckStreak == 2 ? 125.0f : StuckStreak == 3 ? 100.0f : 180.0f;
 		const FVector SideStep = DesiredMoveDirection.RotateAngleAxis(
 			StrafeSign * Angle, FVector::UpVector).GetSafeNormal2D();
 		AvoidCommitUntil = 0.0f;
@@ -2209,9 +2287,13 @@ bool AChaosImpactCPUController::HasLowObstacleAhead(
 	FCollisionQueryParams Parameters(SCENE_QUERY_STAT(ChaosImpactCPUJump), false, GetPawn());
 	FHitResult LowHit;
 	FHitResult HighHit;
-	const FVector LowStart = Origin + FVector::UpVector * 32.0f;
-	const FVector HighStart = Origin + FVector::UpVector * 125.0f;
-	const FVector Offset = DesiredDirection * 150.0f;
+	// Low: above what a step takes; high: just above what a jump clears (as the wall checks), from the feet.
+	const ACharacter* Body = Cast<ACharacter>(GetPawn());
+	const float Feet = Origin.Z - CpuHalfHeight(Body);
+	const float Step = Body && Body->GetCharacterMovement() ? Body->GetCharacterMovement()->MaxStepHeight : 45.0f;
+	const FVector LowStart(Origin.X, Origin.Y, Feet + Step + 10.0f);
+	const FVector HighStart(Origin.X, Origin.Y, Feet + CpuJumpClearance(Body) + 2.0f);
+	const FVector Offset = DesiredDirection.GetSafeNormal2D() * 150.0f;
 	// Only real ledges are jumped: a ball rolling past used to read as a step and set the CPU hopping.
 	const bool bLowBlocked = GetWorld()->LineTraceSingleByObjectType(
 		LowHit, LowStart, LowStart + Offset, WallObjects, Parameters);
@@ -2291,6 +2373,8 @@ float AChaosImpactCPUController::GetPickupValue(const EChaosImpactBallType Type)
 	case EChaosImpactBallType::Swap: return 1.1f;
 	case EChaosImpactBallType::Barrier: return 1.2f;
 	case EChaosImpactBallType::Mine: return 1.7f;
+	// (The heal ball is the player's: a CPU never wants it.)
+	case EChaosImpactBallType::Heal: return 0.0f;
 	case EChaosImpactBallType::Wind: return 1.6f;
 	case EChaosImpactBallType::Snow: return 1.5f;
 	default: return 1.0f;
@@ -2543,7 +2627,7 @@ void AChaosImpactCPUController::CollectExactThreats(const AChaosImpactCharacter*
 		}
 		FBallThreat Threat;
 		Threat.StepSeconds = ThreatStepSeconds;
-		Threat.HitRadius = bFlying ? Other->GetCapsuleComponent()->GetScaledCapsuleRadius() + AChaosImpactCharacter::AnchorRamReach : Rolled;
+		Threat.HitRadius = bFlying ? Other->GetCapsuleComponent()->GetScaledCapsuleRadius() + Other->GetAnchorRamReach() : Rolled;
 		Threat.HitHeight = Other->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() * 2.0f;
 		const FVector Start = bFlying ? Other->GetActorLocation() : FVector(Center.X, Center.Y, Location.Z);
 		float Closest = TNumericLimits<float>::Max();
@@ -3123,6 +3207,36 @@ bool AChaosImpactCPUController::UpdateHunting(const AChaosImpactCharacter* Self,
 	return bHunting;
 }
 
+void AChaosImpactCPUController::UpdateFusion(AChaosImpactCharacter* Self, const float Now)
+{
+	// Only where a player could (CanFuseBalls: the rules' 合体ボール あり, a training stage…), never mid-charge.
+	if (!Self || Self->AreBallsFused() || Self->IsChargingThrow() || !Self->CanFuseBalls())
+	{
+		FusionPairSeenAt = -1.0f;
+		return;
+	}
+	if (FusionPairSeenAt < 0.0f)
+	{
+		// A new pair in its hands: whether it joins them this time, and after how long a look at them.
+		FusionPairSeenAt = Now;
+		bFusionWanted = bPerfect || FMath::FRand() < FMath::Lerp(0.4f, 0.85f, Skill);
+		FusionDelay = bPerfect ? 0.3f : FMath::FRandRange(FMath::Lerp(1.0f, 0.4f, Skill), FMath::Lerp(2.2f, 0.9f, Skill));
+		if (bFusionWanted)
+		{
+			// (No throw meanwhile: it looks at the two, then joins them.)
+			NextThrowAt = FMath::Max(NextThrowAt, Now + FusionDelay + 0.2f);
+		}
+	}
+	if (bFusionWanted && Now - FusionPairSeenAt >= FusionDelay)
+	{
+		Self->RequestBallFusion();
+		UE_LOG(LogTemp, Log, TEXT("%s joined its two balls"), *GetName());
+		// (Its throw a moment after, so the join is seen.)
+		NextThrowAt = FMath::Max(NextThrowAt, Now + 0.45f);
+		bFusionWanted = false;
+	}
+}
+
 bool AChaosImpactCPUController::IsNovaSafe(const AChaosImpactCharacter* Self) const
 {
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
@@ -3304,7 +3418,7 @@ void AChaosImpactCPUController::RefreshHazardSnapshot(const AChaosImpactCharacte
 		}
 		for (const float Ahead : {0.0f, 0.5f, 1.0f})
 		{
-			const FVector Center = Tornado->GetCenter() + Tornado->GetTravelDirection() * AChaosImpactTornado::TravelSpeed * Ahead;
+			const FVector Center = Tornado->GetCenter() + Tornado->GetTravelDirection() * Tornado->GetTravelSpeed() * Ahead;
 			HazardSnapshot.Tornadoes.Add(FVector2D(Center.X, Center.Y));
 		}
 	}

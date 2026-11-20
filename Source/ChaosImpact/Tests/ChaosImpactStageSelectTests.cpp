@@ -94,7 +94,7 @@ namespace
 					return true;
 				}
 				// Four rule rows (time, teams, CPUs, CPU strength), then 決定 and 戻る: no stage row any more.
-				Test->TestEqual(TEXT("The rules screen has no stage row"), Menu->GetEntryCount(), 6);
+				Test->TestEqual(TEXT("The rules screen has no stage row (its rows, 決定, 戻る and ボールスイッチ)"), Menu->GetEntryCount(), 7);
 				StageKey(EKeys::Right);
 				Minutes = PC->GetPendingMatchRules().Minutes;
 				StageKey(EKeys::Down);

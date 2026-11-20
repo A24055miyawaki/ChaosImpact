@@ -3,7 +3,11 @@
 #include "ChaosImpact.h"
 #include "ChaosImpactBallFormComponent.h"
 #include "ChaosImpactCharacter.h"
+#include "ChaosImpactSimaeBird.h"
+#include "ChaosImpactBall.h"
 #include "ChaosImpactFxKit.h"
+#include "ChaosImpactFusion.h"
+#include "ChaosImpactFusionEffects.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactSfx.h"
 #include "Components/BoxComponent.h"
@@ -52,6 +56,8 @@ void AChaosImpactGadget::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactGadget, State);
 	DOREPLIFETIME(AChaosImpactGadget, Source);
+	DOREPLIFETIME_CONDITION(AChaosImpactGadget, FusionTint, COND_InitialOnly);
+	DOREPLIFETIME_CONDITION(AChaosImpactGadget, FusionTintPercent, COND_InitialOnly);
 }
 
 double AChaosImpactGadget::GetNow() const
@@ -83,15 +89,15 @@ bool AChaosImpactGadget::FindFloor(const UWorld* World, const FVector& Near, FVe
 }
 
 AChaosImpactGadget* AChaosImpactGadget::Place(UWorld* World, const EChaosImpactBallType Type, const FVector& Floor, const FVector& Heading,
-	APawn* Source)
+	APawn* Source, const EChaosImpactBallType FusionTint, const float FusionTintAmount, const bool bBeyondLimit)
 {
-	if (!World || World->GetNetMode() == NM_Client || (Type != EChaosImpactBallType::Barrier && Type != EChaosImpactBallType::Mine))
+	if (!World || World->GetNetMode() == NM_Client || !ChaosImpactBallTypes::IsGadget(Type))
 	{
 		return nullptr;
 	}
-	if (Type == EChaosImpactBallType::Mine && Source)
+	if (Type == EChaosImpactBallType::Mine && Source && !bBeyondLimit)
 	{
-		// Two a player: a third takes the oldest away.
+		// Two a player: a third takes the oldest away. (地雷原, 機雷ノヴァ: theirs are strewn beyond it.)
 		TArray<AChaosImpactGadget*, TInlineAllocator<4>> Own;
 		for (TActorIterator<AChaosImpactGadget> It(World); It; ++It)
 		{
@@ -119,6 +125,8 @@ AChaosImpactGadget* AChaosImpactGadget::Place(UWorld* World, const EChaosImpactB
 	}
 	Gadget->State.Kind = static_cast<uint8>(Type);
 	Gadget->Source = Source;
+	Gadget->FusionTint = FusionTint;
+	Gadget->FusionTintPercent = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(FusionTintAmount * 100.0f), 0, 100));
 	Gadget->State.PlacedAt = Gadget->GetNow();
 	Gadget->FinishSpawning(FTransform(Flat.Rotation(), Floor));
 	Gadget->OnRep_State();
@@ -143,7 +151,16 @@ void AChaosImpactGadget::ClearAll(UWorld* World)
 void AChaosImpactGadget::BeginPlay()
 {
 	Super::BeginPlay();
+	const bool bFusionTinted = FusionTint != EChaosImpactBallType::Normal && FusionTintPercent > 0;
+	if (bFusionTinted)
+	{
+		ChaosImpactFusion::RegisterTint(this, FusionTint, FusionTintPercent / 100.0f);
+	}
 	OnRep_State();
+	if (bFusionTinted && GetNetMode() != NM_DedicatedServer)
+	{
+		ChaosImpactFusion::TintActorLooks(this, FusionTint, FusionTintPercent / 100.0f);
+	}
 }
 
 void AChaosImpactGadget::OnRep_State()
@@ -161,6 +178,11 @@ void AChaosImpactGadget::OnRep_State()
 	if (!bLookBuilt && !HasEnded())
 	{
 		BuildLook();
+	}
+	if (IsHeal() && State.Heals > ShownHeals)
+	{
+		ShownHeals = State.Heals;
+		PlayHealOn(State.Healed);
 	}
 	if (HasEnded() && !bEndShown)
 	{
@@ -184,8 +206,26 @@ void AChaosImpactGadget::End(const bool bBurst)
 	ForceNetUpdate();
 }
 
+void AChaosImpactGadget::SetBarrierVariant(const EChaosImpactBallType With, const float LifeScale, const int32 Hits)
+{
+	if (!HasAuthority() || !IsBarrier())
+	{
+		return;
+	}
+	State.Variant = static_cast<uint8>(With);
+	State.LifeSeconds = BarrierSeconds * FMath::Max(LifeScale, 0.1f);
+	HitsLeft = FMath::Max(Hits, 1);
+	ForceNetUpdate();
+}
+
 void AChaosImpactGadget::AbsorbBall(APawn* Thrower)
 {
+	if (HasAuthority() && IsBarrier() && !HasEnded() && --HitsLeft > 0)
+	{
+		// (氷の壁, 雪の壁, 要塞, 風の壁: it stands through more than one ball.)
+		UE_LOG(LogChaosImpact, Log, TEXT("Barrier took a ball at %s (%d more)"), *GetActorLocation().ToCompactString(), HitsLeft);
+		return;
+	}
 	if (HasAuthority() && IsBarrier() && !HasEnded())
 	{
 		BrokenBy = Thrower;
@@ -248,13 +288,24 @@ void AChaosImpactGadget::Burst(const double Now)
 {
 	End(true);
 	// The host's own players and the CPUs here; a guest's player on their own screen (JudgeOwnPlayers there).
+	AChaosImpactCharacter* Nearest = nullptr;
 	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
 	{
 		AChaosImpactCharacter* Victim = *It;
+		if (CanHurt(Victim) && IsInReach(Victim, MineBlastRadius)
+			&& (!Nearest || FVector::DistSquared(Victim->GetActorLocation(), GetActorLocation()) < FVector::DistSquared(Nearest->GetActorLocation(), GetActorLocation())))
+		{
+			Nearest = Victim;
+		}
 		if (!Victim->IsRemotePlayerOnServer() && CanHurt(Victim) && IsInReach(Victim, MineBlastRadius))
 		{
 			ApplyBlast(Victim);
 		}
+	}
+	if (FusedWith != EChaosImpactBallType::Normal && HasAuthority())
+	{
+		// 合体: the flier's own effect goes off with it (焼夷地雷, 冷凍地雷, 連鎖地雷…).
+		ChaosImpactFusion::ApplyMineVariant(GetWorld(), FusedWith, GetActorLocation(), Source, Nearest);
 	}
 }
 
@@ -280,6 +331,22 @@ void AChaosImpactGadget::ApplyBlast(AChaosImpactCharacter* Victim)
 
 bool AChaosImpactGadget::TryApplyReportedBlast(AChaosImpactCharacter* Victim)
 {
+	if (HasAuthority() && IsBarrier())
+	{
+		// A guest's player walked into it on their screen: near enough here too (this copy of them trails them).
+		if (HasEnded() || !CanHurt(Victim) || Hurt.Contains(Victim))
+		{
+			return false;
+		}
+		const float Slack = FMath::Min(150.0f + 650.0f * Victim->GetNetworkRoundTripSeconds(), 750.0f);
+		if (FVector::Dist2D(Victim->GetActorLocation(), GetActorLocation()) > BarrierWidth * 0.5f + Slack)
+		{
+			UE_LOG(LogChaosImpact, Log, TEXT("Reported barrier walk rejected: %s"), *Victim->GetName());
+			return false;
+		}
+		BreakOnWalker(Victim);
+		return true;
+	}
 	if (!HasAuthority() || !IsMine() || !State.bBurst || !HasEnded() || !CanHurt(Victim) || Hurt.Contains(Victim))
 	{
 		return false;
@@ -328,15 +395,175 @@ void AChaosImpactGadget::Tick(const float DeltaSeconds)
 		{
 			ServerTickMine(Now);
 		}
-		else if (IsBarrier() && Now >= State.PlacedAt + BarrierSeconds)
+		else if (IsBarrier() && Now >= State.PlacedAt + GetBarrierLife())
 		{
 			End(false);
 		}
+		else if (IsBarrier())
+		{
+			ServerTickBarrier(Now);
+		}
+		else if (IsHeal())
+		{
+			ServerTickHeal(Now, DeltaSeconds);
+		}
+	}
+	if (!HasAuthority() && IsBarrier() && !HasEnded())
+	{
+		JudgeOwnWalkers(Now);
 	}
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		UpdateLook(Now, DeltaSeconds);
 	}
+}
+
+bool AChaosImpactGadget::IsTouchingBarrier(const AChaosImpactCharacter* Who) const
+{
+	if (!IsBarrier() || !IsValid(Who))
+	{
+		return false;
+	}
+	const UCapsuleComponent* Capsule = Who->GetCapsuleComponent();
+	const float Radius = Capsule ? Capsule->GetScaledCapsuleRadius() : 42.0f;
+	const float HalfHeight = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 96.0f;
+	// In the wall's own space: X across it (its thickness), Y along it, Z up from the floor it stands on.
+	const FVector Local = GetActorTransform().InverseTransformPositionNoScale(Who->GetActorLocation());
+	return FMath::Abs(Local.X) < BarrierThickness * 0.5f + Radius - 6.0f && FMath::Abs(Local.Y) < BarrierWidth * 0.5f + Radius * 0.4f
+		&& Local.Z - HalfHeight < BarrierHeight - 10.0f && Local.Z + HalfHeight > 0.0f;
+}
+
+void AChaosImpactGadget::ServerTickBarrier(const double Now)
+{
+	const float Step = LastBarrierTickAt > 0.0 ? static_cast<float>(FMath::Min(Now - LastBarrierTickAt, 0.1)) : 0.0f;
+	LastBarrierTickAt = Now;
+	UWorld* World = GetWorld();
+	const EChaosImpactBallType Kind = GetVariant();
+	if (Kind == EChaosImpactBallType::Black && Step > 0.0f)
+	{
+		// 吸引バリア: opponents' balls flying near are drawn in to it.
+		for (TActorIterator<AChaosImpactBall> It(World); It; ++It)
+		{
+			APawn* Thrower = It->GetThrowingPawn();
+			const FVector Toward = GetActorLocation() + FVector(0.0f, 0.0f, BarrierHeight * 0.5f) - It->GetActorLocation();
+			if (It->IsPickup() || !Thrower || Thrower == Source || AChaosImpactGameState::AreTeammates(World, Source, Thrower)
+				|| Toward.SizeSquared() > FMath::Square(750.0f) || It->GetBallVelocity().SizeSquared() < 10000.0f)
+			{
+				continue;
+			}
+			It->NudgeVelocity(Toward.GetSafeNormal() * 2600.0f * Step);
+		}
+	}
+	else if (Kind == EChaosImpactBallType::Simae && Watches < 2 && Now >= NextWatchAt)
+	{
+		// 見張りのバリア: its birds go for an opponent who comes near.
+		for (TActorIterator<AChaosImpactCharacter> It(World); It; ++It)
+		{
+			if (CanHurt(*It) && FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation()) < FMath::Square(560.0f))
+			{
+				++Watches;
+				NextWatchAt = Now + 2.5;
+				AChaosImpactSimaeBird::ReleaseFlock(World, GetActorLocation() + FVector(0.0f, 0.0f, BarrierHeight), Source, *It);
+				break;
+			}
+		}
+	}
+	const bool bRising = Now < State.PlacedAt + BarrierRiseSeconds;
+	for (TActorIterator<AChaosImpactCharacter> It(GetWorld()); It; ++It)
+	{
+		AChaosImpactCharacter* Who = *It;
+		if (!CanHurt(Who))
+		{
+			continue;
+		}
+		if (!IsTouchingBarrier(Who))
+		{
+			InsideAtRise.Remove(Who);
+			continue;
+		}
+		// Standing where it came up is not walking into it: let out first. A dash slips through. A guest is judged on
+		// their own screen (they report it).
+		if (bRising)
+		{
+			InsideAtRise.Add(Who);
+		}
+		if (InsideAtRise.Contains(Who) || Who->IsDashing() || Who->IsRemotePlayerOnServer())
+		{
+			continue;
+		}
+		BreakOnWalker(Who);
+		return;
+	}
+}
+
+void AChaosImpactGadget::JudgeOwnWalkers(const double Now)
+{
+	// A guest: did this screen's own player walk into an opponent's barrier, as this screen shows it?
+	UWorld* World = GetWorld();
+	if (bWalkReported || !World)
+	{
+		return;
+	}
+	const bool bRising = Now < State.PlacedAt + BarrierRiseSeconds;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		const APlayerController* PlayerController = It->Get();
+		AChaosImpactCharacter* Own = PlayerController && PlayerController->IsLocalController()
+			? Cast<AChaosImpactCharacter>(PlayerController->GetPawn()) : nullptr;
+		if (!Own || !CanHurt(Own))
+		{
+			continue;
+		}
+		if (!IsTouchingBarrier(Own))
+		{
+			InsideAtRise.Remove(Own);
+			continue;
+		}
+		if (bRising)
+		{
+			InsideAtRise.Add(Own);
+		}
+		if (!InsideAtRise.Contains(Own) && !Own->IsDashing())
+		{
+			bWalkReported = true;
+			Own->ReportGadgetBlastFromClient(this);
+			return;
+		}
+	}
+}
+
+void AChaosImpactGadget::BreakOnWalker(AChaosImpactCharacter* Victim)
+{
+	if (!HasAuthority() || HasEnded() || Hurt.Contains(Victim))
+	{
+		return;
+	}
+	const EChaosImpactBallType Kind = GetVariant();
+	const bool bHolds = Kind == EChaosImpactBallType::Wind || Kind == EChaosImpactBallType::Prison;
+	if (!bHolds)
+	{
+		Hurt.Add(Victim);
+	}
+	// Back the way they came: the side of the wall they are on (or, right in it, against the way they were going).
+	const FVector Normal = GetActorForwardVector().GetSafeNormal2D();
+	const FVector Local = GetActorTransform().InverseTransformPositionNoScale(Victim->GetActorLocation());
+	float Side = FMath::Abs(Local.X) > 4.0f ? FMath::Sign(static_cast<float>(Local.X))
+		: -FMath::Sign(static_cast<float>(FVector::DotProduct(Victim->GetVelocity(), Normal)));
+	Side = Side == 0.0f ? 1.0f : Side;
+	if (bHolds)
+	{
+		// 風の壁 blows them back, 牢屋の壁 keeps them in: no hit, and it stands.
+		Victim->ApplyBlastKnockback(Normal * Side * BarrierKnockback * 0.9f + FVector(0.0f, 0.0f, 260.0f));
+		return;
+	}
+	const float Applied = UGameplayStatics::ApplyDamage(Victim, 1.0f, Source ? Source->GetController() : nullptr, this, nullptr);
+	if (!Victim->IsEliminated())
+	{
+		Victim->ApplyBlastKnockback(Normal * Side * BarrierKnockback + FVector(0.0f, 0.0f, 360.0f));
+	}
+	BrokenBy = nullptr;
+	UE_LOG(LogChaosImpact, Log, TEXT("Barrier walked into by %s: %.0f damage, broken"), *Victim->GetName(), Applied);
+	End(true);
 }
 
 AChaosImpactFxKit* AChaosImpactGadget::GetFx()
@@ -353,6 +580,11 @@ AChaosImpactFxKit* AChaosImpactGadget::GetFx()
 void AChaosImpactGadget::BuildLook()
 {
 	bLookBuilt = true;
+	if (IsHeal())
+	{
+		BuildHealLook();
+		return;
+	}
 	using namespace ChaosImpactBallTypes;
 	const EChaosImpactBallType Type = static_cast<EChaosImpactBallType>(State.Kind);
 	const FLinearColor Color = GetColor(Type);
@@ -450,12 +682,17 @@ void AChaosImpactGadget::UpdateLook(const double Now, const float DeltaSeconds)
 		}
 		return;
 	}
+	if (IsHeal())
+	{
+		UpdateHealLook(Now, DeltaSeconds);
+		return;
+	}
 	const float Age = static_cast<float>(FMath::Max(0.0, Now - State.PlacedAt));
 	if (IsBarrier())
 	{
 		// Up out of the floor in a moment; flickering in its last second and a half.
 		const float Rise = FMath::InterpEaseOut(0.0f, 1.0f, FMath::Clamp(Age / BarrierRiseSeconds, 0.0f, 1.0f), 2.0f);
-		const float Left = BarrierSeconds - Age;
+		const float Left = GetBarrierLife() - Age;
 		const bool bShown = Left > 1.5f || FMath::Fmod(Left, 0.24f) > 0.09f;
 		if (Parts.Num() >= 3 && Parts[0] && Parts[1] && Parts[2])
 		{
@@ -550,6 +787,11 @@ void AChaosImpactGadget::PlayEndEffect()
 		return;
 	}
 	Kit->StopEmitters();
+	if (IsHeal())
+	{
+		PlayHealEnd();
+		return;
+	}
 	if (IsBarrier())
 	{
 		const FVector Middle(0.0f, 0.0f, BarrierHeight * 0.5f);

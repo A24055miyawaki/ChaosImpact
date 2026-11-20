@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+	スマホ版 (2026-11-18): while the game is in front, the phone's Wi-Fi kept awake and quick (no power-saving that holds
+	incoming packets back until the next beacon: on a home network a guest's round trip swung 20-130 ms and worse).
+	Released when the game goes to the background.
+-->
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+	<androidManifestUpdates>
+		<addPermission android:name="android.permission.WAKE_LOCK"/>
+	</androidManifestUpdates>
+
+	<gameActivityClassAdditions>
+		<insert>
+	private android.net.wifi.WifiManager.WifiLock ChaosImpactWifiLock = null;
+
+	private void ChaosImpactHoldWifi(boolean bHold)
+	{
+		try
+		{
+			if (ChaosImpactWifiLock == null)
+			{
+				android.net.wifi.WifiManager Wifi = (android.net.wifi.WifiManager)getApplicationContext().getSystemService(android.content.Context.WIFI_SERVICE);
+				if (Wifi == null)
+				{
+					return;
+				}
+				int Mode = android.os.Build.VERSION.SDK_INT >= 29 ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+				ChaosImpactWifiLock = Wifi.createWifiLock(Mode, "ChaosImpact");
+				ChaosImpactWifiLock.setReferenceCounted(false);
+			}
+			if (bHold)
+			{
+				ChaosImpactWifiLock.acquire();
+			}
+			else if (ChaosImpactWifiLock.isHeld())
+			{
+				ChaosImpactWifiLock.release();
+			}
+		}
+		catch (Exception e)
+		{
+		}
+	}
+
+	private static void ChaosImpactDeleteTree(java.io.File Item)
+	{
+		java.io.File[] Inside = Item.listFiles();
+		if (Inside != null)
+		{
+			for (java.io.File Child : Inside)
+			{
+				ChaosImpactDeleteTree(Child);
+			}
+		}
+		Item.delete();
+	}
+
+	/**
+	 * (2026-11-18) The engine's own store of built drawing states (RHICache, Vulkan): a game stopped while it was being
+	 * written left it broken, and from then on every start drew noise and crashed in the GPU driver. Thrown away (the game
+	 * builds it again) when the apk is new, and when the last start did not live 20 s.
+	 */
+	private void ChaosImpactCheckDrawCache()
+	{
+		try
+		{
+			java.io.File Files = getExternalFilesDir(null);
+			if (Files == null)
+			{
+				return;
+			}
+			final java.io.File Starting = new java.io.File(Files, "ci_starting");
+			java.io.File Stamp = new java.io.File(Files, "ci_apk_stamp");
+			String Apk = Long.toString(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+			String Was = "";
+			if (Stamp.exists())
+			{
+				byte[] Bytes = new byte[(int)Math.min(Stamp.length(), 64)];
+				java.io.FileInputStream In = new java.io.FileInputStream(Stamp);
+				int Read = In.read(Bytes);
+				In.close();
+				Was = Read > 0 ? new String(Bytes, 0, Read, "UTF-8") : "";
+			}
+			if (Starting.exists() || !Apk.equals(Was))
+			{
+				ChaosImpactDeleteTree(new java.io.File(Files, "RHICache"));
+				java.io.FileOutputStream Out = new java.io.FileOutputStream(Stamp);
+				Out.write(Apk.getBytes("UTF-8"));
+				Out.close();
+			}
+			Starting.createNewFile();
+			new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable()
+			{
+				public void run()
+				{
+					Starting.delete();
+				}
+			}, 20000);
+		}
+		catch (Exception e)
+		{
+		}
+	}
+		</insert>
+	</gameActivityClassAdditions>
+
+	<gameActivityOnCreateAdditions>
+		<insert>
+		ChaosImpactCheckDrawCache();
+		</insert>
+	</gameActivityOnCreateAdditions>
+
+	<gameActivityOnResumeAdditions>
+		<insert>
+		ChaosImpactHoldWifi(true);
+		</insert>
+	</gameActivityOnResumeAdditions>
+
+	<gameActivityOnPauseAdditions>
+		<insert>
+		ChaosImpactHoldWifi(false);
+		</insert>
+	</gameActivityOnPauseAdditions>
+</root>

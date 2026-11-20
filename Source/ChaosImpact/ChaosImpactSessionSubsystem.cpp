@@ -1,9 +1,11 @@
-#include "ChaosImpactSessionSubsystem.h"
+﻿#include "ChaosImpactSessionSubsystem.h"
 
 #include "ChaosImpact.h"
 #include "ChaosImpactGameState.h"
 #include "ChaosImpactLoadingScreen.h"
 #include "ChaosImpactLoadoutSubsystem.h"
+#include "ChaosImpactMenuWidget.h"
+#include "ChaosImpactPlayerController.h"
 #include "ChaosImpactRelay.h"
 #include "ChaosImpactRelayWebSocket.h"
 #include "Dom/JsonObject.h"
@@ -1444,7 +1446,8 @@ void UChaosImpactSessionSubsystem::QueueJoin()
 	Message->SetStringField(TEXT("name"), GetPlayerName());
 	Message->SetNumberField(TEXT("players"), LocalPlayerCount);
 	Message->SetNumberField(TEXT("rtt"), LastRelayRtt > 0 ? LastRelayRtt : 999);
-	// What a 1v1 opponent is shown of this player: the character, its colour, and pad or keyboard.
+	// What a 1v1 opponent is shown of this player: the character, its colour, how it plays (keyboard, pad or touch) and on
+	// what (a PC or a phone).
 	const UChaosImpactLoadoutSubsystem* Loadouts = GetGameInstance() ? GetGameInstance()->GetSubsystem<UChaosImpactLoadoutSubsystem>() : nullptr;
 	const FChaosImpactLoadout Loadout = Loadouts ? Loadouts->GetLoadout(0) : FChaosImpactLoadout();
 	int32 KeyboardPlayer = INDEX_NONE;
@@ -1452,7 +1455,8 @@ void UChaosImpactSessionSubsystem::QueueJoin()
 	TSharedRef<FJsonObject> Profile = MakeShared<FJsonObject>();
 	Profile->SetNumberField(TEXT("chara"), Loadout.Character);
 	Profile->SetNumberField(TEXT("color"), FMath::Max(0, Loadout.Colour));
-	Profile->SetStringField(TEXT("device"), KeyboardPlayer == 0 ? TEXT("key") : TEXT("pad"));
+	Profile->SetStringField(TEXT("device"), UChaosImpactMenuWidget::IsPhoneBuild() ? GetLocalDeviceKey() : KeyboardPlayer == 0 ? TEXT("key") : TEXT("pad"));
+	Profile->SetStringField(TEXT("platform"), GetLocalPlatformKey());
 	Message->SetObjectField(TEXT("profile"), Profile);
 	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this), Generation](
 		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
@@ -1645,6 +1649,23 @@ void UChaosImpactSessionSubsystem::HandleQueueMatched(const TSharedPtr<FJsonObje
 	QueueExpected = static_cast<int32>(Reply->GetNumberField(TEXT("expect")));
 	bQueueHost = Reply->GetStringField(TEXT("role")) == TEXT("host");
 	QueueNames.Reset();
+	QueueKinds.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* Kinds = nullptr;
+	if (Reply->TryGetArrayField(TEXT("kinds"), Kinds))
+	{
+		// Each as names: [platform, device].
+		for (const TSharedPtr<FJsonValue>& Value : *Kinds)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pair = nullptr;
+			FChaosImpactPlayerKind Kind;
+			if (Value.IsValid() && Value->TryGetArray(Pair) && Pair->Num() >= 2)
+			{
+				Kind.bPhone = (*Pair)[0]->AsString() == TEXT("phone");
+				Kind.Device = (*Pair)[1]->AsString();
+			}
+			QueueKinds.Add(Kind);
+		}
+	}
 	const TArray<TSharedPtr<FJsonValue>>* Names = nullptr;
 	if (Reply->TryGetArrayField(TEXT("names"), Names))
 	{
@@ -1756,7 +1777,9 @@ void UChaosImpactSessionSubsystem::ReadDuelOffer(const TSharedPtr<FJsonObject>& 
 		DuelOffer.Name = (*Opponent)->GetStringField(TEXT("name"));
 		DuelOffer.Character = static_cast<int32>((*Opponent)->GetNumberField(TEXT("chara")));
 		DuelOffer.Colour = static_cast<int32>((*Opponent)->GetNumberField(TEXT("color")));
-		DuelOffer.bKeyboard = (*Opponent)->GetStringField(TEXT("device")) == TEXT("key");
+		DuelOffer.Device = (*Opponent)->GetStringField(TEXT("device"));
+		DuelOffer.bKeyboard = DuelOffer.Device == TEXT("key");
+		DuelOffer.bPhone = (*Opponent)->GetStringField(TEXT("platform")) == TEXT("phone");
 		const TSharedPtr<FJsonObject>* Record = nullptr;
 		if ((*Opponent)->TryGetObjectField(TEXT("record"), Record))
 		{
@@ -1928,6 +1951,7 @@ void UChaosImpactSessionSubsystem::RefreshRecords()
 	Message->SetStringField(TEXT("op"), TEXT("record_info"));
 	Message->SetStringField(TEXT("token"), GetPlayerToken());
 	Message->SetStringField(TEXT("name"), GetPlayerName());
+	Message->SetStringField(TEXT("platform"), GetLocalPlatformKey());
 	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this)](
 		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
 	{
@@ -2099,6 +2123,7 @@ void UChaosImpactSessionSubsystem::RefreshRankInfo()
 	Message->SetStringField(TEXT("op"), TEXT("rank_info"));
 	Message->SetStringField(TEXT("token"), GetPlayerToken());
 	Message->SetStringField(TEXT("name"), GetPlayerName());
+	Message->SetStringField(TEXT("platform"), GetLocalPlatformKey());
 	ChaosImpactRelay::Request(Message, [WeakThis = TWeakObjectPtr<UChaosImpactSessionSubsystem>(this)](
 		TSharedPtr<FJsonObject> Reply, const int32 RoundTripMs)
 	{
@@ -2193,4 +2218,27 @@ void UChaosImpactSessionSubsystem::SendRankReport()
 			return false;
 		}), RankReportRetrySeconds);
 	});
+}
+
+FString UChaosImpactSessionSubsystem::GetLocalPlatformKey()
+{
+	return UChaosImpactMenuWidget::IsPhoneBuild() ? TEXT("phone") : TEXT("pc");
+}
+
+FString UChaosImpactSessionSubsystem::GetLocalDeviceKey() const
+{
+	// The first player: by touch (a phone with no controller in use), else its keyboard or its controller.
+	const UGameInstance* GameInstance = GetGameInstance();
+	const AChaosImpactPlayerController* First = GameInstance ? Cast<AChaosImpactPlayerController>(GameInstance->GetFirstLocalPlayerController()) : nullptr;
+	if (First && First->ShouldUseTouchControls() && !First->IsUsingGamepad())
+	{
+		return TEXT("touch");
+	}
+	if (First && First->IsUsingGamepad())
+	{
+		return TEXT("pad");
+	}
+	int32 KeyboardPlayer = INDEX_NONE;
+	FParse::Value(*(TEXT("?") + LocalSetupOptions), TEXT("CIKeyboardPlayer="), KeyboardPlayer);
+	return KeyboardPlayer == 0 ? TEXT("key") : TEXT("pad");
 }

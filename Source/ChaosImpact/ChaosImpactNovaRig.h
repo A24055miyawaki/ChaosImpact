@@ -90,17 +90,24 @@ namespace ChaosImpactNova
 	/** The finished nova's size in its source: its rings are this far across (centimetres). */
 	constexpr float ModelRadius = 87.0f;
 
-	/** The source animation's time Age seconds after landing (the spin before the blast sped up, the rest as made). */
+	/** (2026-11-19) The ball of fire grows this much faster than its source: the blast spreads out quickly. */
+	constexpr float FireGrowSpeed = 2.6f;
+	/** Seconds after landing: the ball of fire starts to grow; it is full grown. */
+	constexpr float FireGrowAge = (FireExplodeAt - FireStart) / FireLeadSpeed;
+	constexpr float FireFullAge = FireGrowAge + (FireFullAt - FireExplodeAt) / FireGrowSpeed;
+	/** The source animation's time Age seconds after landing (the spin before the blast and its growing sped up, the rest as made). */
 	constexpr float GetFireAnimTime(const float Age)
 	{
-		return Age * FireLeadSpeed < FireExplodeAt - FireStart ? FireStart + Age * FireLeadSpeed
-			: FireExplodeAt + (Age - (FireExplodeAt - FireStart) / FireLeadSpeed);
+		return Age < FireGrowAge ? FireStart + Age * FireLeadSpeed
+			: Age < FireFullAge ? FireExplodeAt + (Age - FireGrowAge) * FireGrowSpeed
+			: FireFullAt + (Age - FireFullAge);
 	}
 	/** Seconds after landing at which the source animation reaches AnimTime. */
 	constexpr float GetFireAge(const float AnimTime)
 	{
 		return AnimTime < FireExplodeAt ? (AnimTime - FireStart) / FireLeadSpeed
-			: (FireExplodeAt - FireStart) / FireLeadSpeed + (AnimTime - FireExplodeAt);
+			: AnimTime < FireFullAt ? FireGrowAge + (AnimTime - FireExplodeAt) / FireGrowSpeed
+			: FireFullAge + (AnimTime - FireFullAt);
 	}
 
 	/** The ball of fire's size (0-1 of its largest) at a time of the source animation. */

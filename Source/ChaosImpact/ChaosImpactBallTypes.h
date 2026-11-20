@@ -73,12 +73,20 @@ enum class EChaosImpactBallType : uint8
 	 * VS/training only. Where it lands it lies as a mine in plain sight (AChaosImpactGadget): an opponent coming near
 	 * sets it off, and after a short fuse it bursts (1 damage, a push; a dash gets clear).
 	 */
-	Mine UMETA(DisplayName="Mine")
+	Mine UMETA(DisplayName="Mine"),
+	/**
+	 * Solo only (2026-11-19). No harm: lobbed onto the floor ahead, where it lands a small pink spot of healing stays
+	 * (AChaosImpactGadget): its thrower (or their team) stepping in gets 1 back at once, and staying on a while 1 more,
+	 * and then it is gone. Two at most from each.
+	 */
+	Heal UMETA(DisplayName="Heal")
 };
 
 namespace ChaosImpactBallTypes
 {
-	constexpr int32 Count = 18;
+	constexpr int32 Count = 19;
+	/** Every kind but the solo-only ones (listed last): what VS, training and the ball switch know. */
+	constexpr int32 SharedCount = 18;
 	constexpr float PrisonSeconds = 5.0f;
 	constexpr float PrisonImmunitySeconds = 3.0f;
 	constexpr float PrisonReleaseProtection = 0.65f;
@@ -88,9 +96,19 @@ namespace ChaosImpactBallTypes
 	 * バリア and マイン are set down, not thrown at someone: lobbed onto the floor ahead whatever the player's throw setting,
 	 * a tap just in front and a full charge about eleven metres away.
 	 */
-	constexpr float GadgetThrowMinSpeed = 380.0f;
+	constexpr float GadgetThrowMinSpeed = 600.0f;
 	constexpr float GadgetThrowMaxSpeed = 1500.0f;
+	/** A full charge leaves the hand rising this fast (a lob); a short one is thrown down, onto the floor just ahead at
+	 *  once instead of floating up first (2026-11-16). */
 	constexpr float GadgetThrowUpSpeed = 260.0f;
+	constexpr float GadgetThrowDownSpeed = -220.0f;
+	/** The kinds that only come out in solo mode (the heal ball): never in VS, training or the ball switch. */
+	inline bool IsSoloOnly(const EChaosImpactBallType Type) { return Type == EChaosImpactBallType::Heal; }
+	/** Set down on the floor ahead rather than thrown at someone (lobbed; what it leaves is an AChaosImpactGadget). */
+	inline bool IsGadget(const EChaosImpactBallType Type)
+	{
+		return Type == EChaosImpactBallType::Barrier || Type == EChaosImpactBallType::Mine || Type == EChaosImpactBallType::Heal;
+	}
 	/** The kinds that only come out in VS and training (IsPrisonMode). */
 	inline bool IsVersusOnly(const EChaosImpactBallType Type)
 	{
@@ -239,6 +257,8 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Swap: return FLinearColor(0.5f, 0.42f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Barrier: return FLinearColor(0.22f, 0.6f, 1.0f, 1.0f);
 		case EChaosImpactBallType::Mine: return FLinearColor(1.0f, 0.1f, 0.24f, 1.0f);
+		// (A soft pink, paler than the beam's magenta: never taken for it.)
+		case EChaosImpactBallType::Heal: return FLinearColor(1.0f, 0.5f, 0.72f, 1.0f);
 		default: return FLinearColor(0.0f, 0.82f, 1.0f, 1.0f);
 		}
 	}
@@ -264,6 +284,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Swap: return TEXT("スワップ");
 		case EChaosImpactBallType::Barrier: return TEXT("バリア");
 		case EChaosImpactBallType::Mine: return TEXT("マイン");
+		case EChaosImpactBallType::Heal: return TEXT("ヒール");
 		default: return TEXT("ノーマル");
 		}
 	}
@@ -290,6 +311,7 @@ namespace ChaosImpactBallTypes
 		case EChaosImpactBallType::Swap: return TEXT("Swap");
 		case EChaosImpactBallType::Barrier: return TEXT("Barrier");
 		case EChaosImpactBallType::Mine: return TEXT("Mine");
+		case EChaosImpactBallType::Heal: return TEXT("Heal");
 		default: return TEXT("Normal");
 		}
 	}

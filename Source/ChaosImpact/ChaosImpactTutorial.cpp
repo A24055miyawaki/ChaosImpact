@@ -1,4 +1,4 @@
-#include "ChaosImpactTutorial.h"
+﻿#include "ChaosImpactTutorial.h"
 
 #include "ChaosImpactBallTypes.h"
 #include "ChaosImpactBallFormComponent.h"
@@ -180,9 +180,10 @@ namespace
 		case EChaosImpactBallType::Prison: return TEXT("当たった相手を殻に閉じこめる。閉じこめた相手は投げられる");
 		case EChaosImpactBallType::Hook: return TEXT("フックを飛ばし、当てた相手や床のボールを手元へ引き寄せる");
 		case EChaosImpactBallType::Anchor: return TEXT("壁や床に打ちこみ、そこまで一気に飛んでいく。ダッシュで止まれる");
-		case EChaosImpactBallType::Swap: return TEXT("当てた相手と自分の場所が入れ替わる。ダメージはない");
+		case EChaosImpactBallType::Swap: return TEXT("当てると1ダメージ、相手と自分の場所が入れ替わる");
 		case EChaosImpactBallType::Barrier: return TEXT("落ちた所に光の壁が立つ。ボールを1つ止めると砕ける。人は通れる");
 		case EChaosImpactBallType::Mine: return TEXT("落ちた所に置かれ、相手が近づくと爆発する。ダッシュで逃げられる");
+		case EChaosImpactBallType::Heal: return TEXT("落ちた所に回復スポット。乗るとすぐ1回復、乗り続けるともう1回復");
 		default: return FString();
 		}
 	}
@@ -666,12 +667,11 @@ void FChaosImpactTutorial::PaintHints(const FGeometry& Geometry, FSlateWindowEle
 	{
 		return;
 	}
-	const FVector2f Size = Geometry.GetLocalSize();
 	const bool bPad = TutUsesPad(Controller);
 	const EChaosImpactControlScheme Scheme = ChaosImpactSettings::GetPlayerControlScheme(Controller);
 	const int32 Balls = Character->GetCarriedBallCount();
 	const bool bCharging = Character->IsChargingThrow();
-	struct FHint { FString Key; FString Label; float Lit; bool bSpare; };
+	using FHint = FHintRow;
 	TArray<FHint> Right, Left;
 	// Only what can be done now (the first key set for it); dash stays, dimmed while it recovers. Spare ones (pause,
 	// the training menu) go first when a small screen has no room for them all.
@@ -720,7 +720,12 @@ void FChaosImpactTutorial::PaintHints(const FGeometry& Geometry, FSlateWindowEle
 	if (!bCharging && !bInForm && !bCaught)
 	{
 		Add(Left, TutKeys(Controller, EChaosImpactAction::Tackle), TEXT("タックル"), true);
-		Add(Left, bMouseOnly && !bPad ? FString(TEXT("ホイール")) : TutKeys(Controller, EChaosImpactAction::SwapBall), TEXT("入れ替え"), Balls >= 2);
+		// 合体ボール (prototype): two that join, where joining is allowed; joined, how to part them (no swapping then).
+		const bool bFused = Character->AreBallsFused();
+		Add(Left, TutKeys(Controller, EChaosImpactAction::FuseBalls), bFused ? TEXT("合体を解除") : TEXT("合体"),
+			bFused || Character->CanFuseBalls());
+		Add(Left, bMouseOnly && !bPad ? FString(TEXT("ホイール")) : TutKeys(Controller, EChaosImpactAction::SwapBall), TEXT("入れ替え"),
+			Balls >= 2 && !bFused);
 		// Putting a ball down: its own key (a press); the simple layout holds swap; the mouse layouts hold on the ball frame.
 		if (bMouseOnly && !bPad)
 		{
@@ -736,13 +741,81 @@ void FChaosImpactTutorial::PaintHints(const FGeometry& Geometry, FSlateWindowEle
 		}
 		Add(Left, FormKeys, TEXT("長押しでボール化"), bFormReady);
 	}
-	if (!bCornerButtons)
+	if (Character->IsTouchControlled())
+	{
+		// スマホ版: what the fingers do (left half the body, right half the ball); pause and the rest are buttons of their own.
+		Right.Reset();
+		Left.Reset();
+		// (左利き: the halves the other way round.)
+		const bool bSwapped = ChaosImpactSettings::GetProfile(ChaosImpactSettings::GetPlayerProfile(Controller)).bTouchLeftHanded;
+		const FString BallSide = bSwapped ? TEXT("左") : TEXT("右");
+		const FString BodySide = bSwapped ? TEXT("右") : TEXT("左");
+		// ボタン方式: the buttons say what they do; only the throw's drag and the ball holder need telling.
+		const bool bButtonStyle = Character->IsTouchButtonStyle();
+		const FString ThrowPlace = bButtonStyle ? FString(TEXT("投げる")) : BallSide;
+		if (Character->IsTouchOneHand())
+		{
+			// 片手モード: one thumb anywhere; standing still throws by itself.
+			if (bCharging)
+			{
+				Add(Right, FString(TEXT("押したままなぞる")), TEXT("ねらう"), true);
+				Add(Right, FString(TEXT("はなす")), TEXT("投げる"), true);
+			}
+			else if (!bInForm && !bCaught)
+			{
+				Add(Right, FString(TEXT("タップ")), TEXT("すぐ投げる"), Balls > 0);
+				Add(Right, FString(TEXT("長押し")), TEXT("ためる"), Balls > 0);
+			}
+			if (!bInForm && !bCaught)
+			{
+				Add(Left, FString(TEXT("なぞる")), TEXT("移動"), true);
+				Add(Left, FString(TEXT("はじいて離す")), TEXT("ダッシュ"), true, Character->CanDashNow() ? 1.0f : 0.45f);
+				Add(Left, FString(TEXT("ボール枠をタップ")), TEXT("入れ替え"), Balls >= 2 && !Character->AreBallsFused());
+				Add(Left, FString(TEXT("ボール枠を長押し")), TEXT("捨てる"), Balls > 0);
+			}
+		}
+		else if (bCharging)
+		{
+			Add(Right, ThrowPlace + TEXT("からなぞる"), TEXT("ねらう"), true);
+			Add(Right, FString(TEXT("はなす")), TEXT("投げる"), true);
+			Add(Right, FString(TEXT("やめるで離す")), TEXT("キャンセル"), true);
+		}
+		else if (!bInForm && !bCaught)
+		{
+			Add(Right, ThrowPlace + TEXT("をタップ"), TEXT("すぐ投げる"), Balls > 0);
+			Add(Right, ThrowPlace + TEXT("を長押し"), TEXT("ためて投げる"), Balls > 0);
+			Add(Right, BallSide + TEXT("を大きくはらう"), TEXT("タックル"), !bButtonStyle);
+		}
+		if (!bInForm && !bCaught && Character->IsTouchAimStickShown())
+		{
+			Add(Right, FString(TEXT("向きスティック")), TEXT("向きを変える"), true);
+		}
+		if (!bInForm && !bCaught && !Character->IsTouchOneHand())
+		{
+			Add(Left, BodySide + TEXT("をなぞる"), TEXT("移動"), true);
+			Add(Left, BodySide + TEXT("をはじいて離す"), TEXT("ダッシュ"), !bButtonStyle, Character->CanDashNow() ? 1.0f : 0.45f);
+			Add(Left, FString(TEXT("ボール枠をタップ")), TEXT("入れ替え"), Balls >= 2 && !Character->AreBallsFused());
+			Add(Left, FString(TEXT("ボール枠を長押し")), TEXT("捨てる"), Balls > 0);
+		}
+	}
+	else if (!bCornerButtons)
 	{
 		Add(Left, TutKeys(Controller, EChaosImpactAction::TrainingMenu), TEXT("練習設定"), bTrainingMenu, 1.0f, true);
 		Add(Left, TutKeys(Controller, EChaosImpactAction::Pause), TEXT("ポーズ"), true, 1.0f, true);
 		Add(Left, TutKeys(Controller, EChaosImpactAction::OverviewMap), TEXT("全体マップ"), true, 1.0f, true);
 	}
 
+	// (スマホ版: the HP and the ball holder stand higher, out from under the thumbs: the hints over them too.)
+	PaintHintRows(Geometry, Elements, Layer, Scale, !Character->IsTouchControlled() ? 1.0f : Character->IsTouchButtonStyle() ? 0.53f : 0.8f,
+		bCornerButtons, MoveTemp(Left), MoveTemp(Right), OutBoxes);
+}
+
+void FChaosImpactTutorial::PaintHintRows(const FGeometry& Geometry, FSlateWindowElementList& Elements, const int32 Layer, const float Scale,
+	const float HeightFactor, const bool bCornerButtons, TArray<FHintRow> Left, TArray<FHintRow> Right, TArray<FBox2D>* OutBoxes)
+{
+	using namespace ChaosImpactPaint;
+	using FHint = FHintRow;
+	const FVector2f Size = Geometry.GetLocalSize();
 	// One hint: the button drawn as it looks (a trigger's tab, a face button's disc, a key's cap), then what it does on a
 	// faint dark backing, as consoles show them; no panel round them.
 	// (Small and quiet: readable at a glance, never in the way. GlyphH: a button's height; the rest follow from it.)
@@ -811,7 +884,7 @@ void FChaosImpactTutorial::PaintHints(const FGeometry& Geometry, FSlateWindowEle
 	};
 	const float RowH = 32.0f;
 	const float Width = Size.X / Scale;
-	const float Height = Size.Y / Scale;
+	const float Height = Size.Y / Scale * HeightFactor;
 	// Right: over the ball holder (and over the corner buttons the mouse styles have there); left: over the health.
 	const float RightBottom = Height - (bCornerButtons ? 340.0f : 290.0f);
 	// (Over the health and, in a match, the place badge above it.)

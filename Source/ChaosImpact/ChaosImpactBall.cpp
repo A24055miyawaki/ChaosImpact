@@ -1,6 +1,7 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosImpactBall.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "ChaosImpactHook.h"
 #include "ChaosImpactGadget.h"
 #include "ChaosImpactBuddyBall.h"
@@ -84,6 +85,9 @@ AChaosImpactBall::AChaosImpactBall()
 
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
 	ProjectileMovement->UpdatedComponent = CollisionSphere;
+	// (The ball itself ticks first: who it may pass through is settled before it moves, BeginPlay. The movement
+	// component's own wish to tick before its owner would make a cycle of the two, warned about every frame.)
+	ProjectileMovement->bTickBeforeOwner = false;
 	ProjectileMovement->ProjectileGravityScale = 0.0f;
 	ProjectileMovement->bConstrainToPlane = true;
 	ProjectileMovement->SetPlaneConstraintNormal(FVector::UpVector);
@@ -112,6 +116,7 @@ void AChaosImpactBall::BeginPlay()
 	ProjectileMovement->PrimaryComponentTick.AddPrerequisite(this, PrimaryActorTick);
 	ThrowingPawn = GetInstigator();
 	ApplyBallTypePresentation();
+	ApplyFusionPresentation();
 
 	if (AActor* OwningActor = ThrowingPawn.IsValid()
 		? static_cast<AActor*>(ThrowingPawn.Get()) : GetOwner())
@@ -138,6 +143,8 @@ void AChaosImpactBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AChaosImpactBall, bIsPickup);
+	DOREPLIFETIME(AChaosImpactBall, FusedType);
+	DOREPLIFETIME_CONDITION(AChaosImpactBall, FusionPower, COND_InitialOnly);
 	DOREPLIFETIME(AChaosImpactBall, bIsRolling);
 	DOREPLIFETIME(AChaosImpactBall, NetState);
 	DOREPLIFETIME(AChaosImpactBall, ReplicatedThrower);
@@ -582,12 +589,29 @@ void AChaosImpactBall::TryReportLocalHit(const FVector& From, const FVector& To)
 			continue;
 		}
 		const UCapsuleComponent* Capsule = LocalCharacter->GetCapsuleComponent();
+		if (IsPiercingDrive())
+		{
+			// 吸引ドライブ / ドライブ×ビーム fly on through those they meet: report the hit, never stop or move the drawn ball for it.
+			const float Reach = Capsule->GetScaledCapsuleRadius() + BallRadius;
+			const float Axis = FMath::Max(0.0f, Capsule->GetScaledCapsuleHalfHeight() - Capsule->GetScaledCapsuleRadius());
+			const FVector Middle = Capsule->GetComponentLocation();
+			FVector OnPath;
+			FVector OnAxis;
+			FMath::SegmentDistToSegmentSafe(From, To, Middle - FVector::UpVector * Axis, Middle + FVector::UpVector * Axis, OnPath, OnAxis);
+			if (FVector::DistSquared(OnPath, OnAxis) <= FMath::Square(Reach))
+			{
+				bClientHitReported = true;
+				LocalCharacter->ReportBallHitFromClient(this, OnPath);
+				return;
+			}
+			continue;
+		}
 		if (BallType == EChaosImpactBallType::Beam)
 		{
 			// The beam keeps going: report the hit, but never stop or move the drawn beam for it.
 			FVector Struck;
 			if (BeamTouches(From, To, Capsule->GetComponentLocation(), Capsule->GetScaledCapsuleRadius(),
-				Capsule->GetScaledCapsuleHalfHeight(), Struck))
+				Capsule->GetScaledCapsuleHalfHeight(), Struck, GetBeamWidthScale()))
 			{
 				bClientHitReported = true;
 				LocalCharacter->ReportBallHitFromClient(this, Struck);
@@ -697,9 +721,77 @@ bool AChaosImpactBall::AcceptReportedHit(AChaosImpactCharacter* Victim, const FV
 	return true;
 }
 
+void AChaosImpactBall::TickPiercingRepeats()
+{
+	UWorld* World = GetWorld();
+	if (!World || ChaosImpactFusion::IsOneHitRule(World))
+	{
+		return;
+	}
+	// Those it still has hold of (drawn along) or is passing through again take another hit now and then.
+	const double Now = World->GetTimeSeconds();
+	for (auto It = DragHitAt.CreateIterator(); It; ++It)
+	{
+		AChaosImpactCharacter* Victim = Cast<AChaosImpactCharacter>(It.Key().Get());
+		if (!Victim || Victim->IsEliminated())
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		const float Reach = CollisionSphere->GetScaledSphereRadius() * GetBeamWidthScale() + Victim->GetCapsuleComponent()->GetScaledCapsuleRadius() + 40.0f;
+		if (Now - It.Value() < DragRepeatSeconds || FVector::DistSquared(Victim->GetActorLocation(), GetActorLocation()) > FMath::Square(Reach + 60.0f))
+		{
+			continue;
+		}
+		It.Value() = Now;
+		MulticastContactBurst(Victim->GetActorLocation(), FRotator::ZeroRotator);
+		UGameplayStatics::ApplyDamage(Victim, 1.0f, GetInstigatorController(), this, nullptr);
+	}
+}
+
 void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& ImpactPoint,
 	const FVector& ImpactNormal)
 {
+	const bool bPiercer = BallType == EChaosImpactBallType::Drive
+		&& (FusedType == EChaosImpactBallType::Black || FusedType == EChaosImpactBallType::Beam || FusedType == EChaosImpactBallType::Nova
+			|| FusedType == EChaosImpactBallType::Drive);
+	if (bPiercer && !IsPiercingDrive() && DragHit.Contains(OtherActor))
+	{
+		// 吸引ドライブ, its steering over, meeting one it already hit (carried along with it): it bursts into its black hole
+		// there without hitting them again (one throw, one hit).
+		Detonate(ImpactPoint, nullptr);
+		return;
+	}
+	if (IsPiercingDrive())
+	{
+		// 吸引ドライブ / ドライブ×ビーム: it bursts on nobody while it is steered. Each it meets takes its hit once, and it flies on with
+		// them drawn along (its black hole opens where the steering ends).
+		if (AChaosImpactCharacter* Victim = Cast<AChaosImpactCharacter>(OtherActor))
+		{
+			CollisionSphere->IgnoreActorWhenMoving(Victim, true);
+			if (!DragHit.Contains(Victim))
+			{
+				DragHit.Add(Victim);
+				DragHitAt.Add(Victim, GetWorld()->GetTimeSeconds());
+				if (FusedType == EChaosImpactBallType::Beam)
+				{
+					MulticastBeamStrike(ImpactPoint);
+				}
+				else
+				{
+					MulticastContactBurst(ImpactPoint, ImpactNormal.Rotation());
+				}
+				ChaosImpactFusion::OnStrike(GetWorld(), BallType, FusedType, Victim, GetBallVelocity(), ThrowingPawn.Get(),
+					GetDuelThrowDamage(), &FusionCarry);
+				const float Applied = UGameplayStatics::ApplyDamage(Victim, GetHitDamage(), GetInstigatorController(), this, nullptr);
+				if (AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ThrowingPawn.Get()); Thrower && Applied > 0.0f)
+				{
+					Thrower->RecoverStaminaFromBallHit();
+				}
+			}
+			return;
+		}
+	}
 	if (auto* Captive = Cast<AChaosImpactBuddyBall>(this); Captive && Captive->IsPrisonBall())
 	{
 		MulticastContactBurst(ImpactPoint,ImpactNormal.Rotation());
@@ -719,6 +811,12 @@ void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& Imp
 			SetActorHiddenInGame(true); SetActorTickEnabled(false); SetLifeSpan(1.f); ForceNetUpdate();
 		}
 		else { DropToGroundAsPickup(); }
+		return;
+	}
+	if (BallType == EChaosImpactBallType::Heal)
+	{
+		// No harm in it: whoever it meets, its spot opens on the floor there.
+		Detonate(ImpactPoint, nullptr);
 		return;
 	}
 	if (BallType == EChaosImpactBallType::Prison)
@@ -751,11 +849,13 @@ void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& Imp
 	}
 	if (BallType == EChaosImpactBallType::Swap)
 	{
-		// No damage: the two change places (anything that is not a player takes an ordinary hit instead).
+		// One hit, as any ball, and the two change places (anything that is not a player takes an ordinary hit only).
 		AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ThrowingPawn.Get());
 		if (AChaosImpactCharacter* Victim = Cast<AChaosImpactCharacter>(OtherActor); Victim && Thrower)
 		{
-			if (Thrower->SwapPlacesWith(Victim))
+			const bool bSwapped = Thrower->SwapPlacesWith(Victim);
+			const float Applied = UGameplayStatics::ApplyDamage(Victim, GetHitDamage(), GetInstigatorController(), this, nullptr);
+			if (bSwapped || Applied > 0.0f)
 			{
 				Thrower->RecoverStaminaFromBallHit();
 			}
@@ -764,7 +864,15 @@ void AChaosImpactBall::ResolveDamagingHit(AActor* OtherActor, const FVector& Imp
 		}
 	}
 	const float AppliedDamage = UGameplayStatics::ApplyDamage(
-		OtherActor, Damage, GetInstigatorController(), this, nullptr);
+		OtherActor, GetHitDamage(), GetInstigatorController(), this, nullptr);
+#if !UE_BUILD_SHIPPING
+	static const bool bTraceDamage = FParse::Param(FCommandLine::Get(), TEXT("CIBallImpactTrace"));
+	if (bTraceDamage)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Ball damage %s on %s: %.1f of %.1f (instigator %s)"), *GetName(), *GetNameSafe(OtherActor), AppliedDamage,
+			GetHitDamage(), *GetNameSafe(GetInstigatorController()));
+	}
+#endif
 	if (AppliedDamage > 0.0f)
 	{
 		if (AChaosImpactCharacter* Thrower = Cast<AChaosImpactCharacter>(ThrowingPawn.Get());
@@ -1340,6 +1448,7 @@ void AChaosImpactBall::MulticastContactBurst_Implementation(FVector_NetQuantize 
 
 void AChaosImpactBall::Tick(const float DeltaSeconds)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CIBallTick);
 	Super::Tick(DeltaSeconds);
 	UpdateSoundPresentation(DeltaSeconds);
 	if (!HasAuthority())
@@ -1355,6 +1464,10 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 	if (bDetonated)
 	{
 		return;
+	}
+	if (IsPiercingDrive() && !DragHit.IsEmpty())
+	{
+		TickPiercingRepeats();
 	}
 	if (bRetryLocalOverlap && bIsPickup && !bPickupConsumed)
 	{
@@ -1379,6 +1492,15 @@ void AChaosImpactBall::Tick(const float DeltaSeconds)
 			if (bIsPickup || bDetonated || IsHidden())
 			{
 				return;
+			}
+			if (IsFused() && !bCosmeticPrediction)
+			{
+				// 合体: what rides along, on the way (fires, frozen floor, smoke, a crackle, a whirl, mines; a railgun's rebound).
+				TickFusionFlight();
+				if (bDetonated)
+				{
+					return;
+				}
 			}
 			if (BallType == EChaosImpactBallType::Normal && !IsA<AChaosImpactBuddyBall>())
 			{
@@ -1626,7 +1748,24 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 		DetonatedAt = GetWorld()->GetTimeSeconds();
 		FlightEndedAt = DetonatedAt;
 		SetActorTickEnabled(false);
-		AChaosImpactHook::Release(GetWorld(), GetActorLocation(), Direction, ThrowingPawn.Get(), BallType == EChaosImpactBallType::Anchor);
+		const bool bDoubleHook = BallType == EChaosImpactBallType::Hook && FusedType == EChaosImpactBallType::Hook;
+		// (ダブルフック, 超フック: two chains, out to the left and the right.)
+		for (int32 Chain = 0; Chain < (bDoubleHook ? 2 : 1); ++Chain)
+		{
+			const FVector Out = bDoubleHook ? Direction.RotateAngleAxis(Chain == 0 ? -13.0f : 13.0f, FVector::UpVector) : Direction;
+			AChaosImpactHook::Release(GetWorld(), GetActorLocation(), Out, ThrowingPawn.Get(),
+				BallType == EChaosImpactBallType::Anchor, IsFused() ? FusedType : EChaosImpactBallType::Normal, GetFusionReach());
+		}
+		if (BallType == EChaosImpactBallType::Hook && FusedType == EChaosImpactBallType::Barrier)
+		{
+			// 守りのフック: a wall stands in front of its thrower as the hook goes out.
+			if (const APawn* Thrower = ThrowingPawn.Get())
+			{
+				const FVector Ahead = FVector(Direction.X, Direction.Y, 0.0f).GetSafeNormal();
+				ChaosImpactFusion::PlaceFusedBarrier(GetWorld(), Thrower->GetActorLocation() + Ahead * 150.0f, Ahead, ThrowingPawn.Get(),
+					EChaosImpactBallType::Hook);
+			}
+		}
 		SetLifeSpan(1.0f);
 		ForceNetUpdate();
 		return;
@@ -1653,7 +1792,15 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 		DetonatedAt = GetWorld()->GetTimeSeconds();
 		FlightEndedAt = DetonatedAt;
 		SetActorTickEnabled(false);
-		AChaosImpactTornado::Release(GetWorld(), GetActorLocation(), Direction, ThrowingPawn.Get());
+		// Fused: a tornado of the other's colour (a fire riding along: a tornado of flame), the other's effect along its way.
+		const bool bTwin = FusedType == EChaosImpactBallType::Wind;
+		// (双竜巻, 超ウィンド: two tornadoes, side by side and weaving across each other.)
+		for (int32 Twister = 0; Twister < (bTwin ? 2 : 1); ++Twister)
+		{
+			const FVector Out = bTwin ? Direction.RotateAngleAxis(Twister == 0 ? -12.0f : 12.0f, FVector::UpVector) : Direction;
+			AChaosImpactTornado::Release(GetWorld(), GetActorLocation(), Out, ThrowingPawn.Get(), FusedType, FusedType,
+				IsFused() ? ChaosImpactFusion::TintTornado : 0.0f);
+		}
 		SetLifeSpan(1.0f);
 		ForceNetUpdate();
 		return;
@@ -1664,7 +1811,9 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 	const bool bThunder = BallType == EChaosImpactBallType::Thunder;
 	const bool bBeam = BallType == EChaosImpactBallType::Beam;
 	const EChaosImpactBallFlightMode UsedFlightMode = bThunder || bBeam ? EChaosImpactBallFlightMode::Straight : FlightMode;
-	const float UsedSpeed = bThunder ? ChaosImpactBallTypes::ThunderSpeed : bBeam ? ChaosImpactBallTypes::BeamSpeed : Speed;
+	// (迅雷, 超サンダー: half as fast again.)
+	const float UsedSpeed = bThunder ? ChaosImpactBallTypes::ThunderSpeed * (FusedType == EChaosImpactBallType::Thunder ? 1.5f : 1.0f)
+		: bBeam ? ChaosImpactBallTypes::BeamSpeed : Speed;
 	const bool bArc = UsedFlightMode == EChaosImpactBallFlightMode::Arc;
 	ActiveFlightMode = UsedFlightMode;
 	FlightSeconds = 0.0f;
@@ -1710,8 +1859,63 @@ void AChaosImpactBall::Launch(const FVector& Direction, const float Speed,
 		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		BeamLastLocation = GetActorLocation();
 		BeamStruck.Reset();
+		if (FusedType == EChaosImpactBallType::Barrier && HasAuthority() && !bCosmeticPrediction && GetWorld())
+		{
+			// 長い光の壁: a long wall along its way, a little ahead of its thrower (light ends nowhere to put it up).
+			const FVector Along = HorizontalDirection.GetSafeNormal();
+			ChaosImpactFusion::PlaceFusedBarrier(GetWorld(), GetActorLocation() + Along * 650.0f, Along, ThrowingPawn.Get(), EChaosImpactBallType::Beam);
+		}
+		if (FusedType == EChaosImpactBallType::Beam && HasAuthority() && !bCosmeticPrediction && GetWorld())
+		{
+			// 三叉光線 (超ビーム): two more beams fanned out beside it.
+			for (const float Degrees : {-14.0f, 14.0f})
+			{
+				const FVector Side = HorizontalDirection.GetSafeNormal().RotateAngleAxis(Degrees, FVector::UpVector);
+				const FTransform At(Side.Rotation(), GetActorLocation() + Side * 20.0f);
+				if (AChaosImpactBall* Beam = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(GetClass(), At, ThrowingPawn.Get(), ThrowingPawn.Get(),
+					ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+				{
+					Beam->SetBallType(EChaosImpactBallType::Beam);
+					Beam->FinishSpawning(At);
+					Beam->Launch(Side, ChaosImpactBallTypes::BeamSpeed, EChaosImpactBallFlightMode::Straight, 0.0f);
+				}
+			}
+		}
 	}
 	UpdateNetState();
+}
+
+float AChaosImpactBall::GetHitDamage() const
+{
+	return FusedType == EChaosImpactBallType::Nova ? ChaosImpactBallTypes::GetNovaDamage(FusionPower) : Damage;
+}
+
+bool AChaosImpactBall::IsRamDrive() const
+{
+	return BallType == EChaosImpactBallType::Drive && (FusedType == EChaosImpactBallType::Nova || FusedType == EChaosImpactBallType::Drive)
+		&& !bDetonated && GetDriveControlLeft() > 0.0f;
+}
+
+void AChaosImpactBall::TurnBackFor(APawn* NewThrower)
+{
+	if (!HasAuthority() || !NewThrower || ThrowingPawn.Get() == NewThrower)
+	{
+		return;
+	}
+	ThrowingPawn = NewThrower;
+	ReplicatedThrower = NewThrower;
+	SetInstigator(NewThrower);
+	ApplyThrowerIgnores();
+	ForceNetUpdate();
+}
+
+void AChaosImpactBall::NudgeVelocity(const FVector& Change)
+{
+	if (HasAuthority() && ProjectileMovement && ProjectileMovement->IsActive())
+	{
+		ProjectileMovement->Velocity += Change;
+		UpdateNetState();
+	}
 }
 
 void AChaosImpactBall::LaunchNovaDrop(const FVector& GroundTarget)
@@ -1997,6 +2201,14 @@ void AChaosImpactBall::DropToGroundAsPickup()
 void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* OtherActor,
 	UPrimitiveComponent* OtherComponent, FVector NormalImpulse, const FHitResult& Hit)
 {
+#if !UE_BUILD_SHIPPING
+	static const bool bTraceImpacts = FParse::Param(FCommandLine::Get(), TEXT("CIBallImpactTrace"));
+	if (bTraceImpacts)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Ball impact %s on %s (pickup %d, detonated %d, normal %s)"), *GetName(), *GetNameSafe(OtherActor),
+			bIsPickup ? 1 : 0, bDetonated ? 1 : 0, *Hit.ImpactNormal.ToCompactString());
+	}
+#endif
 	if (bIsPickup || bDetonated || !HasAuthority() || bCosmeticPrediction)
 	{
 		return;
@@ -2045,6 +2257,13 @@ void AChaosImpactBall::HandleImpact(UPrimitiveComponent* HitComponent, AActor* O
 	{
 		return;
 	}
+#if !UE_BUILD_SHIPPING
+	if (bTraceImpacts)
+	{
+		UE_LOG(LogChaosImpact, Log, TEXT("Ball impact %s: pawn %d, can be damaged %d, damage %.1f"), *GetName(), bHitPawn ? 1 : 0,
+			OtherActor->CanBeDamaged() ? 1 : 0, GetHitDamage());
+	}
+#endif
 	if ((bHitPawn || bHitTrainingTarget) && OtherActor->CanBeDamaged())
 	{
 		ResolveDamagingHit(OtherActor, Hit.ImpactPoint, Hit.ImpactNormal);
@@ -2123,6 +2342,11 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 	{
 		// A barrier takes one ball, whatever that ball then does (rebounds, bursts).
 		Wall->AbsorbBall(ThrowingPawn.Get());
+		if (Wall->TurnsBallsBack() && Wall->GetSourcePawn() && !AChaosImpactGameState::AreTeammates(GetWorld(), Wall->GetSourcePawn(), ThrowingPawn.Get()))
+		{
+			// 電撃バリア: it goes back the way it came, the wall's owner's ball now.
+			TurnBackFor(Wall->GetSourcePawn());
+		}
 	}
 	if (auto* Captive = Cast<AChaosImpactBuddyBall>(this); Captive && Captive->IsPrisonBall()
 		&& Captive->IsLaunched() && !IsPickup() && ImpactResult.ImpactNormal.Z < .65f
@@ -2153,6 +2377,24 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 			return;
 		}
 	}
+	if (BallType == EChaosImpactBallType::Drive && FusedType == EChaosImpactBallType::Thunder && GetDriveControlLeft() > 0.0f
+		&& FMath::Abs(ImpactResult.ImpactNormal.Z) < 0.65f)
+	{
+		// 操縦サンダー: steered, it rebounds off walls (faster each time) with a crackle, instead of bursting.
+		const FVector Normal = ImpactResult.ImpactNormal.GetSafeNormal2D();
+		FVector Heading = DriveHeading.IsNearlyZero() ? ImpactVelocity.GetSafeNormal2D() : DriveHeading;
+		Heading = (Heading - 2.0f * FVector::DotProduct(Heading, Normal) * Normal).GetSafeNormal2D();
+		DriveHeading = Heading;
+		DriveSpeed = FMath::Min(FMath::Max(DriveSpeed, static_cast<float>(ImpactVelocity.Size2D())) * 1.12f, 2800.0f);
+		ProjectileMovement->Velocity = Heading * DriveSpeed;
+		if (!bCosmeticPrediction)
+		{
+			ChaosImpactFusion::OnBounce(GetWorld(), BallType, FusedType, ImpactResult.ImpactPoint, ThrowingPawn.Get(), GetDuelThrowDamage(),
+				FusionCarry);
+			UpdateNetState();
+		}
+		return;
+	}
 	// A thunder ball rebounds like a normal ball until it meets someone or its time runs out.
 	if (IsSpecialBall() && BallType != EChaosImpactBallType::Thunder && BallType != EChaosImpactBallType::Prison)
 	{
@@ -2173,6 +2415,34 @@ void AChaosImpactBall::HandleBounce(const FHitResult& ImpactResult, const FVecto
 		const FVector Rebound = ProjectileMovement->Velocity;
 		ProjectileMovement->Velocity = Rebound.GetSafeNormal()
 			* FMath::Min(static_cast<float>(Rebound.Size()) * ChaosImpactBallTypes::ThunderBounceSpeedUp, ChaosImpactBallTypes::ThunderMaxSpeed);
+		if (IsFused() && !bCosmeticPrediction)
+		{
+			// 合体: what rides along at every rebound (炎雷's fires, 氷雷's frozen floor…).
+			ChaosImpactFusion::OnBounce(GetWorld(), BallType, FusedType, ImpactResult.ImpactPoint, ThrowingPawn.Get(), GetDuelThrowDamage(),
+				FusionCarry);
+			if (FusedType == EChaosImpactBallType::Thunder && SuperSplitsLeft > 0 && GetWorld())
+			{
+				// 迅雷: it splits as it rebounds (four at most).
+				--SuperSplitsLeft;
+				const FVector Split = ProjectileMovement->Velocity.RotateAngleAxis(FMath::RandBool() ? 38.0f : -38.0f, FVector::UpVector);
+				const FTransform At(Split.Rotation(), GetActorLocation());
+				if (AChaosImpactBall* Twin = GetWorld()->SpawnActorDeferred<AChaosImpactBall>(GetClass(), At, ThrowingPawn.Get(), ThrowingPawn.Get(),
+					ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+				{
+					Twin->SetBallType(EChaosImpactBallType::Thunder);
+					Twin->SetFusedType(EChaosImpactBallType::Thunder);
+					Twin->SuperSplitsLeft = 0;
+					Twin->FinishSpawning(At);
+					Twin->Launch(Split.GetSafeNormal2D(), static_cast<float>(Split.Size2D()), EChaosImpactBallFlightMode::Straight, 0.0f);
+				}
+			}
+			if (FusedType == EChaosImpactBallType::Nova && FusionCarry.Bounces >= 3)
+			{
+				// 雷神ノヴァ: after its third rebound it goes off.
+				Detonate(GetActorLocation(), nullptr);
+				return;
+			}
+		}
 	}
 	if (ActiveFlightMode == EChaosImpactBallFlightMode::Arc
 		&& ImpactResult.ImpactNormal.Z > 0.65f
@@ -2254,6 +2524,19 @@ void AChaosImpactBall::UpdateDashPassThrough()
 		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 		{
 			Capsule->IgnoreActorWhenMoving(this, bDashing);
+		}
+	}
+	// A barrier lets its own side's balls through (its thrower's and their team's); everyone else's stop at it.
+	{
+		const APawn* Thrower = GetShownThrower();
+		for (TActorIterator<AChaosImpactGadget> It(World); It; ++It)
+		{
+			if (It->IsBarrier())
+			{
+				const APawn* WallOwner = It->GetSourcePawn();
+				const bool bOwnSide = Thrower && WallOwner && (Thrower == WallOwner || AChaosImpactGameState::AreTeammates(World, Thrower, WallOwner));
+				CollisionSphere->IgnoreActorWhenMoving(*It, bOwnSide);
+			}
 		}
 	}
 	for (TActorIterator<AChaosImpactBuddyBall> It(World); It; ++It)
@@ -2376,7 +2659,140 @@ void AChaosImpactBall::OnRep_Detonated()
 	{
 		SetActorHiddenInGame(true);
 		StopFlightSound();
+		if (IsFused())
+		{
+			ChaosImpactFusion::PlayFusedBurst(this, GetActorLocation(), BallType, FusedType);
+		}
 	}
+}
+
+void AChaosImpactBall::SetFusedType(const EChaosImpactBallType Type)
+{
+	FusedType = Type;
+	if (HasActorBegunPlay())
+	{
+		ApplyFusionPresentation();
+	}
+}
+
+void AChaosImpactBall::OnRep_FusedType()
+{
+	if (HasActorBegunPlay())
+	{
+		ApplyFusionPresentation();
+	}
+}
+
+void AChaosImpactBall::ApplyFusionPresentation()
+{
+	if (!IsFused() || FusionLook.IsBuilt() || !BallMesh || GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	// With snow in it, at the snow's size; else at a thrown ball's.
+	const bool bSnow = BallType == EChaosImpactBallType::Snow || FusedType == EChaosImpactBallType::Snow;
+	const float Size = bSnow ? FMath::Max(1.0f, SnowScale) : 1.0f;
+	// The ball's own look turned toward the other's colour (one ball of the two), then the fused look: the swirl of the
+	// two colours its body, the other kind's marks round it, and a black hole's pull drawn round it when one rides along.
+	ChaosImpactFusion::RegisterTint(this, FusedType, 0.5f);
+	ChaosImpactFusion::TintActorLooks(this, FusedType, 0.5f);
+	// (Its own glowing shell off: over the swirl it washed the two colours out; its rings, arcs, aura and shape stay.)
+	if (TypeGlow && BallType != EChaosImpactBallType::Thunder)
+	{
+		TypeGlow->SetHiddenInGame(true);
+	}
+	ChaosImpactFusion::FFusionLookOptions Options;
+	Options.Scale = Size;
+	Options.SnowCover = bSnow ? 0.35f : 0.0f;
+	Options.SuctionRadius = FusedType == EChaosImpactBallType::Black
+		? (BallType == EChaosImpactBallType::Drive ? DragPullRadius : FusedPullRadius) : 0.0f;
+	ChaosImpactFusion::BuildLook(this, BallMesh, BallType, FusedType, FusionLook, Options);
+	SetActorTickEnabled(true);
+}
+
+void AChaosImpactBall::TickFusionFlight()
+{
+	UWorld* World = GetWorld();
+	if (!World || !HasAuthority())
+	{
+		return;
+	}
+	const FVector Here = GetActorLocation();
+	// レールガン: the first wall it passes is where it rebounds (once).
+	if (BallType == EChaosImpactBallType::Beam && FusedType == EChaosImpactBallType::Thunder && !bRailReflected && bFusionLastAtSet)
+	{
+		FHitResult Wall;
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(FusionRailgun), false, this);
+		if (World->LineTraceSingleByObjectType(Wall, FusionLastAt, Here, FCollisionObjectQueryParams(ECC_WorldStatic), Query)
+			&& FMath::Abs(Wall.ImpactNormal.Z) < 0.6f)
+		{
+			bRailReflected = true;
+			const FVector Normal = Wall.ImpactNormal.GetSafeNormal2D();
+			const FVector Velocity = ProjectileMovement->Velocity;
+			ProjectileMovement->Velocity = Velocity - 2.0f * FVector::DotProduct(Velocity, Normal) * Normal;
+			SetActorLocation(Wall.Location + Normal * 12.0f);
+			BeamLastLocation = GetActorLocation();
+			MulticastBeamStrike(Wall.ImpactPoint);
+			ChaosImpactFusion::OnBounce(World, BallType, FusedType, Wall.ImpactPoint, ThrowingPawn.Get(), GetDuelThrowDamage(), FusionCarry);
+			UpdateNetState();
+		}
+	}
+	FusionLastAt = GetActorLocation();
+	bFusionLastAtSet = true;
+	ChaosImpactFusion::TickCarry(World, BallType, FusedType, GetActorLocation(), ThrowingPawn.Get(), GetDuelThrowDamage(), FusionCarry,
+		GetFusionReach());
+}
+
+bool AChaosImpactBall::IsWallDrive() const
+{
+	return BallType == EChaosImpactBallType::Drive && FusedType == EChaosImpactBallType::Beam && !bDetonated
+		&& GetDriveControlLeft() > 0.0f;
+}
+
+float AChaosImpactBall::GetBeamWidthScale() const
+{
+	if (BallType == EChaosImpactBallType::Beam && FusedType == EChaosImpactBallType::Nova)
+	{
+		// ノヴァ砲: as thick as the nova was charged.
+		const float Charged = FMath::Clamp((FusionPower - ChaosImpactBallTypes::NovaMinScale)
+			/ FMath::Max(ChaosImpactBallTypes::NovaMaxScale - ChaosImpactBallTypes::NovaMinScale, 0.01f), 0.0f, 1.0f);
+		return FMath::Lerp(3.0f, 7.0f, Charged);
+	}
+	if (BallType != EChaosImpactBallType::Beam || FusedType != EChaosImpactBallType::Snow)
+	{
+		return 1.0f;
+	}
+	// 極太光線: twice as thick even with the snow not rolled, three times with it rolled as big as it goes (1.8).
+	const float Grown = FMath::Clamp((GetFusionReach() - 1.0f) / (FusionSnowCap - 1.0f), 0.0f, 1.0f);
+	return FMath::Lerp(FusionBeamMinWidth, FusionBeamMaxWidth, Grown);
+}
+
+bool AChaosImpactBall::IsDragDrive() const
+{
+	return BallType == EChaosImpactBallType::Drive && FusedType == EChaosImpactBallType::Black && !bDetonated
+		&& GetDriveControlLeft() > 0.0f;
+}
+
+float AChaosImpactBall::GetFusedPullSpeed() const
+{
+	return static_cast<float>(GetBallVelocity().Size2D());
+}
+
+float AChaosImpactBall::GetFusionReach() const
+{
+	const bool bSnow = BallType == EChaosImpactBallType::Snow || FusedType == EChaosImpactBallType::Snow;
+	return IsFused() && bSnow ? FMath::Clamp(SnowScale, 1.0f, FusionSnowCap) : 1.0f;
+}
+
+bool AChaosImpactBall::IsFusedPullActive() const
+{
+	return FusedType == EChaosImpactBallType::Black && !bIsPickup && !bDetonated && !IsHidden() && !bCosmeticPrediction
+		&& IsFlyingForPresentation();
+}
+
+APawn* AChaosImpactBall::GetFusionSource() const
+{
+	return ThrowingPawn.IsValid() ? ThrowingPawn.Get() : ReplicatedThrower.Get();
 }
 
 void AChaosImpactBall::UpdateSoundPresentation(const float DeltaSeconds)
@@ -2440,6 +2856,9 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 		return;
 	}
 	bDetonated = true;
+	// (The way it was going, for what rides along on a fused ball: a tornado or a beam goes on that way.)
+	const FVector FusionHeading = BallType == EChaosImpactBallType::Drive && !DriveHeading.IsNearlyZero() ? DriveHeading
+		: !ProjectileMovement->Velocity.IsNearlyZero() ? ProjectileMovement->Velocity : LaunchHeading;
 	StopFlightSound();
 	DetonatedAt = GetWorld()->GetTimeSeconds();
 	FlightEndedAt = DetonatedAt;
@@ -2456,7 +2875,7 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 	}
 	else if (BallType == EChaosImpactBallType::Simae)
 	{
-		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim, GetDuelThrowDamage());
+		AChaosImpactSimaeBird::ReleaseFlock(GetWorld(), Location, ThrowingPawn.Get(), DirectVictim, GetDuelThrowDamage(), FusedType);
 		DetonationZone = nullptr;
 	}
 	else if (BallType == EChaosImpactBallType::Drive)
@@ -2472,6 +2891,17 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 		MulticastContactBurst(Location, FRotator::ZeroRotator);
 		DetonationZone = nullptr;
 	}
+	else if (BallType == EChaosImpactBallType::Heal)
+	{
+		// Its healing spot on the floor where it came down (the floor under it, if it met a wall or someone).
+		MulticastContactBurst(Location, FRotator::ZeroRotator);
+		DetonationZone = nullptr;
+		FVector Floor;
+		if (AChaosImpactGadget::FindFloor(GetWorld(), Location, Floor))
+		{
+			AChaosImpactGadget::Place(GetWorld(), EChaosImpactBallType::Heal, Floor, LaunchHeading, ThrowingPawn.Get());
+		}
+	}
 	else if (BallType == EChaosImpactBallType::Barrier || BallType == EChaosImpactBallType::Mine)
 	{
 		// Struck someone: an ordinary hit, nothing left behind. Landed: its wall (facing its thrower) or its mine there.
@@ -2486,18 +2916,33 @@ void AChaosImpactBall::Detonate(const FVector& Location, AActor* DirectVictim)
 		{
 			Floor = GadgetPlanFloor;
 		}
-		if (!DirectVictim && (bPlanned || AChaosImpactGadget::FindFloor(GetWorld(), Location, Floor)))
+		// (要塞, two barriers: its walls are put up as one, by the fusion.)
+		const bool bFortress = BallType == EChaosImpactBallType::Barrier && FusedType == EChaosImpactBallType::Barrier;
+		if (!DirectVictim && !bFortress && (bPlanned || AChaosImpactGadget::FindFloor(GetWorld(), Location, Floor)))
 		{
 			const APawn* Thrower = ThrowingPawn.Get();
 			const FVector Heading = bGadgetPlan ? GadgetPlanHeading : !LaunchHeading.IsNearlyZero() ? LaunchHeading
 				: Thrower ? Location - Thrower->GetActorLocation() : FVector::ZeroVector;
-			AChaosImpactGadget::Place(GetWorld(), BallType, Floor, Heading, ThrowingPawn.Get());
+			AChaosImpactGadget::Place(GetWorld(), BallType, Floor, Heading, ThrowingPawn.Get(), FusedType,
+				IsFused() ? ChaosImpactFusion::TintMain : 0.0f);
 		}
 	}
 	else
 	{
-		DetonationZone = AChaosImpactHazardZone::Detonate(GetWorld(), BallType, Location, ThrowingPawn.Get(), DirectVictim,
-			BallType == EChaosImpactBallType::Snow || BallType == EChaosImpactBallType::Nova ? SnowScale : 1.0f, GetDuelThrowDamage());
+		// (Fused: its burst takes the other's colour, the other's burst a little of its own: one effect of the two.)
+		// (Fused, outside the one-hit rule: what it struck is in its burst too.)
+		DetonationZone = AChaosImpactHazardZone::Detonate(GetWorld(), BallType, Location, ThrowingPawn.Get(),
+			IsFused() ? ChaosImpactFusion::SparedVictim(GetWorld(), DirectVictim) : DirectVictim,
+			BallType == EChaosImpactBallType::Snow || BallType == EChaosImpactBallType::Nova ? SnowScale : 1.0f, GetDuelThrowDamage(),
+			FusedType, IsFused() ? ChaosImpactFusion::TintMain : 0.0f, GetFusionReach());
+	}
+	if (IsFused() && !bFusionApplied)
+	{
+		// 合体: the second ball's effect at the same place, and a burst of the two colours over both.
+		bFusionApplied = true;
+		ChaosImpactFusion::ApplySecondary(GetWorld(), FusedType, Location, FusionHeading, ThrowingPawn.Get(), DirectVictim,
+			GetDuelThrowDamage(), GetClass(), BallType, BallType == EChaosImpactBallType::Nova ? SnowScale : GetFusionReach());
+		ChaosImpactFusion::PlayFusedBurst(this, Location, BallType, FusedType);
 	}
 	UE_LOG(LogChaosImpact, Log, TEXT("%s ball detonated at %s (direct victim %s)"),
 		ChaosImpactBallTypes::GetInternalName(BallType), *Location.ToCompactString(), *GetNameSafe(DirectVictim));
@@ -2716,7 +3161,7 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		LightIntensity = 0.0f;
 	}
 	else if (BallType == EChaosImpactBallType::Hook || BallType == EChaosImpactBallType::Anchor || BallType == EChaosImpactBallType::Swap
-		|| BallType == EChaosImpactBallType::Barrier || BallType == EChaosImpactBallType::Mine)
+		|| BallType == EChaosImpactBallType::Barrier || BallType == EChaosImpactBallType::Mine || BallType == EChaosImpactBallType::Heal)
 	{
 		// Its shape round the ball, held up facing the camera so it reads at a glance and never as another kind (nor as
 		// each other): hook: a J-shaped hook (a shank up to its eye, one curve round under the ball to a barbed point);
@@ -2726,7 +3171,8 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 		BallMesh->SetMaterial(0, MakeEmissive(this, bAnchorBall ? FLinearColor(0.5f, 0.85f, 0.05f)
 			: BallType == EChaosImpactBallType::Swap ? FLinearColor(0.34f, 0.28f, 0.85f)
 			: BallType == EChaosImpactBallType::Barrier ? FLinearColor(0.1f, 0.38f, 0.8f)
-			: BallType == EChaosImpactBallType::Mine ? FLinearColor(0.2f, 0.03f, 0.05f) : FLinearColor(0.08f, 0.75f, 0.62f), 1.2f));
+			: BallType == EChaosImpactBallType::Mine ? FLinearColor(0.2f, 0.03f, 0.05f)
+			: BallType == EChaosImpactBallType::Heal ? FLinearColor(1.0f, 0.4f, 0.66f) : FLinearColor(0.08f, 0.75f, 0.62f), 1.2f));
 		TypeGlowMaterial = MakeAdditive(this, GetColor(BallType), 0.45f, 1.0f);
 		TypeGlow = AttachShell(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")), TypeGlowMaterial);
 		UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
@@ -2805,6 +3251,20 @@ void AChaosImpactBall::ApplyBallTypePresentation()
 				Rod(Tip, FVector(0.0f, FMath::Cos(A) * Round, FMath::Sin(A) * Round), FVector(0.0f, FMath::Cos(B) * Round, FMath::Sin(B) * Round), 7.0f);
 			}
 			Rod(Steel, FVector(0.0f, -36.0f, 0.0f), FVector(0.0f, 36.0f, 0.0f), 6.0f);
+		}
+		else if (BallType == EChaosImpactBallType::Heal)
+		{
+			// A pink ball with a white heart on its face (two lobes over a point), and a soft pink ring round it.
+			UMaterialInstanceDynamic* White = MakeEmissive(this, FLinearColor(1.0f, 0.97f, 0.98f), 2.4f);
+			Part(Sphere, White, FVector(30.0f, -10.0f, 8.0f), FVector(1.0f, 0.0f, 0.0f), 6.0f, 24.0f);
+			Part(Sphere, White, FVector(30.0f, 10.0f, 8.0f), FVector(1.0f, 0.0f, 0.0f), 6.0f, 24.0f);
+			Part(Cone, White, FVector(30.0f, 0.0f, -6.0f), -Up, 26.0f, 38.0f);
+			constexpr float Round = 40.0f;
+			for (int32 Bead = 0; Bead < 8; ++Bead)
+			{
+				const float Angle = FMath::DegreesToRadians(22.5f + Bead * 45.0f);
+				Part(Sphere, Tip, FVector(0.0f, FMath::Cos(Angle) * Round, FMath::Sin(Angle) * Round), Up, 9.0f, 9.0f);
+			}
 		}
 		else if (BallType == EChaosImpactBallType::Mine)
 		{
@@ -2937,8 +3397,21 @@ void AChaosImpactBall::UpdateBallTypePresentation(const float DeltaSeconds)
 	}
 	if (DriveLook.IsBuilt())
 	{
+		DriveLook.Scale = FusedType == EChaosImpactBallType::Snow ? FMath::Max(1.0f, SnowScale) : 1.0f;
 		ChaosImpactDrive::UpdateLook(this, DriveLook, T, DeltaSeconds, bFlying,
 			!IsHidden() && !bDetonated && !GetAttachParentActor(), GetDriveControlLeft(), GetVelocity());
+	}
+	if (FusionLook.IsBuilt())
+	{
+		// 合体: the fused look over the ball's own, and a trail of the two colours twisting round each other in flight.
+		const bool bFusionShown = !IsHidden() && !bDetonated && BallMesh->IsVisible() && bExpiryShown;
+		ChaosImpactFusion::UpdateLook(FusionLook, T, DeltaSeconds, bFusionShown, 0.0f, bFlying);
+		if (bFlying && bFusionShown && T >= FusionPuffAt)
+		{
+			FusionPuffAt = T + 0.045f;
+			ChaosImpactFusion::PlayTrailPuff(this, BallMesh->GetComponentLocation(), GetBallVelocity(), BallType, FusedType,
+				BallType == EChaosImpactBallType::Snow ? FMath::Max(1.0f, SnowScale) : 1.0f);
+		}
 	}
 	// A nova is far too big for a ribbon trail.
 	if (bFlying && !FlightTrailEffect && BallType != EChaosImpactBallType::Nova && BallType != EChaosImpactBallType::Drive)
@@ -3137,12 +3610,12 @@ void AChaosImpactBall::MulticastBeamStrike_Implementation(FVector_NetQuantize Lo
 }
 
 bool AChaosImpactBall::BeamTouches(const FVector& From, const FVector& To, const FVector& Center, const float Radius,
-	const float HalfHeight, FVector& OutPoint)
+	const float HalfHeight, FVector& OutPoint, const float Width)
 {
-	// The beam is a thick shaft of light: close enough across, and near enough in height (it stays level).
+	// The beam is a thick shaft of light: close enough across, and near enough in height (it stays level). Width: 極太光線.
 	OutPoint = FMath::ClosestPointOnSegment(Center, From, To);
-	return FVector::Dist2D(OutPoint, Center) <= Radius + ChaosImpactBallTypes::BeamHitRadius
-		&& FMath::Abs(OutPoint.Z - Center.Z) <= FMath::Max(HalfHeight, ChaosImpactBallTypes::BeamHitHeight);
+	return FVector::Dist2D(OutPoint, Center) <= Radius + ChaosImpactBallTypes::BeamHitRadius * Width
+		&& FMath::Abs(OutPoint.Z - Center.Z) <= FMath::Max(HalfHeight, ChaosImpactBallTypes::BeamHitHeight * Width);
 }
 
 void AChaosImpactBall::UpdateBeamHits()
@@ -3169,11 +3642,17 @@ void AChaosImpactBall::UpdateBeamHits()
 		const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
 		FVector Struck;
 		if (BeamTouches(From, To, Capsule->GetComponentLocation(), Capsule->GetScaledCapsuleRadius(),
-			Capsule->GetScaledCapsuleHalfHeight(), Struck))
+			Capsule->GetScaledCapsuleHalfHeight(), Struck, GetBeamWidthScale()))
 		{
 			// Once each: someone who dashed through it (invulnerable) is not caught by it later either.
 			BeamStruck.Add(Character);
 			ResolveDamagingHit(Character, Struck, (Character->GetActorLocation() - Struck).GetSafeNormal2D());
+			if (IsFused())
+			{
+				// 合体: the rider on everyone it pierces (灼熱光線 burns them, 凍結光線 freezes them, 目くらまし光線…).
+				ChaosImpactFusion::OnStrike(World, BallType, FusedType, Character, GetBallVelocity(), ThrowingPawn.Get(),
+					GetDuelThrowDamage(), &FusionCarry);
+			}
 		}
 	}
 	for (TActorIterator<AChaosImpactCrashBall> It(World); It; ++It)
@@ -3259,9 +3738,12 @@ void AChaosImpactBall::UpdateBeamShaft(const float DeltaSeconds, const bool bFly
 	const float Shimmer = 0.85f + 0.15f * FMath::Sin(TypeFxTime * 37.0f);
 	// A thin white-hot core inside a wider pink glow, both thinning as the shaft fades.
 	BeamCore->SetWorldLocationAndRotation(Middle, Facing);
-	BeamCore->SetWorldScale3D(FVector(Length / 100.0f, 0.22f * FMath::Lerp(0.3f, 1.0f, BeamShaftFade), 1.0f));
+	const float Wide = GetBeamWidthScale();
+	// (極太光線: drawn as wide as it hits, its white core widening with it.)
+	const float Drawn = Wide > 1.0f ? Wide * 1.45f : 1.0f;
+	BeamCore->SetWorldScale3D(FVector(Length / 100.0f, 0.22f * Drawn * 1.3f * FMath::Lerp(0.3f, 1.0f, BeamShaftFade), 1.0f));
 	BeamGlow->SetWorldLocationAndRotation(Middle, Facing);
-	BeamGlow->SetWorldScale3D(FVector(Length / 100.0f, 1.0f * Shimmer * FMath::Lerp(0.5f, 1.0f, BeamShaftFade), 1.0f));
+	BeamGlow->SetWorldScale3D(FVector(Length / 100.0f, 1.0f * Drawn * Shimmer * FMath::Lerp(0.5f, 1.0f, BeamShaftFade), 1.0f));
 	if (BeamCoreMaterial)
 	{
 		BeamCoreMaterial->SetScalarParameterValue(TEXT("Intensity"), 8.0f * BeamShaftFade);
@@ -3275,8 +3757,22 @@ void AChaosImpactBall::UpdateBeamShaft(const float DeltaSeconds, const bool bFly
 void AChaosImpactBall::BeginDrive(const double DeadlineServerTime)
 {
 	DriveDeadline = DeadlineServerTime;
+	if (FusedType == EChaosImpactBallType::Drive || FusedType == EChaosImpactBallType::Nova)
+	{
+		// ターボドライブ / 操縦ノヴァ: steered half as long again.
+		if (const AGameStateBase* Clock = GetWorld() ? GetWorld()->GetGameState() : nullptr)
+		{
+			const double Now = Clock->GetServerWorldTimeSeconds();
+			DriveDeadline = Now + FMath::Max(DeadlineServerTime - Now, 0.0) * 1.5;
+		}
+	}
 	DriveSteer = FVector::ZeroVector;
 	DriveSpeed = 0.0f;
+	if (FusedType == EChaosImpactBallType::Beam && CollisionSphere)
+	{
+		// ドライブ×ビーム: light passes through walls (its steering's end is where it bursts).
+		CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Ignore);
+	}
 	ForceNetUpdate();
 }
 
@@ -3423,10 +3919,18 @@ bool AChaosImpactBall::TickOwnDriveFlight(const float DeltaSeconds)
 	FVector To = From + DriveHeading * DriveSpeed * DeltaSeconds;
 	FHitResult Wall;
 	FCollisionQueryParams Query(SCENE_QUERY_STAT(OwnDriveFlight), false, this);
-	if (GetWorld()->SweepSingleByObjectType(Wall, From, To, FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
-		FCollisionShape::MakeSphere(GetHitRadius()), Query))
+	if (FusedType != EChaosImpactBallType::Beam && GetWorld()->SweepSingleByObjectType(Wall, From, To, FQuat::Identity,
+		FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(GetHitRadius()), Query))
 	{
 		To = Wall.Location;
+		if (FusedType == EChaosImpactBallType::Thunder && FMath::Abs(Wall.ImpactNormal.Z) < 0.65f)
+		{
+			// 操縦サンダー: off the wall, faster.
+			const FVector Normal = Wall.ImpactNormal.GetSafeNormal2D();
+			DriveHeading = (DriveHeading - 2.0f * FVector::DotProduct(DriveHeading, Normal) * Normal).GetSafeNormal2D();
+			DriveSpeed = FMath::Min(DriveSpeed * 1.12f, 2800.0f);
+			To += Normal * 4.0f;
+		}
 	}
 	SetActorLocation(To);
 	// Back on the host's state the moment this ends (re-matched from where it is now).

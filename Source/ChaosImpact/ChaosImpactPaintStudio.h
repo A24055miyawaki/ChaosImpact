@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ChaosImpactBodyPaint.h"
@@ -50,6 +50,16 @@ public:
 	float GetViewYaw() const { return ViewYaw; }
 	void HandleMouseMove(const FVector2D& Point);
 	void HandleWheel(const FVector2D& Point, float Delta, bool bCtrl);
+	/**
+	 * スマホ版: fingers (each by its own number). One on the model draws; one off it turns the view; two pinch and slide it.
+	 * Drawing and moving the view never happen together (see the cpp).
+	 */
+	void TouchStart(int32 Finger, const FVector2D& Point);
+	void TouchMove(int32 Finger, const FVector2D& Point);
+	void TouchEnd(int32 Finger, const FVector2D& Point);
+	bool IsDrawing() const { return bPenDown; }
+	/** Something drawn can be taken back (tests). */
+	bool CanUndoForTests() const { return Surface.CanUndo(); }
 
 	// For tests and the screen's own buttons.
 	void SetTool(ETool InTool);
@@ -188,6 +198,19 @@ private:
 	float ZoomIn = 0.0f;
 	float ZoomOut = 0.0f;
 	bool bPadA = false;
+
+	/** スマホ版: the fingers down, and what the first one is doing. */
+	enum class ETouchMode : uint8 { None, Draw, Tap, Turn, Controls, Pinch, Spent };
+	TMap<int32, FVector2D> Fingers;
+	ETouchMode TouchMode = ETouchMode::None;
+	int32 TouchFinger = INDEX_NONE;
+	FVector2D TouchFrom = FVector2D::ZeroVector;
+	double TouchStartedAt = 0.0;
+	float PinchDistance = 1.0f;
+	FVector2D PinchMiddle = FVector2D::ZeroVector;
+	float PinchZoom = 1.0f;
+	FVector2D PinchPan = FVector2D::ZeroVector;
+	int32 PaintPhone(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 
 	bool bLeaveMenu = false;
 	int32 LeaveChoice = 0;

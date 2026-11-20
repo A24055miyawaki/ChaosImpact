@@ -1,5 +1,11 @@
 #include "ChaosImpactDuelStage.h"
+#include "ChaosImpactDuelStages.h"
 #include "ChaosImpactGameState.h"
+#include "ChaosImpactMatchTypes.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkyLight.h"
 
 #include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
@@ -33,6 +39,22 @@ namespace
 }
 
 AChaosImpactDuelStage::AChaosImpactDuelStage()
+	: AChaosImpactDuelStage(EBuild::ChaosArena)
+{
+}
+
+UClass* AChaosImpactDuelStage::GetDuelStageClass(const int32 Index)
+{
+	switch (ChaosImpactMatch::SanitizeDuelStage(Index))
+	{
+	case 1: return AChaosImpactDuelTempleStage::StaticClass();
+	case 2: return AChaosImpactDuelCourtStage::StaticClass();
+	case 3: return AChaosImpactDuelRooftopStage::StaticClass();
+	default: return AChaosImpactDuelStage::StaticClass();
+	}
+}
+
+AChaosImpactDuelStage::AChaosImpactDuelStage(const EBuild Build)
 {
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.TickInterval = 0.1f;
@@ -64,13 +86,28 @@ AChaosImpactDuelStage::AChaosImpactDuelStage()
 	FloorMaterial = MetalFloor.Succeeded() ? MetalFloor.Object : Flat.Object;
 	WallMaterial = Panel.Succeeded() ? Panel.Object : Flat.Object;
 	PaintMaterial = Gloss.Succeeded() ? Gloss.Object : Flat.Object;
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Plane(TEXT("/Engine/BasicShapes/Plane.Plane"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cone(TEXT("/Engine/BasicShapes/Cone.Cone"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Sky(TEXT("/Game/ChaosImpact/Versus/Duel/M_CI_DuelSky.M_CI_DuelSky"));
+	SphereMesh = Sphere.Object;
+	PlaneMesh = Plane.Object;
+	ConeMesh = Cone.Object;
+	SkyMaterial = Sky.Succeeded() ? Sky.Object : nullptr;
 
 	// Starts first (red, then blue), then spares on each half.
 	SpawnPointOffsets = {FVector(-1500.0f, 0.0f, 0.0f), FVector(1500.0f, 0.0f, 0.0f),
 		FVector(-1500.0f, 850.0f, 0.0f), FVector(1500.0f, -850.0f, 0.0f), FVector(-1500.0f, -850.0f, 0.0f), FVector(1500.0f, 850.0f, 0.0f)};
 	// One pad just ahead of each start, two on the centre line.
 	BallPointOffsets = {FVector(-1240.0f, 0.0f, 0.0f), FVector(1240.0f, 0.0f, 0.0f), FVector(0.0f, 640.0f, 0.0f), FVector(0.0f, -640.0f, 0.0f)};
+	if (Build == EBuild::ChaosArena)
+	{
+		BuildChaosArena();
+	}
+}
 
+void AChaosImpactDuelStage::BuildChaosArena()
+{
 	constexpr float Half = DuelHalfExtent;
 	AddBlock(TEXT("Floor"), Floor, FVector(0.0f, 0.0f, -12.0f), FVector(Half * 2.0f + 80.0f, Half * 2.0f + 80.0f, 24.0f));
 	// The two halves, faintly in their side's colour, and the line between them.
@@ -145,6 +182,167 @@ AChaosImpactDuelStage::AChaosImpactDuelStage()
 	}
 }
 
+UStaticMeshComponent* AChaosImpactDuelStage::AddPiece(USceneComponent* Parent, const FString& Name, UStaticMesh* Mesh,
+	UMaterialInterface* Material, const FVector& Location, const FVector& Scale, const FRotator& Rotation, const bool bCollision,
+	const bool bShadow)
+{
+	UStaticMeshComponent* Piece = CreateDefaultSubobject<UStaticMeshComponent>(FName(*Name));
+	Piece->SetupAttachment(Parent ? Parent : SceneRoot.Get());
+	Piece->SetStaticMesh(Mesh);
+	if (Material)
+	{
+		Piece->SetMaterial(0, Material);
+	}
+	Piece->SetRelativeLocation(Location);
+	Piece->SetRelativeRotation(Rotation);
+	Piece->SetRelativeScale3D(Scale);
+	Piece->SetCollisionEnabled(bCollision ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
+	if (bCollision)
+	{
+		Piece->SetCollisionObjectType(ECC_WorldStatic);
+		Piece->SetCollisionResponseToAllChannels(ECR_Block);
+		Piece->CanCharacterStepUpOn = ECB_Yes;
+	}
+	Piece->SetGenerateOverlapEvents(false);
+	Piece->SetCanEverAffectNavigation(false);
+	Piece->SetCastShadow(bShadow);
+	Piece->bEditableWhenInherited = true;
+	return Piece;
+}
+
+UStaticMeshComponent* AChaosImpactDuelStage::AddCube(const FString& Name, UMaterialInterface* Material, const FVector& Location,
+	const FVector& Size, const float Yaw, const bool bCollision, const bool bChamfer)
+{
+	// Both meshes are a metre each way about their middle.
+	return AddPiece(nullptr, Name, bChamfer ? ChamferMesh.Get() : BoxMesh.Get(), Material, Location, Size / 100.0f,
+		FRotator(0.0f, Yaw, 0.0f), bCollision);
+}
+
+UStaticMeshComponent* AChaosImpactDuelStage::AddDisc(const FString& Name, UMaterialInterface* Material, const FVector& Base,
+	const float Diameter, const float Height, const bool bCollision)
+{
+	// SM_Cylinder is 100 across with its base at 0.
+	return AddPiece(nullptr, Name, CylinderMesh.Get(), Material, Base, FVector(Diameter / 100.0f, Diameter / 100.0f, Height / 100.0f),
+		FRotator::ZeroRotator, bCollision);
+}
+
+UStaticMeshComponent* AChaosImpactDuelStage::AddBand(const FString& Name, UMaterialInterface* Material, const FVector& Location,
+	const float Radius, const float Thickness)
+{
+	// SM_CircularBand is a band of radius 70 and about 13 high, centred on its pivot.
+	return AddPiece(nullptr, Name, RingMesh.Get(), Material, Location, FVector(Radius / 70.0f, Radius / 70.0f, Thickness / 13.0f),
+		FRotator::ZeroRotator, false, false);
+}
+
+void AChaosImpactDuelStage::AddCharacterFence(const FString& Name, const FVector& From, const FVector& To, const float Height)
+{
+	const FVector Span = To - From;
+	UStaticMeshComponent* Fence = AddPiece(nullptr, Name, BoxMesh.Get(), nullptr, (From + To) * 0.5f + FVector(0.0f, 0.0f, Height * 0.5f),
+		FVector(Span.Size2D() / 100.0f, 0.4f, Height / 100.0f), FRotator(0.0f, Span.Rotation().Yaw, 0.0f), false, false);
+	// Stops characters only (as the temple's edge): balls fly on over the gap, and floor traces never meet it. (The CPUs
+	// count it as a wall.)
+	Fence->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Fence->SetCollisionObjectType(ECC_Destructible);
+	Fence->SetCollisionResponseToAllChannels(ECR_Ignore);
+	Fence->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+	Fence->SetVisibility(false);
+	Fence->SetHiddenInGame(true);
+}
+
+void AChaosImpactDuelStage::AddInvisibleWall(const FString& Name, const FVector& From, const FVector& To, const float Height)
+{
+	const FVector Span = To - From;
+	UStaticMeshComponent* Wall = AddPiece(nullptr, Name, BoxMesh.Get(), nullptr, (From + To) * 0.5f + FVector(0.0f, 0.0f, Height * 0.5f),
+		FVector(Span.Size2D() / 100.0f, 0.4f, Height / 100.0f), FRotator(0.0f, Span.Rotation().Yaw, 0.0f), true, false);
+	Wall->SetVisibility(false);
+	Wall->SetHiddenInGame(true);
+}
+
+void AChaosImpactDuelStage::Tint(UStaticMeshComponent* Piece, const FLinearColor& Colour, const float Glow)
+{
+	if (!Piece)
+	{
+		return;
+	}
+	PieceColours.Add(Piece->GetFName(), Colour);
+	if (Glow >= 0.0f)
+	{
+		PieceGlows.Add(Piece->GetFName(), Glow);
+	}
+}
+
+void AChaosImpactDuelStage::AddSkyDome(const float Radius)
+{
+	if (!SkyMaterial || !SphereMesh)
+	{
+		return;
+	}
+	// (Seen from inside: the material is two-sided and unlit. Its middle a little below the floor, so the horizon sits low.)
+	SkyDome = AddPiece(nullptr, TEXT("SkyDome"), SphereMesh.Get(), SkyMaterial.Get(), FVector(0.0f, 0.0f, -300.0f),
+		FVector(Radius / 50.0f), FRotator::ZeroRotator, false, false);
+	SkyDome->bVisibleInReflectionCaptures = false;
+	// (Not in the map's picture taken from above it.)
+	SkyDome->bHiddenInSceneCapture = true;
+	SkyDome->bAffectDistanceFieldLighting = false;
+	SkyDome->SetCastShadow(false);
+}
+
+void AChaosImpactDuelStage::ApplyPieceLooks()
+{
+	TArray<UStaticMeshComponent*> Pieces;
+	GetComponents(Pieces);
+	for (UStaticMeshComponent* Piece : Pieces)
+	{
+		const FLinearColor* Colour = PieceColours.Find(Piece->GetFName());
+		const float* Glow = PieceGlows.Find(Piece->GetFName());
+		if (!Colour && !Glow)
+		{
+			continue;
+		}
+		UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Piece->GetMaterial(0));
+		if (!Material)
+		{
+			Material = Piece->CreateDynamicMaterialInstance(0);
+		}
+		if (!Material)
+		{
+			continue;
+		}
+		if (Colour)
+		{
+			Material->SetVectorParameterValue(TEXT("Color"), *Colour);
+			Material->SetVectorParameterValue(TEXT("Base Color"), *Colour);
+			Material->SetVectorParameterValue(TEXT("BaseColor"), *Colour);
+		}
+		if (Glow)
+		{
+			Material->SetScalarParameterValue(TEXT("Intensity"), *Glow);
+		}
+	}
+	if (SkyDome)
+	{
+		const FDuelSky Sky = GetSky();
+		UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(SkyDome->GetMaterial(0));
+		if (!Material)
+		{
+			Material = SkyDome->CreateDynamicMaterialInstance(0);
+		}
+		if (Material)
+		{
+			Material->SetVectorParameterValue(TEXT("Zenith"), Sky.Zenith);
+			Material->SetVectorParameterValue(TEXT("Horizon"), Sky.Horizon);
+			Material->SetVectorParameterValue(TEXT("Ground"), Sky.Ground);
+			const FVector Sun = Sky.SunDir.GetSafeNormal();
+			Material->SetVectorParameterValue(TEXT("SunDir"), FLinearColor(Sun.X, Sun.Y, Sun.Z, 0.0f));
+			Material->SetVectorParameterValue(TEXT("SunColor"), Sky.SunColor);
+			Material->SetScalarParameterValue(TEXT("SunSize"), Sky.SunSize);
+			Material->SetScalarParameterValue(TEXT("SunGlow"), Sky.SunGlow);
+			Material->SetScalarParameterValue(TEXT("Brightness"), Sky.Brightness);
+			Material->SetScalarParameterValue(TEXT("Haze"), Sky.Haze);
+		}
+	}
+}
+
 UStaticMeshComponent* AChaosImpactDuelStage::AddBlock(const FString& Name, const EPaint Paint, const FVector& Location, const FVector& Size,
 	const float Yaw, const bool bCollision, UStaticMesh* Mesh)
 {
@@ -201,6 +399,7 @@ void AChaosImpactDuelStage::OnConstruction(const FTransform& Transform)
 	Super::OnConstruction(Transform);
 	MakeWallsSeeThrough({TEXT("Wall")}, GlowMaterial);
 	ApplyStageColors();
+	ApplyPieceLooks();
 }
 
 void AChaosImpactDuelStage::BeginPlay()
@@ -208,6 +407,7 @@ void AChaosImpactDuelStage::BeginPlay()
 	Super::BeginPlay();
 	MakeWallsSeeThrough({TEXT("Wall")}, GlowMaterial);
 	ApplyStageColors();
+	ApplyPieceLooks();
 	if (GetNetMode() == NM_DedicatedServer) { SetActorTickEnabled(false); }
 }
 
@@ -218,17 +418,31 @@ void AChaosImpactDuelStage::Tick(const float DeltaSeconds)
 	bool bDuelLight = Match && Match->IsDuel();
 	if (Match && Match->IsTournament())
 	{
-		// The world has one sun for all its arenas: the first arena looks after it, for as long as someone on this machine
-		// plays or watches a match in any of them.
-		bool bFirst = false;
-		for (TActorIterator<AChaosImpactDuelStage> It(GetWorld()); It; ++It) { bFirst = *It == this; break; }
+		// The world has one sun for all its arenas: the arena this machine's (first) player is playing in looks after it,
+		// in its own stage's light, for as long as they are in it.
 		bool bInArena = false;
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); bFirst && It; ++It)
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); !bInArena && It; ++It)
 		{
 			const APlayerController* Viewer = It->Get();
-			bInArena |= Viewer && Viewer->IsLocalController() && Match->FindDuelFor(Viewer->PlayerState) != nullptr;
+			const FChaosImpactDuelState* Duel = Viewer && Viewer->IsLocalController() ? Match->FindDuelFor(Viewer->PlayerState) : nullptr;
+			if (Duel)
+			{
+				bInArena = Match->FindDuelAt(GetActorLocation()) == Duel;
+				break;
+			}
 		}
-		bDuelLight = bFirst && bInArena;
+		bDuelLight = bInArena;
+	}
+	if (bDuelLight && !bArenaLightingActive)
+	{
+		// (Another arena's light goes first, so this one starts from the level's own.)
+		for (TActorIterator<AChaosImpactDuelStage> It(GetWorld()); It; ++It)
+		{
+			if (*It != this && It->bArenaLightingActive)
+			{
+				It->UpdateArenaLighting(false);
+			}
+		}
 	}
 	UpdateArenaLighting(bDuelLight);
 }
@@ -258,6 +472,42 @@ void AChaosImpactDuelStage::UpdateArenaLighting(const bool bActive)
 			// Almost overhead: a 180-degree camera reversal barely changes the short ground shadow.
 			Light->SetWorldRotation(FRotator(-88.f, 0.f, 0.f));
 			Light->SetLightSourceAngle(5.f);
+			// The stage's own light (its colour and strength).
+			const FDuelLook Look = GetArenaLook();
+			SavedSunLooks.Add({Light, Light->GetLightColor(), Light->Intensity});
+			Light->SetLightColor(Look.SunColor);
+			Light->SetIntensity(Light->Intensity * Look.SunScale);
+		}
+		const FDuelLook Look = GetArenaLook();
+		for (TActorIterator<ASkyLight> It(GetWorld()); It; ++It)
+		{
+			if (USkyLightComponent* Sky = It->GetLightComponent())
+			{
+				SavedSkyLights.Add({Sky, Sky->Intensity});
+				Sky->SetIntensity(Sky->Intensity * Look.SkyLightScale);
+			}
+		}
+		if (Look.FogStart >= 0.0f)
+		{
+			for (TActorIterator<AExponentialHeightFog> It(GetWorld()); It; ++It)
+			{
+				if (UExponentialHeightFogComponent* Fog = It->GetComponent())
+				{
+					SavedFogStarts.Add({Fog, Fog->StartDistance});
+					Fog->SetStartDistance(Look.FogStart);
+				}
+			}
+		}
+		if (Look.FogColor.A > 0.0f)
+		{
+			for (TActorIterator<AExponentialHeightFog> It(GetWorld()); It; ++It)
+			{
+				if (UExponentialHeightFogComponent* Fog = It->GetComponent())
+				{
+					SavedFogs.Add({Fog, Fog->FogInscatteringLuminance});
+					Fog->SetFogInscatteringColor(FLinearColor(Look.FogColor.R, Look.FogColor.G, Look.FogColor.B));
+				}
+			}
 		}
 	}
 	else
@@ -272,6 +522,39 @@ void AChaosImpactDuelStage::UpdateArenaLighting(const bool bActive)
 			}
 		}
 		SavedSuns.Reset();
+		for (const FSunLook& Saved : SavedSunLooks)
+		{
+			if (UDirectionalLightComponent* Light = Saved.Light.Get())
+			{
+				Light->SetLightColor(Saved.Colour);
+				Light->SetIntensity(Saved.Intensity);
+			}
+		}
+		SavedSunLooks.Reset();
+		for (const auto& Saved : SavedSkyLights)
+		{
+			if (USkyLightComponent* Sky = Saved.Key.Get())
+			{
+				Sky->SetIntensity(Saved.Value);
+			}
+		}
+		SavedSkyLights.Reset();
+		for (const auto& Saved : SavedFogs)
+		{
+			if (UExponentialHeightFogComponent* Fog = Saved.Key.Get())
+			{
+				Fog->SetFogInscatteringColor(Saved.Value);
+			}
+		}
+		SavedFogs.Reset();
+		for (const auto& Saved : SavedFogStarts)
+		{
+			if (UExponentialHeightFogComponent* Fog = Saved.Key.Get())
+			{
+				Fog->SetStartDistance(Saved.Value);
+			}
+		}
+		SavedFogStarts.Reset();
 	}
 }
 

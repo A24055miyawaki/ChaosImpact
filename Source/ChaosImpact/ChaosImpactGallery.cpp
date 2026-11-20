@@ -1,5 +1,6 @@
-#include "ChaosImpactGallery.h"
+﻿#include "ChaosImpactGallery.h"
 
+#include "ChaosImpactMenuWidget.h"
 #include "ChaosImpactBodyPaint.h"
 #include "ChaosImpactCharacterPreview.h"
 #include "ChaosImpactCharacterRoster.h"
@@ -32,6 +33,47 @@ namespace
 	constexpr float GaRowGap = 22.0f;
 	constexpr float GaBarTop = 842.0f;
 	constexpr int32 GaPostRows = 9;
+
+	/**
+	 * スマホ版 (2026-11-18). Sideways: the PC's page with a 戻る button and no keys named; a page turned by a swipe too.
+	 * Upright: the cards two across and four down (a little shorter), the tabs, the filter and 投稿する over them, 戻る and
+	 * the page arrows at the foot; a work's page and the post page laid out down the screen.
+	 */
+	bool GaPhone()
+	{
+		return UChaosImpactMenuWidget::IsPhoneBuild();
+	}
+	bool GaUpright()
+	{
+		return UChaosImpactMenuWidget::IsUprightCanvas();
+	}
+	/** A card's own heights (upright cards are shorter: everything on them a little closer). */
+	float GaCardY(const float Y)
+	{
+		return GaUpright() ? Y * 0.9f : Y;
+	}
+	int32 GaPostRowsShown()
+	{
+		return GaUpright() ? 6 : GaPostRows;
+	}
+	/** The work shown large (its own page, or as it will be posted). */
+	FBox2D GaDetailShown()
+	{
+		return GaUpright() ? FBox2D(FVector2D(220.0, 100.0), FVector2D(680.0, 713.0)) : FBox2D(FVector2D(110.0, 96.0), FVector2D(650.0, 816.0));
+	}
+	FBox2D GaPostShown()
+	{
+		return GaUpright() ? FBox2D(FVector2D(60.0, 600.0), FVector2D(420.0, 1080.0)) : FBox2D(FVector2D(700.0, 120.0), FVector2D(1110.0, 667.0));
+	}
+	/** Where a work's words start, and how wide they run. */
+	float GaInfoX()
+	{
+		return GaUpright() ? 60.0f : 720.0f;
+	}
+	float GaInfoTop()
+	{
+		return GaUpright() ? 730.0f : 104.0f;
+	}
 	const FLinearColor GaBack(0.008f, 0.012f, 0.03f, 1.0f);
 	const FLinearColor GaCard(0.03f, 0.07f, 0.18f, 1.0f);
 	const FLinearColor GaCardOn(0.06f, 0.2f, 0.5f, 1.0f);
@@ -747,7 +789,7 @@ void UChaosImpactGallery::ChoosePost(const int32 Choice)
 		return;
 	}
 	PostChoice = Choice;
-	PostScroll = FMath::Clamp(PostScroll, Choice - GaPostRows + 1, Choice);
+	PostScroll = FMath::Clamp(PostScroll, Choice - GaPostRowsShown() + 1, Choice);
 	const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
 	const FPostChoice& Chosen = PostChoices[Choice];
 	PostTitle = Colours && Colours->GetPresets(Chosen.Character).IsValidIndex(Chosen.Slot) ? Colours->GetPresets(Chosen.Character)[Chosen.Slot].Name
@@ -1291,6 +1333,7 @@ int32 UChaosImpactGallery::HitTest(const FVector2D& Point) const
 		if (PostButtonRect().IsInside(Point)) { return 104; }
 		if (Page > 0 && PageArrowRect(-1).IsInside(Point)) { return 110; }
 		if (Page + 1 < Pages && PageArrowRect(1).IsInside(Point)) { return 111; }
+		if (GaPhone() && PhoneBackRect().IsInside(Point)) { return 120; }
 		return INDEX_NONE;
 	}
 	if (View == EView::Detail)
@@ -1301,7 +1344,7 @@ int32 UChaosImpactGallery::HitTest(const FVector2D& Point) const
 		}
 		return INDEX_NONE;
 	}
-	for (int32 Row = 0; Row < GaPostRows; ++Row)
+	for (int32 Row = 0; Row < GaPostRowsShown(); ++Row)
 	{
 		if (PostChoices.IsValidIndex(PostScroll + Row) && PostRowRect(Row).IsInside(Point)) { return 300 + PostScroll + Row; }
 	}
@@ -1332,6 +1375,11 @@ void UChaosImpactGallery::HandleMouseMove(const FVector2D& Point, const bool bLe
 		return;
 	}
 	bDragging = false;
+	if (GaPhone())
+	{
+		// (By touch nothing hovers: what is pressed is what is chosen.)
+		return;
+	}
 	const int32 Hit = HitTest(Point);
 	if (Hit != INDEX_NONE && Hit != Focus && !(View == EView::Post && bPosting))
 	{
@@ -1367,13 +1415,25 @@ void UChaosImpactGallery::HandleMouseDown(const FVector2D& Point, const FKey& Bu
 		return;
 	}
 	LastMouse = Point;
-	if (View != EView::List && FBox2D(FVector2D(90.0, 96.0), FVector2D(680.0, 830.0)).IsInside(Point))
+	if (View != EView::List && GaGrow(View == EView::Detail ? GaDetailShown() : GaPostShown(), 20.0f).IsInside(Point))
 	{
 		// The work turned by dragging.
 		bDragging = true;
 		return;
 	}
 	const int32 Hit = HitTest(Point);
+	if (Hit == 120)
+	{
+		Back();
+		return;
+	}
+	if (GaPhone() && View == EView::List && Button == EKeys::LeftMouseButton)
+	{
+		// スマホ版: decided when the finger lifts (a swipe across turns the page instead).
+		bSwipePending = true;
+		SwipeFrom = Point;
+		return;
+	}
 	if (Hit != INDEX_NONE)
 	{
 		Focus = Hit;
@@ -1384,6 +1444,27 @@ void UChaosImpactGallery::HandleMouseDown(const FVector2D& Point, const FKey& Bu
 void UChaosImpactGallery::HandleMouseUp(const FVector2D& Point, const FKey& Button)
 {
 	bDragging = false;
+	if (!bSwipePending || !bOpen)
+	{
+		return;
+	}
+	bSwipePending = false;
+	const FVector2D Moved = Point - SwipeFrom;
+	if (FMath::Abs(Moved.X) > 90.0 && FMath::Abs(Moved.X) > FMath::Abs(Moved.Y) * 1.3)
+	{
+		// Swiped: to the next page (leftwards) or the one before.
+		TurnPage(Moved.X < 0.0 ? 1 : -1);
+		return;
+	}
+	if (Moved.Size() < 30.0)
+	{
+		const int32 Hit = HitTest(SwipeFrom);
+		if (Hit != INDEX_NONE)
+		{
+			Focus = Hit;
+			Activate();
+		}
+	}
 }
 
 void UChaosImpactGallery::HandleWheel(const FVector2D& Point, const float Delta)
@@ -1398,59 +1479,114 @@ void UChaosImpactGallery::HandleWheel(const FVector2D& Point, const float Delta)
 	}
 	else if (View == EView::Post && !PostChoices.IsEmpty())
 	{
-		PostScroll = FMath::Clamp(PostScroll + (Delta > 0.0f ? -1 : 1), 0, FMath::Max(PostChoices.Num() - GaPostRows, 0));
+		PostScroll = FMath::Clamp(PostScroll + (Delta > 0.0f ? -1 : 1), 0, FMath::Max(PostChoices.Num() - GaPostRowsShown(), 0));
 	}
 }
 
 // ---- Layout -----------------------------------------------------------------------------------------------------------
 
+FBox2D UChaosImpactGallery::PhoneBackRect()
+{
+	return GaUpright() ? FBox2D(FVector2D(60.0, 1446.0), FVector2D(440.0, 1536.0)) : FBox2D(FVector2D(GaGridLeft, 828.0), FVector2D(GaGridLeft + 300.0, 892.0));
+}
+
 FBox2D UChaosImpactGallery::CardRect(const int32 Index)
 {
+	if (GaUpright())
+	{
+		// Two across, four down.
+		const FVector2D At(46.0f + (Index % 2) * 412.0f, 246.0f + (Index / 2) * 284.0f);
+		return FBox2D(At, At + FVector2D(396.0f, 270.0f));
+	}
 	const FVector2D At(GaGridLeft + (Index % 4) * (GaCardWidth + GaCardGap), GaGridTop + (Index / 4) * (GaCardHeight + GaRowGap));
 	return FBox2D(At, At + FVector2D(GaCardWidth, GaCardHeight));
 }
 
 FBox2D UChaosImpactGallery::TabRect(const int32 Index)
 {
+	if (GaUpright())
+	{
+		const FVector2D At(60.0f + Index * 172.0f, 104.0f);
+		return FBox2D(At, At + FVector2D(Index == 2 ? 190.0f : 160.0f, 56.0f));
+	}
 	const FVector2D At(GaGridLeft + Index * 168.0f, 112.0f);
 	return FBox2D(At, At + FVector2D(Index == 2 ? 190.0f : 156.0f, 48.0f));
 }
 
 FBox2D UChaosImpactGallery::FilterRect()
 {
+	if (GaUpright())
+	{
+		return FBox2D(FVector2D(60.0f, 172.0f), FVector2D(560.0f, 230.0f));
+	}
 	return FBox2D(FVector2D(GaGridLeft + 560.0f, 112.0f), FVector2D(GaGridLeft + 900.0f, 160.0f));
 }
 
 FBox2D UChaosImpactGallery::PostButtonRect()
 {
+	if (GaUpright())
+	{
+		return FBox2D(FVector2D(600.0f, 100.0f), FVector2D(840.0f, 160.0f));
+	}
 	return FBox2D(FVector2D(1600.0f - GaGridLeft - 290.0f, 104.0f), FVector2D(1600.0f - GaGridLeft, 164.0f));
 }
 
 FBox2D UChaosImpactGallery::PageArrowRect(const int32 Direction)
 {
+	if (GaUpright())
+	{
+		// At the foot, beside 戻る.
+		const float X = Direction < 0 ? 460.0f : 660.0f;
+		return FBox2D(FVector2D(X, 1446.0f), FVector2D(X + 180.0f, 1536.0f));
+	}
+	if (GaPhone())
+	{
+		const float X = Direction < 0 ? GaGridLeft - 66.0f : 1600.0f - GaGridLeft + 6.0f;
+		return FBox2D(FVector2D(X, 400.0f), FVector2D(X + 60.0f, 600.0f));
+	}
 	const float X = Direction < 0 ? GaGridLeft - 58.0f : 1600.0f - GaGridLeft + 10.0f;
 	return FBox2D(FVector2D(X, 440.0f), FVector2D(X + 48.0f, 560.0f));
 }
 
-FBox2D UChaosImpactGallery::DetailButtonRect(const int32 Index)
+FBox2D UChaosImpactGallery::DetailButtonRect(const int32 Index) const
 {
+	if (GaUpright())
+	{
+		const float W = (780.0f - (DetailButtons - 1) * 16.0f) / FMath::Max(DetailButtons, 1);
+		const FVector2D At(60.0f + Index * (W + 16.0f), 1446.0f);
+		return FBox2D(At, At + FVector2D(W, 90.0f));
+	}
 	const FVector2D At(720.0f + Index * 262.0f, 726.0f);
 	return FBox2D(At, At + FVector2D(246.0f, 74.0f));
 }
 
 FBox2D UChaosImpactGallery::PostRowRect(const int32 Row)
 {
+	if (GaUpright())
+	{
+		const FVector2D At(60.0f, 150.0f + Row * 70.0f);
+		return FBox2D(At, At + FVector2D(780.0f, 62.0f));
+	}
 	const FVector2D At(GaGridLeft, 168.0f + Row * 70.0f);
 	return FBox2D(At, At + FVector2D(560.0f, 62.0f));
 }
 
 FBox2D UChaosImpactGallery::PostFieldRect()
 {
+	if (GaUpright())
+	{
+		return FBox2D(FVector2D(440.0f, 630.0f), FVector2D(840.0f, 700.0f));
+	}
 	return FBox2D(FVector2D(1150.0f, 214.0f), FVector2D(1500.0f, 282.0f));
 }
 
 FBox2D UChaosImpactGallery::PostActionRect(const int32 Index)
 {
+	if (GaUpright())
+	{
+		// 投稿する at the foot's right, やめる where 戻る is.
+		return Index == 0 ? FBox2D(FVector2D(460.0f, 1446.0f), FVector2D(840.0f, 1536.0f)) : FBox2D(FVector2D(60.0f, 1446.0f), FVector2D(440.0f, 1536.0f));
+	}
 	return Index == 0 ? FBox2D(FVector2D(1150.0f, 640.0f), FVector2D(1500.0f, 720.0f)) : FBox2D(FVector2D(1150.0f, 736.0f), FVector2D(1500.0f, 796.0f));
 }
 
@@ -1471,7 +1607,9 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 	const FPainter Top{Design, Elements, Layer + 3};
 	// Hints in the names of what is being played with right now.
 	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(Controller.Get());
-	Back.Box(-1400.0f, 0.0f, 4400.0f, 900.0f, GaBack);
+	Back.Box(-1400.0f, -400.0f, 4400.0f, 2600.0f, GaBack);
+	const bool bPhone = GaPhone();
+	const bool bUpright = GaUpright();
 	// A soft wash of colour behind, slowly drifting (the gallery's own light).
 	for (int32 Blob = 0; Blob < 3; ++Blob)
 	{
@@ -1480,10 +1618,15 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 		Back.Disc(C, 300.0f, WithAlpha(Wash, 0.035f));
 	}
 	const FString Heading = View == EView::Post ? TEXT("投稿する") : TEXT("みんなのカラー");
-	HudText3D(P, TEXT("GALLERY"), GaGridLeft, 18.0f, 54.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"));
-	P.Text(Heading, GaGridLeft + HudMeasure(TEXT("GALLERY"), 54.0f, TEXT("BlackItalic")) + 26.0f, 38.0f, 30.0f, GaPink, ETextAlign::Left, TEXT("Black"));
-	P.Text(View == EView::Post ? TEXT("自分のプリセットを、みんなに見せよう") : TEXT("みんなが作ったカスタムカラー。気に入ったら自分のプリセットに保存しよう"),
-		1600.0f - GaGridLeft, 46.0f, 16.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	const float HeadLeft = bUpright ? 60.0f : GaGridLeft;
+	const float HeadTop = bUpright ? 26.0f : 18.0f;
+	HudText3D(P, TEXT("GALLERY"), HeadLeft, HeadTop, 54.0f, Paper, ETextAlign::Left, TEXT("BlackItalic"));
+	P.Text(Heading, HeadLeft + HudMeasure(TEXT("GALLERY"), 54.0f, TEXT("BlackItalic")) + 26.0f, HeadTop + 20.0f, 30.0f, GaPink, ETextAlign::Left, TEXT("Black"));
+	if (!bUpright)
+	{
+		const FString About = View == EView::Post ? TEXT("自分のプリセットを、みんなに見せよう") : TEXT("みんなが作ったカスタムカラー。気に入ったら自分のプリセットに保存しよう");
+		GaText(P, About, 1600.0f - GaGridLeft, 46.0f, bPhone ? 18.0f : 16.0f, 620.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+	}
 
 	if (View == EView::List)
 	{
@@ -1497,10 +1640,14 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 				GaGlow(Back, R, 10.0f, WithAlpha(Gold, Pulse), 3.0f);
 			}
 			GaRound(Back, R, 10.0f, bOn ? GaPink : GaCard);
-			GaText(P, GaTabNames[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 11.0f, 20.0f,
+			const float TabSize = bPhone ? 24.0f : 20.0f;
+			GaText(P, GaTabNames[Index], static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - TabSize * 0.72f, TabSize,
 				static_cast<float>(R.GetSize().X) - 16.0f, bOn ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
 		}
-		P.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E}")), TabRect(0).Min.X, TabRect(0).Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
+		if (!bPhone)
+		{
+			P.Text(ChaosImpactHints::Text(Device, TEXT("{LB|Q} / {RB|E}")), TabRect(0).Min.X, TabRect(0).Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
+		}
 		{
 			const FBox2D R = FilterRect();
 			if (Focus == 103)
@@ -1509,11 +1656,16 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			}
 			GaRound(Back, R, 10.0f, CharacterFilter >= 0 ? GaCardOn : GaCard);
 			const FString Label = FString::Printf(TEXT("キャラ：%s"), CharacterFilter >= 0 ? *CharacterName(CharacterFilter) : TEXT("すべて"));
-			GaText(P, Label, static_cast<float>(R.Min.X) + 40.0f, static_cast<float>(R.Min.Y) + 12.0f, 18.0f, static_cast<float>(R.GetSize().X) - 80.0f,
+			const float FilterSize = bPhone ? 22.0f : 18.0f;
+			const float MidY = static_cast<float>(R.GetCenter().Y);
+			GaText(P, Label, static_cast<float>(R.Min.X) + 44.0f, MidY - FilterSize * 0.72f, FilterSize, static_cast<float>(R.GetSize().X) - 88.0f,
 				Paper, ETextAlign::Left, TEXT("Black"));
-			P.Text(TEXT("◀"), static_cast<float>(R.Min.X) + 14.0f, static_cast<float>(R.Min.Y) + 12.0f, 16.0f, WithAlpha(Paper, 0.7f), ETextAlign::Left, TEXT("Black"));
-			P.Text(TEXT("▶"), static_cast<float>(R.Max.X) - 14.0f, static_cast<float>(R.Min.Y) + 12.0f, 16.0f, WithAlpha(Paper, 0.7f), ETextAlign::Right, TEXT("Black"));
-			P.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{LT} / {RT}}{kb:[ ]}")), R.Min.X, R.Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
+			P.Text(TEXT("◀"), static_cast<float>(R.Min.X) + 14.0f, MidY - FilterSize * 0.72f, FilterSize, WithAlpha(Paper, 0.7f), ETextAlign::Left, TEXT("Black"));
+			P.Text(TEXT("▶"), static_cast<float>(R.Max.X) - 14.0f, MidY - FilterSize * 0.72f, FilterSize, WithAlpha(Paper, 0.7f), ETextAlign::Right, TEXT("Black"));
+			if (!bPhone)
+			{
+				P.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{LT} / {RT}}{kb:[ ]}")), R.Min.X, R.Max.Y + 2.0f, 11.0f, WithAlpha(Muted, 0.8f), ETextAlign::Left, TEXT("Bold"));
+			}
 		}
 		{
 			const FBox2D R = PostButtonRect();
@@ -1526,8 +1678,11 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			GaPen(P, FVector2D(R.Min.X + 40.0f, R.GetCenter().Y), 30.0f, Ink, GaPink);
 			GaText(P, TEXT("投稿する"), static_cast<float>(R.Min.X) + 70.0f, static_cast<float>(R.Min.Y) + 13.0f, 26.0f, 150.0f, Ink, ETextAlign::Left,
 				TEXT("Black"));
-			P.Text(ChaosImpactHints::Text(Device, TEXT("{X|P}")), static_cast<float>(R.Max.X) - 14.0f, static_cast<float>(R.Min.Y) + 22.0f, 13.0f, WithAlpha(Ink, 0.7f), ETextAlign::Right,
-				TEXT("Bold"));
+			if (!bPhone)
+			{
+				P.Text(ChaosImpactHints::Text(Device, TEXT("{X|P}")), static_cast<float>(R.Max.X) - 14.0f, static_cast<float>(R.Min.Y) + 22.0f, 13.0f, WithAlpha(Ink, 0.7f), ETextAlign::Right,
+					TEXT("Bold"));
+			}
 		}
 
 		// The cards.
@@ -1565,23 +1720,23 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			const float TX = static_cast<float>(Card.Min.X) + 164.0f;
 			const float TW = static_cast<float>(Card.Max.X) - TX - 14.0f;
 			const float TY = static_cast<float>(Card.Min.Y);
-			GaText(P, Post.Title, TX, TY + 18.0f, 24.0f, TW, Paper, ETextAlign::Left, TEXT("Black"));
-			P.Box(TX, TY + 56.0f, 40.0f, 3.0f, GaPink);
-			GaText(P, Post.Poster, TX, TY + 70.0f, 17.0f, TW, WithAlpha(Paper, 0.9f), ETextAlign::Left, TEXT("Bold"));
-			P.Text(TEXT("投稿者"), TX, TY + 94.0f, 11.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-			GaText(P, FormatDate(Post.At), TX, TY + 118.0f, 14.0f, TW, WithAlpha(Paper, 0.75f));
-			P.Text(TEXT("投稿日"), TX, TY + 138.0f, 11.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			GaText(P, Post.Title, TX, TY + GaCardY(18.0f), 24.0f, TW, Paper, ETextAlign::Left, TEXT("Black"));
+			P.Box(TX, TY + GaCardY(56.0f), 40.0f, 3.0f, GaPink);
+			GaText(P, Post.Poster, TX, TY + GaCardY(70.0f), 17.0f, TW, WithAlpha(Paper, 0.9f), ETextAlign::Left, TEXT("Bold"));
+			P.Text(TEXT("投稿者"), TX, TY + GaCardY(94.0f), 11.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			GaText(P, FormatDate(Post.At), TX, TY + GaCardY(118.0f), 14.0f, TW, WithAlpha(Paper, 0.75f));
+			P.Text(TEXT("投稿日"), TX, TY + GaCardY(138.0f), 11.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 			// The character's name, the hearts and the paint.
-			const FBox2D Chip(FVector2D(TX, TY + 166.0f), FVector2D(TX + TW, TY + 194.0f));
+			const FBox2D Chip(FVector2D(TX, TY + GaCardY(166.0f)), FVector2D(TX + TW, TY + GaCardY(194.0f)));
 			GaRound(P, Chip, 8.0f, FLinearColor(0.02f, 0.04f, 0.1f, 1.0f));
-			GaText(Over, CharacterName(Post.Character), TX + 10.0f, TY + 171.0f, 14.0f, TW - 20.0f, Ice, ETextAlign::Left, TEXT("Bold"));
-			GaHeart(P, FVector2D(TX + 12.0f, TY + 226.0f), 20.0f, Post.bSaved ? GaPink : WithAlpha(GaPink, 0.55f));
-			P.Text(FString::FromInt(Post.Saves), TX + 30.0f, TY + 214.0f, 18.0f, Paper, ETextAlign::Left, TEXT("Black"));
+			GaText(Over, CharacterName(Post.Character), TX + 10.0f, TY + GaCardY(171.0f), 14.0f, TW - 20.0f, Ice, ETextAlign::Left, TEXT("Bold"));
+			GaHeart(P, FVector2D(TX + 12.0f, TY + GaCardY(226.0f)), 20.0f, Post.bSaved ? GaPink : WithAlpha(GaPink, 0.55f));
+			P.Text(FString::FromInt(Post.Saves), TX + 30.0f, TY + GaCardY(214.0f), 18.0f, Paper, ETextAlign::Left, TEXT("Black"));
 			if (Post.PaintBytes > 0)
 			{
 				const float Got = DownloadProgress(Post.Id);
-				GaPen(P, FVector2D(TX + 86.0f, TY + 226.0f), 20.0f, Paper, GaPink);
-				GaText(P, Got >= 1.0f ? FString(TEXT("ペイント")) : FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Got * 100.0f)), TX + 102.0f, TY + 216.0f,
+				GaPen(P, FVector2D(TX + 86.0f, TY + GaCardY(226.0f)), 20.0f, Paper, GaPink);
+				GaText(P, Got >= 1.0f ? FString(TEXT("ペイント")) : FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Got * 100.0f)), TX + 102.0f, TY + GaCardY(216.0f),
 					14.0f, TW - 104.0f, WithAlpha(Paper, 0.85f));
 			}
 			// Swatches of its parts along the bottom.
@@ -1590,7 +1745,7 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			{
 				FColor Colour;
 				const bool bOnPart = ChaosImpactCustomColour::GetPart(Post.Parts, Part, Colour);
-				const FBox2D Swatch(FVector2D(TX + Part * 26.0f, TY + 256.0f), FVector2D(TX + Part * 26.0f + 20.0f, TY + 276.0f));
+				const FBox2D Swatch(FVector2D(TX + Part * 26.0f, TY + GaCardY(256.0f)), FVector2D(TX + Part * 26.0f + 20.0f, TY + GaCardY(276.0f)));
 				GaRound(P, Swatch, 5.0f, bOnPart ? FLinearColor(Colour) : FLinearColor(0.12f, 0.15f, 0.24f, 1.0f));
 			}
 			if (Post.bMine)
@@ -1611,21 +1766,34 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			const FBox2D R = PageArrowRect(Direction);
 			const bool bOn = Focus == (Direction < 0 ? 110 : 111);
 			GaRound(Back, R, 12.0f, bOn ? Gold : GaCard);
-			P.Text(Direction < 0 ? TEXT("◀") : TEXT("▶"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - 16.0f, 26.0f,
+				const float ArrowSize = bPhone ? 34.0f : 26.0f;
+			P.Text(Direction < 0 ? TEXT("◀") : TEXT("▶"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - ArrowSize * 0.66f, ArrowSize,
 				bOn ? Ink : Paper, ETextAlign::Center, TEXT("Black"));
+		}
+		if (bPhone)
+		{
+			// スマホ版: 戻る of its own.
+			const FBox2D R = PhoneBackRect();
+			GaRound(Back, R, 14.0f, GaCard);
+			P.Box(static_cast<float>(R.Min.X) + 12.0f, static_cast<float>(R.Max.Y) - 8.0f, static_cast<float>(R.GetSize().X) - 24.0f, 3.0f, Muted);
+			P.Text(TEXT("戻る"), static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - 32.0f * 0.72f, 32.0f, Paper, ETextAlign::Center, TEXT("Black"));
 		}
 		if (bListLoaded && ErrorText.IsEmpty())
 		{
-			P.Text(FString::Printf(TEXT("%d / %d ページ ・ %d作品"), Page + 1, Pages, Total), 1600.0f - GaGridLeft, 166.0f, 14.0f, WithAlpha(Paper, 0.8f),
-				ETextAlign::Right, TEXT("Bold"));
+			P.Text(FString::Printf(TEXT("%d / %d ページ ・ %d作品"), Page + 1, Pages, Total), bUpright ? 840.0f : 1600.0f - GaGridLeft, bUpright ? 188.0f : 166.0f,
+				bPhone ? 18.0f : 14.0f, WithAlpha(Paper, 0.8f), ETextAlign::Right, TEXT("Bold"));
 		}
 		// Waiting, nothing there, or no way through.
-		const FVector2D Middle(800.0, 480.0);
+		const FVector2D Middle = bUpright ? FVector2D(450.0, 700.0) : FVector2D(800.0, 480.0);
 		if (!ErrorText.IsEmpty())
 		{
-			GaRound(P, FBox2D(Middle - FVector2D(420.0, 70.0), Middle + FVector2D(420.0, 70.0)), 18.0f, GaCard);
-			GaText(Over, ErrorText, static_cast<float>(Middle.X), static_cast<float>(Middle.Y) - 34.0f, 24.0f, 780.0f, Paper, ETextAlign::Center, TEXT("Black"));
-			Over.Text(ChaosImpactHints::Text(Device, TEXT("{Y|R}：もう一度")),static_cast<float>(Middle.X), static_cast<float>(Middle.Y) + 14.0f, 17.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+			const float Half = bUpright ? 410.0f : 420.0f;
+			GaRound(P, FBox2D(Middle - FVector2D(Half, 70.0), Middle + FVector2D(Half, 70.0)), 18.0f, GaCard);
+			GaText(Over, ErrorText, static_cast<float>(Middle.X), static_cast<float>(Middle.Y) - 34.0f, 24.0f, Half * 2.0f - 40.0f, Paper, ETextAlign::Center, TEXT("Black"));
+			if (!bPhone)
+			{
+				Over.Text(ChaosImpactHints::Text(Device, TEXT("{Y|R}：もう一度")),static_cast<float>(Middle.X), static_cast<float>(Middle.Y) + 14.0f, 17.0f, Muted, ETextAlign::Center, TEXT("Bold"));
+			}
 		}
 		else if (bListPending && Posts.IsEmpty())
 		{
@@ -1636,39 +1804,41 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 		{
 			const FString Empty = Tab == ETab::Mine ? TEXT("まだ投稿していません") : TEXT("まだ作品がありません");
 			GaText(Over, Empty, static_cast<float>(Middle.X), static_cast<float>(Middle.Y) - 40.0f, 30.0f, 800.0f, Paper, ETextAlign::Center, TEXT("Black"));
-			Over.Text(TEXT("右上の「投稿する」から、自分のカラーを投稿しよう"), static_cast<float>(Middle.X), static_cast<float>(Middle.Y) + 10.0f, 18.0f, Muted,
-				ETextAlign::Center, TEXT("Bold"));
+			GaText(Over, TEXT("右上の「投稿する」から、自分のカラーを投稿しよう"), static_cast<float>(Middle.X), static_cast<float>(Middle.Y) + 10.0f, bPhone ? 22.0f : 18.0f,
+				800.0f, Muted, ETextAlign::Center, TEXT("Bold"));
 		}
 		else if (bListPending)
 		{
-			GaSpinner(Top, FVector2D(1600.0 - GaGridLeft - 320.0, 134.0), 12.0f, Time);
+			GaSpinner(Top, bUpright ? FVector2D(580.0, 200.0) : FVector2D(1600.0 - GaGridLeft - 320.0, 134.0), 12.0f, Time);
 		}
 	}
 	else if (View == EView::Detail && Posts.IsValidIndex(DetailIndex))
 	{
 		const FPost& Post = Posts[DetailIndex];
 		// 全体図: the work large, turning.
-		const FBox2D Shown(FVector2D(110.0, 96.0), FVector2D(650.0, 816.0));
+		const FBox2D Shown = GaDetailShown();
 		GaRound(Back, GaGrow(Shown, 8.0f), 22.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
 		GaPicture(P, StageBrush, Shown);
-		Over.Text(ChaosImpactHints::Text(Device, TEXT("{kb:ドラッグ・Z / X}{pad:{RStick}} で回す")),static_cast<float>(Shown.GetCenter().X), static_cast<float>(Shown.Max.Y) - 34.0f, 14.0f,
+		const FString TurnHow = bPhone ? FString(TEXT("ドラッグで回す")) : ChaosImpactHints::Text(Device, TEXT("{kb:ドラッグ・Z / X}{pad:{RStick}} で回す"));
+		Over.Text(TurnHow, static_cast<float>(Shown.GetCenter().X), static_cast<float>(Shown.Max.Y) - 34.0f, bPhone ? 18.0f : 14.0f,
 			WithAlpha(Paper, 0.65f), ETextAlign::Center, TEXT("Bold"));
-		// Its details.
-		const float X = 720.0f;
+		// Its details (upright: under the work; everything below moved by Down).
+		const float X = GaInfoX();
 		const float W = 780.0f;
-		GaText(P, Post.Title, X, 104.0f, 46.0f, W, Paper, ETextAlign::Left, TEXT("Black"));
-		P.Box(X, 180.0f, 90.0f, 4.0f, GaPink);
+		const float Down = GaInfoTop() - 104.0f;
+		GaText(P, Post.Title, X, 104.0f + Down, 46.0f, W, Paper, ETextAlign::Left, TEXT("Black"));
+		P.Box(X, 180.0f + Down, 90.0f, 4.0f, GaPink);
 		struct FLine { const TCHAR* Label; FString Value; };
 		const FLine Lines[] = {{TEXT("投稿者"), Post.Poster}, {TEXT("投稿日"), FormatDate(Post.At)}, {TEXT("キャラ"), CharacterName(Post.Character)}};
 		for (int32 Row = 0; Row < UE_ARRAY_COUNT(Lines); ++Row)
 		{
-			const float Y = 198.0f + Row * 48.0f;
+			const float Y = 198.0f + Down + Row * 48.0f;
 			GaRound(Back, FBox2D(FVector2D(X, Y), FVector2D(X + W, Y + 42.0f)), 10.0f, GaCard);
 			P.Text(Lines[Row].Label, X + 16.0f, Y + 11.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 			GaText(P, Lines[Row].Value, X + 120.0f, Y + 8.0f, 20.0f, W - 140.0f, Paper, ETextAlign::Left, TEXT("Black"));
 		}
 		{
-			const float Y = 344.0f;
+			const float Y = 344.0f + Down;
 			GaHeart(P, FVector2D(X + 18.0f, Y + 16.0f), 26.0f, Post.bSaved ? GaPink : WithAlpha(GaPink, 0.6f));
 			P.Text(FString::Printf(TEXT("%d人が保存"), Post.Saves), X + 44.0f, Y + 2.0f, 22.0f, Paper, ETextAlign::Left, TEXT("Black"));
 			const FString PaintLine = Post.PaintBytes <= 0 ? FString(TEXT("ペイントなし"))
@@ -1678,11 +1848,11 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			P.Text(PaintLine, X + 312.0f, Y + 4.0f, 20.0f, Post.PaintBytes > 0 ? Paper : Muted, ETextAlign::Left, TEXT("Bold"));
 		}
 		// The parts' colours.
-		P.Text(TEXT("部位の色"), X, 404.0f, 18.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		P.Text(TEXT("部位の色"), X, 404.0f + Down, 18.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 		const TArray<FString>& Names = ChaosImpactCustomColour::GetPartNames(ChaosImpactRoster::ClampIndex(Post.Character));
 		for (int32 Part = 0; Part < FMath::Min(Names.Num(), 8); ++Part)
 		{
-			const FBox2D R(FVector2D(X + (Part % 2) * 396.0f, 432.0f + (Part / 2) * 54.0f), FVector2D(X + (Part % 2) * 396.0f + 384.0f, 432.0f + (Part / 2) * 54.0f + 46.0f));
+			const FBox2D R(FVector2D(X + (Part % 2) * 396.0f, 432.0f + Down + (Part / 2) * 54.0f), FVector2D(X + (Part % 2) * 396.0f + 384.0f, 432.0f + Down + (Part / 2) * 54.0f + 46.0f));
 			GaRound(Back, R, 10.0f, GaCard);
 			GaText(P, Names[Part], static_cast<float>(R.Min.X) + 14.0f, static_cast<float>(R.Min.Y) + 10.0f, 18.0f, 230.0f, Paper, ETextAlign::Left, TEXT("Bold"));
 			FColor Colour;
@@ -1710,22 +1880,26 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			P.Box(static_cast<float>(R.Min.X) + 12.0f, static_cast<float>(R.Max.Y) - 8.0f, static_cast<float>(R.GetSize().X) - 24.0f, 3.0f, Accent);
 			const FString Label = Kind == 0 ? (bWaiting ? FString(TEXT("読みこみ中…")) : FString(TEXT("プリセットに保存"))) : Kind == 1 ? FString(TEXT("投稿を消す"))
 				: FString(TEXT("もどる"));
-			GaText(P, Label, static_cast<float>(R.GetCenter().X), static_cast<float>(R.Min.Y) + 21.0f, 24.0f, static_cast<float>(R.GetSize().X) - 24.0f,
+			const float LabelSize = bPhone ? 28.0f : 24.0f;
+			GaText(P, Label, static_cast<float>(R.GetCenter().X), static_cast<float>(R.GetCenter().Y) - LabelSize * 0.72f, LabelSize, static_cast<float>(R.GetSize().X) - 24.0f,
 				bOn ? Ink : bWaiting ? Muted : Paper, ETextAlign::Center, TEXT("Black"));
 		}
-		P.Text(FString::Printf(TEXT("%d / %d"), DetailIndex + 1, Posts.Num()), 1500.0f, 690.0f, 16.0f, Muted, ETextAlign::Right, TEXT("Bold"));
+		P.Text(FString::Printf(TEXT("%d / %d"), DetailIndex + 1, Posts.Num()), bUpright ? 840.0f : 1500.0f, bUpright ? 1410.0f : 690.0f, 16.0f, Muted, ETextAlign::Right, TEXT("Bold"));
 	}
 	else if (View == EView::Post)
 	{
 		const UChaosImpactColourSubsystem* Colours = UChaosImpactColourSubsystem::Get(Controller.Get());
-		P.Text(TEXT("投稿するカラー"), GaGridLeft, 128.0f, 20.0f, Paper, ETextAlign::Left, TEXT("Black"));
+		const float ListLeft = bUpright ? 60.0f : GaGridLeft;
+		const float ListW = bUpright ? 780.0f : 560.0f;
+		P.Text(TEXT("投稿するカラー"), ListLeft, bUpright ? 106.0f : 128.0f, bPhone ? 24.0f : 20.0f, Paper, ETextAlign::Left, TEXT("Black"));
 		if (PostChoices.IsEmpty())
 		{
-			GaRound(Back, FBox2D(FVector2D(GaGridLeft, 168.0), FVector2D(GaGridLeft + 560.0, 330.0)), 16.0f, GaCard);
-			GaText(P, TEXT("まだ保存したカラーがありません"), GaGridLeft + 280.0f, 200.0f, 24.0f, 520.0f, Paper, ETextAlign::Center, TEXT("Black"));
-			GaText(P, TEXT("カラーエディットで作って保存すると、ここから投稿できます"), GaGridLeft + 280.0f, 252.0f, 16.0f, 520.0f, Muted, ETextAlign::Center);
+			const float Top0 = bUpright ? 150.0f : 168.0f;
+			GaRound(Back, FBox2D(FVector2D(ListLeft, Top0), FVector2D(ListLeft + ListW, Top0 + 162.0)), 16.0f, GaCard);
+			GaText(P, TEXT("まだ保存したカラーがありません"), ListLeft + ListW * 0.5f, Top0 + 32.0f, 24.0f, ListW - 40.0f, Paper, ETextAlign::Center, TEXT("Black"));
+			GaText(P, TEXT("カラーエディットで作って保存すると、ここから投稿できます"), ListLeft + ListW * 0.5f, Top0 + 84.0f, bPhone ? 20.0f : 16.0f, ListW - 40.0f, Muted, ETextAlign::Center);
 		}
-		for (int32 Row = 0; Row < GaPostRows; ++Row)
+		for (int32 Row = 0; Row < GaPostRowsShown(); ++Row)
 		{
 			const int32 Choice = PostScroll + Row;
 			if (!PostChoices.IsValidIndex(Choice) || !Colours)
@@ -1762,21 +1936,25 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 				P.Text(TEXT("ペイント"), static_cast<float>(R.Max.X) - 104.0f, static_cast<float>(R.Min.Y) + 20.0f, 15.0f, Paper, ETextAlign::Left, TEXT("Bold"));
 			}
 		}
-		if (PostChoices.Num() > GaPostRows)
+		if (PostChoices.Num() > GaPostRowsShown())
 		{
-			P.Text(FString::Printf(TEXT("%d / %d　%s"), PostChoice + 1, PostChoices.Num(),
-				*ChaosImpactHints::Text(Device, TEXT("{kb:↑↓・ホイール}{pad:{DPad}↑↓}"))),GaGridLeft + 560.0f, 128.0f, 14.0f, Muted, ETextAlign::Right,
-				TEXT("Bold"));
+			const FString Where = bPhone ? FString::Printf(TEXT("%d / %d"), PostChoice + 1, PostChoices.Num())
+				: FString::Printf(TEXT("%d / %d　%s"), PostChoice + 1, PostChoices.Num(), *ChaosImpactHints::Text(Device, TEXT("{kb:↑↓・ホイール}{pad:{DPad}↑↓}")));
+			P.Text(Where, ListLeft + ListW, bUpright ? 112.0f : 128.0f, bPhone ? 18.0f : 14.0f, Muted, ETextAlign::Right, TEXT("Bold"));
 		}
 		// The work as it will be seen.
-		const FBox2D Shown(FVector2D(700.0, 120.0), FVector2D(1110.0, 667.0));
+		const FBox2D Shown = GaPostShown();
 		GaRound(Back, GaGrow(Shown, 6.0f), 18.0f, FLinearColor(0.02f, 0.035f, 0.09f, 1.0f));
+		// Its words (upright: beside the picture, under the list).
+		const float FX = bUpright ? 440.0f : 1150.0f;
+		const float FW = bUpright ? 400.0f : 350.0f;
+		const float FDown = bUpright ? 416.0f : 0.0f;
 		if (!PostChoices.IsEmpty())
 		{
 			GaPicture(P, StageBrush, Shown);
 		}
 		// Its name, who posts it, and the buttons.
-		P.Text(TEXT("作品の名前"), 1150.0f, 186.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		P.Text(TEXT("作品の名前"), FX, 186.0f + FDown, bPhone ? 20.0f : 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 		{
 			const FBox2D R = PostFieldRect();
 			if (Focus == 400)
@@ -1786,16 +1964,17 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 			GaRound(Back, R, 12.0f, FLinearColor(0.015f, 0.03f, 0.08f, 1.0f));
 			GaText(P, PostTitle.IsEmpty() ? FString(TEXT("（名前をつけてください）")) : PostTitle, static_cast<float>(R.Min.X) + 16.0f, static_cast<float>(R.Min.Y) + 16.0f,
 				24.0f, static_cast<float>(R.GetSize().X) - 32.0f, PostTitle.IsEmpty() ? Muted : Paper, ETextAlign::Left, TEXT("Black"));
-			P.Text(ChaosImpactHints::Text(Device, TEXT("{Confirm}：名前を変える ・ {Y|N}")),static_cast<float>(R.Min.X), static_cast<float>(R.Max.Y) + 6.0f, 13.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			const FString NameHow = bPhone ? FString(TEXT("タップで名前を変える")) : ChaosImpactHints::Text(Device, TEXT("{Confirm}：名前を変える ・ {Y|N}"));
+			P.Text(NameHow, static_cast<float>(R.Min.X), static_cast<float>(R.Max.Y) + 6.0f, bPhone ? 18.0f : 13.0f, Muted, ETextAlign::Left, TEXT("Bold"));
 		}
 		const UChaosImpactSessionSubsystem* Sessions = UChaosImpactSessionSubsystem::Get(Controller.Get());
-		P.Text(TEXT("投稿者"), 1150.0f, 330.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-		GaText(P, Sessions ? Sessions->GetPlayerName() : FString(), 1150.0f, 354.0f, 22.0f, 350.0f, Paper, ETextAlign::Left, TEXT("Black"));
-		P.Text(TEXT("みんなに公開されます。保存した人の数も見られます"), 1150.0f, 400.0f, 13.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		P.Text(TEXT("投稿者"), FX, 330.0f + FDown, bPhone ? 20.0f : 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+		GaText(P, Sessions ? Sessions->GetPlayerName() : FString(), FX, 356.0f + FDown, bPhone ? 26.0f : 22.0f, FW, Paper, ETextAlign::Left, TEXT("Black"));
+		GaText(P, TEXT("みんなに公開されます。保存した人の数も見られます"), FX, 400.0f + FDown, bPhone ? 18.0f : 13.0f, FW, Muted, ETextAlign::Left, TEXT("Bold"));
 		if (PostChoices.IsValidIndex(PostChoice))
 		{
-			P.Text(TEXT("キャラ"), 1150.0f, 440.0f, 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
-			GaText(P, CharacterName(PostChoices[PostChoice].Character), 1150.0f, 464.0f, 22.0f, 350.0f, Ice, ETextAlign::Left, TEXT("Black"));
+			P.Text(TEXT("キャラ"), FX, 440.0f + FDown, bPhone ? 20.0f : 16.0f, Muted, ETextAlign::Left, TEXT("Bold"));
+			GaText(P, CharacterName(PostChoices[PostChoice].Character), FX, 466.0f + FDown, bPhone ? 26.0f : 22.0f, FW, Ice, ETextAlign::Left, TEXT("Black"));
 		}
 		for (int32 Index = 0; Index < 2; ++Index)
 		{
@@ -1817,8 +1996,9 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 					24.0f, Paper, ETextAlign::Center, TEXT("Black"));
 				continue;
 			}
+			const float ActionSize = bPhone ? 28.0f : Index == 0 ? 26.0f : 20.0f;
 			GaText(P, Index == 0 ? TEXT("この作品を投稿する") : TEXT("やめる"), static_cast<float>(R.GetCenter().X),
-				static_cast<float>(R.Min.Y) + (Index == 0 ? 24.0f : 16.0f), Index == 0 ? 26.0f : 20.0f, static_cast<float>(R.GetSize().X) - 24.0f,
+				static_cast<float>(R.GetCenter().Y) - ActionSize * 0.72f, ActionSize, static_cast<float>(R.GetSize().X) - 24.0f,
 				bOn && bUsable ? Ink : bUsable ? Paper : Muted, ETextAlign::Center, TEXT("Black"));
 		}
 	}
@@ -1829,11 +2009,17 @@ int32 UChaosImpactGallery::Paint(const FGeometry& Design, FSlateWindowElementLis
 		const float Fade = FMath::Clamp(static_cast<float>(3.0 - (Now - NoticeAt)) / 0.4f, 0.0f, 1.0f);
 		const FPainter Note{Design, Elements, Layer + 4, Fade};
 		// (Where it covers nothing it needs: over the cards' foot, above a work's buttons, under the post's picture.)
-		const FBox2D Band = View == EView::Detail ? FBox2D(FVector2D(720.0, 662.0), FVector2D(1500.0, 714.0))
+		const FBox2D Band = bUpright ? FBox2D(FVector2D(60.0, 1376.0), FVector2D(840.0, 1432.0))
+			: View == EView::Detail ? FBox2D(FVector2D(720.0, 662.0), FVector2D(1500.0, 714.0))
 			: View == EView::Post ? FBox2D(FVector2D(690.0, 690.0), FVector2D(1120.0, 746.0)) : FBox2D(FVector2D(360.0, 772.0), FVector2D(1240.0, 828.0));
 		GaRound(Note, Band, 14.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.94f));
 		GaText(Note, NoticeText, static_cast<float>(Band.GetCenter().X), static_cast<float>(Band.Min.Y) + 13.0f, 21.0f, static_cast<float>(Band.GetSize().X) - 30.0f, Gold,
 			ETextAlign::Center, TEXT("Black"));
+	}
+	if (bPhone)
+	{
+		// (By touch: no keys to name.)
+		return Naming.IsOpen() ? Naming.Paint(Design, Elements, Layer + 6) : Layer + 6;
 	}
 	Back.Box(0.0f, GaBarTop, 1600.0f, 58.0f, FLinearColor(0.004f, 0.006f, 0.016f, 0.95f));
 	// (The keyboard posts with Enter on the button: no key of its own.)

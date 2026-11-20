@@ -1,4 +1,4 @@
-#include "ChaosImpactSoloTitleWidget.h"
+﻿#include "ChaosImpactSoloTitleWidget.h"
 
 #include "ChaosImpactHints.h"
 #include "ChaosImpactPaint.h"
@@ -12,50 +12,92 @@ void UChaosImpactSoloTitleWidget::SetTitle(AChaosImpactSoloTitle* InTitle)
 
 namespace
 {
-	constexpr float PlanW = 1600.0f;
-	constexpr float PlanH = 900.0f;
-	constexpr float CardW = 400.0f;
-	constexpr float CardH = 290.0f;
-	constexpr float CardTop = 505.0f;
+	// The plan: 1600 x 900, or (スマホ版, upright) 900 x 1600 with the files under each other.
 	constexpr float CardGap = 40.0f;
 
-	FVector2D CardPlan(const int32 Index)
+	FVector2D PlanSize(const bool bUpright)
 	{
-		const float Left = (PlanW - (CardW * 3.0f + CardGap * 2.0f)) * 0.5f;
-		return FVector2D(Left + Index * (CardW + CardGap), CardTop);
+		return bUpright ? FVector2D(900.0, 1600.0) : FVector2D(1600.0, 900.0);
 	}
+
+	FVector2D CardSize(const bool bUpright)
+	{
+		return bUpright ? FVector2D(780.0, 268.0) : FVector2D(400.0, 290.0);
+	}
+
+	FVector2D CardPlan(const int32 Index, const bool bUpright)
+	{
+		if (bUpright)
+		{
+			return FVector2D(60.0, 560.0 + Index * (268.0 + 34.0));
+		}
+		const float Left = (1600.0f - (400.0f * 3.0f + CardGap * 2.0f)) * 0.5f;
+		return FVector2D(Left + Index * (400.0f + CardGap), 505.0f);
+	}
+}
+
+bool UChaosImpactSoloTitleWidget::IsPhone()
+{
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	return true;
+#else
+	static const bool bTouch = FParse::Param(FCommandLine::Get(), TEXT("CITouch"));
+	return bTouch;
+#endif
+}
+
+bool UChaosImpactSoloTitleWidget::IsUpright(const FVector2D& Size)
+{
+	return IsPhone() && Size.Y > Size.X;
 }
 
 float UChaosImpactSoloTitleWidget::PlanScale(const FVector2D& Size)
 {
-	return static_cast<float>(FMath::Max(0.1, FMath::Min(Size.X / PlanW, Size.Y / PlanH)));
+	const FVector2D Plan = PlanSize(IsUpright(Size));
+	return static_cast<float>(FMath::Max(0.1, FMath::Min(Size.X / Plan.X, Size.Y / Plan.Y)));
 }
 
 FVector2D UChaosImpactSoloTitleWidget::PlanOrigin(const FVector2D& Size)
 {
 	const float S = PlanScale(Size);
-	return FVector2D((Size.X - PlanW * S) * 0.5, (Size.Y - PlanH * S) * 0.5);
+	const FVector2D Plan = PlanSize(IsUpright(Size));
+	return FVector2D((Size.X - Plan.X * S) * 0.5, (Size.Y - Plan.Y * S) * 0.5);
 }
 
 FBox2D UChaosImpactSoloTitleWidget::CardRect(const FVector2D& Size, const int32 Index)
 {
 	const float S = PlanScale(Size);
-	const FVector2D O = PlanOrigin(Size) + CardPlan(Index) * S;
-	return FBox2D(O, O + FVector2D(CardW, CardH) * S);
+	const bool bUpright = IsUpright(Size);
+	const FVector2D O = PlanOrigin(Size) + CardPlan(Index, bUpright) * S;
+	return FBox2D(O, O + CardSize(bUpright) * S);
 }
 
 FBox2D UChaosImpactSoloTitleWidget::EraseRect(const FVector2D& Size, const int32 Index)
 {
 	const float S = PlanScale(Size);
-	const FVector2D O = PlanOrigin(Size) + (CardPlan(Index) + FVector2D(CardW - 150.0f, CardH - 60.0f)) * S;
+	const bool bUpright = IsUpright(Size);
+	const FVector2D Card = CardSize(bUpright);
+	const FVector2D O = PlanOrigin(Size) + (CardPlan(Index, bUpright) + FVector2D(Card.X - 150.0, Card.Y - 60.0)) * S;
 	return FBox2D(O, O + FVector2D(126.0f, 42.0f) * S);
 }
 
 FBox2D UChaosImpactSoloTitleWidget::AnswerRect(const FVector2D& Size, const bool bYes)
 {
 	const float S = PlanScale(Size);
-	const FVector2D O = PlanOrigin(Size) + FVector2D(bYes ? 560.0f : 820.0f, 560.0f) * S;
-	return FBox2D(O, O + FVector2D(220.0f, 70.0f) * S);
+	const bool bUpright = IsUpright(Size);
+	const FVector2D O = PlanOrigin(Size) + (bUpright ? FVector2D(bYes ? 150.0f : 470.0f, 880.0f) : FVector2D(bYes ? 560.0f : 820.0f, 560.0f)) * S;
+	return FBox2D(O, O + FVector2D(bUpright ? 280.0f : 220.0f, 70.0f) * S);
+}
+
+FBox2D UChaosImpactSoloTitleWidget::BackRect(const FVector2D& Size)
+{
+	if (!IsPhone())
+	{
+		return FBox2D(ForceInit);
+	}
+	const float S = PlanScale(Size);
+	const FVector2D O = PlanOrigin(Size) + FVector2D(30.0, 28.0) * S;
+	return FBox2D(O, O + FVector2D(210.0f, 64.0f) * S);
 }
 
 int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
@@ -73,6 +115,13 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 	}
 	const FVector2D Size(Size2f.X, Size2f.Y);
 	const float S = PlanScale(Size);
+	// (スマホ版: upright, the plan is 900 wide; CX is its middle.)
+	const bool bUpright = IsUpright(Size);
+	const bool bPhone = IsPhone();
+	const float CX = bUpright ? 450.0f : 800.0f;
+	const FVector2D CardDims = CardSize(bUpright);
+	const float CardW = static_cast<float>(CardDims.X);
+	const float CardH = static_cast<float>(CardDims.Y);
 	const FVector2D Origin = PlanOrigin(Size);
 	const FGeometry Plan = MakeAnchor(AllottedGeometry, static_cast<float>(Origin.X), static_cast<float>(Origin.Y), S);
 	const FGeometry Whole = MakeAnchor(AllottedGeometry, 0.0f, 0.0f, 1.0f);
@@ -83,6 +132,7 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 	// Hints in the names of what is being played with right now (the title reads the face buttons by where they are).
 	const EChaosImpactDevice Device = ChaosImpactHints::GetDevice(GetOwningPlayer());
 	const bool bPad = ChaosImpactHints::IsPad(Device);
+	(void)CardW;
 	const FHudFill Glow = MakeFill(FLinearColor(1.0f, 0.97f, 0.82f), FLinearColor(1.0f, 0.66f, 0.2f));
 	const FLinearColor Dusk(0.06f, 0.04f, 0.16f);
 
@@ -102,8 +152,8 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 	{
 		const float ToFiles = Step == EStep::Press ? 0.0f : Step == EStep::Leaving ? 1.0f : EaseOut(StepAge / 0.45f);
 		const float LogoIn = EaseOut((Time - 0.6f) / 1.2f);
-		const float Scale = FMath::Lerp(1.0f, 0.62f, ToFiles);
-		const FVector2D Centre = FMath::Lerp(At(800.0f, 300.0f), At(800.0f, 150.0f), ToFiles);
+		const float Scale = FMath::Lerp(bUpright ? 0.95f : 1.0f, bUpright ? 0.7f : 0.62f, ToFiles);
+		const FVector2D Centre = bUpright ? FMath::Lerp(At(CX, 560.0f), At(CX, 270.0f), ToFiles) : FMath::Lerp(At(CX, 300.0f), At(CX, 150.0f), ToFiles);
 		const FGeometry Logo = MakeAnchor(Plan, static_cast<float>(Centre.X), static_cast<float>(Centre.Y), Scale);
 		// Its light: a slow wheel of rays and a soft halo.
 		const FPainter Rays{Logo, OutDrawElements, Base + 4, LogoIn * 0.32f};
@@ -132,23 +182,28 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 	{
 		const float Blink = 0.55f + 0.45f * FMath::Sin(Time * 3.2f);
 		const FPainter Press{Plan, OutDrawElements, Base + 30, EaseOut((Time - 1.6f) / 0.6f)};
-		HudText3D(Press, TEXT("PRESS START"), 800.0f, 640.0f, 40.0f, WithAlpha(FLinearColor(1.0f, 0.9f, 0.6f), Blink), ETextAlign::Center);
-		Press.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{A} ボタン}{kb:クリック / Enter}")), 800.0f, 700.0f, 18.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.85f), ETextAlign::Center,
-			TEXT("Black"), 2.0f, Navy);
+		// (スマホ版: a tap, no keys named.)
+		const float PressY = bUpright ? 1120.0f : 640.0f;
+		HudText3D(Press, bPhone ? TEXT("TAP TO START") : TEXT("PRESS START"), CX, PressY, 40.0f, WithAlpha(FLinearColor(1.0f, 0.9f, 0.6f), Blink), ETextAlign::Center);
+		if (!bPhone)
+		{
+			Press.Text(ChaosImpactHints::Text(Device, TEXT("{pad:{A} ボタン}{kb:クリック / Enter}")), CX, PressY + 60.0f, 18.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.85f),
+				ETextAlign::Center, TEXT("Black"), 2.0f, Navy);
+		}
 	}
 
 	// ---- The files.
 	if (Step == EStep::Files || Step == EStep::ConfirmErase || Step == EStep::Leaving)
 	{
 		const float In = Step == EStep::Files ? EaseOut(StepAge / 0.4f) : 1.0f;
-		FPainter{Plan, OutDrawElements, Base + 30, In}.Text(TEXT("ファイルをえらんでください"), 800.0f, 440.0f, 22.0f, Paper, ETextAlign::Center,
+		FPainter{Plan, OutDrawElements, Base + 30, In}.Text(TEXT("ファイルをえらんでください"), CX, bUpright ? 500.0f : 440.0f, 22.0f, Paper, ETextAlign::Center,
 			TEXT("Black"), 3.0f, Navy);
 		for (int32 I = 0; I < 3; ++I)
 		{
 			const FChaosImpactSoloFileView& File = T->GetFile(I);
 			const bool bPicked = I == T->GetSelected();
 			const float Lift = bPicked ? -10.0f - 3.0f * FMath::Sin(Time * 4.0f) : 0.0f;
-			const FVector2D C = CardPlan(I) + FVector2D(0.0, Lift + (1.0f - In) * 60.0f);
+			const FVector2D C = CardPlan(I, bUpright) + FVector2D(0.0, Lift + (1.0f - In) * 60.0f);
 			const float L = static_cast<float>(C.X);
 			const float Tp = static_cast<float>(C.Y);
 			const FPainter Card{Plan, OutDrawElements, Base + 40 + I * 12, In * (bPicked || Step != EStep::ConfirmErase ? 1.0f : 0.6f)};
@@ -194,22 +249,23 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 			Words.Text(File.Place, L + 28.0f, Tp + 188.0f, 20.0f, Paper, ETextAlign::Left, TEXT("Black"), 2.0f, Navy);
 			Words.Text(File.LastPlayed.GetTicks() > 0 ? File.LastPlayed.ToString(TEXT("%Y/%m/%d %H:%M")) : FString(), L + 28.0f, Tp + 240.0f, 14.0f,
 				FLinearColor(0.7f, 0.74f, 0.88f), ETextAlign::Left, TEXT("Bold"));
-			// Its erase button (the picked file's).
-			if (bPicked && Step == EStep::Files)
+			// Its erase button (the picked file's; スマホ版: every file's, as there is no picking before a tap).
+			if ((bPicked || bPhone) && Step == EStep::Files)
 			{
 				const float EL = L + CardW - 150.0f;
 				const float ET = Tp + CardH - 60.0f;
-				const bool bHover = T->IsEraseHovered();
+				const bool bHover = bPicked && T->IsEraseHovered();
 				HudShard(HudAbove(Words, 2), {At(EL + 6.0f, ET), At(EL + 126.0f, ET - 2.0f), At(EL + 120.0f, ET + 42.0f), At(EL, ET + 44.0f)},
 					bHover ? FireFill : MakeFill(FLinearColor(0.5f, 0.12f, 0.2f, 0.95f), FLinearColor(0.25f, 0.04f, 0.1f, 0.95f)), 2.5f, FVector2D(3.0, 4.0));
-				HudAbove(Words, 6).Text(ChaosImpactHints::Text(Device, TEXT("{pad:{Y}：}けす")), EL + 63.0f, ET + 8.0f, 17.0f, Paper, ETextAlign::Center, TEXT("Black"), 2.0f,
-					Navy);
+				HudAbove(Words, 6).Text(bPhone ? FString(TEXT("けす")) : ChaosImpactHints::Text(Device, TEXT("{pad:{Y}：}けす")), EL + 63.0f, ET + 8.0f, 17.0f, Paper,
+					ETextAlign::Center, TEXT("Black"), 2.0f, Navy);
 			}
 		}
-		// What the buttons do.
-		const FString Hint = bPad ? ChaosImpactHints::Text(Device, TEXT("左右：えらぶ　{A}：はじめる　{Y}：けす　{B}：もどる"))
+		// What the buttons do (スマホ版: what to tap).
+		const FString Hint = bPhone ? FString(TEXT("ファイルをタップではじめる"))
+			: bPad ? ChaosImpactHints::Text(Device, TEXT("左右：えらぶ　{A}：はじめる　{Y}：けす　{B}：もどる"))
 			: FString(TEXT("←→ / クリック：えらぶ　Enter / クリック：はじめる　Delete：けす　Esc：もどる"));
-		FPainter{Plan, OutDrawElements, Base + 80, In}.Text(Hint, 800.0f, 852.0f, 16.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.9f), ETextAlign::Center,
+		FPainter{Plan, OutDrawElements, Base + 80, In}.Text(Hint, CX, bUpright ? 1500.0f : 852.0f, 16.0f, FLinearColor(0.9f, 0.92f, 1.0f, 0.9f), ETextAlign::Center,
 			TEXT("Black"), 2.0f, Navy);
 	}
 
@@ -219,22 +275,44 @@ int32 UChaosImpactSoloTitleWidget::NativePaint(const FPaintArgs& Args, const FGe
 		const float In = EaseOut(StepAge / 0.25f);
 		FPainter{Whole, OutDrawElements, Base + 100, In}.Box(0.0f, 0.0f, Size2f.X, Size2f.Y, FLinearColor(0.01f, 0.0f, 0.04f, 0.6f));
 		const FPainter Panel{Plan, OutDrawElements, Base + 104, In};
-		HudShard(Panel, {At(470.0f, 330.0f), At(1140.0f, 320.0f), At(1124.0f, 660.0f), At(456.0f, 672.0f)},
+		// (Upright: the panel lower and narrower, its middle CX; the plan is shifted for it.)
+		const float PanelDY = bUpright ? 320.0f : 0.0f;
+		const float PanelDX = CX - 800.0f;
+		const float PanelHalf = bUpright ? 380.0f : 335.0f;
+		HudShard(Panel, {At(CX - PanelHalf, 330.0f + PanelDY), At(CX + PanelHalf, 320.0f + PanelDY), At(CX + PanelHalf - 16.0f, 660.0f + PanelDY),
+			At(CX - PanelHalf - 14.0f, 672.0f + PanelDY)},
 			MakeFill(FLinearColor(0.32f, 0.08f, 0.16f, 0.98f), FLinearColor(0.1f, 0.02f, 0.06f, 0.98f)), 4.0f, FVector2D(8.0, 9.0));
+		(void)PanelDX;
 		const FChaosImpactSoloFileView& File = T->GetFile(T->GetSelected());
 		const FPainter Words{Plan, OutDrawElements, Base + 110, In};
-		HudText3D(Words, FString::Printf(TEXT("ファイル %d をけしますか？"), T->GetSelected() + 1), 800.0f, 372.0f, 36.0f, Paper, ETextAlign::Center);
-		Words.Text(FString::Printf(TEXT("クリア %d / %d の記録がなくなります。"), File.Cleared, File.Total), 800.0f, 446.0f, 20.0f,
+		HudText3D(Words, FString::Printf(TEXT("ファイル %d をけしますか？"), T->GetSelected() + 1), CX, 372.0f + PanelDY, 36.0f, Paper, ETextAlign::Center);
+		Words.Text(FString::Printf(TEXT("クリア %d / %d の記録がなくなります。"), File.Cleared, File.Total), CX, 446.0f + PanelDY, 20.0f,
 			FLinearColor(1.0f, 0.85f, 0.8f), ETextAlign::Center, TEXT("Black"));
-		Words.Text(TEXT("けしたファイルはもとに戻せません。"), 800.0f, 480.0f, 18.0f, FLinearColor(1.0f, 0.6f, 0.55f), ETextAlign::Center, TEXT("Bold"));
+		Words.Text(TEXT("けしたファイルはもとに戻せません。"), CX, 480.0f + PanelDY, 18.0f, FLinearColor(1.0f, 0.6f, 0.55f), ETextAlign::Center, TEXT("Bold"));
 		for (const bool bYes : {true, false})
 		{
+			// (Where AnswerRect has them, in the plan.)
 			const bool bOn = T->IsEraseYes() == bYes;
-			const float X = bYes ? 560.0f : 820.0f;
-			HudShard(HudAbove(Words, 2), {At(X + 8.0f, 560.0f), At(X + 220.0f, 556.0f), At(X + 212.0f, 630.0f), At(X, 634.0f)},
+			const float X = bUpright ? (bYes ? 150.0f : 470.0f) : (bYes ? 560.0f : 820.0f);
+			const float Y = bUpright ? 880.0f : 560.0f;
+			const float W = bUpright ? 280.0f : 220.0f;
+			HudShard(HudAbove(Words, 2), {At(X + 8.0f, Y), At(X + W, Y - 4.0f), At(X + W - 8.0f, Y + 70.0f), At(X, Y + 74.0f)},
 				bOn ? (bYes ? FireFill : IceFill) : NightFill, bOn ? 4.0f : 2.5f, FVector2D(4.0, 5.0));
-			HudText3D(HudAbove(Words, 6), bYes ? TEXT("はい") : TEXT("いいえ"), X + 110.0f, 572.0f, 30.0f, Paper, ETextAlign::Center);
+			HudText3D(HudAbove(Words, 6), bYes ? TEXT("はい") : TEXT("いいえ"), X + W * 0.5f, Y + 12.0f, 30.0f, Paper, ETextAlign::Center);
 		}
+	}
+
+	// ---- スマホ版: もどる at the top left (as the menus' way back: a slim leaning bar, an arrow).
+	if (bPhone && Step != EStep::Leaving && Step != EStep::ConfirmErase)
+	{
+		const FPainter BackBar{Plan, OutDrawElements, Base + 90, EaseOut((Time - 1.0f) / 0.5f)};
+		const float BX = 30.0f;
+		const float BY = 28.0f;
+		HudShard(BackBar, {At(BX + 10.0f, BY), At(BX + 210.0f, BY), At(BX + 200.0f, BY + 64.0f), At(BX, BY + 64.0f)}, NightFill, 2.5f, FVector2D(4.0, 5.0));
+		const FPainter Mark = HudAbove(BackBar, 3);
+		Mark.Line(At(BX + 46.0f, BY + 20.0f), At(BX + 34.0f, BY + 32.0f), Paper, 5.0f);
+		Mark.Line(At(BX + 34.0f, BY + 32.0f), At(BX + 46.0f, BY + 44.0f), Paper, 5.0f);
+		Mark.Text(TEXT("もどる"), BX + 64.0f, BY + 14.0f, 26.0f, Paper, ETextAlign::Left, TEXT("Black"));
 	}
 
 	// ---- Coming in from the dark; going out into the light.

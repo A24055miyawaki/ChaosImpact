@@ -65,7 +65,9 @@ enum class EChaosImpactDojoGoal : uint8
 	/** Change places with the CPU (the swap ball). */
 	SwapPlace,
 	/** Stop the CPU's throws with a barrier (each wall broken by a CPU's ball counts). */
-	BarrierBlock
+	BarrierBlock,
+	/** Join the two balls held (合体ボール) and hit the CPU with the fused ball (each fused throw that hits counts once). */
+	FusionHit
 };
 
 /** How a lesson's CPUs behave (set by AChaosImpactDojo; their own brains are off unless Fighter). */
@@ -115,7 +117,9 @@ enum class EChaosImpactDojoArt : uint8
 	Stamina,
 	Curve,
 	/** The drive course: a drive ball steered down the winding road onto the CPU. */
-	DriveCourse
+	DriveCourse,
+	/** 合体ボール: two balls joined into one, then thrown. */
+	Fusion
 };
 
 /** The part of the HUD a slide or task points at. */
@@ -188,6 +192,8 @@ struct FChaosImpactDojoLesson
 	int32 CPULevel = 0;
 	/** Thrower CPUs: seconds between throws. */
 	float ThrowEvery = 2.1f;
+	/** 合体ボール may be used in it (the dojo is otherwise without it). */
+	bool bFusion = false;
 };
 
 struct FChaosImpactDojoCategory

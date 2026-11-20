@@ -1380,8 +1380,8 @@ void AChaosImpactCrashBall::UpdateVisuals(const float DeltaSeconds)
 		: NeutralGold;
 	// Frozen by an ice ball: pale ice blue all over, the bands shimmering, until it thaws.
 	const bool bFrozenLook = IsFrozen();
-	const FLinearColor Ice(0.55f, 0.88f, 1.0f, 1.0f);
-	const FLinearColor BandColor = bFrozenLook ? FMath::Lerp(Ice, FLinearColor::White, 0.3f + 0.3f * FMath::Sin(static_cast<float>(Now) * 9.0f))
+	const FLinearColor IceTint(0.55f, 0.88f, 1.0f, 1.0f);
+	const FLinearColor BandColor = bFrozenLook ? FMath::Lerp(IceTint, FLinearColor::White, 0.3f + 0.3f * FMath::Sin(static_cast<float>(Now) * 9.0f))
 		: FMath::Lerp(TeamColor, FLinearColor::White, FMath::Max(HitFlash * 0.75f, RecoveryFlash * 0.85f));
 	const FLinearColor CoreColor = bFrozenLook ? FLinearColor(0.42f, 0.62f, 0.78f, 1.0f)
 		: FMath::Lerp(FLinearColor(0.08f, 0.10f, 0.18f, 1.0f), TeamColor, 0.28f + HitFlash * 0.45f);

@@ -8,6 +8,12 @@ public class ChaosImpact : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		if (Target.Platform == UnrealTargetPlatform.Android)
+		{
+			// スマホ版: the Wi-Fi kept quick while the game is in front (ChaosImpact_UPL.xml).
+			AdditionalPropertiesForReceipt.Add("AndroidPlugin", System.IO.Path.Combine(ModuleDirectory, "ChaosImpact_UPL.xml"));
+		}
+
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
 			"CoreUObject",
@@ -28,7 +34,6 @@ public class ChaosImpact : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"RHI",
 			"RenderCore",
-			"JoyShockLibrary4Unreal",
 			"NetCore",
 			"ProceduralMeshComponent",
 			"OnlineSubsystem",
@@ -46,6 +51,18 @@ public class ChaosImpact : ModuleRules
 			"StaticMeshDescription",
 			"AssetRegistry"
 		});
+
+		// The PlayStation / Switch pads (JoyShockLibrary4Unreal) are Windows only; elsewhere (スマホ版) the game builds without
+		// them (ChaosImpactJoyShock.h).
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PrivateDependencyModuleNames.Add("JoyShockLibrary4Unreal");
+			PublicDefinitions.Add("WITH_JOYSHOCK=1");
+		}
+		else
+		{
+			PublicDefinitions.Add("WITH_JOYSHOCK=0");
+		}
 
 		// Keep the supplied logo available through the platform file layer in packaged builds.
 		RuntimeDependencies.Add("$(ProjectDir)/Content/UI/TitleLogoTransparent.png", StagedFileType.UFS);

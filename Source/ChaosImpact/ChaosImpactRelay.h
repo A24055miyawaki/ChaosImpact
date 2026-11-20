@@ -104,6 +104,8 @@ private:
 	{
 		FSocket* Socket = nullptr;
 		double LastSeen = 0.0;
+		/** When this guest last sent the game's packets through the relay (its direct line not answering it). */
+		double LastRelayedAt = -100.0;
 	};
 
 	void SendToRelay(const uint8* Data, int32 Size);

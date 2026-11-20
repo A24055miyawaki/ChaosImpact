@@ -90,8 +90,32 @@ public:
 	bool HandleClick(const FVector2D& DesignPoint);
 	void HandleMouseMove(const FVector2D& DesignPoint);
 	bool HandleCharacter(TCHAR Character);
+	/** スマホ版: its pages (0 キャラ, 1 参加者, 2 ルール), as a tab shows them. */
+	void ShowPhonePage(int32 Page);
+	int32 GetPhonePage() const { return PhonePage; }
+	int32 GetPeoplePage() const;
+	/** Tests: the name's keyboard opened / put away. */
+	void OpenNamingForTests() { OpenNaming(); }
+	void CloseNamingForTests() { Naming.Close(); }
 
 private:
+	/** スマホ版: laid out for touch (both ways), a page at a time. */
+	bool IsPhone() const;
+	FBox2D TabRect(int32 Slot) const;
+	/** The tabs: キャラ, 参加者 (more than one person), ルール. */
+	int32 GetPhoneTabCount() const;
+	int32 GetPhoneTabPage(int32 Slot) const;
+	bool IsButtonShown(int32 Button) const;
+	/** The people's pages: 0 back, 1 on. */
+	FBox2D PagerRect(int32 Direction) const;
+	/** A setting's ◀ (-1) and ▶ (1). */
+	FBox2D ArrowRect(int32 Row, int32 Direction) const;
+	int32 GetPeoplePerPage() const;
+	int32 GetPeoplePages() const;
+	/** (Keys or a controller on the phone: the page showing what the cursor is on.) */
+	void FollowAreaOnPhone();
+	bool HandlePhoneClick(const FVector2D& Point);
+	int32 PaintPhone(const FGeometry& Design, FSlateWindowElementList& Elements, int32 Layer) const;
 	UChaosImpactLocalTourneySubsystem* GetData() const;
 	FChaosImpactLocalTourneyPerson* GetCurrent() const;
 	void Move(int32 Columns, int32 Rows);
@@ -125,6 +149,8 @@ private:
 	int32 SettingCursor = 0;
 	int32 PersonCursor = 0;
 	int32 ButtonCursor = 3;
+	int32 PhonePage = 0;
+	int32 PeoplePage = 0;
 	int32 Frame = 0;
 	double NextStickAt[2] = {0.0, 0.0};
 	FString Message;
